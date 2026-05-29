@@ -15,7 +15,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
 	parsed, err := parseSandboxArgs(
-		[]string{"--tmp-env", "--mountable-projects", "proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
+		[]string{"--tmp-env", "proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
 		true,
 		tool.OpenCodeToolName,
 		ctxTools,
@@ -24,7 +24,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsed.Options.TmpEnv || !parsed.Options.MountableProjects || parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
+	if !parsed.Options.TmpEnv || parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
 		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {

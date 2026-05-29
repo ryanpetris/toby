@@ -9,19 +9,12 @@ import (
 const JSONRPCVersion = "2.0"
 
 const (
-	CodeParseError                = -32700
-	CodeInvalidRequest            = -32600
-	CodeMethodNotFound            = -32601
-	CodeInvalidParams             = -32602
-	CodeInternalError             = -32603
-	CodeTmuxRequired              = -32001
-	CodeDenied                    = -32002
-	CodeMountFailed               = -32003
-	CodeControlFileError          = -32004
-	CodeProjectNotFound           = -32005
-	CodeReadmeNotFound            = -32006
-	CodeProjectNotVisible         = -32007
-	CodeMountableProjectsDisabled = -32008
+	CodeParseError        = -32700
+	CodeInvalidRequest    = -32600
+	CodeMethodNotFound    = -32601
+	CodeInvalidParams     = -32602
+	CodeInternalError     = -32603
+	CodeProjectNotVisible = -32007
 )
 
 type RPCRequest struct {
@@ -44,30 +37,14 @@ type RPCError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-type ProjectParams struct {
-	Name string `json:"name" jsonschema:"project directory name under XDG_PROJECTS_DIR"`
+type ContextFile struct {
+	Path string `json:"path" jsonschema:"relative path under XDG_RUNTIME_DIR/toby/context"`
+	Mode uint32 `json:"mode" jsonschema:"file mode bits"`
+	Data []byte `json:"data" jsonschema:"file contents, base64-encoded by JSON"`
 }
 
-type ProjectInfo struct {
-	Name string `json:"name" jsonschema:"project directory name"`
-	Path string `json:"path" jsonschema:"absolute host path to the project directory"`
-}
-
-type ProjectListResult struct {
-	ProjectRoot string        `json:"project_root" jsonschema:"absolute host path of XDG_PROJECTS_DIR"`
-	Projects    []ProjectInfo `json:"projects" jsonschema:"available project directories"`
-}
-
-type ProjectReadmeResult struct {
-	Name    string `json:"name" jsonschema:"project directory name"`
-	Path    string `json:"path" jsonschema:"absolute host path to README.md"`
-	Content string `json:"content" jsonschema:"README.md contents"`
-}
-
-type MountResult struct {
-	HostPath    string `json:"host_path" jsonschema:"host path requested for mounting"`
-	SandboxPath string `json:"sandbox_path" jsonschema:"sandbox path where the host path is visible"`
-	VirtualPath string `json:"virtual_path" jsonschema:"internal FUSE virtual path for the mount"`
+type ContextFilesResult struct {
+	Files []ContextFile `json:"files" jsonschema:"context files to materialize under XDG_RUNTIME_DIR/toby/context"`
 }
 
 type GitRepositoryParams struct {
@@ -92,24 +69,8 @@ type GitResult struct {
 	Stderr     string `json:"stderr" jsonschema:"git standard error"`
 }
 
-func NewProjectListRequest(id int64) ([]byte, error) {
-	return newRequest(id, "project_list", nil)
-}
-
-func NewProjectReadmeRequest(id int64, name string) ([]byte, error) {
-	params, err := json.Marshal(ProjectParams{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	return newRequest(id, "project_readme", params)
-}
-
-func NewProjectMountRequest(id int64, name string) ([]byte, error) {
-	params, err := json.Marshal(ProjectParams{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	return newRequest(id, "project_mount", params)
+func NewContextFilesRequest(id int64) ([]byte, error) {
+	return newRequest(id, "context_files", nil)
 }
 
 func NewGitCommitRequest(id int64, repository, message string) ([]byte, error) {
@@ -153,20 +114,6 @@ func DecodeRequest(data []byte) (RPCRequest, error) {
 		return RPCRequest{}, errors.New("invalid JSON-RPC request")
 	}
 	return req, nil
-}
-
-func DecodeProjectParams(raw json.RawMessage) (ProjectParams, error) {
-	if len(raw) == 0 {
-		return ProjectParams{}, errors.New("missing params")
-	}
-	var params ProjectParams
-	if err := json.Unmarshal(raw, &params); err != nil {
-		return ProjectParams{}, err
-	}
-	if params.Name == "" {
-		return ProjectParams{}, errors.New("name is required")
-	}
-	return params, nil
 }
 
 func DecodeGitRepositoryParams(raw json.RawMessage) (GitRepositoryParams, error) {
@@ -239,28 +186,12 @@ func DecodeResponse(data []byte) (RPCResponse, error) {
 	return resp, nil
 }
 
-func DecodeMountResult(result any) (MountResult, error) {
-	var mount MountResult
-	if err := decodeResult(result, &mount); err != nil {
-		return MountResult{}, err
+func DecodeContextFilesResult(result any) (ContextFilesResult, error) {
+	var files ContextFilesResult
+	if err := decodeResult(result, &files); err != nil {
+		return ContextFilesResult{}, err
 	}
-	return mount, nil
-}
-
-func DecodeProjectListResult(result any) (ProjectListResult, error) {
-	var projects ProjectListResult
-	if err := decodeResult(result, &projects); err != nil {
-		return ProjectListResult{}, err
-	}
-	return projects, nil
-}
-
-func DecodeProjectReadmeResult(result any) (ProjectReadmeResult, error) {
-	var readme ProjectReadmeResult
-	if err := decodeResult(result, &readme); err != nil {
-		return ProjectReadmeResult{}, err
-	}
-	return readme, nil
+	return files, nil
 }
 
 func DecodeGitResult(result any) (GitResult, error) {

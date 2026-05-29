@@ -1,49 +1,43 @@
 openapi: 3.1.0
 info:
   title: Toby Control JSON-RPC
-  version: 0.1.0
+  version: 0.2.0
   description: >
     Schema documentation for the Toby sandbox control protocol. The protocol is
-    JSON-RPC 2.0 over the sandbox file `$XDG_STATE_HOME/toby/control`, where
-    `XDG_STATE_HOME` defaults to `$HOME/.local/state`; clients open the file
-    read/write, write exactly one newline-terminated request, seek to the start
-    of the handle, and read one newline-terminated response. Project listing,
-    README, and mount requests are available only when the sandbox was launched
-    with mountable projects enabled.
+    JSON-RPC 2.0 over a private Unix stream socket. The host supervisor listens
+    on `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket
+    into the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`.
 servers:
-  - url: file://$XDG_STATE_HOME/toby/control
-    description: Sandbox control file transport, not an HTTP server.
+  - url: unix://$XDG_RUNTIME_DIR/toby/sandbox.sock
+    description: Sandbox Unix socket transport, not an HTTP server.
 paths:
-  /control:
+  /rpc:
     post:
-      operationId: writeControlRequest
-      summary: Send one JSON-RPC request to the sandbox control file.
+      operationId: sendControlRequest
+      summary: Send one JSON-RPC request over the sandbox Unix socket.
       description: >
-        This OpenAPI operation models the control file payload. It does not
-        imply an HTTP endpoint; the actual transport is a read/write file at
-        `$XDG_STATE_HOME/toby/control` inside a Toby sandbox.
+        This OpenAPI operation models the control payload. It does not imply an
+        HTTP endpoint; the actual transport is one newline-terminated JSON-RPC
+        request and response over `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside a
+        Toby sandbox.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               oneOf:
-                - $ref: '#/components/schemas/ProjectListRequest'
-                - $ref: '#/components/schemas/ProjectReadmeRequest'
-                - $ref: '#/components/schemas/ProjectMountRequest'
+                - $ref: '#/components/schemas/ContextFilesRequest'
                 - $ref: '#/components/schemas/GitCommitRequest'
                 - $ref: '#/components/schemas/GitFetchRequest'
                 - $ref: '#/components/schemas/GitPushRequest'
       responses:
         '200':
-          description: JSON-RPC response payload read from the control file.
+          description: JSON-RPC response payload read from the Unix socket.
           content:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/MountResponse'
-                  - $ref: '#/components/schemas/ProjectListResponse'
-                  - $ref: '#/components/schemas/ProjectReadmeResponse'
+                  - $ref: '#/components/schemas/ContextFilesResponse'
                   - $ref: '#/components/schemas/GitResponse'
                   - $ref: '#/components/schemas/ErrorResponse'
 components:
@@ -57,12 +51,9 @@ components:
     JSONRPCVersion:
       type: string
       const: '2.0'
-    ProjectListRequest:
+    ContextFilesRequest:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - method
+      required: [jsonrpc, id, method]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -71,66 +62,14 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         method:
           type: string
-          const: project_list
+          const: context_files
       examples:
         - jsonrpc: '2.0'
           id: 1
-          method: project_list
-    ProjectReadmeRequest:
-      type: object
-      required:
-        - jsonrpc
-        - id
-        - method
-        - params
-      additionalProperties: false
-      properties:
-        jsonrpc:
-          $ref: '#/components/schemas/JSONRPCVersion'
-        id:
-          $ref: '#/components/schemas/JSONRPCID'
-        method:
-          type: string
-          const: project_readme
-        params:
-          $ref: '#/components/schemas/ProjectParams'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: project_readme
-          params:
-            name: example
-    ProjectMountRequest:
-      type: object
-      required:
-        - jsonrpc
-        - id
-        - method
-        - params
-      additionalProperties: false
-      properties:
-        jsonrpc:
-          $ref: '#/components/schemas/JSONRPCVersion'
-        id:
-          $ref: '#/components/schemas/JSONRPCID'
-        method:
-          type: string
-          const: project_mount
-        params:
-          $ref: '#/components/schemas/ProjectParams'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: project_mount
-          params:
-            name: example
+          method: context_files
     GitCommitRequest:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - method
-        - params
+      required: [jsonrpc, id, method, params]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -142,20 +81,9 @@ components:
           const: git_commit
         params:
           $ref: '#/components/schemas/GitCommitParams'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: git_commit
-          params:
-            repository: example
-            message: Commit staged files
     GitFetchRequest:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - method
-        - params
+      required: [jsonrpc, id, method, params]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -167,19 +95,9 @@ components:
           const: git_fetch
         params:
           $ref: '#/components/schemas/GitRepositoryParams'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: git_fetch
-          params:
-            repository: example
     GitPushRequest:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - method
-        - params
+      required: [jsonrpc, id, method, params]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -191,42 +109,18 @@ components:
           const: git_push
         params:
           $ref: '#/components/schemas/GitPushParams'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: git_push
-          params:
-            repository: example
-            branch: main
-            origin: origin
-    ProjectParams:
-      type: object
-      required:
-        - name
-      additionalProperties: false
-      properties:
-        name:
-          type: string
-          description: Direct project directory name under XDG_PROJECTS_DIR.
-          examples:
-            - example
     GitRepositoryParams:
       type: object
-      required:
-        - repository
+      required: [repository]
       additionalProperties: false
       properties:
         repository:
           type: string
           description: Repository name visible in the sandbox, relative to XDG_PROJECTS_DIR. Empty, '.', and '..' path segments are rejected.
-          examples:
-            - example
-            - foo/bar/baz
+          examples: [example, foo/bar/baz]
     GitCommitParams:
       type: object
-      required:
-        - repository
-        - message
+      required: [repository, message]
       additionalProperties: false
       properties:
         repository:
@@ -237,9 +131,7 @@ components:
           description: Commit message passed to git commit -m. Only already staged files are committed.
     GitPushParams:
       type: object
-      required:
-        - repository
-        - branch
+      required: [repository, branch]
       additionalProperties: false
       properties:
         repository:
@@ -252,12 +144,9 @@ components:
           type: string
           default: origin
           description: Remote name to push to.
-    MountResponse:
+    ContextFilesResponse:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - result
+      required: [jsonrpc, id, result]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -265,124 +154,34 @@ components:
         id:
           $ref: '#/components/schemas/JSONRPCID'
         result:
-          $ref: '#/components/schemas/MountResult'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          result:
-            host_path: /home/alice/Projects/example
-            sandbox_path: /home/alice/Projects/example
-            virtual_path: /projects/example
-    MountResult:
+          type: object
+          required: [files]
+          additionalProperties: false
+          properties:
+            files:
+              type: array
+              items:
+                $ref: '#/components/schemas/ContextFile'
+    ContextFile:
       type: object
-      required:
-        - host_path
-        - sandbox_path
-        - virtual_path
+      required: [path, mode, data]
       additionalProperties: false
       properties:
-        host_path:
-          type: string
-          description: Host path approved for mounting.
-        sandbox_path:
-          type: string
-          description: Path where the mount is visible inside the sandbox.
-        virtual_path:
-          type: string
-          description: Internal FUSE virtual path backing the dynamic mount under /projects.
-    ProjectListResponse:
-      type: object
-      required:
-        - jsonrpc
-        - id
-        - result
-      additionalProperties: false
-      properties:
-        jsonrpc:
-          $ref: '#/components/schemas/JSONRPCVersion'
-        id:
-          $ref: '#/components/schemas/JSONRPCID'
-        result:
-          $ref: '#/components/schemas/ProjectListResult'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          result:
-            project_root: /home/alice/Projects
-            projects:
-              - name: example
-                path: /home/alice/Projects/example
-    ProjectListResult:
-      type: object
-      required:
-        - project_root
-        - projects
-      additionalProperties: false
-      properties:
-        project_root:
-          type: string
-          description: Absolute host path for XDG_PROJECTS_DIR.
-        projects:
-          type: array
-          items:
-            $ref: '#/components/schemas/ProjectInfo'
-    ProjectInfo:
-      type: object
-      required:
-        - name
-        - path
-      additionalProperties: false
-      properties:
-        name:
-          type: string
-          description: Direct project directory name.
         path:
           type: string
-          description: Absolute host path to the project directory.
-    ProjectReadmeResponse:
-      type: object
-      required:
-        - jsonrpc
-        - id
-        - result
-      additionalProperties: false
-      properties:
-        jsonrpc:
-          $ref: '#/components/schemas/JSONRPCVersion'
-        id:
-          $ref: '#/components/schemas/JSONRPCID'
-        result:
-          $ref: '#/components/schemas/ProjectReadmeResult'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          result:
-            name: example
-            path: /home/alice/Projects/example/README.md
-            content: '# Example\n'
-    ProjectReadmeResult:
-      type: object
-      required:
-        - name
-        - path
-        - content
-      additionalProperties: false
-      properties:
-        name:
+          description: Relative path to write under `$XDG_RUNTIME_DIR/toby/context`.
+          examples: [GIT_AGENTS.md, opencode/opencode.json, claude/mcp.json]
+        mode:
+          type: integer
+          format: uint32
+          description: File permission bits, such as 256 for 0400.
+        data:
           type: string
-          description: Project directory name.
-        path:
-          type: string
-          description: Absolute host path to README.md.
-        content:
-          type: string
-          description: README.md contents.
+          contentEncoding: base64
+          description: File contents. JSON encodes the Go byte slice as base64.
     GitResponse:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - result
+      required: [jsonrpc, id, result]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -391,41 +190,22 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         result:
           $ref: '#/components/schemas/GitResult'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          result:
-            repository: example
-            exit_code: 0
-            stdout: ''
-            stderr: ''
     GitResult:
       type: object
-      required:
-        - repository
-        - exit_code
-        - stdout
-        - stderr
+      required: [repository, exit_code, stdout, stderr]
       additionalProperties: false
       properties:
         repository:
           type: string
-          description: Repository name used for the git command.
         exit_code:
           type: integer
-          description: Git process exit code. Non-zero exits are returned as successful JSON-RPC responses so stdout and stderr are preserved.
         stdout:
           type: string
-          description: Git standard output.
         stderr:
           type: string
-          description: Git standard error.
     ErrorResponse:
       type: object
-      required:
-        - jsonrpc
-        - id
-        - error
+      required: [jsonrpc, id, error]
       additionalProperties: false
       properties:
         jsonrpc:
@@ -433,52 +213,14 @@ components:
         id:
           $ref: '#/components/schemas/JSONRPCID'
         error:
-          $ref: '#/components/schemas/RPCError'
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          error:
-            code: -32002
-            message: permission denied
-    RPCError:
-      type: object
-      required:
-        - code
-        - message
-      additionalProperties: true
-      properties:
-        code:
-          type: integer
-          description: JSON-RPC or Toby-specific error code.
-          enum:
-            - -32700
-            - -32600
-            - -32601
-            - -32602
-            - -32603
-            - -32001
-            - -32002
-            - -32003
-            - -32004
-            - -32005
-            - -32006
-            - -32007
-            - -32008
-        message:
-          type: string
-        data:
-          description: Optional implementation-specific error details.
-      x-error-codes:
-        '-32700': parse error
-        '-32600': invalid request
-        '-32601': method not found
-        '-32602': invalid params
-        '-32603': internal error
-        '-32001': tmux confirmation is required but unavailable
-        '-32002': mount request denied
-        '-32003': mount failed
-        '-32004': control file error
-        '-32005': project not found
-        '-32006': project README.md not found
-        '-32007': repository is not visible in the sandbox
-        '-32008': mountable projects are disabled
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: integer
+              enum: [-32700, -32600, -32601, -32602, -32603, -32007]
+            message:
+              type: string
+            data:
+              description: Optional implementation-specific error data.

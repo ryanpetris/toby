@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	"petris.dev/toby/internal/cli"
 	"petris.dev/toby/internal/config"
@@ -45,7 +46,7 @@ func newArgs() args {
 }
 
 func newRootCommand(registry *tool.Registry, factory sandbox.Factory, staticFiles *staticfiles.Service, renderer *opencodeconfig.Renderer, argv args) *cobra.Command {
-	return cli.NewRootCommand(cli.Params{
+	params := cli.Params{
 		Registry:         registry,
 		SandboxFactory:   factory,
 		StaticFiles:      staticFiles,
@@ -53,7 +54,11 @@ func newRootCommand(registry *tool.Registry, factory sandbox.Factory, staticFile
 		Args:             []string(argv),
 		Stdout:           os.Stdout,
 		Stderr:           os.Stderr,
-	})
+	}
+	if filepath.Base(os.Args[0]) == "toby-sandbox" {
+		return cli.NewSandboxRootCommand(params)
+	}
+	return cli.NewRootCommand(params)
 }
 
 func runCLI(lc fx.Lifecycle, shutdowner fx.Shutdowner, cmd *cobra.Command) {

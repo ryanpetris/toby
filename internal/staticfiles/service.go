@@ -1,9 +1,9 @@
 package staticfiles
 
 import (
+	"fmt"
 	"io/fs"
-
-	"petris.dev/toby/internal/staticmount"
+	"strings"
 )
 
 type Registrar interface {
@@ -13,8 +13,14 @@ type Registrar interface {
 
 type Service struct{}
 
+type File struct {
+	Path string
+	Data []byte
+	Mode uint32
+}
+
 type Builder struct {
-	files []staticmount.File
+	files []File
 }
 
 func NewService() *Service {
@@ -25,50 +31,65 @@ func (s *Service) NewBuilder() *Builder {
 	return &Builder{}
 }
 
-func (s *Service) NewMount(id, basePath string, configure func(*Builder) error) (*staticmount.Mount, error) {
+func (s *Service) Build(configure func(*Builder) error) ([]File, error) {
 	builder := s.NewBuilder()
 	if err := configure(builder); err != nil {
-		_ = builder.Close()
 		return nil, err
 	}
-	mount, err := staticmount.New(id, basePath, builder.files)
-	if err != nil {
-		_ = builder.Close()
-		return nil, err
-	}
-	builder.files = nil
-	return mount, nil
+	return builder.Files(), nil
 }
 
 func (b *Builder) AddBytes(path string, data []byte, mode uint32) error {
-	b.files = append(b.files, staticmount.Bytes(path, data, mode))
+	path, err := cleanPath(path)
+	if err != nil {
+		return err
+	}
+	if mode == 0 {
+		mode = 0o400
+	}
+	b.files = append(b.files, File{Path: path, Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
 
 func (b *Builder) AddFS(path string, fsys fs.FS, name string, mode uint32) error {
-	file, err := staticmount.FromFS(path, fsys, name, mode)
+	if fsys == nil {
+		return fmt.Errorf("fs is required")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || !fs.ValidPath(name) {
+		return fmt.Errorf("invalid fs path")
+	}
+	info, err := fs.Stat(fsys, name)
 	if err != nil {
 		return err
 	}
-	b.files = append(b.files, file)
-	return nil
-}
-
-func (b *Builder) AddCurrentExecutable(path string, mode uint32) error {
-	file, err := staticmount.CurrentExecutable(path, mode)
+	if info.IsDir() {
+		return fmt.Errorf("fs path is a directory: %s", name)
+	}
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return err
 	}
-	b.files = append(b.files, file)
-	return nil
+	return b.AddBytes(path, data, mode)
 }
 
-func (b *Builder) Files() []staticmount.File {
-	return append([]staticmount.File(nil), b.files...)
+func (b *Builder) Files() []File {
+	files := make([]File, 0, len(b.files))
+	for _, file := range b.files {
+		files = append(files, File{Path: file.Path, Data: append([]byte(nil), file.Data...), Mode: file.Mode})
+	}
+	return files
 }
 
 func (b *Builder) Close() error {
-	err := staticmount.CloseFiles(b.files)
 	b.files = nil
-	return err
+	return nil
+}
+
+func cleanPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." || !fs.ValidPath(path) {
+		return "", fmt.Errorf("invalid context file path: %q", path)
+	}
+	return path, nil
 }

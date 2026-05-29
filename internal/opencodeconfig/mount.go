@@ -13,10 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 
-	"petris.dev/toby/fusekit"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/openai"
 	"petris.dev/toby/internal/staticfiles"
@@ -25,27 +22,12 @@ import (
 )
 
 const (
-	DirPath                 = "/opencode"
-	ConfigPath              = "/opencode/opencode.json"
-	CommandsPath            = "/opencode/commands"
-	ProjectMountCommandPath = "/opencode/commands/toby.project.mount.md"
-	StaticGitignorePath     = "opencode/.gitignore"
-	StaticConfigPath        = "opencode/opencode.json"
-	StaticCommandsPath      = "opencode/commands"
-	StaticProjectMountPath  = "opencode/commands/toby.project.mount.md"
-	maxConfig               = 1 << 20
+	StaticGitignorePath = "opencode/.gitignore"
+	StaticConfigPath    = "opencode/opencode.json"
+	maxConfig           = 1 << 20
 )
 
 var opencodeGitignore = []byte("*\n")
-
-var projectMountCommand = []byte(`---
-description: Mount a Toby project directory
----
-Use the Toby MCP project_mount tool to request access to the project named "$ARGUMENTS".
-
-If no project name was provided, ask which project directory under XDG_PROJECTS_DIR should be mounted.
-After the tool succeeds, use the returned sandbox_path for subsequent work.
-`)
 
 type sourceFormat string
 
@@ -62,22 +44,18 @@ type sourceFile struct {
 var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
 
 type Mount struct {
-	configDir         string
-	projectRoot       string
-	instructions      []string
-	mountableProjects bool
-	http              *http.Client
-	modelsOnce        sync.Once
-	models            map[string]map[string]any
-	modelWarnings     []error
-	created           time.Time
+	configDir     string
+	projectRoot   string
+	instructions  []string
+	http          *http.Client
+	modelsOnce    sync.Once
+	models        map[string]map[string]any
+	modelWarnings []error
 }
 
 type Renderer struct {
 	http *http.Client
 }
-
-type MountOption func(*Mount)
 
 func NewRenderer(client *http.Client) (*Renderer, error) {
 	if client == nil {
@@ -86,25 +64,15 @@ func NewRenderer(client *http.Client) (*Renderer, error) {
 	return &Renderer{http: client}, nil
 }
 
-func WithMountableProjects(enabled bool) MountOption {
-	return func(m *Mount) {
-		m.mountableProjects = enabled
-	}
-}
-
-func (r *Renderer) newMount(configDir, projectRoot string, instructions []string, opts ...MountOption) (*Mount, error) {
+func (r *Renderer) newMount(configDir, projectRoot string, instructions []string) (*Mount, error) {
 	if r == nil || r.http == nil {
 		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
-	mount := &Mount{configDir: configDir, projectRoot: projectRoot, instructions: append([]string(nil), instructions...), http: r.http, created: time.Now()}
-	for _, opt := range opts {
-		opt(mount)
-	}
-	return mount, nil
+	return &Mount{configDir: configDir, projectRoot: projectRoot, instructions: append([]string(nil), instructions...), http: r.http}, nil
 }
 
-func (r *Renderer) RegisterStaticFiles(ctx context.Context, registrar staticfiles.Registrar, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]error, error) {
-	mount, err := r.newMount(configDir, projectRoot, instructions, opts...)
+func (r *Renderer) RegisterStaticFiles(ctx context.Context, registrar staticfiles.Registrar, configDir, projectRoot string, instructions []string) ([]error, error) {
+	mount, err := r.newMount(configDir, projectRoot, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -118,188 +86,7 @@ func (r *Renderer) RegisterStaticFiles(ctx context.Context, registrar staticfile
 	if err := registrar.AddBytes(StaticConfigPath, config, 0o400); err != nil {
 		return nil, err
 	}
-	if mount.mountableProjects {
-		if err := registrar.AddBytes(StaticProjectMountPath, projectMountCommand, 0o400); err != nil {
-			return nil, err
-		}
-	}
 	return append([]error(nil), mount.modelWarnings...), nil
-}
-
-func (m *Mount) ID() string { return "opencode-config" }
-
-func (m *Mount) BasePath() string { return DirPath }
-
-func (m *Mount) PrepareCrossMountRename(_ context.Context, op fusekit.Operation) (bool, error) {
-	return false, nil
-}
-
-func (m *Mount) Handle(ctx context.Context, op fusekit.Operation, next fusekit.Next) (fusekit.Result, error) {
-	if op.Kind == fusekit.OpRename {
-		if m.isSyntheticPath(op.OldPath) || m.isSyntheticPath(op.NewPath) {
-			return fusekit.Result{}, syscall.EROFS
-		}
-		return next(ctx, op)
-	}
-	if op.Path == DirPath {
-		switch op.Kind {
-		case fusekit.OpGetAttr:
-			return m.getDirAttr()
-		case fusekit.OpReadDir:
-			return m.readDir(ctx, op, next)
-		case fusekit.OpMaterialize:
-			return fusekit.Result{}, nil
-		default:
-			return next(ctx, op)
-		}
-	}
-	if op.Path == CommandsPath {
-		if !m.mountableProjects {
-			return nextOrENOENT(ctx, op, next)
-		}
-		switch op.Kind {
-		case fusekit.OpGetAttr:
-			return m.dirAttr(CommandsPath, 0o500), nil
-		case fusekit.OpReadDir:
-			return fusekit.Result{Entries: []fusekit.DirEntry{{Name: filepath.Base(ProjectMountCommandPath), Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "file", Key: ProjectMountCommandPath}, Mode: syscall.S_IFREG | 0o400}}}, nil
-		case fusekit.OpMaterialize:
-			return fusekit.Result{}, nil
-		default:
-			return fusekit.Result{}, syscall.EROFS
-		}
-	}
-	if op.Path == ProjectMountCommandPath {
-		if !m.mountableProjects {
-			return nextOrENOENT(ctx, op, next)
-		}
-		return m.handleReadOnlyFile(ctx, op, ProjectMountCommandPath, projectMountCommand, 0o400)
-	}
-	if op.Path != ConfigPath {
-		return next(ctx, op)
-	}
-	switch op.Kind {
-	case fusekit.OpGetAttr:
-		return m.getAttr(ctx)
-	case fusekit.OpOpen:
-		if hasWriteFlags(op.Flags) {
-			return fusekit.Result{}, syscall.EROFS
-		}
-		return m.open(ctx, op.Flags)
-	case fusekit.OpCreate:
-		return fusekit.Result{}, syscall.EROFS
-	case fusekit.OpSetAttr:
-		return fusekit.Result{}, syscall.EROFS
-	case fusekit.OpUnlink:
-		return fusekit.Result{}, syscall.EROFS
-	case fusekit.OpMkdir, fusekit.OpRmdir, fusekit.OpSymlink, fusekit.OpMaterialize:
-		return fusekit.Result{}, syscall.ENOTDIR
-	default:
-		return next(ctx, op)
-	}
-}
-
-func nextOrENOENT(ctx context.Context, op fusekit.Operation, next fusekit.Next) (fusekit.Result, error) {
-	if next == nil {
-		return fusekit.Result{}, syscall.ENOENT
-	}
-	return next(ctx, op)
-}
-
-func (m *Mount) isSyntheticPath(path string) bool {
-	if path == ConfigPath {
-		return true
-	}
-	if !m.mountableProjects {
-		return false
-	}
-	return path == CommandsPath || path == ProjectMountCommandPath || strings.HasPrefix(path, CommandsPath+"/")
-}
-
-func (m *Mount) getDirAttr() (fusekit.Result, error) {
-	return m.dirAttr(DirPath, 0o500), nil
-}
-
-func (m *Mount) dirAttr(path string, mode uint32) fusekit.Result {
-	attr := fusekit.Attr{
-		Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "dir", Key: path},
-		Mode:   syscall.S_IFDIR | mode,
-		UID:    uint32(os.Getuid()),
-		GID:    uint32(os.Getgid()),
-		Nlink:  2,
-		ATime:  m.created,
-		MTime:  m.created,
-		CTime:  m.created,
-	}
-	return fusekit.Result{Attr: &attr}
-}
-
-func (m *Mount) readDir(ctx context.Context, op fusekit.Operation, next fusekit.Next) (fusekit.Result, error) {
-	seen := map[string]bool{}
-	entries := []fusekit.DirEntry{}
-	if next != nil {
-		res, err := next(ctx, op)
-		if err != nil {
-			if fusekit.ErrnoOf(err) != syscall.ENOENT {
-				return fusekit.Result{}, err
-			}
-		} else {
-			for _, entry := range res.Entries {
-				seen[entry.Name] = true
-				entries = append(entries, entry)
-			}
-		}
-	}
-	if !seen["opencode.json"] {
-		entries = append(entries, fusekit.DirEntry{
-			Name:   "opencode.json",
-			Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "file", Key: ConfigPath},
-			Mode:   syscall.S_IFREG | 0o400,
-		})
-	}
-	if m.mountableProjects && !seen["commands"] {
-		entries = append(entries, fusekit.DirEntry{
-			Name:   "commands",
-			Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "dir", Key: CommandsPath},
-			Mode:   syscall.S_IFDIR | 0o500,
-		})
-	}
-	return fusekit.Result{Entries: entries}, nil
-}
-
-func (m *Mount) getAttr(ctx context.Context) (fusekit.Result, error) {
-	data, err := m.render(ctx)
-	if err != nil {
-		return fusekit.Result{}, err
-	}
-	attr := m.attr(uint64(len(data)))
-	return fusekit.Result{Attr: &attr}, nil
-}
-
-func (m *Mount) open(ctx context.Context, flags uint32) (fusekit.Result, error) {
-	data, err := m.render(ctx)
-	if err != nil {
-		return fusekit.Result{}, err
-	}
-	attr := m.attr(uint64(len(data)))
-	return fusekit.Result{Attr: &attr, Handle: &readOnlyFile{data: append([]byte(nil), data...)}}, nil
-}
-
-func (m *Mount) handleReadOnlyFile(ctx context.Context, op fusekit.Operation, path string, data []byte, mode uint32) (fusekit.Result, error) {
-	switch op.Kind {
-	case fusekit.OpGetAttr:
-		attr := m.fileAttr(path, uint64(len(data)), mode)
-		return fusekit.Result{Attr: &attr}, nil
-	case fusekit.OpOpen:
-		if hasWriteFlags(op.Flags) {
-			return fusekit.Result{}, syscall.EROFS
-		}
-		attr := m.fileAttr(path, uint64(len(data)), mode)
-		return fusekit.Result{Attr: &attr, Handle: &readOnlyFile{data: append([]byte(nil), data...)}}, nil
-	case fusekit.OpCreate, fusekit.OpSetAttr, fusekit.OpUnlink, fusekit.OpMkdir, fusekit.OpRmdir, fusekit.OpRename, fusekit.OpSymlink, fusekit.OpMaterialize:
-		return fusekit.Result{}, syscall.EROFS
-	default:
-		return fusekit.Result{}, syscall.ENOENT
-	}
 }
 
 func (m *Mount) render(ctx context.Context) ([]byte, error) {
@@ -369,50 +156,6 @@ func mergeConfig(dst, src map[string]any) {
 
 func (m *Mount) sourceDir() string {
 	return m.configDir
-}
-
-func (m *Mount) attr(size uint64) fusekit.Attr {
-	return m.fileAttr(ConfigPath, size, 0o400)
-}
-
-func (m *Mount) fileAttr(path string, size uint64, mode uint32) fusekit.Attr {
-	attr := fusekit.Attr{
-		Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "file", Key: path},
-		Mode:   syscall.S_IFREG | mode,
-		Size:   size,
-		UID:    uint32(os.Getuid()),
-		GID:    uint32(os.Getgid()),
-		Nlink:  1,
-		ATime:  m.created,
-		MTime:  m.created,
-		CTime:  m.created,
-	}
-	return attr
-}
-
-func hasWriteFlags(flags uint32) bool {
-	access := flags & syscall.O_ACCMODE
-	return access == syscall.O_WRONLY || access == syscall.O_RDWR || flags&(syscall.O_TRUNC|syscall.O_APPEND|syscall.O_CREAT) != 0
-}
-
-type readOnlyFile struct {
-	data []byte
-}
-
-var _ = (fusekit.FileReader)((*readOnlyFile)(nil))
-
-func (f *readOnlyFile) Read(ctx context.Context, dest []byte, off int64) ([]byte, error) {
-	if off < 0 {
-		return nil, syscall.EINVAL
-	}
-	if int64(len(f.data)) <= off {
-		return nil, nil
-	}
-	data := f.data[off:]
-	if len(data) > len(dest) {
-		data = data[:len(dest)]
-	}
-	return append([]byte(nil), data...), nil
 }
 
 func decodeConfig(data []byte) (map[string]any, error) {
@@ -738,7 +481,7 @@ func objectAt(config map[string]any, key string) map[string]any {
 func syntheticMCP() map[string]any {
 	return map[string]any{
 		"type":    "local",
-		"command": []any{"toby", "mcp"},
+		"command": []any{"toby-sandbox", "mcp"},
 		"enabled": true,
 	}
 }

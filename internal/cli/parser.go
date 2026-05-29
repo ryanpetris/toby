@@ -36,10 +36,6 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 			result.Options.TmpEnv = true
 			continue
 		}
-		if arg == "--mountable-projects" {
-			result.Options.MountableProjects = true
-			continue
-		}
 		if launch && arg == "--install" {
 			result.Options.Install = true
 			continue

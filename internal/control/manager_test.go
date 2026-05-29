@@ -9,27 +9,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-
-	"petris.dev/toby/fusekit"
 )
 
-type fakeMounter struct {
-	paths      []string
-	virtual    string
-	err        error
+type fakeResolver struct {
 	visible    map[string]string
 	visibleErr error
 }
 
-func (m *fakeMounter) AddHostPath(path string) (string, error) {
-	m.paths = append(m.paths, path)
-	if m.virtual != "" {
-		return m.virtual, m.err
-	}
-	return path, m.err
-}
-
-func (m *fakeMounter) VisibleHostPath(repository string) (string, error) {
+func (m *fakeResolver) VisibleHostPath(repository string) (string, error) {
 	if m.visibleErr != nil {
 		return "", m.visibleErr
 	}
@@ -39,76 +26,9 @@ func (m *fakeMounter) VisibleHostPath(repository string) (string, error) {
 	return "", errors.New("repository is not visible")
 }
 
-type fakeConfirmer struct {
-	approved bool
-	err      error
-}
-
-func (c fakeConfirmer) ConfirmMount(context.Context, Request) (bool, error) {
-	return c.approved, c.err
-}
-
-func TestManagerProjectMountApprovesAndMountsPath(t *testing.T) {
-	projectRoot := t.TempDir()
-	projectDir := filepath.Join(projectRoot, "foo")
-	if err := os.Mkdir(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mounter := &fakeMounter{virtual: "/foo"}
-	manager := &Manager{Mounter: mounter, Confirmer: fakeConfirmer{approved: true}, ProjectRoot: projectRoot, MountableProjects: true}
-	response, err := manager.Handle(context.Background(), mustProjectMountRequest(t, "foo"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(mounter.paths) != 1 || mounter.paths[0] != projectDir {
-		t.Fatalf("paths = %#v", mounter.paths)
-	}
-	result := mustMountResult(t, response)
-	if result.HostPath != projectDir || result.SandboxPath != projectDir || result.VirtualPath != "/foo" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestManagerDeniedRequestReturnsEACCES(t *testing.T) {
-	projectRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectRoot, "foo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mounter := &fakeMounter{}
-	manager := &Manager{Mounter: mounter, Confirmer: fakeConfirmer{approved: false}, ProjectRoot: projectRoot, MountableProjects: true}
-	response, err := manager.Handle(context.Background(), mustProjectMountRequest(t, "foo"))
-	if fusekit.ErrnoOf(err) != syscall.EACCES {
-		t.Fatalf("err = %v, want EACCES", err)
-	}
-	mustRPCErrorCode(t, response, CodeDenied)
-	if len(mounter.paths) != 0 {
-		t.Fatalf("paths = %#v, want none", mounter.paths)
-	}
-}
-func TestTmuxConfirmerRequiresTmux(t *testing.T) {
-	t.Setenv("TMUX", "")
-	projectRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectRoot, "foo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manager := &Manager{Mounter: &fakeMounter{}, Confirmer: TmuxConfirmer{}, ProjectRoot: projectRoot, MountableProjects: true}
-	response, err := manager.Handle(context.Background(), mustProjectMountRequest(t, "foo"))
-	if fusekit.ErrnoOf(err) != syscall.ENOTSUP {
-		t.Fatalf("err = %v, want ENOTSUP", err)
-	}
-	mustRPCErrorCode(t, response, CodeTmuxRequired)
-}
-
-func TestManagerProjectListListsProjectDirectories(t *testing.T) {
-	projectRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectRoot, "chirp"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectRoot, "not-a-project"), []byte("file"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	manager := &Manager{ProjectRoot: projectRoot, MountableProjects: true}
-	request, err := NewProjectListRequest(1)
+func TestManagerReturnsContextFiles(t *testing.T) {
+	manager := &Manager{ContextFiles: []ContextFile{{Path: "GIT_AGENTS.md", Mode: 0o400, Data: []byte("git")}}}
+	request, err := NewContextFilesRequest(1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,72 +36,17 @@ func TestManagerProjectListListsProjectDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := mustProjectListResult(t, response)
-	if result.ProjectRoot != projectRoot || len(result.Projects) != 1 || result.Projects[0].Name != "chirp" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestManagerProjectReadmeReadsProjectReadme(t *testing.T) {
-	projectRoot := t.TempDir()
-	projectDir := filepath.Join(projectRoot, "chirp")
-	if err := os.Mkdir(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("# Chirp\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	manager := &Manager{ProjectRoot: projectRoot, MountableProjects: true}
-	request, err := NewProjectReadmeRequest(1, "chirp")
+	decoded, err := DecodeResponse(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := manager.Handle(context.Background(), request)
+	result, err := DecodeContextFilesResult(decoded.Result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := mustProjectReadmeResult(t, response)
-	if result.Name != "chirp" || result.Content != "# Chirp\n" || result.Path != filepath.Join(projectDir, "README.md") {
-		t.Fatalf("result = %#v", result)
+	if len(result.Files) != 1 || result.Files[0].Path != "GIT_AGENTS.md" || string(result.Files[0].Data) != "git" {
+		t.Fatalf("context files = %#v", result.Files)
 	}
-}
-
-func TestManagerProjectMountOnlyMountsProjectDirectories(t *testing.T) {
-	projectRoot := t.TempDir()
-	projectDir := filepath.Join(projectRoot, "chirp")
-	if err := os.Mkdir(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mounter := &fakeMounter{virtual: "/projects/chirp"}
-	manager := &Manager{Mounter: mounter, Confirmer: fakeConfirmer{approved: true}, ProjectRoot: projectRoot, MountableProjects: true}
-	request, err := NewProjectMountRequest(1, "chirp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := manager.Handle(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := mustMountResult(t, response)
-	if len(mounter.paths) != 1 || mounter.paths[0] != projectDir {
-		t.Fatalf("paths = %#v, want %q", mounter.paths, projectDir)
-	}
-	if result.HostPath != projectDir || result.VirtualPath != "/projects/chirp" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestManagerProjectMountRejectsNonProjectPath(t *testing.T) {
-	manager := &Manager{Mounter: &fakeMounter{}, Confirmer: fakeConfirmer{approved: true}, ProjectRoot: t.TempDir(), MountableProjects: true}
-	request, err := NewProjectMountRequest(1, "../secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := manager.Handle(context.Background(), request)
-	if fusekit.ErrnoOf(err) != syscall.EINVAL {
-		t.Fatalf("err = %v, want EINVAL", err)
-	}
-	mustRPCErrorCode(t, response, CodeInvalidParams)
 }
 
 func TestManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
@@ -196,7 +61,7 @@ func TestManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "unstaged.txt"), []byte("unstaged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{Mounter: &fakeMounter{visible: map[string]string{"foo": repo}}}
+	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
 	response, err := manager.Handle(context.Background(), mustGitCommitRequest(t, "foo", "commit staged"))
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +107,7 @@ func TestManagerGitFetchDoesNotAdvanceHEAD(t *testing.T) {
 	runTestGit(t, updater, "push", "origin", "main")
 	newHead := strings.TrimSpace(runTestGit(t, updater, "rev-parse", "HEAD"))
 
-	manager := &Manager{Mounter: &fakeMounter{visible: map[string]string{"foo": repo}}}
+	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo"))
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +145,7 @@ func TestManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
 	runTestGit(t, repo, "commit", "-m", "feature commit")
 	featureHead := strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD"))
 
-	manager := &Manager{Mounter: &fakeMounter{visible: map[string]string{"foo": repo}}}
+	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
 	response, err := manager.Handle(context.Background(), mustGitPushRequest(t, "foo", "feature", ""))
 	if err != nil {
 		t.Fatal(err)
@@ -298,30 +163,21 @@ func TestManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
 }
 
 func TestManagerGitRejectsDotSegmentRepository(t *testing.T) {
-	manager := &Manager{Mounter: &fakeMounter{visible: map[string]string{"foo/../bar": t.TempDir()}}}
+	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo/../bar": t.TempDir()}}}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo/../bar"))
-	if fusekit.ErrnoOf(err) != syscall.EINVAL {
+	if !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("err = %v, want EINVAL", err)
 	}
 	mustRPCErrorCode(t, response, CodeInvalidParams)
 }
 
 func TestManagerGitRequiresVisibleRepository(t *testing.T) {
-	manager := &Manager{Mounter: &fakeMounter{}}
+	manager := &Manager{RepositoryResolver: &fakeResolver{}}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo"))
-	if fusekit.ErrnoOf(err) != syscall.EACCES {
+	if !errors.Is(err, syscall.EACCES) {
 		t.Fatalf("err = %v, want EACCES", err)
 	}
 	mustRPCErrorCode(t, response, CodeProjectNotVisible)
-}
-
-func mustProjectMountRequest(t *testing.T, name string) []byte {
-	t.Helper()
-	request, err := NewProjectMountRequest(1, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return request
 }
 
 func mustGitCommitRequest(t *testing.T, repository, message string) []byte {
@@ -351,22 +207,6 @@ func mustGitPushRequest(t *testing.T, repository, branch, origin string) []byte 
 	return request
 }
 
-func mustMountResult(t *testing.T, response []byte) MountResult {
-	t.Helper()
-	decoded, err := DecodeResponse(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Error != nil {
-		t.Fatalf("response error = %#v", decoded.Error)
-	}
-	result, err := DecodeMountResult(decoded.Result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
 func mustRPCErrorCode(t *testing.T, response []byte, code int) {
 	t.Helper()
 	decoded, err := DecodeResponse(response)
@@ -376,38 +216,6 @@ func mustRPCErrorCode(t *testing.T, response []byte, code int) {
 	if decoded.Error == nil || decoded.Error.Code != code {
 		t.Fatalf("response = %#v, want error code %d", decoded, code)
 	}
-}
-
-func mustProjectListResult(t *testing.T, response []byte) ProjectListResult {
-	t.Helper()
-	decoded, err := DecodeResponse(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Error != nil {
-		t.Fatalf("response error = %#v", decoded.Error)
-	}
-	result, err := DecodeProjectListResult(decoded.Result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
-func mustProjectReadmeResult(t *testing.T, response []byte) ProjectReadmeResult {
-	t.Helper()
-	decoded, err := DecodeResponse(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Error != nil {
-		t.Fatalf("response error = %#v", decoded.Error)
-	}
-	result, err := DecodeProjectReadmeResult(decoded.Result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return result
 }
 
 func mustGitResult(t *testing.T, response []byte) GitResult {

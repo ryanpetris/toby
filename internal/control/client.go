@@ -1,15 +1,19 @@
 package control
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 
 	"petris.dev/toby/internal/config"
 )
+
+const SandboxSocketName = "sandbox.sock"
 
 type Client struct {
 	Path string
@@ -20,54 +24,48 @@ func NewClient(path string) *Client {
 	return &Client{Path: path}
 }
 
-func DefaultControlPath() (string, error) {
+func DefaultSocketPath() (string, error) {
+	runtimeDir, err := defaultRuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(runtimeDir, "toby", SandboxSocketName), nil
+}
+
+func DefaultContextDir() (string, error) {
+	runtimeDir, err := defaultRuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(runtimeDir, "toby", "context"), nil
+}
+
+func HostSocketPath(runtimeDir string, pid int) string {
+	return filepath.Join(runtimeDir, "toby", "control", fmt.Sprintf("%d.sock", pid))
+}
+
+func defaultRuntimeDir() (string, error) {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return "", fmt.Errorf("XDG_RUNTIME_DIR is required")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		stateHome = filepath.Join(home, ".local", "state")
-	} else {
-		stateHome = config.ExpandHome(stateHome, home)
-	}
-	return filepath.Join(stateHome, "toby", "control"), nil
+	return config.ExpandHome(runtimeDir, home), nil
 }
 
-func (c *Client) ProjectList() (ProjectListResult, error) {
-	request, err := NewProjectListRequest(c.next.Add(1))
+func (c *Client) ContextFiles() (ContextFilesResult, error) {
+	request, err := NewContextFilesRequest(c.next.Add(1))
 	if err != nil {
-		return ProjectListResult{}, err
+		return ContextFilesResult{}, err
 	}
 	resp, err := c.call(request)
 	if err != nil {
-		return ProjectListResult{}, err
+		return ContextFilesResult{}, err
 	}
-	return DecodeProjectListResult(resp.Result)
-}
-
-func (c *Client) ProjectReadme(name string) (ProjectReadmeResult, error) {
-	request, err := NewProjectReadmeRequest(c.next.Add(1), name)
-	if err != nil {
-		return ProjectReadmeResult{}, err
-	}
-	resp, err := c.call(request)
-	if err != nil {
-		return ProjectReadmeResult{}, err
-	}
-	return DecodeProjectReadmeResult(resp.Result)
-}
-
-func (c *Client) ProjectMount(name string) (MountResult, error) {
-	request, err := NewProjectMountRequest(c.next.Add(1), name)
-	if err != nil {
-		return MountResult{}, err
-	}
-	resp, err := c.call(request)
-	if err != nil {
-		return MountResult{}, err
-	}
-	return DecodeMountResult(resp.Result)
+	return DecodeContextFilesResult(resp.Result)
 }
 
 func (c *Client) GitCommit(repository, message string) (GitResult, error) {
@@ -132,16 +130,13 @@ func (c *Client) call(request []byte) (RPCResponse, error) {
 }
 
 func (c *Client) roundTrip(request []byte) ([]byte, error) {
-	file, err := os.OpenFile(c.Path, os.O_RDWR, 0)
+	conn, err := net.Dial("unix", c.Path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	_, writeErr := file.Write(request)
-	if _, err := file.Seek(0, io.SeekStart); err != nil && writeErr == nil {
-		writeErr = err
-	}
-	response, readErr := io.ReadAll(file)
+	defer conn.Close()
+	_, writeErr := conn.Write(request)
+	response, readErr := bufio.NewReader(conn).ReadBytes('\n')
 	if readErr != nil && writeErr == nil {
 		writeErr = readErr
 	}

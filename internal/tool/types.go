@@ -54,13 +54,12 @@ type Bind struct {
 }
 
 type CommandOptions struct {
-	Env               string
-	TmpEnv            bool
-	Project           string
-	MountableProjects bool
-	Install           bool
-	Upgrade           bool
-	lifecycle         map[string]bool
+	Env       string
+	TmpEnv    bool
+	Project   string
+	Install   bool
+	Upgrade   bool
+	lifecycle map[string]bool
 }
 
 type ExecOptions struct {
@@ -81,9 +80,6 @@ type RunContext struct {
 	Env     Environment
 	Exec    Executor
 	Launch  Executor
-	// StaticMount is true when the read-only FUSE static files overlay (Toby MCP
-	// binary and generated agent configuration) is mounted.
-	StaticMount bool
 	lifecycle   map[string]bool
 }
 

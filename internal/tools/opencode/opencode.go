@@ -77,7 +77,7 @@ func (t *openCodeTool) SandboxContextSetup(ctx *tool.RunContext) error {
 		return err
 	}
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		ctx.Env["OPENCODE_CONFIG_DIR"] = filepath.Join(t.stateHomeDir(), "toby", "static", "opencode")
+		ctx.Env["OPENCODE_CONFIG_DIR"] = filepath.Join(t.paths.XDGRuntimeDir, "toby", "context", "opencode")
 		return nil
 	})
 }
@@ -118,11 +118,4 @@ func (t *openCodeTool) install(ctx context.Context, run *tool.RunContext, force 
 
 func (t *openCodeTool) Launch(ctx context.Context, run *tool.RunContext) error {
 	return tool.RunCommand(ctx, run.Launch, append([]string{"opencode"}, run.Extra...), tool.ExecOptions{})
-}
-
-func (t *openCodeTool) stateHomeDir() string {
-	if t.paths.StateHome != "" {
-		return t.paths.StateHome
-	}
-	return filepath.Join(t.paths.Home, ".local", "state")
 }

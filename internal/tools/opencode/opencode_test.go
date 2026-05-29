@@ -27,7 +27,7 @@ func (fakeNPM) SandboxContextSetup(ctx *tool.RunContext) error {
 
 func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
+	paths := config.Paths{Home: home, XDGRuntimeDir: filepath.Join(home, "runtime"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	var oc tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
@@ -47,7 +47,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	if err := oc.SandboxContextSetup(run); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".state", "toby", "static", "opencode")
+	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
 	if run.Env["OPENCODE_CONFIG_DIR"] != want {
 		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", run.Env["OPENCODE_CONFIG_DIR"], want)
 	}
@@ -55,7 +55,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 
 func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
+	paths := config.Paths{Home: home, XDGRuntimeDir: filepath.Join(home, "runtime"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	oc := Provide(Params{
 		Paths: paths,
 		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
@@ -71,7 +71,7 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 	if run.Env["NPM_CALLED"] != "1" {
 		t.Fatalf("dependency SandboxContextSetup was not called")
 	}
-	want := filepath.Join(home, ".state", "toby", "static", "opencode")
+	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
 	if run.Env["OPENCODE_CONFIG_DIR"] != want {
 		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", run.Env["OPENCODE_CONFIG_DIR"], want)
 	}
@@ -79,7 +79,7 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 
 func TestOpenCodeCallsDependencyHostInitBeforeOwnHostInit(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
+	paths := config.Paths{Home: home, XDGRuntimeDir: filepath.Join(home, "runtime"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	called := false
 	npm := hostInitNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}, called: &called, sandboxRoot: paths.SandboxRoot}
 	oc := Provide(Params{Paths: paths, NPM: npm}).Service

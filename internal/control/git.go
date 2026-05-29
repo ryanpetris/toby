@@ -52,10 +52,10 @@ func (m *Manager) gitPush(ctx context.Context, repository, branch, origin string
 }
 
 func (m *Manager) runVisibleGit(ctx context.Context, repository string, args []string) (GitResult, error) {
-	if m.Mounter == nil {
+	if m.RepositoryResolver == nil {
 		return GitResult{}, syscall.ENOSYS
 	}
-	repoPath, err := m.Mounter.VisibleHostPath(repository)
+	repoPath, err := m.RepositoryResolver.VisibleHostPath(repository)
 	if err != nil {
 		return GitResult{}, fmt.Errorf("%w: %v", ErrProjectNotVisible, err)
 	}

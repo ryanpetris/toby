@@ -10,14 +10,12 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/staticfiles"
-	"petris.dev/toby/internal/staticmount"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
 
-var testInstructions = []string{"/home/petris/.local/state/toby/static/GIT_AGENTS.md"}
-var testProjectInstructions = []string{"/home/petris/.local/state/toby/static/GIT_AGENTS.md", "/home/petris/.local/state/toby/static/PROJECT_MOUNT_AGENTS.md"}
+var testInstructions = []string{"/run/user/1000/toby/context/GIT_AGENTS.md"}
 
 func TestNewRendererRequiresHTTPClient(t *testing.T) {
 	if _, err := NewRenderer(nil); err == nil {
@@ -34,7 +32,7 @@ func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	if toby["type"] != "local" || toby["enabled"] != true {
 		t.Fatalf("mcp.toby = %#v", toby)
 	}
-	if got := toby["command"].([]any); len(got) != 2 || got[0] != "toby" || got[1] != "mcp" {
+	if got := toby["command"].([]any); len(got) != 2 || got[0] != "toby-sandbox" || got[1] != "mcp" {
 		t.Fatalf("mcp.toby.command = %#v", got)
 	}
 
@@ -107,24 +105,7 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 	}
 }
 
-func TestGeneratedCommandIsExposed(t *testing.T) {
-	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-	file := findStaticFile(files, StaticProjectMountPath)
-	if file == nil {
-		t.Fatalf("files = %#v, want %s", files, StaticProjectMountPath)
-	}
-	if string(file.Data) != string(projectMountCommand) {
-		t.Fatalf("command = %q", file.Data)
-	}
-}
-
-func TestGeneratedCommandIsHiddenWithoutMountableProjects(t *testing.T) {
+func TestGeneratedFilesAreReadOnly(t *testing.T) {
 	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testInstructions)
 	if err != nil {
 		t.Fatal(err)
@@ -132,20 +113,7 @@ func TestGeneratedCommandIsHiddenWithoutMountableProjects(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v", warnings)
 	}
-	if findStaticFile(files, StaticProjectMountPath) != nil {
-		t.Fatalf("files = %#v, want project mount command hidden", files)
-	}
-}
-
-func TestGeneratedFilesAreReadOnly(t *testing.T) {
-	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-	for _, path := range []string{StaticGitignorePath, StaticConfigPath, StaticProjectMountPath} {
+	for _, path := range []string{StaticGitignorePath, StaticConfigPath} {
 		file := findStaticFile(files, path)
 		if file == nil {
 			t.Fatalf("files = %#v, want %s", files, path)
@@ -159,9 +127,9 @@ func TestGeneratedFilesAreReadOnly(t *testing.T) {
 	}
 }
 
-func readGeneratedConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, opts ...MountOption) map[string]any {
+func readGeneratedConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string) map[string]any {
 	t.Helper()
-	files, warnings, err := staticFiles(t, client, configDir, projectRoot, instructions, opts...)
+	files, warnings, err := staticFiles(t, client, configDir, projectRoot, instructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +147,11 @@ func readGeneratedConfig(t *testing.T, client *http.Client, configDir, projectRo
 	return config
 }
 
-func staticFiles(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]staticmount.File, []error, error) {
+func staticFiles(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string) ([]staticfiles.File, []error, error) {
 	t.Helper()
 	renderer, service := testDeps(t, client)
 	builder := service.NewBuilder()
-	warnings, err := renderer.RegisterStaticFiles(context.Background(), builder, configDir, projectRoot, instructions, opts...)
+	warnings, err := renderer.RegisterStaticFiles(context.Background(), builder, configDir, projectRoot, instructions)
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -218,7 +186,7 @@ func writeJSON(t *testing.T, path string, value map[string]any) {
 	}
 }
 
-func findStaticFile(files []staticmount.File, path string) *staticmount.File {
+func findStaticFile(files []staticfiles.File, path string) *staticfiles.File {
 	for i := range files {
 		if files[i].Path == path {
 			return &files[i]

@@ -1,9 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -11,7 +11,6 @@ type Paths struct {
 	Home           string
 	ProjectRoot    string
 	SandboxRoot    string
-	StateHome      string
 	XDGRuntimeDir  string
 	PipewireCore   string
 	WaylandDisplay string
@@ -23,12 +22,15 @@ func NewPaths() (Paths, error) {
 	if err != nil {
 		return Paths{}, err
 	}
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return Paths{}, fmt.Errorf("XDG_RUNTIME_DIR is required")
+	}
 	return Paths{
 		Home:           home,
 		ProjectRoot:    envPath("XDG_PROJECTS_DIR", filepath.Join(home, "Projects")),
 		SandboxRoot:    sandboxRoot(home),
-		StateHome:      envPath("XDG_STATE_HOME", filepath.Join(home, ".local", "state")),
-		XDGRuntimeDir:  envPath("XDG_RUNTIME_DIR", filepath.Join("/run/user", strconv.Itoa(os.Getuid()))),
+		XDGRuntimeDir:  ExpandHome(runtimeDir, home),
 		PipewireCore:   envString("PIPEWIRE_CORE", "pipewire-0"),
 		WaylandDisplay: envString("WAYLAND_DISPLAY", "wayland-0"),
 		XAuthority:     os.Getenv("XAUTHORITY"),

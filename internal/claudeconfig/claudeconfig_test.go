@@ -6,13 +6,12 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/staticfiles"
-	"petris.dev/toby/internal/staticmount"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
 
-func fileByPath(t *testing.T, files []staticmount.File, path string) staticmount.File {
+func fileByPath(t *testing.T, files []staticfiles.File, path string) staticfiles.File {
 	t.Helper()
 	for _, file := range files {
 		if file.Path == path {
@@ -20,7 +19,7 @@ func fileByPath(t *testing.T, files []staticmount.File, path string) staticmount
 		}
 	}
 	t.Fatalf("static file %q not found", path)
-	return staticmount.File{}
+	return staticfiles.File{}
 }
 
 func decode(t *testing.T, data []byte) map[string]any {
@@ -33,14 +32,14 @@ func decode(t *testing.T, data []byte) map[string]any {
 }
 
 func TestStaticFilesIncludesTobyMCPServer(t *testing.T) {
-	files, err := renderStaticFiles(t, "/home/toby/Projects/app", [][]byte{[]byte("# git")}, false)
+	files, err := renderStaticFiles(t, "/home/toby/Projects/app", [][]byte{[]byte("# git")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	mcp := decode(t, fileByPath(t, files, StaticMcpPath).Data)
 	toby := mcp["mcpServers"].(map[string]any)["toby"].(map[string]any)
-	if toby["type"] != "stdio" || toby["command"] != "toby" {
+	if toby["type"] != "stdio" || toby["command"] != "toby-sandbox" {
 		t.Fatalf("mcp.toby = %#v", toby)
 	}
 	if args := toby["args"].([]any); len(args) != 1 || args[0] != "mcp" {
@@ -50,7 +49,7 @@ func TestStaticFilesIncludesTobyMCPServer(t *testing.T) {
 
 func TestStaticFilesIncludesPermissionDirectories(t *testing.T) {
 	projectRoot := "/home/toby/Projects/app"
-	files, err := renderStaticFiles(t, projectRoot, [][]byte{[]byte("# git")}, false)
+	files, err := renderStaticFiles(t, projectRoot, [][]byte{[]byte("# git")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,42 +70,29 @@ func TestStaticFilesIncludesPermissionDirectories(t *testing.T) {
 }
 
 func TestStaticFilesCombinesInstructions(t *testing.T) {
-	files, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git\n"), []byte("# mount\n")}, true)
+	files, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git\n"), []byte("# context\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(fileByPath(t, files, StaticInstructionsPath).Data)
-	if !strings.Contains(got, "# git") || !strings.Contains(got, "# mount") {
+	if !strings.Contains(got, "# git") || !strings.Contains(got, "# context") {
 		t.Fatalf("instructions = %q", got)
 	}
 }
 
-func TestStaticFilesPluginOnlyWhenMountable(t *testing.T) {
-	without, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git")}, false)
+func TestStaticFilesDoNotIncludePlugin(t *testing.T) {
+	files, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range without {
-		if file.Path == StaticProjectMountCommandPath || file.Path == StaticPluginManifestPath {
-			t.Fatalf("unexpected plugin file without mountable projects: %q", file.Path)
+	for _, file := range files {
+		if strings.HasPrefix(file.Path, "claude/plugin/") {
+			t.Fatalf("unexpected plugin file: %q", file.Path)
 		}
-	}
-
-	with, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git")}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest := decode(t, fileByPath(t, with, StaticPluginManifestPath).Data)
-	if manifest["name"] != "toby" {
-		t.Fatalf("plugin manifest name = %#v", manifest["name"])
-	}
-	cmd := string(fileByPath(t, with, StaticProjectMountCommandPath).Data)
-	if !strings.Contains(cmd, "project_mount") {
-		t.Fatalf("project mount command = %q", cmd)
 	}
 }
 
-func renderStaticFiles(t *testing.T, projectRoot string, instructions [][]byte, mountableProjects bool) ([]staticmount.File, error) {
+func renderStaticFiles(t *testing.T, projectRoot string, instructions [][]byte) ([]staticfiles.File, error) {
 	t.Helper()
 	var service *staticfiles.Service
 	app := fxtest.New(t,
@@ -116,7 +102,7 @@ func renderStaticFiles(t *testing.T, projectRoot string, instructions [][]byte, 
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
-	if err := RegisterStaticFiles(builder, projectRoot, instructions, mountableProjects); err != nil {
+	if err := RegisterStaticFiles(builder, projectRoot, instructions); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

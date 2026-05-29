@@ -10,8 +10,8 @@ Available Toby MCP tools:
 
 Equivalent CLI commands inside the sandbox:
 
-- `toby sandbox git commit REPOSITORY -m MESSAGE`
-- `toby sandbox git fetch REPOSITORY`
-- `toby sandbox git push REPOSITORY BRANCH [ORIGIN]`
+- `toby-sandbox git commit REPOSITORY -m MESSAGE`
+- `toby-sandbox git fetch REPOSITORY`
+- `toby-sandbox git push REPOSITORY BRANCH [ORIGIN]`
 
 Repository names are relative to `XDG_PROJECTS_DIR`, may include nested paths such as `foo/bar/baz`, must already be visible in the sandbox, and must not contain `.` or `..` path segments. `git_commit` commits only already staged files; it does not add files.

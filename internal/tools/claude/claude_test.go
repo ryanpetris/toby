@@ -15,7 +15,7 @@ import (
 
 func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
+	paths := config.Paths{Home: home, XDGRuntimeDir: filepath.Join(home, "runtime"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	run := &tool.RunContext{Options: &tool.CommandOptions{}, Env: tool.Environment{}}
 	var claude tool.Tool
 	app := fxtest.New(t,
@@ -41,10 +41,10 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	}
 }
 
-func TestStaticFlagsInjectedWhenMounted(t *testing.T) {
-	state := "/home/toby/.state"
-	base := filepath.Join(state, "toby", "static", "claude")
-	flags := staticFlags(state, true, false)
+func TestContextFlags(t *testing.T) {
+	runtimeDir := "/run/user/1000"
+	base := filepath.Join(runtimeDir, "toby", "context", "claude")
+	flags := contextFlags(runtimeDir)
 
 	for _, want := range [][2]string{
 		{"--mcp-config", filepath.Join(base, "mcp.json")},
@@ -57,21 +57,6 @@ func TestStaticFlagsInjectedWhenMounted(t *testing.T) {
 		}
 	}
 	if slices.Contains(flags, "--plugin-dir") {
-		t.Fatalf("unexpected --plugin-dir without mountable projects: %v", flags)
-	}
-}
-
-func TestStaticFlagsIncludePluginWhenMountable(t *testing.T) {
-	state := "/home/toby/.state"
-	flags := staticFlags(state, true, true)
-	i := slices.Index(flags, "--plugin-dir")
-	if i == -1 || flags[i+1] != filepath.Join(state, "toby", "static", "claude", "plugin") {
-		t.Fatalf("--plugin-dir missing or wrong: %v", flags)
-	}
-}
-
-func TestStaticFlagsAbsentWithoutMount(t *testing.T) {
-	if flags := staticFlags("/home/toby/.state", false, true); len(flags) != 0 {
-		t.Fatalf("expected no flags without static mount, got %v", flags)
+		t.Fatalf("unexpected --plugin-dir: %v", flags)
 	}
 }

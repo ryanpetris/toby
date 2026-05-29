@@ -5,33 +5,41 @@ import (
 	"testing"
 )
 
-func TestDefaultControlPathDefaultsToLocalState(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_STATE_HOME", "")
-
-	got, err := DefaultControlPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(home, ".local", "state", "toby", "control")
-	if got != want {
-		t.Fatalf("DefaultControlPath = %q, want %q", got, want)
+func TestDefaultSocketPathRequiresXDGRuntimeDir(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if _, err := DefaultSocketPath(); err == nil {
+		t.Fatal("expected XDG_RUNTIME_DIR to be required")
 	}
 }
 
-func TestDefaultControlPathUsesXDGStateHome(t *testing.T) {
+func TestDefaultSocketPathUsesXDGRuntimeDir(t *testing.T) {
 	home := t.TempDir()
-	stateHome := filepath.Join(home, "State")
+	runtimeDir := filepath.Join(home, "Runtime")
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
-	got, err := DefaultControlPath()
+	got, err := DefaultSocketPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(stateHome, "toby", "control")
+	want := filepath.Join(runtimeDir, "toby", "sandbox.sock")
 	if got != want {
-		t.Fatalf("DefaultControlPath = %q, want %q", got, want)
+		t.Fatalf("DefaultSocketPath = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultContextDirUsesXDGRuntimeDir(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := filepath.Join(home, "Runtime")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	got, err := DefaultContextDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(runtimeDir, "toby", "context")
+	if got != want {
+		t.Fatalf("DefaultContextDir = %q, want %q", got, want)
 	}
 }

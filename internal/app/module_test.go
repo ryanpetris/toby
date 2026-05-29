@@ -26,7 +26,7 @@ func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Opt
 
 func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), StateHome: filepath.Join(home, ".state")}
+	paths := config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), XDGRuntimeDir: filepath.Join(home, "runtime")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
 		fx.Supply(paths, args(nil)),
@@ -49,6 +49,7 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 }
 
 func TestModuleDependencyGraphIsValid(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	if err := fx.ValidateApp(Module()); err != nil {
 		t.Fatal(err)
 	}

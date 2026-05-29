@@ -29,7 +29,7 @@ Make sure your Go binary directory, usually `~/go/bin`, is on `PATH`.
 Runtime requirements:
 
 - Linux with Bubblewrap available at `/usr/bin/bwrap`.
-- FUSE via `/dev/fuse` for Toby MCP, sandbox control commands, generated OpenCode config, and mountable projects.
+- `XDG_RUNTIME_DIR` must be set.
 - Tool-specific installers may need common utilities such as `curl`, `tar`, or `npm`.
 
 ## Get Started
@@ -87,11 +87,15 @@ Useful flags:
 
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
 - `--tmp-env` uses a temporary sandbox home that is removed on exit.
-- `--mountable-projects` lets agents request additional project mounts through Toby MCP.
 - `--install` installs the selected tool and exits.
 - `--upgrade` reinstalls the selected tool, then launches it.
+
+## MCP
+
+Toby automatically exposes a sandbox-only `toby-sandbox mcp` server to supported tools launched through `toby <client>`. The server uses a private Unix socket at `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside the sandbox and provides `git_commit`, `git_fetch`, and `git_push` for repositories already visible in the sandbox.
+
+The `toby-sandbox` command is the same Toby binary bind-mounted under a sandbox-only name. It is not part of the public host CLI.
 
 ## More Docs
 
 - [Sandbox and integration details](docs/sandbox.md)
-- [fusekit internals](docs/fusekit.md)

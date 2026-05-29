@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	pathpkg "path"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"petris.dev/toby/internal/claudeconfig"
 	"petris.dev/toby/internal/control"
@@ -15,7 +18,6 @@ import (
 	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/staticfiles"
-	"petris.dev/toby/internal/staticmount"
 	"petris.dev/toby/internal/tool"
 
 	"github.com/spf13/cobra"
@@ -55,10 +57,31 @@ func NewRootCommand(params Params) *cobra.Command {
 		cmd.AddCommand(newLaunchCommand(params, item))
 	}
 	cmd.AddCommand(newExecCommand(params))
-	cmd.AddCommand(newSandboxCommand())
-	cmd.AddCommand(newMCPCommand())
-	cmd.AddCommand(newConfirmMountCommand())
 	cmd.AddCommand(newCompletionCommand())
+	return cmd
+}
+
+func NewSandboxRootCommand(params Params) *cobra.Command {
+	stdout := params.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stderr := params.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	cmd := &cobra.Command{
+		Use:           "toby-sandbox",
+		Short:         "Run Toby sandbox internals.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs(params.Args)
+	cmd.AddCommand(newSandboxInitCommand())
+	cmd.AddCommand(newSandboxMCPCommand())
+	cmd.AddCommand(newSandboxGitCommand())
 	return cmd
 }
 
@@ -113,7 +136,6 @@ func newExecCommand(params Params) *cobra.Command {
 func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("tmp-env", false, "Use a temporary sandbox home directory that is removed on exit.")
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
-	cmd.Flags().Bool("mountable-projects", false, "Expose mountable project directories through Toby MCP and the sandbox FUSE project root.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {
@@ -163,63 +185,37 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	if err := sbx.EnsureSandboxProjectDir(); err != nil {
 		return err
 	}
-	homeFS, err := startOptionalHomeFS(ctx, params, sbx, toolset, opts.MountableProjects)
-	if err != nil {
-		return err
-	}
-	var tobyMount *control.Mount
-	var staticMount *staticmount.Mount
-	defer func() {
-		_ = homeFS.Close()
-		_ = staticMount.Close()
-		_ = tobyMount.Close()
-	}()
-	if homeFS != nil {
-		controlManager := &control.Manager{Mounter: homeFS, Confirmer: control.TmuxConfirmer{}, ProjectRoot: sbx.ProjectRoot(), MountableProjects: opts.MountableProjects}
-		tobyBase, err := sbx.TobyMountBasePath()
-		if err != nil {
-			return err
-		}
-		tobyMount, err = control.NewMountAt(tobyBase, controlManager.Handle, control.WithMountableProjects(opts.MountableProjects))
-		if err == nil {
-			err = homeFS.AddOverlayMount(tobyMount)
-		}
-		if err == nil {
-			staticMount, err = addStaticOverlayMount(ctx, params.Stderr, params.StaticFiles, params.OpenCodeRenderer, sbx, homeFS, tobyBase, opts.MountableProjects)
-		}
-		if err != nil {
-			_ = staticMount.Close()
-			staticMount = nil
-			_ = tobyMount.Close()
-			tobyMount = nil
-			_ = homeFS.Close()
-			homeFS = nil
-			if opts.MountableProjects {
-				return fmt.Errorf("mountable projects require FUSE-backed sandbox features: %w", err)
-			}
-			warnFUSEUnavailable(params.Stderr, fmt.Errorf("failed to enable FUSE-backed sandbox features: %w", err))
-		}
-	}
+
 	env := tool.EnvironmentFromList(os.Environ())
 	run := &tool.RunContext{
-		Sandbox:     sbx,
-		Options:     opts,
-		Extra:       extra,
-		Toolset:     toolset,
-		Env:         env,
-		StaticMount: homeFS != nil,
+		Sandbox: sbx,
+		Options: opts,
+		Extra:   extra,
+		Toolset: toolset,
+		Env:     env,
 	}
 	sbx.SetupContext(run)
 	if err := toolset.SandboxContextSetup(run); err != nil {
 		return err
 	}
-	if homeFS == nil && env["OPENCODE_CONFIG_DIR"] == sbx.TobyOpenCodeConfigDir() {
-		delete(env, "OPENCODE_CONFIG_DIR")
+
+	contextFiles, err := buildContextFiles(ctx, params.Stderr, params.StaticFiles, params.OpenCodeRenderer, sbx)
+	if err != nil {
+		return err
 	}
-	commandMounts := sbx.CommandMountsWithoutFUSE(toolset)
-	if homeFS != nil {
-		commandMounts = homeFS.CommandMounts()
+	manager := &control.Manager{RepositoryResolver: sbx, ContextFiles: contextFiles}
+	socketPath := control.HostSocketPath(env["XDG_RUNTIME_DIR"], os.Getpid())
+	server, err := control.Listen(ctx, socketPath, manager.Handle)
+	if err != nil {
+		return err
 	}
+	defer server.Close()
+
+	tobyBinary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	commandMounts := sbx.CommandMounts(toolset, socketPath, tobyBinary)
 	run.Exec = func(ctx context.Context, argv []string, options tool.ExecOptions) (int, error) {
 		return sbx.Run(ctx, argv, commandMounts, env, options)
 	}
@@ -233,68 +229,43 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	return toolset.Launch(ctx, run)
 }
 
-func startOptionalHomeFS(ctx context.Context, params Params, sbx *sandbox.Sandbox, toolset *tool.Toolset, required bool) (*sandbox.HomeFS, error) {
-	if err := checkFUSEAvailable(); err != nil {
-		if required {
-			return nil, fmt.Errorf("mountable projects require FUSE: %w", err)
-		}
-		warnFUSEUnavailable(params.Stderr, err)
-		return nil, nil
-	}
-	homeFS, err := sbx.StartHomeFS(ctx, toolset)
-	if err != nil {
-		if required {
-			return nil, fmt.Errorf("mountable projects require FUSE: %w", err)
-		}
-		warnFUSEUnavailable(params.Stderr, err)
-		return nil, nil
-	}
-	return homeFS, nil
-}
-
-func addStaticOverlayMount(ctx context.Context, stderr io.Writer, service *staticfiles.Service, renderer *opencodeconfig.Renderer, sbx *sandbox.Sandbox, homeFS *sandbox.HomeFS, tobyBase string, mountableProjects bool) (*staticmount.Mount, error) {
+func buildContextFiles(ctx context.Context, stderr io.Writer, service *staticfiles.Service, renderer *opencodeconfig.Renderer, sbx *sandbox.Sandbox) ([]control.ContextFile, error) {
 	if service == nil {
-		return nil, fmt.Errorf("static files service is not configured")
+		return nil, fmt.Errorf("context files service is not configured")
 	}
 	if renderer == nil {
 		return nil, fmt.Errorf("opencode renderer is not configured")
 	}
-	staticMount, err := service.NewMount("toby-static", pathpkg.Join(tobyBase, "static"), func(builder *staticfiles.Builder) error {
-		return buildStaticFiles(ctx, stderr, sbx, builder, renderer, mountableProjects)
+	files, err := service.Build(func(builder *staticfiles.Builder) error {
+		return registerContextFiles(ctx, stderr, sbx, builder, renderer)
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := homeFS.AddOverlayMount(staticMount); err != nil {
-		_ = staticMount.Close()
-		return nil, err
+	contextFiles := make([]control.ContextFile, 0, len(files))
+	for _, file := range files {
+		contextFiles = append(contextFiles, control.ContextFile{Path: file.Path, Mode: file.Mode, Data: file.Data})
 	}
-	return staticMount, nil
+	return contextFiles, nil
 }
 
-func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, renderer *opencodeconfig.Renderer, mountableProjects bool) error {
+func registerContextFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, renderer *opencodeconfig.Renderer) error {
 	instructions := []string{sbx.TobyGitAgentsPath()}
-	if mountableProjects {
-		instructions = append(instructions, sbx.TobyProjectMountAgentsPath())
-	}
-	if err := staticfiles.RegisterAgentFiles(builder, mountableProjects); err != nil {
+	if err := staticfiles.RegisterAgentFiles(builder); err != nil {
 		return err
 	}
-	warnings, err := renderer.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
+	warnings, err := renderer.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions)
 	if err != nil {
 		return err
 	}
 	for _, warning := range warnings {
 		warnOpenCodeModelFetch(stderr, warning)
 	}
-	instructionContent, err := staticfiles.AgentContents(mountableProjects)
+	instructionContent, err := staticfiles.AgentContents()
 	if err != nil {
 		return err
 	}
-	if err := claudeconfig.RegisterStaticFiles(builder, sbx.ProjectRoot(), instructionContent, mountableProjects); err != nil {
-		return err
-	}
-	return builder.AddCurrentExecutable(pathpkg.Join("bin", "toby"), 0o500)
+	return claudeconfig.RegisterStaticFiles(builder, sbx.ProjectRoot(), instructionContent)
 }
 
 func warnOpenCodeModelFetch(stderr io.Writer, err error) {
@@ -302,20 +273,6 @@ func warnOpenCodeModelFetch(stderr io.Writer, err error) {
 		stderr = os.Stderr
 	}
 	_, _ = fmt.Fprintf(stderr, "toby: failed to fetch OpenCode models: %v\n", err)
-}
-
-func checkFUSEAvailable() error {
-	if _, err := os.Stat("/dev/fuse"); err != nil {
-		return fmt.Errorf("/dev/fuse is not available: %w", err)
-	}
-	return nil
-}
-
-func warnFUSEUnavailable(stderr io.Writer, err error) {
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	_, _ = fmt.Fprintf(stderr, "toby: FUSE is unavailable: %v; Toby MCP, sandbox control commands, synthetic configuration, and mountable projects will not be available.\n", err)
 }
 
 func commandOrShell(extra []string, env tool.Environment) []string {
@@ -329,75 +286,88 @@ func commandOrShell(extra []string, env tool.Environment) []string {
 	return []string{shell, "-i"}
 }
 
-func newSandboxCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "sandbox",
-		Short: "Run Toby sandbox control commands.",
+func newSandboxInitCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "init -- COMMAND [ARG...]",
+		Short:              "Initialize Toby sandbox context and exec a command.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 && args[0] == "--" {
+				args = args[1:]
+			}
+			if len(args) == 0 {
+				return exitcode.New(2, "init requires a command after --")
+			}
+			client, err := sandboxControlClient()
+			if err != nil {
+				return err
+			}
+			result, err := client.ContextFiles()
+			if err != nil {
+				return err
+			}
+			contextDir, err := control.DefaultContextDir()
+			if err != nil {
+				return err
+			}
+			if err := writeContextFiles(contextDir, result.Files); err != nil {
+				return err
+			}
+			path, err := exec.LookPath(args[0])
+			if err != nil {
+				return err
+			}
+			return syscall.Exec(path, args, os.Environ())
+		},
 	}
-	cmd.AddCommand(newSandboxProjectCommand())
-	cmd.AddCommand(newSandboxGitCommand())
-	return cmd
 }
 
-func newSandboxProjectCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "project",
-		Short: "Run project control commands inside a sandbox.",
+func writeContextFiles(contextDir string, files []control.ContextFile) error {
+	if err := os.RemoveAll(contextDir); err != nil {
+		return err
 	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List available project directories.",
-		Args:  cobra.NoArgs,
+	for _, file := range files {
+		path, err := cleanContextPath(file.Path)
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(file.Mode & 0o777)
+		if mode == 0 {
+			mode = 0o400
+		}
+		target := filepath.Join(contextDir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, file.Data, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(target, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cleanContextPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." || !fs.ValidPath(path) {
+		return "", fmt.Errorf("invalid context file path: %q", path)
+	}
+	return path, nil
+}
+
+func newSandboxMCPCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "mcp",
+		Short: "Run the Toby MCP server inside a sandbox.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := sandboxControlClient()
-			if err != nil {
-				return err
+			if len(args) != 0 {
+				return exitcode.New(2, "mcp does not accept arguments")
 			}
-			result, err := client.ProjectList()
-			if err != nil {
-				return err
-			}
-			for _, project := range result.Projects {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), project.Name)
-			}
-			return nil
+			return mcpserver.Run(cmd.Context(), "")
 		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "readme NAME",
-		Short: "Read a project's README.md without mounting it.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := sandboxControlClient()
-			if err != nil {
-				return err
-			}
-			result, err := client.ProjectReadme(args[0])
-			if err != nil {
-				return err
-			}
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), result.Content)
-			return nil
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "mount NAME",
-		Short: "Request access to a project directory.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := sandboxControlClient()
-			if err != nil {
-				return err
-			}
-			result, err := client.ProjectMount(args[0])
-			if err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), result.SandboxPath)
-			return nil
-		},
-	})
-	return cmd
+	}
 }
 
 func newSandboxGitCommand() *cobra.Command {
@@ -467,12 +437,12 @@ func newSandboxGitCommand() *cobra.Command {
 }
 
 func sandboxControlClient() (*control.Client, error) {
-	path, err := control.DefaultControlPath()
+	path, err := control.DefaultSocketPath()
 	if err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("toby sandbox commands must run inside a Toby sandbox: %s is not available", path)
+		return nil, fmt.Errorf("toby-sandbox commands must run inside a Toby sandbox: %s is not available", path)
 	}
 	return control.NewClient(path), nil
 }
@@ -488,37 +458,6 @@ func writeGitResult(cmd *cobra.Command, result control.GitResult) error {
 		return exitcode.Code(result.ExitCode)
 	}
 	return nil
-}
-
-func newMCPCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "mcp",
-		Short: "Run the Toby MCP server inside a sandbox.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.New(2, "mcp does not accept arguments")
-			}
-			return mcpserver.Run(cmd.Context(), "")
-		},
-	}
-}
-
-func newConfirmMountCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:    "__confirm-mount PATH",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			approved, err := control.RunMountConfirmation(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			if !approved {
-				return exitcode.Code(1)
-			}
-			return nil
-		},
-	}
 }
 
 func newCompletionCommand() *cobra.Command {
