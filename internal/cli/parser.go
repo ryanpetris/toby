@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"strings"
 
 	"petris.dev/toby/internal/exitcode"
@@ -37,12 +36,8 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 			result.Options.TmpEnv = true
 			continue
 		}
-		if arg == "--no-project" {
-			result.Options.NoProject = true
-			continue
-		}
-		if arg == "--print" {
-			result.Options.Print = true
+		if arg == "--mountable-projects" {
+			result.Options.MountableProjects = true
 			continue
 		}
 		if launch && arg == "--install" {
@@ -96,9 +91,6 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 	if result.Options.Install && result.Options.Upgrade {
 		return result, exitcode.New(2, "--install and --upgrade are mutually exclusive")
 	}
-	if result.Options.Print {
-		result.RequestedTools = appendIfMissing(result.RequestedTools, tool.PrintToolName)
-	}
 	if primary != "" {
 		result.RequestedTools = appendIfMissing(result.RequestedTools, primary)
 	}
@@ -129,17 +121,4 @@ func appendIfMissing(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-func opencodeArgParser(opts *tool.CommandOptions) func(string, string) (bool, string, error) {
-	return func(arg, next string) (bool, string, error) {
-		if arg == "--sync-models" {
-			opts.SyncModels = true
-			return true, "", nil
-		}
-		if strings.HasPrefix(arg, "--sync-models=") {
-			return false, "", fmt.Errorf("--sync-models does not take a value")
-		}
-		return false, "", nil
-	}
 }

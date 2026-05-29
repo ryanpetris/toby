@@ -1,0 +1,16 @@
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Go build and test artifacts
+/toby
+/bin/
+/dist/
+*.test
+*.out
+coverage.out
+*.coverprofile

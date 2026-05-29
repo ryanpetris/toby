@@ -15,7 +15,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
 	parsed, err := parseSandboxArgs(
-		[]string{"--tmp-env", "proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
+		[]string{"--tmp-env", "--mountable-projects", "proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
 		true,
 		tool.OpenCodeToolName,
 		ctxTools,
@@ -24,7 +24,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsed.Options.TmpEnv || parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
+	if !parsed.Options.TmpEnv || !parsed.Options.MountableProjects || parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
 		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
@@ -35,23 +35,15 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 	}
 }
 
-func TestParseSandboxArgsOpenCodeSyncModels(t *testing.T) {
-	opts := &tool.CommandOptions{}
-	parsed, err := parseSandboxArgs(
-		[]string{"env", "--sync-models", "run"},
-		true,
-		tool.OpenCodeToolName,
-		nil,
-		opencodeArgParser(opts),
-	)
+func TestParseSandboxArgsDoesNotHandlePrintFlag(t *testing.T) {
+	parsed, err := parseSandboxArgs([]string{"env", "--print"}, false, "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed.Options.SyncModels = opts.SyncModels
-	if !parsed.Options.SyncModels {
-		t.Fatal("expected sync models flag")
-	}
-	if got, want := parsed.Extra, []string{"run"}; !reflect.DeepEqual(got, want) {
+	if got, want := parsed.Extra, []string{"--print"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("extra = %#v, want %#v", got, want)
+	}
+	if len(parsed.RequestedTools) != 0 {
+		t.Fatalf("requested tools = %#v, want none", parsed.RequestedTools)
 	}
 }

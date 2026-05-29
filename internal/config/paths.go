@@ -11,6 +11,7 @@ type Paths struct {
 	Home           string
 	ProjectRoot    string
 	SandboxRoot    string
+	StateHome      string
 	XDGRuntimeDir  string
 	PipewireCore   string
 	WaylandDisplay string
@@ -26,6 +27,7 @@ func NewPaths() (Paths, error) {
 		Home:           home,
 		ProjectRoot:    envPath("XDG_PROJECTS_DIR", filepath.Join(home, "Projects")),
 		SandboxRoot:    sandboxRoot(home),
+		StateHome:      envPath("XDG_STATE_HOME", filepath.Join(home, ".local", "state")),
 		XDGRuntimeDir:  envPath("XDG_RUNTIME_DIR", filepath.Join("/run/user", strconv.Itoa(os.Getuid()))),
 		PipewireCore:   envString("PIPEWIRE_CORE", "pipewire-0"),
 		WaylandDisplay: envString("WAYLAND_DISPLAY", "wayland-0"),

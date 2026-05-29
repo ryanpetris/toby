@@ -2,37 +2,19 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/shellquote"
 	"petris.dev/toby/internal/tool"
 )
 
 func init() {
-	register(newPrintTool)
 	register(newNpmTool)
 	register(newDockerTool)
 	register(newClaudeTool)
 	register(newCopilotTool)
 	register(newCodexTool)
 	register(newT3Tool)
-}
-
-type printTool struct{ tool.Base }
-
-func newPrintTool() tool.Tool {
-	return &printTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.PrintToolName}}}
-}
-
-func (t *printTool) SandboxContextSetup(ctx *tool.RunContext) error {
-	ctx.Exec = func(context.Context, []string, tool.ExecOptions) (int, error) { return 0, nil }
-	ctx.Launch = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-		fmt.Println(shellquote.Join(ctx.Sandbox.BuildCommand(argv, ctx.Toolset)))
-		return 0, nil
-	}
-	return nil
 }
 
 type npmTool struct {

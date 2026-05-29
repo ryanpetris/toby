@@ -13,7 +13,6 @@ const (
 	GroupSystem = "system"
 	GroupVCS    = "vcs"
 
-	PrintToolName      = "print"
 	NpmToolName        = "npm"
 	UvToolName         = "uv"
 	OpenCodeToolName   = "opencode"
@@ -55,14 +54,12 @@ type Bind struct {
 }
 
 type CommandOptions struct {
-	Env        string
-	TmpEnv     bool
-	Project    string
-	NoProject  bool
-	Print      bool
-	Install    bool
-	Upgrade    bool
-	SyncModels bool
+	Env               string
+	TmpEnv            bool
+	Project           string
+	MountableProjects bool
+	Install           bool
+	Upgrade           bool
 }
 
 type ExecOptions struct {
@@ -73,7 +70,6 @@ type Executor func(context.Context, []string, ExecOptions) (int, error)
 
 type Sandbox interface {
 	HomeDir() string
-	BuildCommand(argv []string, toolset *Toolset) []string
 }
 
 type RunContext struct {

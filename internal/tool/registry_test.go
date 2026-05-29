@@ -21,17 +21,17 @@ func TestRegistryBuildOrdersDependenciesBeforeDependents(t *testing.T) {
 	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
 		newFakeTool("npm"),
 		newFakeTool("claude", "npm"),
-		newFakeTool("print"),
+		newFakeTool("docker"),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolset, err := registry.Build([]string{"print", "claude"}, "claude")
+	toolset, err := registry.Build([]string{"docker", "claude"}, "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := toolset.OrderedToolNames()
-	want := []string{"npm", "claude", "print"}
+	want := []string{"npm", "claude", "docker"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered names = %#v, want %#v", got, want)
 	}
