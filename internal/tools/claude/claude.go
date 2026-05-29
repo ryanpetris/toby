@@ -2,9 +2,12 @@ package claude
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 
+	"petris.dev/toby/internal/claudeconfig"
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,8 +19,9 @@ var Module = fx.Module("tools.claude", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	Paths config.Paths
-	NPM   tool.Tool `name:"npm"`
+	Paths  config.Paths
+	NPM    tool.Tool           `name:"npm"`
+	Config *tobyconfig.Service `optional:"true"`
 }
 
 type Result struct {
@@ -37,16 +41,18 @@ func Provide(params Params) Result {
 			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
 			map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(params.Paths.Home, ".config", "claude")},
 		),
-		paths: params.Paths,
-		npm:   params.NPM,
+		paths:  params.Paths,
+		npm:    params.NPM,
+		config: params.Config,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type claudeTool struct {
 	*tool.Simple
-	paths config.Paths
-	npm   tool.Tool
+	paths  config.Paths
+	npm    tool.Tool
+	config *tobyconfig.Service
 }
 
 func (t *claudeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -78,6 +84,13 @@ func (t *claudeTool) SandboxInit(ctx context.Context, run *tool.RunContext) erro
 		return err
 	}
 	return t.Simple.SandboxInit(ctx, run)
+}
+
+func (t *claudeTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	return claudeconfig.RegisterContextFiles(run.ContextFiles, t.paths.ProjectRoot, run.ContextFiles.InstructionContents(), t.config)
 }
 
 func (t *claudeTool) Install(ctx context.Context, run *tool.RunContext) error {

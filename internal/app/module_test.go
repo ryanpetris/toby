@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/contextfiles"
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
-	"petris.dev/toby/internal/staticfiles"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 
 	"github.com/spf13/cobra"
@@ -26,7 +27,7 @@ func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Opt
 
 func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), XDGRuntimeDir: filepath.Join(home, "runtime")}
+	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), XDGRuntimeDir: filepath.Join(home, "runtime")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
 		fx.Supply(paths, args(nil)),
@@ -35,7 +36,8 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 			func() executil.Runner { return fakeRunner{} },
 			opencodeconfig.NewRenderer,
 			sandbox.NewFactory,
-			staticfiles.NewService,
+			contextfiles.NewService,
+			tobyconfig.New,
 			tool.NewRegistry,
 			newRootCommand,
 		),

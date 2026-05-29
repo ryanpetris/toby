@@ -2,7 +2,10 @@ package tool
 
 import (
 	"context"
+	"io"
 	"path/filepath"
+
+	"petris.dev/toby/internal/contextfiles"
 
 	"github.com/spf13/cobra"
 )
@@ -73,14 +76,16 @@ type Sandbox interface {
 }
 
 type RunContext struct {
-	Sandbox Sandbox
-	Options *CommandOptions
-	Extra   []string
-	Toolset *Toolset
-	Env     Environment
-	Exec    Executor
-	Launch  Executor
-	lifecycle   map[string]bool
+	Sandbox      Sandbox
+	Options      *CommandOptions
+	Extra        []string
+	Toolset      *Toolset
+	Env          Environment
+	Stderr       io.Writer
+	ContextFiles *contextfiles.Session
+	Exec         Executor
+	Launch       Executor
+	lifecycle    map[string]bool
 }
 
 type Tool interface {
@@ -97,6 +102,10 @@ type Tool interface {
 	Install(context.Context, *RunContext) error
 	Upgrade(context.Context, *RunContext) error
 	Launch(context.Context, *RunContext) error
+}
+
+type ContextFileTool interface {
+	RegisterContextFiles(context.Context, *RunContext) error
 }
 
 type Metadata struct {

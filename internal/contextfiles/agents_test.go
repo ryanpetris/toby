@@ -1,4 +1,4 @@
-package staticfiles
+package contextfiles
 
 import (
 	"bytes"

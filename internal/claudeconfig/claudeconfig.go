@@ -10,8 +10,11 @@ package claudeconfig
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
-	"petris.dev/toby/internal/staticfiles"
+	"petris.dev/toby/internal/configfile"
+	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/tobyconfig"
 )
 
 const (
@@ -24,12 +27,16 @@ const (
 	StaticInstructionsPath = "claude/instructions.md"
 )
 
-// RegisterStaticFiles renders the Claude Code synthetic configuration files.
+// RegisterContextFiles renders the Claude Code synthetic configuration files.
 // instructions is the content of Toby's instruction files; they are concatenated
 // into a single file so the launcher can pass exactly one
 // --append-system-prompt-file.
-func RegisterStaticFiles(registrar staticfiles.Registrar, projectRoot string, instructions [][]byte) error {
-	mcp, err := marshalJSON(syntheticMCP())
+func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, instructions [][]byte, cfg *tobyconfig.Service) error {
+	mcpConfig, err := syntheticMCP(cfg)
+	if err != nil {
+		return err
+	}
+	mcp, err := marshalJSON(mcpConfig)
 	if err != nil {
 		return err
 	}
@@ -49,15 +56,105 @@ func RegisterStaticFiles(registrar staticfiles.Registrar, projectRoot string, in
 	return nil
 }
 
-func syntheticMCP() map[string]any {
+func syntheticMCP(cfg *tobyconfig.Service) (map[string]any, error) {
+	servers := map[string]any{}
+	if cfg != nil {
+		for name, configured := range cfg.MCPServers() {
+			if !configured.Enabled() {
+				continue
+			}
+			converted, err := convertMCPServer(name, configured.Raw())
+			if err != nil {
+				return nil, err
+			}
+			servers[name] = converted
+		}
+	}
+	servers["toby"] = syntheticTobyMCP()
+	return map[string]any{"mcpServers": servers}, nil
+}
+
+func syntheticTobyMCP() map[string]any {
 	return map[string]any{
-		"mcpServers": map[string]any{
-			"toby": map[string]any{
-				"type":    "stdio",
-				"command": "toby-sandbox",
-				"args":    []any{"mcp"},
-			},
-		},
+		"type":    "stdio",
+		"command": "toby-sandbox",
+		"args":    []any{"mcp"},
+	}
+}
+
+func convertMCPServer(name string, server map[string]any) (map[string]any, error) {
+	typ, _ := server["type"].(string)
+	switch typ {
+	case "", "local":
+		return convertLocalMCPServer(name, server)
+	case "remote":
+		return convertRemoteMCPServer(server), nil
+	case "stdio", "http", "streamable-http", "sse", "ws":
+		return configfile.CloneMap(server), nil
+	default:
+		return nil, fmt.Errorf("unsupported mcp server %q type %q", name, typ)
+	}
+}
+
+func convertLocalMCPServer(name string, server map[string]any) (map[string]any, error) {
+	command, args, err := commandParts(name, server["command"])
+	if err != nil {
+		return nil, err
+	}
+	converted := map[string]any{
+		"type":    "stdio",
+		"command": command,
+	}
+	if len(args) > 0 {
+		converted["args"] = args
+	}
+	copyField(converted, server, "env", "env")
+	copyField(converted, server, "environment", "env")
+	copyField(converted, server, "timeout", "timeout")
+	copyField(converted, server, "alwaysLoad", "alwaysLoad")
+	return converted, nil
+}
+
+func convertRemoteMCPServer(server map[string]any) map[string]any {
+	converted := map[string]any{"type": "http"}
+	for _, key := range []string{"url", "headers", "oauth", "timeout", "alwaysLoad"} {
+		copyField(converted, server, key, key)
+	}
+	return converted
+}
+
+func commandParts(name string, raw any) (string, []any, error) {
+	switch command := raw.(type) {
+	case string:
+		if command == "" {
+			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
+		}
+		return command, nil, nil
+	case []any:
+		if len(command) == 0 {
+			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
+		}
+		first, ok := command[0].(string)
+		if !ok || first == "" {
+			return "", nil, fmt.Errorf("mcp server %q command must start with a string", name)
+		}
+		args := make([]any, 0, len(command)-1)
+		for _, item := range command[1:] {
+			arg, ok := item.(string)
+			if !ok {
+				return "", nil, fmt.Errorf("mcp server %q command arguments must be strings", name)
+			}
+			args = append(args, arg)
+		}
+		return first, args, nil
+	default:
+		return "", nil, fmt.Errorf("mcp server %q command is required", name)
+	}
+}
+
+func copyField(dst, src map[string]any, from, to string) {
+	if value, ok := src[from]; ok {
+		dst[to] = configfile.Clone(value)
 	}
 }
 

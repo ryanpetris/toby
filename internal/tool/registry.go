@@ -208,6 +208,19 @@ func (t *Toolset) SandboxInit(ctx context.Context, run *RunContext) error {
 	return nil
 }
 
+func (t *Toolset) RegisterContextFiles(ctx context.Context, run *RunContext) error {
+	for _, item := range t.ordered {
+		registrar, ok := item.(ContextFileTool)
+		if !ok {
+			continue
+		}
+		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (t *Toolset) Install(ctx context.Context, run *RunContext) error {
 	for _, item := range t.ordered {
 		if err := item.Install(ctx, run); err != nil {

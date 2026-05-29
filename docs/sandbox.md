@@ -5,6 +5,7 @@ This page covers Toby's environment layout, project access rules, runtime contex
 ## Environment
 
 - `XDG_PROJECTS_DIR` defaults to `~/Projects`.
+- `XDG_CONFIG_HOME` defaults to `~/.config`; Toby host configuration is loaded from `$XDG_CONFIG_HOME/toby`. If `XDG_CONFIG_HOME` is unset, Toby also accepts `XDG_CONFIG_DIR` before falling back to `~/.config`.
 - `XDG_CACHE_HOME` defaults to `~/.cache`; sandbox homes are stored under `$XDG_CACHE_HOME/toby/sandboxes`.
 - `XDG_RUNTIME_DIR` is required. Toby uses `$XDG_RUNTIME_DIR/toby` inside the sandbox for its private socket, generated context files, and the sandbox-facing `toby-sandbox` binary name.
 - `TOBY_SANDBOX_ROOT` overrides the sandbox home root when set.
@@ -27,6 +28,16 @@ For each sandboxed command, Bubblewrap launches `$XDG_RUNTIME_DIR/toby/bin/toby-
 
 The host supervisor listens on `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket into the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`. The current Toby executable is bind-mounted into the sandbox as `$XDG_RUNTIME_DIR/toby/bin/toby-sandbox`, and that directory is prepended to `PATH`.
 
+## Host Configuration
+
+Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`, with `XDG_CONFIG_DIR` and then `~/.config` used when `XDG_CONFIG_HOME` is unset. If multiple files exist, they are deep merged in that order.
+
+Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, and `provider`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
+
+- `mcp` config is rendered into OpenCode and Claude Code synthetic MCP files. Toby's own MCP server is always injected as `toby` after host config is merged.
+- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During sandbox init, Toby writes matching files under `$XDG_RUNTIME_DIR/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
+- `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby warns on stderr and excludes that provider from the generated OpenCode config.
+
 ## MCP
 
 Toby exposes an MCP stdio server inside each sandbox as `toby-sandbox mcp`. The server provides tools for running selected host Git commands for repositories visible through the initial project bind mount.
@@ -45,7 +56,7 @@ The same control calls are available inside a sandbox as CLI commands: `toby-san
 
 ## OpenCode
 
-For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=$XDG_RUNTIME_DIR/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with the Toby MCP server, `$XDG_RUNTIME_DIR/toby/context/GIT_AGENTS.md` instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and best-effort model lists for OpenAI-compatible providers. Model lists are fetched during sandbox startup; fetch failures warn to stderr and continue.
+For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=$XDG_RUNTIME_DIR/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config, the Toby MCP server, `$XDG_RUNTIME_DIR/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and discovered model lists for OpenAI-compatible providers that need them. Model discovery failures warn to stderr and omit only the provider that failed discovery.
 
 Equivalent generated OpenCode `opencode.json` entry:
 
@@ -67,7 +78,7 @@ Equivalent generated OpenCode `opencode.json` entry:
 For Claude Code sandboxes, Toby injects its generated context through launch flags rather than by redirecting the config directory: Claude Code writes credentials, history, and session state into `CLAUDE_CONFIG_DIR`, so that directory stays the writable real config bind-mounted under `TOBY_SANDBOX_ROOT/.config/claude/`. Toby generates files under `$XDG_RUNTIME_DIR/toby/context/claude/` and launches `claude` with:
 
 - `--mcp-config .../claude/mcp.json` adds the Toby MCP server.
-- `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md`.
+- `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` and configured Toby instruction files.
 - `--settings .../claude/settings.json` allows the `/tmp` and project-root directories via `permissions.additionalDirectories`, mirroring OpenCode's external-directory rules.
 
 Generated `claude/mcp.json`:

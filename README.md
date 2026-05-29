@@ -74,6 +74,16 @@ toby claude review-env --project ~/Projects/customer-api
 
 Project paths must resolve to `XDG_PROJECTS_DIR` or a directory below it. This keeps sandbox project access explicit and prevents accidental access to unrelated host paths.
 
+## Host Configuration
+
+Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`; if `XDG_CONFIG_HOME` is unset, Toby also accepts `XDG_CONFIG_DIR` before falling back to `~/.config`. If more than one file exists, Toby deep merges them in that order.
+
+Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, and `provider`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
+
+- `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server.
+- `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `$XDG_RUNTIME_DIR/toby/context/instructions/` using the source filename, adding a short random suffix before the extension if two files share a filename.
+- `provider` entries use OpenCode's provider schema and are currently applied to OpenCode only. If a provider includes `models`, Toby uses those models verbatim. For OpenAI-compatible providers without `models`, Toby queries the provider at sandbox startup; if discovery fails, Toby logs a warning and leaves that provider out of the generated OpenCode config.
+
 ## Common Commands
 
 ```sh

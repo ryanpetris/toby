@@ -1,4 +1,4 @@
-package staticfiles
+package contextfiles
 
 import (
 	"embed"
@@ -14,6 +14,10 @@ var agentFiles embed.FS
 
 func RegisterAgentFiles(registrar Registrar) error {
 	return registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400)
+}
+
+func RegisterAgentInstructions(session *Session) error {
+	return session.AddInstructionFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400)
 }
 
 func AgentContents() ([][]byte, error) {

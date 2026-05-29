@@ -11,26 +11,25 @@ import (
 	"strings"
 	"syscall"
 
-	"petris.dev/toby/internal/claudeconfig"
+	"petris.dev/toby/internal/contextfiles"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/mcpserver"
-	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
-	"petris.dev/toby/internal/staticfiles"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 
 	"github.com/spf13/cobra"
 )
 
 type Params struct {
-	Registry         *tool.Registry
-	SandboxFactory   sandbox.Factory
-	StaticFiles      *staticfiles.Service
-	OpenCodeRenderer *opencodeconfig.Renderer
-	Args             []string
-	Stdout           io.Writer
-	Stderr           io.Writer
+	Registry       *tool.Registry
+	SandboxFactory sandbox.Factory
+	ContextFiles   *contextfiles.Service
+	TobyConfig     *tobyconfig.Service
+	Args           []string
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 func NewRootCommand(params Params) *cobra.Command {
@@ -193,13 +192,14 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		Extra:   extra,
 		Toolset: toolset,
 		Env:     env,
+		Stderr:  params.Stderr,
 	}
 	sbx.SetupContext(run)
 	if err := toolset.SandboxContextSetup(run); err != nil {
 		return err
 	}
 
-	contextFiles, err := buildContextFiles(ctx, params.Stderr, params.StaticFiles, params.OpenCodeRenderer, sbx)
+	contextFiles, err := buildContextFiles(ctx, params.ContextFiles, params.TobyConfig, sbx, run)
 	if err != nil {
 		return err
 	}
@@ -229,19 +229,16 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	return toolset.Launch(ctx, run)
 }
 
-func buildContextFiles(ctx context.Context, stderr io.Writer, service *staticfiles.Service, renderer *opencodeconfig.Renderer, sbx *sandbox.Sandbox) ([]control.ContextFile, error) {
+func buildContextFiles(ctx context.Context, service *contextfiles.Service, cfg *tobyconfig.Service, sbx *sandbox.Sandbox, run *tool.RunContext) ([]control.ContextFile, error) {
 	if service == nil {
 		return nil, fmt.Errorf("context files service is not configured")
 	}
-	if renderer == nil {
-		return nil, fmt.Errorf("opencode renderer is not configured")
-	}
-	files, err := service.Build(func(builder *staticfiles.Builder) error {
-		return registerContextFiles(ctx, stderr, sbx, builder, renderer)
-	})
-	if err != nil {
+	session := service.NewSession(sbx.TobyContextDir())
+	run.ContextFiles = session
+	if err := registerContextFiles(ctx, session, cfg, run); err != nil {
 		return nil, err
 	}
+	files := session.Files()
 	contextFiles := make([]control.ContextFile, 0, len(files))
 	for _, file := range files {
 		contextFiles = append(contextFiles, control.ContextFile{Path: file.Path, Mode: file.Mode, Data: file.Data})
@@ -249,30 +246,16 @@ func buildContextFiles(ctx context.Context, stderr io.Writer, service *staticfil
 	return contextFiles, nil
 }
 
-func registerContextFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, renderer *opencodeconfig.Renderer) error {
-	instructions := []string{sbx.TobyGitAgentsPath()}
-	if err := staticfiles.RegisterAgentFiles(builder); err != nil {
+func registerContextFiles(ctx context.Context, session *contextfiles.Session, cfg *tobyconfig.Service, run *tool.RunContext) error {
+	if err := contextfiles.RegisterAgentInstructions(session); err != nil {
 		return err
 	}
-	warnings, err := renderer.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions)
-	if err != nil {
-		return err
+	if cfg != nil {
+		if err := cfg.RegisterContextFiles(session); err != nil {
+			return err
+		}
 	}
-	for _, warning := range warnings {
-		warnOpenCodeModelFetch(stderr, warning)
-	}
-	instructionContent, err := staticfiles.AgentContents()
-	if err != nil {
-		return err
-	}
-	return claudeconfig.RegisterStaticFiles(builder, sbx.ProjectRoot(), instructionContent)
-}
-
-func warnOpenCodeModelFetch(stderr io.Writer, err error) {
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	_, _ = fmt.Fprintf(stderr, "toby: failed to fetch OpenCode models: %v\n", err)
+	return run.Toolset.RegisterContextFiles(ctx, run)
 }
 
 func commandOrShell(extra []string, env tool.Environment) []string {

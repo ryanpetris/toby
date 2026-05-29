@@ -9,6 +9,7 @@ import (
 
 type Paths struct {
 	Home           string
+	XDGConfigHome  string
 	ProjectRoot    string
 	SandboxRoot    string
 	XDGRuntimeDir  string
@@ -28,6 +29,7 @@ func NewPaths() (Paths, error) {
 	}
 	return Paths{
 		Home:           home,
+		XDGConfigHome:  configHome(home),
 		ProjectRoot:    envPath("XDG_PROJECTS_DIR", filepath.Join(home, "Projects")),
 		SandboxRoot:    sandboxRoot(home),
 		XDGRuntimeDir:  ExpandHome(runtimeDir, home),
@@ -35,6 +37,20 @@ func NewPaths() (Paths, error) {
 		WaylandDisplay: envString("WAYLAND_DISPLAY", "wayland-0"),
 		XAuthority:     os.Getenv("XAUTHORITY"),
 	}, nil
+}
+
+func (p Paths) TobyConfigDir() string {
+	return filepath.Join(p.XDGConfigHome, "toby")
+}
+
+func configHome(home string) string {
+	if value := os.Getenv("XDG_CONFIG_HOME"); value != "" {
+		return ExpandHome(value, home)
+	}
+	if value := os.Getenv("XDG_CONFIG_DIR"); value != "" {
+		return ExpandHome(value, home)
+	}
+	return filepath.Join(home, ".config")
 }
 
 func envString(name, fallback string) string {
