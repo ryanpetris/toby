@@ -84,6 +84,57 @@ Toby config is its own format. Supported top-level keys are `instructions`, `mcp
 - `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `$XDG_RUNTIME_DIR/toby/context/instructions/` using the source filename, adding a short random suffix before the extension if two files share a filename.
 - `provider` entries use OpenCode's provider schema and are currently applied to OpenCode only. If a provider includes `models`, Toby uses those models verbatim. For OpenAI-compatible providers without `models`, Toby queries the provider at sandbox startup; if discovery fails, Toby logs a warning and leaves that provider out of the generated OpenCode config.
 
+## Launch Configuration
+
+Use `--config` to launch from a per-run YAML or JSON file instead of specifying the tool and project on the command line. JSON files are parsed with the same YAML parser.
+
+```yaml
+sandbox:
+  name: foo # optional; defaults to the first project name
+  autoUpgrade: true # optional; defaults to false
+workdir: ~/tmp # optional; defaults to the primary project path inside the sandbox
+projects:
+  - foo
+  - name: bar
+    path: ../bar-source # relative to this config file, defaults to "."; leading ~ expands
+tools:
+  - name: opencode
+    params: ["--model", "anthropic/claude-sonnet-4-5"] # optional; only valid on the first tool
+  - uv
+  - npm
+```
+
+The first project is the working directory. The first tool is the launch tool, and later tools are installed and made available in order. Tool entries may be strings or objects with `name`; `params` is only allowed on the first tool. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
+
+Path values in launch config expand a leading `~` to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
+
+`workdir` is passed to bubblewrap as `--chdir` after leading `~` expansion and is not otherwise resolved or validated by Toby. If omitted, Toby uses the first configured project's sandbox path.
+
+Command arguments are still passed after `--` and are appended to the first tool's configured `params`:
+
+```sh
+toby --config myconfig.yaml -- --additional-param value
+```
+
+Use `exec` as the primary tool to run arbitrary sandbox commands from `params` or from CLI arguments.
+
+Configured project `path` values are host source directories. Each project always appears inside the sandbox under `$XDG_PROJECTS_DIR/<name>`, even when the source directory is elsewhere. For example, `name: baz` with `path: /foo/bar` is mounted as `$XDG_PROJECTS_DIR/baz` in the sandbox.
+
+```yaml
+projects:
+  - foo
+tools:
+  - name: exec
+    params: ["npm", "test"]
+  - npm
+```
+
+```sh
+toby --config myconfig.yaml -- -- --watch
+```
+
+This runs `npm test -- --watch` in `$XDG_PROJECTS_DIR/foo`.
+
 ## Common Commands
 
 ```sh
@@ -96,6 +147,7 @@ toby exec <env> -- <command arguments>
 Useful flags:
 
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
+- `--config <file>` launches from a YAML or JSON launch configuration.
 - `--tmp-env` uses a temporary sandbox home that is removed on exit.
 - `--install` installs the selected tool and exits.
 - `--upgrade` reinstalls the selected tool, then launches it.

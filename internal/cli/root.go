@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/contextfiles"
 	"petris.dev/toby/internal/contextinit"
 	"petris.dev/toby/internal/control"
@@ -27,6 +28,7 @@ import (
 type Params struct {
 	Registry       *tool.Registry
 	SandboxFactory sandbox.Factory
+	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	ContextInit    []contextinit.Registration
 	HostManager    *hostmanager.HostManager
@@ -47,22 +49,33 @@ func NewRootCommand(params Params) *cobra.Command {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
+	var configPath string
 	cmd := &cobra.Command{
 		Use:           "toby",
 		Short:         "Run Toby Sandbox development environments.",
 		Long:          "Toby Sandbox runs development tools inside private-home bubblewrap sandboxes.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if configPath == "" {
+				return cmd.Help()
+			}
+			launch, err := buildConfiguredLaunch(params, configPath, args)
+			if err != nil {
+				return err
+			}
+			return runSandboxCommand(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+		},
 	}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.SetArgs(params.Args)
+	cmd.Flags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
 
 	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {
 		cmd.AddCommand(newLaunchCommand(params, item))
 	}
-	cmd.AddCommand(newExecCommand(params))
 	cmd.AddCommand(newCompletionCommand())
 	return cmd
 }
@@ -82,7 +95,7 @@ func newLaunchCommand(params Params, primary tool.Tool) *cobra.Command {
 			if parsed.Help {
 				return cmd.Help()
 			}
-			return runSandboxCommand(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name(), false)
+			return runSandboxCommand(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name())
 		},
 	}
 	addSandboxFlags(cmd)
@@ -90,28 +103,6 @@ func newLaunchCommand(params Params, primary tool.Tool) *cobra.Command {
 	cmd.Flags().Bool("upgrade", false, "Reinstall "+primary.CommandName()+" inside the sandbox, then launch it.")
 	primary.ConfigureCommand(cmd)
 	addContextFlags(cmd, primary, contextTools)
-	return cmd
-}
-
-func newExecCommand(params Params) *cobra.Command {
-	contextTools := toolsFromNames(params.Registry, tool.ExpandGroups([]string{tool.GroupAI, tool.GroupSystem, tool.GroupUI, tool.GroupVCS}))
-	cmd := &cobra.Command{
-		Use:                "exec [env] [-- command arguments...]",
-		Short:              "Run a command in Toby Sandbox (default: interactive shell).",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			parsed, err := parseSandboxArgs(args, false, "", contextTools, nil)
-			if err != nil {
-				return err
-			}
-			if parsed.Help {
-				return cmd.Help()
-			}
-			return runSandboxCommand(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, "", true)
-		},
-	}
-	addSandboxFlags(cmd)
-	addContextFlags(cmd, nil, contextTools)
 	return cmd
 }
 
@@ -147,7 +138,7 @@ func toolsFromNames(registry *tool.Registry, names []string) []tool.Tool {
 	return result
 }
 
-func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string, execMode bool) error {
+func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
 	sbx, err := params.SandboxFactory.FromOptions(opts)
 	if err != nil {
 		return err
@@ -240,8 +231,6 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	var runErr error
 	if err := toolset.SandboxInit(ctx, run); err != nil {
 		runErr = err
-	} else if execMode {
-		runErr = tool.RunCommand(ctx, run.Launch, commandOrShell(extra, env), tool.ExecOptions{})
 	} else {
 		runErr = toolset.Launch(ctx, run)
 	}
@@ -249,17 +238,6 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		return termErr
 	}
 	return runErr
-}
-
-func commandOrShell(extra []string, env tool.Environment) []string {
-	if len(extra) > 0 {
-		return extra
-	}
-	shell := env["SHELL"]
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	return []string{shell, "-i"}
 }
 
 type sandboxManagerReady struct {

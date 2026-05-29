@@ -32,6 +32,19 @@ func TestSandboxCommandVisibleInsideSandbox(t *testing.T) {
 	}
 }
 
+func TestExecCommandGeneratedFromRegisteredTool(t *testing.T) {
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.ExecToolName, LaunchHelp: "Run a command"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCommand(Params{Registry: registry})
+	if findCommand(cmd, "exec") == nil {
+		t.Fatal("exec command missing")
+	}
+}
+
 func emptyRegistry(t *testing.T) *tool.Registry {
 	t.Helper()
 	registry, err := tool.NewRegistry(tool.RegistryParams{})

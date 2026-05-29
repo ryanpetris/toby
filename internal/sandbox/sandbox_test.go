@@ -113,6 +113,84 @@ func TestProjectUnderProjectRootAccepted(t *testing.T) {
 	}
 }
 
+func TestConfiguredProjectsMountUnderProjectRootByName(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	firstSource := filepath.Join(home, "sources", "bar")
+	secondSource := filepath.Join(t.TempDir(), "external")
+	if err := os.MkdirAll(firstSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := NewFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{
+		Env:     "env",
+		Workdir: "/tmp/custom-workdir",
+		Projects: []tool.ProjectMount{
+			{Name: "foo", Source: firstSource},
+			{Name: "baz", Source: secondSource},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := sbx.BuildCommand([]string{"/bin/true"}, CommandMounts{})
+	firstTarget := filepath.Join(paths.ProjectRoot, "foo")
+	secondTarget := filepath.Join(paths.ProjectRoot, "baz")
+	assertContainsSequence(t, cmd, []string{"--bind", firstSource, firstTarget})
+	assertContainsSequence(t, cmd, []string{"--bind", secondSource, secondTarget})
+	assertContainsSequence(t, cmd, []string{"--chdir", "/tmp/custom-workdir"})
+}
+
+func TestConfiguredProjectsDefaultWorkdirIsPrimaryProject(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	source := filepath.Join(home, "sources", "bar")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := NewFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{
+		Env:      "env",
+		Projects: []tool.ProjectMount{{Name: "foo", Source: source}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := sbx.BuildCommand([]string{"/bin/true"}, CommandMounts{})
+	assertContainsSequence(t, cmd, []string{"--chdir", filepath.Join(paths.ProjectRoot, "foo")})
+}
+
+func TestConfiguredProjectVisibleHostPathUsesProjectName(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	source := filepath.Join(t.TempDir(), "source")
+	nested := filepath.Join(source, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := NewFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{
+		Env:      "env",
+		Projects: []tool.ProjectMount{{Name: "baz", Source: source}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, err := sbx.VisibleHostPath("baz/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visible != nested {
+		t.Fatalf("visible path = %q, want %q", visible, nested)
+	}
+	if _, err := sbx.VisibleHostPath("source/nested"); err == nil {
+		t.Fatal("expected source path name to be invisible")
+	}
+}
+
 func TestOpenCodeConfigDirUsesSandboxRoot(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)

@@ -108,3 +108,16 @@ func TestNewPathsUsesTobySandboxRootOverride(t *testing.T) {
 		t.Fatalf("SandboxRoot = %q, want %q", paths.SandboxRoot, sandboxRoot)
 	}
 }
+
+func TestExpandHomeOnlyExpandsLeadingTilde(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "home", "demo")
+	if got, want := ExpandHome("~/work/../project", home), home+"/work/../project"; got != want {
+		t.Fatalf("ExpandHome = %q, want %q", got, want)
+	}
+	if got, want := ExpandHome("~", home), home; got != want {
+		t.Fatalf("ExpandHome = %q, want %q", got, want)
+	}
+	if got, want := ExpandHome("/tmp/~", home), "/tmp/~"; got != want {
+		t.Fatalf("ExpandHome = %q, want %q", got, want)
+	}
+}

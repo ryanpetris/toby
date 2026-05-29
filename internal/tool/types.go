@@ -11,11 +11,13 @@ import (
 )
 
 const (
-	GroupAI     = "ai"
-	GroupUI     = "ui"
-	GroupSystem = "system"
-	GroupVCS    = "vcs"
+	GroupAI      = "ai"
+	GroupUI      = "ui"
+	GroupSystem  = "system"
+	GroupVCS     = "vcs"
+	GroupCommand = "command"
 
+	ExecToolName       = "exec"
 	NpmToolName        = "npm"
 	UvToolName         = "uv"
 	OpenCodeToolName   = "opencode"
@@ -32,13 +34,14 @@ const (
 	ForgejoCliToolName = "fj"
 )
 
-var GroupOrder = []string{GroupAI, GroupUI, GroupSystem, GroupVCS}
+var GroupOrder = []string{GroupAI, GroupUI, GroupSystem, GroupVCS, GroupCommand}
 
 var ToolGroups = map[string][]string{
-	GroupSystem: {DockerToolName, NpmToolName, UvToolName},
-	GroupAI:     {OpenCodeToolName, CopilotToolName, ClaudeToolName, CodexToolName, GrokToolName, SpeckitToolName},
-	GroupUI:     {T3ToolName, EmdashToolName},
-	GroupVCS:    {GitHubCliToolName, GitLabCliToolName, ForgejoCliToolName},
+	GroupCommand: {ExecToolName},
+	GroupSystem:  {DockerToolName, NpmToolName, UvToolName},
+	GroupAI:      {OpenCodeToolName, CopilotToolName, ClaudeToolName, CodexToolName, GrokToolName, SpeckitToolName},
+	GroupUI:      {T3ToolName, EmdashToolName},
+	GroupVCS:     {GitHubCliToolName, GitLabCliToolName, ForgejoCliToolName},
 }
 
 type BindType string
@@ -60,9 +63,16 @@ type CommandOptions struct {
 	Env       string
 	TmpEnv    bool
 	Project   string
+	Projects  []ProjectMount
+	Workdir   string
 	Install   bool
 	Upgrade   bool
 	lifecycle map[string]bool
+}
+
+type ProjectMount struct {
+	Name   string
+	Source string
 }
 
 type ExecOptions struct {

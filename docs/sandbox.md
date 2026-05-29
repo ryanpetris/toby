@@ -20,6 +20,46 @@ Use `--project` to point an environment at a different project directory. The va
 
 For temporary environments, use `--tmp-env` with either a project name or `--project`. A bare project name such as `my-app` resolves to `$XDG_PROJECTS_DIR/my-app`; a path value is resolved and checked against `$XDG_PROJECTS_DIR`.
 
+Launch configuration files passed with `toby --config <file>` can define one or more named projects. A configured project's `path` is the host source directory and may be absolute or relative to the config file; if omitted, it defaults to the config file directory. Each configured project is mounted inside the sandbox at `$XDG_PROJECTS_DIR/<name>` regardless of where the source lives on the host. The first configured project is the working directory.
+
+Example:
+
+```yaml
+sandbox:
+  name: review
+workdir: ~/tmp
+projects:
+  - name: foo
+    path: ~/Projects/bar
+  - name: baz
+    path: /foo/bar
+tools:
+  - name: opencode
+    params: ["--model", "anthropic/claude-sonnet-4-5"]
+  - uv
+```
+
+Inside the sandbox, those projects appear as `$XDG_PROJECTS_DIR/foo` and `$XDG_PROJECTS_DIR/baz`. Toby Git and MCP repository names use those configured project names, not the host source paths.
+
+Path values in launch config expand a leading `~` to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
+
+If `workdir` is set, Toby passes it to bubblewrap as `--chdir` after leading `~` expansion without otherwise resolving or validating it. If omitted, the working directory is the first configured project's sandbox path.
+
+Configured `tools` entries can be strings or objects with `name`; `params` is only allowed on the first tool. Tool names must be registered Toby tools. The first tool launches, and later tools are installed and made available in order. CLI arguments after `--` are appended to the first tool's configured `params`.
+
+Use `exec` as the first tool to run arbitrary sandbox commands:
+
+```yaml
+projects:
+  - foo
+tools:
+  - name: exec
+    params: ["npm", "test"]
+  - npm
+```
+
+`toby --config toby.yaml -- -- --watch` runs `npm test -- --watch` in `$XDG_PROJECTS_DIR/foo`.
+
 ## Sandbox Runtime
 
 Toby bind mounts the private sandbox `$HOME` directly and bind mounts the selected project directory. Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox. Operations that need host credentials should go through Toby's control bridge instead of copying keys into the environment.

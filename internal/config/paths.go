@@ -77,7 +77,7 @@ func ExpandHome(path, home string) string {
 		return home
 	}
 	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(home, path[2:])
+		return home + path[1:]
 	}
 	return path
 }

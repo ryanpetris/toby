@@ -59,6 +59,7 @@ type rootCommandParams struct {
 
 	Registry       *tool.Registry
 	Factory        sandbox.Factory
+	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	ContextInit    []contextinit.Registration `group:"toby.context.init"`
 	HostManager    *hostmanager.HostManager
@@ -72,6 +73,7 @@ func newRootCommand(params rootCommandParams) *cobra.Command {
 	cliParams := cli.Params{
 		Registry:       params.Registry,
 		SandboxFactory: params.Factory,
+		Paths:          params.Paths,
 		ContextFiles:   params.ContextFiles,
 		ContextInit:    params.ContextInit,
 		HostManager:    params.HostManager,

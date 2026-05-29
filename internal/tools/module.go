@@ -6,6 +6,7 @@ import (
 	"petris.dev/toby/internal/tools/copilot"
 	"petris.dev/toby/internal/tools/docker"
 	"petris.dev/toby/internal/tools/emdash"
+	"petris.dev/toby/internal/tools/exectool"
 	"petris.dev/toby/internal/tools/forgejocli"
 	"petris.dev/toby/internal/tools/githubcli"
 	"petris.dev/toby/internal/tools/gitlabcli"
@@ -24,6 +25,7 @@ func Module() fx.Option {
 	return fx.Module(
 		"tools",
 		toolutil.Module,
+		exectool.Module,
 		npm.Module,
 		docker.Module,
 		claude.Module,

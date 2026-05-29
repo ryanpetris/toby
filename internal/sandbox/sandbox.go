@@ -31,7 +31,15 @@ type Sandbox struct {
 	homeDir        string
 	projectDir     string
 	sandboxProjDir string
+	workdir        string
+	projectMounts  []projectMount
 	tempHome       string
+}
+
+type projectMount struct {
+	name       string
+	sourceDir  string
+	sandboxDir string
 }
 
 type bwrapBind struct {
@@ -52,10 +60,53 @@ func (s *Sandbox) CommandMounts(toolset *tool.Toolset, controlSocket, tobyBinary
 }
 
 func (f Factory) FromOptions(opts *tool.CommandOptions) (*Sandbox, error) {
+	if len(opts.Projects) > 0 {
+		return f.fromConfiguredEnvironment(opts)
+	}
 	if opts.TmpEnv {
 		return f.fromTemporaryEnvironment(opts)
 	}
 	return f.fromPersistentEnvironment(opts)
+}
+
+func (f Factory) fromConfiguredEnvironment(opts *tool.CommandOptions) (*Sandbox, error) {
+	if opts.TmpEnv {
+		return nil, exitcode.New(2, "configured projects cannot be used with --tmp-env")
+	}
+	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
+		return nil, err
+	}
+	env := filepath.ToSlash(strings.TrimSpace(opts.Env))
+	if env == "" {
+		env = filepath.ToSlash(strings.TrimSpace(opts.Projects[0].Name))
+	}
+	if err := validateRelativeName("sandbox name", env); err != nil {
+		return nil, exitcode.New(2, "%s", err)
+	}
+	mounts := make([]projectMount, 0, len(opts.Projects))
+	seen := map[string]bool{}
+	for _, configured := range opts.Projects {
+		mount, err := f.resolveConfiguredProjectMount(configured)
+		if err != nil {
+			return nil, err
+		}
+		if seen[mount.name] {
+			return nil, exitcode.New(2, "duplicate configured project name: %s", mount.name)
+		}
+		seen[mount.name] = true
+		mounts = append(mounts, mount)
+	}
+	primary := mounts[0]
+	return &Sandbox{
+		paths:          f.paths,
+		runner:         f.runner,
+		label:          env,
+		homeDir:        filepath.Join(f.paths.SandboxRoot, filepath.FromSlash(env)),
+		projectDir:     primary.sourceDir,
+		sandboxProjDir: primary.sandboxDir,
+		workdir:        opts.Workdir,
+		projectMounts:  mounts,
+	}, nil
 }
 
 func (f Factory) fromTemporaryEnvironment(opts *tool.CommandOptions) (*Sandbox, error) {
@@ -90,6 +141,7 @@ func (f Factory) fromTemporaryEnvironment(opts *tool.CommandOptions) (*Sandbox, 
 		homeDir:        tempHome,
 		projectDir:     projectDir,
 		sandboxProjDir: sandboxProjDir,
+		workdir:        opts.Workdir,
 		tempHome:       tempHome,
 	}, nil
 }
@@ -116,6 +168,7 @@ func (f Factory) fromPersistentEnvironment(opts *tool.CommandOptions) (*Sandbox,
 		homeDir:        filepath.Join(f.paths.SandboxRoot, opts.Env),
 		projectDir:     projectDir,
 		sandboxProjDir: sandboxProjDir,
+		workdir:        opts.Workdir,
 	}, nil
 }
 
@@ -144,6 +197,40 @@ func (f Factory) resolveProjectDir(envName, project string, tmpEnv bool) (string
 		return "", exitcode.New(1, "project directory must be under %s: %s", f.paths.ProjectRoot, err)
 	}
 	return abs, nil
+}
+
+func (f Factory) resolveConfiguredProjectMount(project tool.ProjectMount) (projectMount, error) {
+	name := filepath.ToSlash(strings.TrimSpace(project.Name))
+	if err := validateRelativeName("project name", name); err != nil {
+		return projectMount{}, exitcode.New(2, "%s", err)
+	}
+	source := strings.TrimSpace(project.Source)
+	if source == "" {
+		return projectMount{}, exitcode.New(2, "configured project %s source is required", name)
+	}
+	source = config.ExpandHome(source, f.paths.Home)
+	info, err := os.Stat(source)
+	if err != nil || !info.IsDir() {
+		return projectMount{}, exitcode.New(1, "failed to resolve project directory: %s does not exist", source)
+	}
+	return projectMount{
+		name:       name,
+		sourceDir:  source,
+		sandboxDir: filepath.Join(f.paths.ProjectRoot, filepath.FromSlash(name)),
+	}, nil
+}
+
+func validateRelativeName(label, value string) error {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	if value == "" || pathpkg.IsAbs(value) || strings.ContainsRune(value, 0) {
+		return fmt.Errorf("invalid %s: %q", label, value)
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("invalid %s: %q", label, value)
+		}
+	}
+	return nil
 }
 
 func isProjectShorthand(project string) bool {
@@ -203,6 +290,9 @@ func (s *Sandbox) EnsureHome() error {
 }
 
 func (s *Sandbox) EnsureSandboxProjectDir() error {
+	if len(s.projectMounts) > 0 {
+		return nil
+	}
 	if s.projectDir != "" {
 		return nil
 	}
@@ -298,15 +388,26 @@ func (s *Sandbox) BuildCommand(argv []string, mounts CommandMounts) []string {
 	if mounts.ControlSocket != "" {
 		args = append(args, "--bind", mounts.ControlSocket, s.TobySandboxSocketPath())
 	}
-	if s.projectDir != "" {
+	if len(s.projectMounts) > 0 {
+		for _, mount := range s.projectMounts {
+			args = append(args, "--bind", mount.sourceDir, mount.sandboxDir)
+		}
+	} else if s.projectDir != "" {
 		args = append(args, "--bind", s.projectDir, s.sandboxProjDir)
 	}
 	for _, bind := range mounts.Binds {
 		args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, bind.SandboxPath)
 	}
-	args = append(args, "--chdir", s.sandboxProjDir)
+	args = append(args, "--chdir", s.chdirDir())
 	args = append(args, argv...)
 	return args
+}
+
+func (s *Sandbox) chdirDir() string {
+	if s.workdir != "" {
+		return s.workdir
+	}
+	return s.sandboxProjDir
 }
 
 func bwrapBindsForToolset(toolset *tool.Toolset) []bwrapBind {
@@ -322,6 +423,9 @@ func bwrapBindsForToolset(toolset *tool.Toolset) []bwrapBind {
 }
 
 func (s *Sandbox) VisibleHostPath(repository string) (string, error) {
+	if len(s.projectMounts) > 0 {
+		return s.visibleConfiguredHostPath(repository)
+	}
 	virtual, err := repositoryVirtualPath(repository)
 	if err != nil {
 		return "", err
@@ -347,6 +451,35 @@ func (s *Sandbox) VisibleHostPath(repository string) (string, error) {
 		hostPath = filepath.Join(hostPath, filepath.FromSlash(rel))
 	}
 	return validateVisibleHostPath(source, hostPath)
+}
+
+func (s *Sandbox) visibleConfiguredHostPath(repository string) (string, error) {
+	virtual, err := repositoryVirtualPath(repository)
+	if err != nil {
+		return "", err
+	}
+	var selected *projectMount
+	selectedBase := ""
+	for i := range s.projectMounts {
+		base, err := projectVirtualPath(s.paths.ProjectRoot, s.projectMounts[i].sandboxDir)
+		if err != nil {
+			return "", err
+		}
+		if virtualPathWithin(base, virtual) && len(base) > len(selectedBase) {
+			selected = &s.projectMounts[i]
+			selectedBase = base
+		}
+	}
+	if selected == nil {
+		return "", fmt.Errorf("repository is outside visible project: %s", repository)
+	}
+	rel := strings.TrimPrefix(virtual, selectedBase)
+	rel = strings.TrimPrefix(rel, "/")
+	hostPath := selected.sourceDir
+	if rel != "" {
+		hostPath = filepath.Join(hostPath, filepath.FromSlash(rel))
+	}
+	return validateVisibleHostPath(selected.sourceDir, hostPath)
 }
 
 func projectVirtualPath(projectRoot, path string) (string, error) {
