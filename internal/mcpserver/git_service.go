@@ -37,5 +37,17 @@ func (GitService) Tools() []Tool {
 				mcp.AddTool(server, &mcp.Tool{Name: "git.push", Description: gitPushDescription}, toby.gitPush)
 			},
 		},
+		{
+			Name: "git.rebase",
+			Register: func(server *mcp.Server, toby *Server) {
+				mcp.AddTool(server, &mcp.Tool{Name: "git.rebase", Description: gitRebaseDescription}, toby.gitRebase)
+			},
+		},
+		{
+			Name: "git.tag",
+			Register: func(server *mcp.Server, toby *Server) {
+				mcp.AddTool(server, &mcp.Tool{Name: "git.tag", Description: gitTagDescription}, toby.gitTag)
+			},
+		},
 	}
 }

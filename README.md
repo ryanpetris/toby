@@ -154,7 +154,7 @@ Useful flags:
 
 ## MCP
 
-Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. The server uses a private Unix socket at `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside the sandbox and provides `git.commit`, `git.fetch`, and `git.push` for repositories already visible in the sandbox.
+Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. The server uses a private Unix socket at `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside the sandbox and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag` for repositories already visible in the sandbox.
 
 Inside the sandbox, Toby bind-mounts the same binary as `toby` and enables hidden `toby sandbox ...` commands. On the host these commands are hidden from help but still registered for diagnostics.
 

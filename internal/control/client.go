@@ -48,8 +48,8 @@ func defaultRuntimeDir() (string, error) {
 	return config.ExpandHome(runtimeDir, home), nil
 }
 
-func (c *Client) GitCommit(repository, message string) (GitResult, error) {
-	request, err := NewGitCommitRequest(c.next.Add(1), repository, message)
+func (c *Client) GitCommit(repository, message string, amend bool) (GitResult, error) {
+	request, err := NewGitCommitRequest(c.next.Add(1), repository, message, amend)
 	if err != nil {
 		return GitResult{}, err
 	}
@@ -72,8 +72,32 @@ func (c *Client) GitFetch(repository string) (GitResult, error) {
 	return DecodeGitResult(resp.Result)
 }
 
-func (c *Client) GitPush(repository, branch, origin string) (GitResult, error) {
-	request, err := NewGitPushRequest(c.next.Add(1), repository, branch, origin)
+func (c *Client) GitPush(repository, branch, origin string, tags bool) (GitResult, error) {
+	request, err := NewGitPushRequest(c.next.Add(1), repository, branch, origin, tags)
+	if err != nil {
+		return GitResult{}, err
+	}
+	resp, err := c.call(request)
+	if err != nil {
+		return GitResult{}, err
+	}
+	return DecodeGitResult(resp.Result)
+}
+
+func (c *Client) GitRebase(repository, base string, continueRebase, abort bool) (GitResult, error) {
+	request, err := NewGitRebaseRequest(c.next.Add(1), repository, base, continueRebase, abort)
+	if err != nil {
+		return GitResult{}, err
+	}
+	resp, err := c.call(request)
+	if err != nil {
+		return GitResult{}, err
+	}
+	return DecodeGitResult(resp.Result)
+}
+
+func (c *Client) GitTag(repository, tag, message, target string) (GitResult, error) {
+	request, err := NewGitTagRequest(c.next.Add(1), repository, tag, message, target)
 	if err != nil {
 		return GitResult{}, err
 	}

@@ -88,13 +88,15 @@ Git MCP calls run through the host Toby process, so host Git config, SSH agents,
 
 Available tools:
 
-- `git.commit`: run `git commit -m MESSAGE` on the host for a visible repository. It commits only staged files and does not add files.
+- `git.commit`: run `git commit -m MESSAGE` on the host for a visible repository, or `git commit --amend -m MESSAGE` when `amend` is true. It commits only staged files and does not add files.
 - `git.fetch`: run `git fetch` on the host for a visible repository.
-- `git.push`: run `git push ORIGIN BRANCH` on the host for a visible repository. `origin` defaults to `origin`.
+- `git.push`: run `git push ORIGIN BRANCH` on the host for a visible repository, optionally with `--tags`. `origin` defaults to `origin`.
+- `git.rebase`: run `git rebase BASE`, `git rebase --continue`, or `git rebase --abort` on the host for a visible repository.
+- `git.tag`: run `git tag -a TAG -m MESSAGE [TARGET]` on the host for a visible repository. `target` defaults to `HEAD`.
 
-The Git MCP tools accept repository names relative to `XDG_PROJECTS_DIR`, including nested repositories such as `foo/bar/baz`. The requested repository must already be visible in the sandbox through the initial project bind mount. Repository names with empty, `.`, or `..` path segments are rejected. Use these tools instead of running `git commit`, `git fetch`, or `git push` directly in the sandbox when host Git config, GPG keys, or SSH keys are required.
+The Git MCP tools accept repository names relative to `XDG_PROJECTS_DIR`, including nested repositories such as `foo/bar/baz`. The requested repository must already be visible in the sandbox through the initial project bind mount. Repository names with empty, `.`, or `..` path segments are rejected. Use these tools instead of running `git commit`, `git fetch`, `git push`, `git rebase`, or `git tag` directly in the sandbox when host Git config, GPG keys, or SSH keys are required.
 
-The same control calls are available inside a sandbox as CLI commands: `toby sandbox git commit REPOSITORY -m MESSAGE`, `toby sandbox git fetch REPOSITORY`, and `toby sandbox git push REPOSITORY BRANCH [ORIGIN]`.
+The same control calls are available inside a sandbox as CLI commands: `toby sandbox git commit REPOSITORY -m MESSAGE [--amend]`, `toby sandbox git fetch REPOSITORY`, `toby sandbox git push REPOSITORY BRANCH [ORIGIN] [--tags]`, `toby sandbox git rebase REPOSITORY BASE|--continue|--abort`, and `toby sandbox git tag REPOSITORY TAG -m MESSAGE [TARGET]`.
 
 ## OpenCode
 

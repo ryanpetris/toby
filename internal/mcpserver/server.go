@@ -72,15 +72,21 @@ func Module() fx.Option {
 type GitCommitInput = control.GitCommitParams
 type GitRepositoryInput = control.GitRepositoryParams
 type GitPushInput = control.GitPushParams
+type GitRebaseInput = control.GitRebaseParams
+type GitTagInput = control.GitTagParams
 type GitOutput = control.GitResult
 
-const gitServerInstructions = "Toby MCP tools: git.commit, git.fetch, and git.push run host Git for repositories visible in the sandbox."
+const gitServerInstructions = "Toby MCP tools: git.commit, git.fetch, git.push, git.rebase, and git.tag run host Git for repositories visible in the sandbox."
 
 const gitCommitDescription = "Commit staged files in a visible repository using host Git."
 
 const gitFetchDescription = "Fetch remote refs in a visible repository using host Git."
 
-const gitPushDescription = "Push one branch from a visible repository using host Git."
+const gitPushDescription = "Push one branch, optionally with all tags, from a visible repository using host Git."
+
+const gitRebaseDescription = "Start, continue, or abort a rebase in a visible repository using host Git."
+
+const gitTagDescription = "Create an annotated tag in a visible repository using host Git."
 
 func (r *Runner) Run(ctx context.Context, controlPath string) error {
 	if controlPath == "" {
@@ -115,7 +121,7 @@ func Run(ctx context.Context, controlPath string) error {
 func (s *Server) gitCommit(ctx context.Context, _ *mcp.CallToolRequest, input GitCommitInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitCommit(input.Repository, input.Message)
+	result, err := s.client.GitCommit(input.Repository, input.Message, input.Amend)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}
@@ -135,7 +141,27 @@ func (s *Server) gitFetch(ctx context.Context, _ *mcp.CallToolRequest, input Git
 func (s *Server) gitPush(ctx context.Context, _ *mcp.CallToolRequest, input GitPushInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitPush(input.Repository, input.Branch, input.Origin)
+	result, err := s.client.GitPush(input.Repository, input.Branch, input.Origin, input.Tags)
+	if err != nil {
+		return nil, GitOutput{}, err
+	}
+	return gitToolResult(result), GitOutput(result), nil
+}
+
+func (s *Server) gitRebase(ctx context.Context, _ *mcp.CallToolRequest, input GitRebaseInput) (*mcp.CallToolResult, GitOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.client.GitRebase(input.Repository, input.Base, input.Continue, input.Abort)
+	if err != nil {
+		return nil, GitOutput{}, err
+	}
+	return gitToolResult(result), GitOutput(result), nil
+}
+
+func (s *Server) gitTag(ctx context.Context, _ *mcp.CallToolRequest, input GitTagInput) (*mcp.CallToolResult, GitOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.client.GitTag(input.Repository, input.Tag, input.Message, input.Target)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}

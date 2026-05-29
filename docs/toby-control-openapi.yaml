@@ -38,6 +38,8 @@ paths:
                 - $ref: '#/components/schemas/GitCommitRequest'
                 - $ref: '#/components/schemas/GitFetchRequest'
                 - $ref: '#/components/schemas/GitPushRequest'
+                - $ref: '#/components/schemas/GitRebaseRequest'
+                - $ref: '#/components/schemas/GitTagRequest'
       responses:
         '200':
           description: JSON-RPC response payload read from the Unix socket.
@@ -289,6 +291,34 @@ components:
           const: git.push
         params:
           $ref: '#/components/schemas/GitPushParams'
+    GitRebaseRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: git.rebase
+        params:
+          $ref: '#/components/schemas/GitRebaseParams'
+    GitTagRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: git.tag
+        params:
+          $ref: '#/components/schemas/GitTagParams'
     GitRepositoryParams:
       type: object
       required: [repository]
@@ -308,6 +338,10 @@ components:
         message:
           type: string
           description: Commit message passed to git commit -m. Only already staged files are committed.
+        amend:
+          type: boolean
+          default: false
+          description: Amend the previous commit when true.
     GitPushParams:
       type: object
       required: [repository, branch]
@@ -322,6 +356,45 @@ components:
           type: string
           default: origin
           description: Remote name to push to.
+        tags:
+          type: boolean
+          default: false
+          description: Push all tags with --tags when true.
+    GitRebaseParams:
+      type: object
+      required: [repository]
+      additionalProperties: false
+      description: Exactly one of base, continue, or abort must be provided.
+      properties:
+        repository:
+          type: string
+        base:
+          type: string
+          description: Base ref to rebase onto.
+        continue:
+          type: boolean
+          default: false
+          description: Continue an in-progress rebase when true.
+        abort:
+          type: boolean
+          default: false
+          description: Abort an in-progress rebase when true.
+    GitTagParams:
+      type: object
+      required: [repository, tag, message]
+      additionalProperties: false
+      properties:
+        repository:
+          type: string
+        tag:
+          type: string
+          description: Annotated tag name to create.
+        message:
+          type: string
+          description: Tag message passed to git tag -m.
+        target:
+          type: string
+          description: Optional object to tag. Defaults to HEAD.
     EmptyResponse:
       type: object
       required: [jsonrpc, id, result]
