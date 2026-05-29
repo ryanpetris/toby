@@ -22,12 +22,13 @@ import (
 )
 
 type Params struct {
-	Registry       *tool.Registry
-	SandboxFactory sandbox.Factory
-	StaticFiles    *staticfiles.Service
-	Args           []string
-	Stdout         io.Writer
-	Stderr         io.Writer
+	Registry         *tool.Registry
+	SandboxFactory   sandbox.Factory
+	StaticFiles      *staticfiles.Service
+	OpenCodeRenderer *opencodeconfig.Renderer
+	Args             []string
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 func NewRootCommand(params Params) *cobra.Command {
@@ -38,9 +39,6 @@ func NewRootCommand(params Params) *cobra.Command {
 	stderr := params.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
-	}
-	if params.StaticFiles == nil {
-		params.StaticFiles = staticfiles.NewService()
 	}
 	cmd := &cobra.Command{
 		Use:           "toby",
@@ -187,7 +185,7 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 			err = homeFS.AddOverlayMount(tobyMount)
 		}
 		if err == nil {
-			staticMount, err = addStaticOverlayMount(ctx, params.Stderr, params.StaticFiles, sbx, homeFS, tobyBase, opts.MountableProjects)
+			staticMount, err = addStaticOverlayMount(ctx, params.Stderr, params.StaticFiles, params.OpenCodeRenderer, sbx, homeFS, tobyBase, opts.MountableProjects)
 		}
 		if err != nil {
 			_ = staticMount.Close()
@@ -254,12 +252,15 @@ func startOptionalHomeFS(ctx context.Context, params Params, sbx *sandbox.Sandbo
 	return homeFS, nil
 }
 
-func addStaticOverlayMount(ctx context.Context, stderr io.Writer, service *staticfiles.Service, sbx *sandbox.Sandbox, homeFS *sandbox.HomeFS, tobyBase string, mountableProjects bool) (*staticmount.Mount, error) {
+func addStaticOverlayMount(ctx context.Context, stderr io.Writer, service *staticfiles.Service, renderer *opencodeconfig.Renderer, sbx *sandbox.Sandbox, homeFS *sandbox.HomeFS, tobyBase string, mountableProjects bool) (*staticmount.Mount, error) {
 	if service == nil {
-		service = staticfiles.NewService()
+		return nil, fmt.Errorf("static files service is not configured")
+	}
+	if renderer == nil {
+		return nil, fmt.Errorf("opencode renderer is not configured")
 	}
 	staticMount, err := service.NewMount("toby-static", pathpkg.Join(tobyBase, "static"), func(builder *staticfiles.Builder) error {
-		return buildStaticFiles(ctx, stderr, sbx, builder, mountableProjects)
+		return buildStaticFiles(ctx, stderr, sbx, builder, renderer, mountableProjects)
 	})
 	if err != nil {
 		return nil, err
@@ -271,7 +272,7 @@ func addStaticOverlayMount(ctx context.Context, stderr io.Writer, service *stati
 	return staticMount, nil
 }
 
-func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, mountableProjects bool) error {
+func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, renderer *opencodeconfig.Renderer, mountableProjects bool) error {
 	instructions := []string{sbx.TobyGitAgentsPath()}
 	if mountableProjects {
 		instructions = append(instructions, sbx.TobyProjectMountAgentsPath())
@@ -279,7 +280,7 @@ func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbo
 	if err := staticfiles.RegisterAgentFiles(builder, mountableProjects); err != nil {
 		return err
 	}
-	warnings, err := opencodeconfig.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
+	warnings, err := renderer.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
 	if err != nil {
 		return err
 	}

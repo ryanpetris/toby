@@ -18,9 +18,9 @@ type Client struct {
 	http    *http.Client
 }
 
-func NewClient(httpClient *http.Client, baseURL, token string, headers map[string]string) Client {
+func NewClient(httpClient *http.Client, baseURL, token string, headers map[string]string) (Client, error) {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		return Client{}, fmt.Errorf("openai client requires an HTTP client")
 	}
 	resolved := map[string]string{
 		"Accept":     "application/json",
@@ -34,7 +34,7 @@ func NewClient(httpClient *http.Client, baseURL, token string, headers map[strin
 			resolved["Authorization"] = "Bearer " + token
 		}
 	}
-	return Client{baseURL: strings.TrimSpace(baseURL), token: token, headers: resolved, http: httpClient}
+	return Client{baseURL: strings.TrimSpace(baseURL), token: token, headers: resolved, http: httpClient}, nil
 }
 
 func (c Client) ModelIDs(ctx context.Context) ([]string, error) {

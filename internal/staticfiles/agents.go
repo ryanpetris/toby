@@ -3,8 +3,6 @@ package staticfiles
 import (
 	"embed"
 	"io/fs"
-
-	"petris.dev/toby/internal/staticmount"
 )
 
 const (
@@ -39,12 +37,4 @@ func AgentContents(mountableProjects bool) ([][]byte, error) {
 		contents = append(contents, data)
 	}
 	return contents, nil
-}
-
-func AgentFiles(mountableProjects bool) []staticmount.File {
-	builder := NewService().NewBuilder()
-	if err := RegisterAgentFiles(builder, mountableProjects); err != nil {
-		return nil
-	}
-	return builder.Files()
 }

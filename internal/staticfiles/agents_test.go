@@ -7,10 +7,13 @@ import (
 
 	"petris.dev/toby/fusekit"
 	"petris.dev/toby/internal/staticmount"
+
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
 )
 
 func TestAgentFilesExposeSharedGuidance(t *testing.T) {
-	service := NewService()
+	service := testService(t)
 	builder := service.NewBuilder()
 	if err := RegisterAgentFiles(builder, false); err != nil {
 		t.Fatal(err)
@@ -37,6 +40,18 @@ func TestAgentFilesExposeSharedGuidance(t *testing.T) {
 	if !bytes.Contains(readStaticFile(t, files, ProjectMountAgentsPath), []byte("Toby Project Mounts")) {
 		t.Fatalf("project mount guidance missing")
 	}
+}
+
+func testService(t *testing.T) *Service {
+	t.Helper()
+	var service *Service
+	app := fxtest.New(t,
+		fx.Provide(NewService),
+		fx.Populate(&service),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+	return service
 }
 
 func readStaticFile(t *testing.T, files []staticmount.File, path string) []byte {

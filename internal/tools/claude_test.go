@@ -7,13 +7,24 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/tool"
+
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
 )
 
 func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	run := &tool.RunContext{Env: tool.Environment{}}
-	if err := newClaudeTool(paths).SandboxContextSetup(run); err != nil {
+	var claude tool.Tool
+	app := fxtest.New(t,
+		fx.Supply(paths),
+		fx.Provide(newClaudeTool),
+		fx.Populate(&claude),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+	if err := claude.SandboxContextSetup(run); err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(home, ".config", "claude")

@@ -20,7 +20,6 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/openai"
 	"petris.dev/toby/internal/staticfiles"
-	"petris.dev/toby/internal/staticmount"
 
 	"gopkg.in/yaml.v3"
 )
@@ -74,14 +73,17 @@ type Mount struct {
 	created           time.Time
 }
 
+type Renderer struct {
+	http *http.Client
+}
+
 type MountOption func(*Mount)
 
-func WithModelHTTPClient(client *http.Client) MountOption {
-	return func(m *Mount) {
-		if client != nil {
-			m.http = client
-		}
+func NewRenderer(client *http.Client) (*Renderer, error) {
+	if client == nil {
+		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
+	return &Renderer{http: client}, nil
 }
 
 func WithMountableProjects(enabled bool) MountOption {
@@ -90,25 +92,22 @@ func WithMountableProjects(enabled bool) MountOption {
 	}
 }
 
-func NewMount(configDir, projectRoot string, instructions []string, opts ...MountOption) *Mount {
-	mount := &Mount{configDir: configDir, projectRoot: projectRoot, instructions: append([]string(nil), instructions...), http: &http.Client{Timeout: 30 * time.Second}, created: time.Now()}
+func (r *Renderer) newMount(configDir, projectRoot string, instructions []string, opts ...MountOption) (*Mount, error) {
+	if r == nil || r.http == nil {
+		return nil, errors.New("opencode renderer requires an HTTP client")
+	}
+	mount := &Mount{configDir: configDir, projectRoot: projectRoot, instructions: append([]string(nil), instructions...), http: r.http, created: time.Now()}
 	for _, opt := range opts {
 		opt(mount)
 	}
-	return mount
+	return mount, nil
 }
 
-func StaticFiles(ctx context.Context, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]staticmount.File, []error, error) {
-	builder := staticfiles.NewService().NewBuilder()
-	warnings, err := RegisterStaticFiles(ctx, builder, configDir, projectRoot, instructions, opts...)
+func (r *Renderer) RegisterStaticFiles(ctx context.Context, registrar staticfiles.Registrar, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]error, error) {
+	mount, err := r.newMount(configDir, projectRoot, instructions, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return builder.Files(), warnings, nil
-}
-
-func RegisterStaticFiles(ctx context.Context, registrar staticfiles.Registrar, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]error, error) {
-	mount := NewMount(configDir, projectRoot, instructions, opts...)
 	config, err := mount.render(ctx)
 	if err != nil {
 		return nil, err
@@ -561,7 +560,11 @@ func (m *Mount) fetchProviderModelIDs(ctx context.Context, providerID string, pr
 		token = strings.TrimPrefix(auth, "Bearer ")
 		delete(headers, "Authorization")
 	}
-	return openai.NewClient(m.http, baseURL, token, headers).ModelIDs(ctx)
+	client, err := openai.NewClient(m.http, baseURL, token, headers)
+	if err != nil {
+		return nil, err
+	}
+	return client.ModelIDs(ctx)
 }
 
 func resolveHeaders(providerID string, options map[string]any, configDir string) (map[string]string, error) {

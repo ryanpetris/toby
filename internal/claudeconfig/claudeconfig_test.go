@@ -5,7 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/internal/staticfiles"
 	"petris.dev/toby/internal/staticmount"
+
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
 )
 
 func fileByPath(t *testing.T, files []staticmount.File, path string) staticmount.File {
@@ -29,7 +33,7 @@ func decode(t *testing.T, data []byte) map[string]any {
 }
 
 func TestStaticFilesIncludesTobyMCPServer(t *testing.T) {
-	files, err := StaticFiles("/home/toby/Projects/app", [][]byte{[]byte("# git")}, false)
+	files, err := renderStaticFiles(t, "/home/toby/Projects/app", [][]byte{[]byte("# git")}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +50,7 @@ func TestStaticFilesIncludesTobyMCPServer(t *testing.T) {
 
 func TestStaticFilesIncludesPermissionDirectories(t *testing.T) {
 	projectRoot := "/home/toby/Projects/app"
-	files, err := StaticFiles(projectRoot, [][]byte{[]byte("# git")}, false)
+	files, err := renderStaticFiles(t, projectRoot, [][]byte{[]byte("# git")}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +71,7 @@ func TestStaticFilesIncludesPermissionDirectories(t *testing.T) {
 }
 
 func TestStaticFilesCombinesInstructions(t *testing.T) {
-	files, err := StaticFiles("/p", [][]byte{[]byte("# git\n"), []byte("# mount\n")}, true)
+	files, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git\n"), []byte("# mount\n")}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,7 @@ func TestStaticFilesCombinesInstructions(t *testing.T) {
 }
 
 func TestStaticFilesPluginOnlyWhenMountable(t *testing.T) {
-	without, err := StaticFiles("/p", [][]byte{[]byte("# git")}, false)
+	without, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git")}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +92,7 @@ func TestStaticFilesPluginOnlyWhenMountable(t *testing.T) {
 		}
 	}
 
-	with, err := StaticFiles("/p", [][]byte{[]byte("# git")}, true)
+	with, err := renderStaticFiles(t, "/p", [][]byte{[]byte("# git")}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,4 +104,20 @@ func TestStaticFilesPluginOnlyWhenMountable(t *testing.T) {
 	if !strings.Contains(cmd, "project_mount") {
 		t.Fatalf("project mount command = %q", cmd)
 	}
+}
+
+func renderStaticFiles(t *testing.T, projectRoot string, instructions [][]byte, mountableProjects bool) ([]staticmount.File, error) {
+	t.Helper()
+	var service *staticfiles.Service
+	app := fxtest.New(t,
+		fx.Provide(staticfiles.NewService),
+		fx.Populate(&service),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+	builder := service.NewBuilder()
+	if err := RegisterStaticFiles(builder, projectRoot, instructions, mountableProjects); err != nil {
+		return nil, err
+	}
+	return builder.Files(), nil
 }

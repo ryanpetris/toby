@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 
 	"petris.dev/toby/internal/staticfiles"
-	"petris.dev/toby/internal/staticmount"
 )
 
 const (
@@ -41,18 +40,10 @@ If no project name was provided, ask which project directory under XDG_PROJECTS_
 After the tool succeeds, use the returned sandbox_path for subsequent work.
 `)
 
-// StaticFiles renders the Claude Code synthetic configuration files. instructions
-// is the content of Toby's instruction files (GIT_AGENTS.md, and
+// RegisterStaticFiles renders the Claude Code synthetic configuration files.
+// instructions is the content of Toby's instruction files (GIT_AGENTS.md, and
 // PROJECT_MOUNT_AGENTS.md when mountableProjects); they are concatenated into a
 // single file so the launcher can pass exactly one --append-system-prompt-file.
-func StaticFiles(projectRoot string, instructions [][]byte, mountableProjects bool) ([]staticmount.File, error) {
-	builder := staticfiles.NewService().NewBuilder()
-	if err := RegisterStaticFiles(builder, projectRoot, instructions, mountableProjects); err != nil {
-		return nil, err
-	}
-	return builder.Files(), nil
-}
-
 func RegisterStaticFiles(registrar staticfiles.Registrar, projectRoot string, instructions [][]byte, mountableProjects bool) error {
 	mcp, err := marshalJSON(syntheticMCP())
 	if err != nil {

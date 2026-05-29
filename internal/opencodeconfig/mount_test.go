@@ -9,15 +9,25 @@ import (
 	"path/filepath"
 	"testing"
 
+	"petris.dev/toby/internal/staticfiles"
 	"petris.dev/toby/internal/staticmount"
+
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
 )
 
 var testInstructions = []string{"/home/petris/.local/state/toby/static/GIT_AGENTS.md"}
 var testProjectInstructions = []string{"/home/petris/.local/state/toby/static/GIT_AGENTS.md", "/home/petris/.local/state/toby/static/PROJECT_MOUNT_AGENTS.md"}
 
+func TestNewRendererRequiresHTTPClient(t *testing.T) {
+	if _, err := NewRenderer(nil); err == nil {
+		t.Fatal("expected nil HTTP client to fail")
+	}
+}
+
 func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	projectRoot := filepath.Join(t.TempDir(), "Projects")
-	config := readGeneratedConfig(t, t.TempDir(), projectRoot, testInstructions)
+	config := readGeneratedConfig(t, &http.Client{}, t.TempDir(), projectRoot, testInstructions)
 
 	mcp := config["mcp"].(map[string]any)
 	toby := mcp["toby"].(map[string]any)
@@ -62,7 +72,7 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 			},
 		},
 	})
-	config := readGeneratedConfig(t, configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions, WithModelHTTPClient(server.Client()))
+	config := readGeneratedConfig(t, server.Client(), configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions)
 
 	models := config["provider"].(map[string]any)["local"].(map[string]any)["models"].(map[string]any)
 	if _, ok := models["alpha"]; !ok {
@@ -88,7 +98,7 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 			},
 		},
 	})
-	_, warnings, err := StaticFiles(context.Background(), configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions, WithModelHTTPClient(server.Client()))
+	_, warnings, err := staticFiles(t, server.Client(), configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +108,7 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 }
 
 func TestGeneratedCommandIsExposed(t *testing.T) {
-	files, warnings, err := StaticFiles(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
+	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +125,7 @@ func TestGeneratedCommandIsExposed(t *testing.T) {
 }
 
 func TestGeneratedCommandIsHiddenWithoutMountableProjects(t *testing.T) {
-	files, warnings, err := StaticFiles(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testInstructions)
+	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +138,7 @@ func TestGeneratedCommandIsHiddenWithoutMountableProjects(t *testing.T) {
 }
 
 func TestGeneratedFilesAreReadOnly(t *testing.T) {
-	files, warnings, err := StaticFiles(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
+	files, warnings, err := staticFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testProjectInstructions, WithMountableProjects(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +159,9 @@ func TestGeneratedFilesAreReadOnly(t *testing.T) {
 	}
 }
 
-func readGeneratedConfig(t *testing.T, configDir, projectRoot string, instructions []string, opts ...MountOption) map[string]any {
+func readGeneratedConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, opts ...MountOption) map[string]any {
 	t.Helper()
-	files, warnings, err := StaticFiles(context.Background(), configDir, projectRoot, instructions, opts...)
+	files, warnings, err := staticFiles(t, client, configDir, projectRoot, instructions, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +177,31 @@ func readGeneratedConfig(t *testing.T, configDir, projectRoot string, instructio
 		t.Fatal(err)
 	}
 	return config
+}
+
+func staticFiles(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]staticmount.File, []error, error) {
+	t.Helper()
+	renderer, service := testDeps(t, client)
+	builder := service.NewBuilder()
+	warnings, err := renderer.RegisterStaticFiles(context.Background(), builder, configDir, projectRoot, instructions, opts...)
+	if err != nil {
+		return nil, warnings, err
+	}
+	return builder.Files(), warnings, nil
+}
+
+func testDeps(t *testing.T, client *http.Client) (*Renderer, *staticfiles.Service) {
+	t.Helper()
+	var renderer *Renderer
+	var service *staticfiles.Service
+	app := fxtest.New(t,
+		fx.Supply(client),
+		fx.Provide(NewRenderer, staticfiles.NewService),
+		fx.Populate(&renderer, &service),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+	return renderer, service
 }
 
 func writeJSON(t *testing.T, path string, value map[string]any) {
