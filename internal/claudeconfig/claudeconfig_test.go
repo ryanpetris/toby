@@ -42,10 +42,10 @@ func TestContextFilesIncludesTobyMCPServer(t *testing.T) {
 
 	mcp := decode(t, fileByPath(t, files, StaticMcpPath).Data)
 	toby := mcp["mcpServers"].(map[string]any)["toby"].(map[string]any)
-	if toby["type"] != "stdio" || toby["command"] != "toby-sandbox" {
+	if toby["type"] != "stdio" || toby["command"] != "toby" {
 		t.Fatalf("mcp.toby = %#v", toby)
 	}
-	if args := toby["args"].([]any); len(args) != 1 || args[0] != "mcp" {
+	if args := toby["args"].([]any); len(args) != 2 || args[0] != "sandbox" || args[1] != "mcp" {
 		t.Fatalf("mcp.toby.args = %#v", args)
 	}
 }

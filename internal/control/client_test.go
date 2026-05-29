@@ -27,19 +27,3 @@ func TestDefaultSocketPathUsesXDGRuntimeDir(t *testing.T) {
 		t.Fatalf("DefaultSocketPath = %q, want %q", got, want)
 	}
 }
-
-func TestDefaultContextDirUsesXDGRuntimeDir(t *testing.T) {
-	home := t.TempDir()
-	runtimeDir := filepath.Join(home, "Runtime")
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-
-	got, err := DefaultContextDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(runtimeDir, "toby", "context")
-	if got != want {
-		t.Fatalf("DefaultContextDir = %q, want %q", got, want)
-	}
-}

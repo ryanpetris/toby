@@ -9,6 +9,20 @@ import (
 const JSONRPCVersion = "2.0"
 
 const (
+	MethodContextInit      = "context.init"
+	MethodFileCreate       = "file.create"
+	MethodFileDelete       = "file.delete"
+	MethodFileMkdir        = "file.mkdir"
+	MethodFileSymlink      = "file.symlink"
+	MethodCommandRun       = "command.run"
+	MethodCommandExit      = "command.exit"
+	MethodSandboxTerminate = "sandbox.terminate"
+	MethodGitCommit        = "git.commit"
+	MethodGitFetch         = "git.fetch"
+	MethodGitPush          = "git.push"
+)
+
+const (
 	CodeParseError        = -32700
 	CodeInvalidRequest    = -32600
 	CodeMethodNotFound    = -32601
@@ -37,14 +51,40 @@ type RPCError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-type ContextFile struct {
-	Path string `json:"path" jsonschema:"relative path under XDG_RUNTIME_DIR/toby/context"`
+type EmptyResult struct{}
+
+type FileCreateParams struct {
+	Path string `json:"path" jsonschema:"path to write inside the sandbox"`
 	Mode uint32 `json:"mode" jsonschema:"file mode bits"`
 	Data []byte `json:"data" jsonschema:"file contents, base64-encoded by JSON"`
 }
 
-type ContextFilesResult struct {
-	Files []ContextFile `json:"files" jsonschema:"context files to materialize under XDG_RUNTIME_DIR/toby/context"`
+type FileDeleteParams struct {
+	Path      string `json:"path" jsonschema:"path to remove inside the sandbox"`
+	Recursive bool   `json:"recursive,omitempty" jsonschema:"remove directories recursively when true"`
+}
+
+type FileMkdirParams struct {
+	Path string `json:"path" jsonschema:"directory path to create inside the sandbox"`
+	Mode uint32 `json:"mode" jsonschema:"directory mode bits"`
+}
+
+type FileSymlinkParams struct {
+	Path   string `json:"path" jsonschema:"symlink path to create inside the sandbox"`
+	Target string `json:"target" jsonschema:"symlink target"`
+}
+
+type CommandRunParams struct {
+	CommandID  string   `json:"command_id" jsonschema:"UUID identifying this command execution"`
+	Argv       []string `json:"argv" jsonschema:"command argv to run inside the sandbox"`
+	Foreground bool     `json:"foreground,omitempty" jsonschema:"whether this command is the foreground process"`
+	HideOutput bool     `json:"hide_output,omitempty" jsonschema:"redirect stdout and stderr to /dev/null"`
+}
+
+type CommandExitParams struct {
+	CommandID string `json:"command_id" jsonschema:"UUID identifying this command execution"`
+	ExitCode  int    `json:"exit_code" jsonschema:"process exit code"`
+	Error     string `json:"error,omitempty" jsonschema:"optional process execution error"`
 }
 
 type GitRepositoryParams struct {
@@ -69,8 +109,60 @@ type GitResult struct {
 	Stderr     string `json:"stderr" jsonschema:"git standard error"`
 }
 
-func NewContextFilesRequest(id int64) ([]byte, error) {
-	return newRequest(id, "context_files", nil)
+func NewContextInitRequest(id int64) ([]byte, error) {
+	return newRequest(id, MethodContextInit, nil)
+}
+
+func NewFileCreateRequest(id int64, params FileCreateParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodFileCreate, data)
+}
+
+func NewFileDeleteRequest(id int64, params FileDeleteParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodFileDelete, data)
+}
+
+func NewFileMkdirRequest(id int64, params FileMkdirParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodFileMkdir, data)
+}
+
+func NewFileSymlinkRequest(id int64, params FileSymlinkParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodFileSymlink, data)
+}
+
+func NewCommandRunRequest(id int64, params CommandRunParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodCommandRun, data)
+}
+
+func NewCommandExitRequest(id int64, params CommandExitParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodCommandExit, data)
+}
+
+func NewSandboxTerminateRequest(id int64) ([]byte, error) {
+	return newRequest(id, MethodSandboxTerminate, nil)
 }
 
 func NewGitCommitRequest(id int64, repository, message string) ([]byte, error) {
@@ -78,7 +170,7 @@ func NewGitCommitRequest(id int64, repository, message string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRequest(id, "git_commit", params)
+	return newRequest(id, MethodGitCommit, params)
 }
 
 func NewGitFetchRequest(id int64, repository string) ([]byte, error) {
@@ -86,7 +178,7 @@ func NewGitFetchRequest(id int64, repository string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRequest(id, "git_fetch", params)
+	return newRequest(id, MethodGitFetch, params)
 }
 
 func NewGitPushRequest(id int64, repository, branch, origin string) ([]byte, error) {
@@ -94,7 +186,7 @@ func NewGitPushRequest(id int64, repository, branch, origin string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	return newRequest(id, "git_push", params)
+	return newRequest(id, MethodGitPush, params)
 }
 
 func newRequest(id int64, method string, params json.RawMessage) ([]byte, error) {
@@ -164,6 +256,85 @@ func DecodeGitPushParams(raw json.RawMessage) (GitPushParams, error) {
 	return params, nil
 }
 
+func DecodeFileCreateParams(raw json.RawMessage) (FileCreateParams, error) {
+	var params FileCreateParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return FileCreateParams{}, err
+	}
+	if params.Path == "" {
+		return FileCreateParams{}, errors.New("path is required")
+	}
+	return params, nil
+}
+
+func DecodeFileDeleteParams(raw json.RawMessage) (FileDeleteParams, error) {
+	var params FileDeleteParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return FileDeleteParams{}, err
+	}
+	if params.Path == "" {
+		return FileDeleteParams{}, errors.New("path is required")
+	}
+	return params, nil
+}
+
+func DecodeFileMkdirParams(raw json.RawMessage) (FileMkdirParams, error) {
+	var params FileMkdirParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return FileMkdirParams{}, err
+	}
+	if params.Path == "" {
+		return FileMkdirParams{}, errors.New("path is required")
+	}
+	return params, nil
+}
+
+func DecodeFileSymlinkParams(raw json.RawMessage) (FileSymlinkParams, error) {
+	var params FileSymlinkParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return FileSymlinkParams{}, err
+	}
+	if params.Path == "" {
+		return FileSymlinkParams{}, errors.New("path is required")
+	}
+	if params.Target == "" {
+		return FileSymlinkParams{}, errors.New("target is required")
+	}
+	return params, nil
+}
+
+func DecodeCommandRunParams(raw json.RawMessage) (CommandRunParams, error) {
+	var params CommandRunParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return CommandRunParams{}, err
+	}
+	if params.CommandID == "" {
+		return CommandRunParams{}, errors.New("command_id is required")
+	}
+	if len(params.Argv) == 0 {
+		return CommandRunParams{}, errors.New("argv is required")
+	}
+	return params, nil
+}
+
+func DecodeCommandExitParams(raw json.RawMessage) (CommandExitParams, error) {
+	var params CommandExitParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return CommandExitParams{}, err
+	}
+	if params.CommandID == "" {
+		return CommandExitParams{}, errors.New("command_id is required")
+	}
+	return params, nil
+}
+
+func decodeRequiredParams(raw json.RawMessage, dest any) error {
+	if len(raw) == 0 {
+		return errors.New("missing params")
+	}
+	return json.Unmarshal(raw, dest)
+}
+
 func ResponseOK(id json.RawMessage, result any) []byte {
 	data, _ := json.Marshal(RPCResponse{JSONRPC: JSONRPCVersion, ID: cloneID(id), Result: result})
 	return append(data, '\n')
@@ -186,20 +357,23 @@ func DecodeResponse(data []byte) (RPCResponse, error) {
 	return resp, nil
 }
 
-func DecodeContextFilesResult(result any) (ContextFilesResult, error) {
-	var files ContextFilesResult
-	if err := decodeResult(result, &files); err != nil {
-		return ContextFilesResult{}, err
-	}
-	return files, nil
-}
-
 func DecodeGitResult(result any) (GitResult, error) {
 	var gitResult GitResult
 	if err := decodeResult(result, &gitResult); err != nil {
 		return GitResult{}, err
 	}
 	return gitResult, nil
+}
+
+func DecodeEmptyResult(result any) (EmptyResult, error) {
+	var empty EmptyResult
+	if result == nil {
+		return empty, nil
+	}
+	if err := decodeResult(result, &empty); err != nil {
+		return EmptyResult{}, err
+	}
+	return empty, nil
 }
 
 func decodeResult(result any, dest any) error {

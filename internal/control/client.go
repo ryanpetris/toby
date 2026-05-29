@@ -32,14 +32,6 @@ func DefaultSocketPath() (string, error) {
 	return filepath.Join(runtimeDir, "toby", SandboxSocketName), nil
 }
 
-func DefaultContextDir() (string, error) {
-	runtimeDir, err := defaultRuntimeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(runtimeDir, "toby", "context"), nil
-}
-
 func HostSocketPath(runtimeDir string, pid int) string {
 	return filepath.Join(runtimeDir, "toby", "control", fmt.Sprintf("%d.sock", pid))
 }
@@ -54,18 +46,6 @@ func defaultRuntimeDir() (string, error) {
 		return "", err
 	}
 	return config.ExpandHome(runtimeDir, home), nil
-}
-
-func (c *Client) ContextFiles() (ContextFilesResult, error) {
-	request, err := NewContextFilesRequest(c.next.Add(1))
-	if err != nil {
-		return ContextFilesResult{}, err
-	}
-	resp, err := c.call(request)
-	if err != nil {
-		return ContextFilesResult{}, err
-	}
-	return DecodeContextFilesResult(resp.Result)
 }
 
 func (c *Client) GitCommit(repository, message string) (GitResult, error) {

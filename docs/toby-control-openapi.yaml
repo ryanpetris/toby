@@ -4,29 +4,37 @@ info:
   version: 0.2.0
   description: >
     Schema documentation for the Toby sandbox control protocol. The protocol is
-    JSON-RPC 2.0 over a private Unix stream socket. The host supervisor listens
-    on `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket
-    into the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`.
+    JSON-RPC 2.0 over a private Unix stream socket. The host listens on
+    `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket into
+    the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`. The sandbox manager
+    connects to that socket and both sides can issue newline-terminated JSON-RPC
+    requests over the same connection.
 servers:
   - url: unix://$XDG_RUNTIME_DIR/toby/sandbox.sock
     description: Sandbox Unix socket transport, not an HTTP server.
 paths:
   /rpc:
     post:
-      operationId: sendControlRequest
-      summary: Send one JSON-RPC request over the sandbox Unix socket.
+      operationId: sendControlMessage
+      summary: Send one JSON-RPC message over the sandbox Unix socket.
       description: >
         This OpenAPI operation models the control payload. It does not imply an
-        HTTP endpoint; the actual transport is one newline-terminated JSON-RPC
-        request and response over `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside a
-        Toby sandbox.
+        HTTP endpoint; the actual transport is newline-terminated JSON-RPC over
+        `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside a Toby sandbox.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               oneOf:
-                - $ref: '#/components/schemas/ContextFilesRequest'
+                - $ref: '#/components/schemas/ContextInitRequest'
+                - $ref: '#/components/schemas/FileCreateRequest'
+                - $ref: '#/components/schemas/FileDeleteRequest'
+                - $ref: '#/components/schemas/FileMkdirRequest'
+                - $ref: '#/components/schemas/FileSymlinkRequest'
+                - $ref: '#/components/schemas/CommandRunRequest'
+                - $ref: '#/components/schemas/CommandExitRequest'
+                - $ref: '#/components/schemas/SandboxTerminateRequest'
                 - $ref: '#/components/schemas/GitCommitRequest'
                 - $ref: '#/components/schemas/GitFetchRequest'
                 - $ref: '#/components/schemas/GitPushRequest'
@@ -37,7 +45,7 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/ContextFilesResponse'
+                  - $ref: '#/components/schemas/EmptyResponse'
                   - $ref: '#/components/schemas/GitResponse'
                   - $ref: '#/components/schemas/ErrorResponse'
 components:
@@ -51,7 +59,7 @@ components:
     JSONRPCVersion:
       type: string
       const: '2.0'
-    ContextFilesRequest:
+    ContextInitRequest:
       type: object
       required: [jsonrpc, id, method]
       additionalProperties: false
@@ -62,11 +70,183 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         method:
           type: string
-          const: context_files
-      examples:
-        - jsonrpc: '2.0'
-          id: 1
-          method: context_files
+          const: context.init
+      description: Sent by the sandbox manager to ask the host manager to run registered context init services.
+    FileCreateRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: file.create
+        params:
+          $ref: '#/components/schemas/FileCreateParams'
+    FileDeleteRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: file.delete
+        params:
+          $ref: '#/components/schemas/FileDeleteParams'
+    FileMkdirRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: file.mkdir
+        params:
+          $ref: '#/components/schemas/FileMkdirParams'
+    FileSymlinkRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: file.symlink
+        params:
+          $ref: '#/components/schemas/FileSymlinkParams'
+    CommandRunRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: command.run
+        params:
+          $ref: '#/components/schemas/CommandRunParams'
+    CommandExitRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: command.exit
+        params:
+          $ref: '#/components/schemas/CommandExitParams'
+    SandboxTerminateRequest:
+      type: object
+      required: [jsonrpc, id, method]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: sandbox.terminate
+      description: Sent by the host manager to make the sandbox manager stop outstanding processes and exit with code 0.
+    FileCreateParams:
+      type: object
+      required: [path, mode, data]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Path to write inside the sandbox.
+        mode:
+          type: integer
+          format: uint32
+          description: File permission bits, such as 256 for 0400.
+        data:
+          type: string
+          contentEncoding: base64
+          description: File contents. JSON encodes the Go byte slice as base64.
+    FileDeleteParams:
+      type: object
+      required: [path]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+        recursive:
+          type: boolean
+          default: false
+    FileMkdirParams:
+      type: object
+      required: [path, mode]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+        mode:
+          type: integer
+          format: uint32
+          description: Directory permission bits, such as 448 for 0700.
+    FileSymlinkParams:
+      type: object
+      required: [path, target]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+        target:
+          type: string
+    CommandRunParams:
+      type: object
+      required: [command_id, argv]
+      additionalProperties: false
+      properties:
+        command_id:
+          type: string
+          format: uuid
+        argv:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        foreground:
+          type: boolean
+          default: false
+          description: At most one foreground command may run at a time.
+        hide_output:
+          type: boolean
+          default: false
+    CommandExitParams:
+      type: object
+      required: [command_id, exit_code]
+      additionalProperties: false
+      properties:
+        command_id:
+          type: string
+          format: uuid
+        exit_code:
+          type: integer
+        error:
+          type: string
     GitCommitRequest:
       type: object
       required: [jsonrpc, id, method, params]
@@ -78,7 +258,7 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         method:
           type: string
-          const: git_commit
+          const: git.commit
         params:
           $ref: '#/components/schemas/GitCommitParams'
     GitFetchRequest:
@@ -92,7 +272,7 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         method:
           type: string
-          const: git_fetch
+          const: git.fetch
         params:
           $ref: '#/components/schemas/GitRepositoryParams'
     GitPushRequest:
@@ -106,7 +286,7 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         method:
           type: string
-          const: git_push
+          const: git.push
         params:
           $ref: '#/components/schemas/GitPushParams'
     GitRepositoryParams:
@@ -125,7 +305,6 @@ components:
       properties:
         repository:
           type: string
-          description: Repository name visible in the sandbox, relative to XDG_PROJECTS_DIR. Empty, '.', and '..' path segments are rejected.
         message:
           type: string
           description: Commit message passed to git commit -m. Only already staged files are committed.
@@ -136,7 +315,6 @@ components:
       properties:
         repository:
           type: string
-          description: Repository name visible in the sandbox, relative to XDG_PROJECTS_DIR. Empty, '.', and '..' path segments are rejected.
         branch:
           type: string
           description: Single branch to push.
@@ -144,7 +322,7 @@ components:
           type: string
           default: origin
           description: Remote name to push to.
-    ContextFilesResponse:
+    EmptyResponse:
       type: object
       required: [jsonrpc, id, result]
       additionalProperties: false
@@ -155,30 +333,7 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         result:
           type: object
-          required: [files]
           additionalProperties: false
-          properties:
-            files:
-              type: array
-              items:
-                $ref: '#/components/schemas/ContextFile'
-    ContextFile:
-      type: object
-      required: [path, mode, data]
-      additionalProperties: false
-      properties:
-        path:
-          type: string
-          description: Relative path to write under `$XDG_RUNTIME_DIR/toby/context`.
-          examples: [GIT_AGENTS.md, opencode/opencode.json, claude/mcp.json]
-        mode:
-          type: integer
-          format: uint32
-          description: File permission bits, such as 256 for 0400.
-        data:
-          type: string
-          contentEncoding: base64
-          description: File contents. JSON encodes the Go byte slice as base64.
     GitResponse:
       type: object
       required: [jsonrpc, id, result]

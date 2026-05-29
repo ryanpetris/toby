@@ -398,7 +398,7 @@ func objectAt(config map[string]any, key string) map[string]any {
 func syntheticMCP() map[string]any {
 	return map[string]any{
 		"type":    "local",
-		"command": []any{"toby-sandbox", "mcp"},
+		"command": []any{"toby", "sandbox", "mcp"},
 		"enabled": true,
 	}
 }

@@ -173,8 +173,8 @@ func (s *Sandbox) TobyBinDir() string {
 	return filepath.Join(s.TobyRuntimeDir(), "bin")
 }
 
-func (s *Sandbox) TobySandboxBinaryPath() string {
-	return filepath.Join(s.TobyBinDir(), "toby-sandbox")
+func (s *Sandbox) TobyBinaryPath() string {
+	return filepath.Join(s.TobyBinDir(), "toby")
 }
 
 func (s *Sandbox) TobySandboxSocketPath() string {
@@ -244,6 +244,7 @@ func (s *Sandbox) SetupContext(ctx *tool.RunContext) {
 	ctx.Env["XDG_RUNTIME_DIR"] = s.paths.XDGRuntimeDir
 	ctx.Env["GRML_CHROOT"] = "1"
 	ctx.Env["CHROOT"] = "(" + s.label + ")"
+	ctx.Env["TOBY_SANDBOX"] = "1"
 	ctx.Env["BASH_ENV"] = filepath.Join(s.paths.Home, ".env")
 	delete(ctx.Env, "TOBY_MOUNTABLE_PROJECTS")
 	ctx.Env.Prepend("PATH", filepath.Join(s.paths.Home, ".local", "bin"))
@@ -292,7 +293,7 @@ func (s *Sandbox) BuildCommand(argv []string, mounts CommandMounts) []string {
 		"--bind", "/usr/bin/true", "/usr/bin/xdg-open",
 	)
 	if mounts.TobyBinary != "" {
-		args = append(args, "--ro-bind", mounts.TobyBinary, s.TobySandboxBinaryPath())
+		args = append(args, "--ro-bind", mounts.TobyBinary, s.TobyBinaryPath())
 	}
 	if mounts.ControlSocket != "" {
 		args = append(args, "--bind", mounts.ControlSocket, s.TobySandboxSocketPath())
@@ -304,9 +305,6 @@ func (s *Sandbox) BuildCommand(argv []string, mounts CommandMounts) []string {
 		args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, bind.SandboxPath)
 	}
 	args = append(args, "--chdir", s.sandboxProjDir)
-	if mounts.TobyBinary != "" {
-		args = append(args, s.TobySandboxBinaryPath(), "init", "--")
-	}
 	args = append(args, argv...)
 	return args
 }

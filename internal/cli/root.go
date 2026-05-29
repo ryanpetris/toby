@@ -2,20 +2,22 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/contextinit"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/hostmanager"
 	"petris.dev/toby/internal/mcpserver"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 
@@ -26,6 +28,10 @@ type Params struct {
 	Registry       *tool.Registry
 	SandboxFactory sandbox.Factory
 	ContextFiles   *contextfiles.Service
+	ContextInit    []contextinit.Registration
+	HostManager    *hostmanager.HostManager
+	SandboxManager *sandboxmanager.Runner
+	MCPServer      *mcpserver.Runner
 	TobyConfig     *tobyconfig.Service
 	Args           []string
 	Stdout         io.Writer
@@ -52,35 +58,12 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.SetErr(stderr)
 	cmd.SetArgs(params.Args)
 
+	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {
 		cmd.AddCommand(newLaunchCommand(params, item))
 	}
 	cmd.AddCommand(newExecCommand(params))
 	cmd.AddCommand(newCompletionCommand())
-	return cmd
-}
-
-func NewSandboxRootCommand(params Params) *cobra.Command {
-	stdout := params.Stdout
-	if stdout == nil {
-		stdout = os.Stdout
-	}
-	stderr := params.Stderr
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	cmd := &cobra.Command{
-		Use:           "toby-sandbox",
-		Short:         "Run Toby sandbox internals.",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-	}
-	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs(params.Args)
-	cmd.AddCommand(newSandboxInitCommand())
-	cmd.AddCommand(newSandboxMCPCommand())
-	cmd.AddCommand(newSandboxGitCommand())
 	return cmd
 }
 
@@ -199,13 +182,22 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		return err
 	}
 
-	contextFiles, err := buildContextFiles(ctx, params.ContextFiles, params.TobyConfig, sbx, run)
-	if err != nil {
-		return err
+	exits := newCommandExits()
+	ready := make(chan sandboxManagerReady, 1)
+	if params.HostManager == nil {
+		return fmt.Errorf("host manager is not configured")
 	}
-	manager := &control.Manager{RepositoryResolver: sbx, ContextFiles: contextFiles}
+	manager := params.HostManager
+	manager.RepositoryResolver = sbx
+	manager.CommandExit = exits.complete
+	manager.ContextInit = func(ctx context.Context, client *hostmanager.SandboxClient) error {
+		return initSandboxContext(ctx, params, sbx, run, client)
+	}
+	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
+		ready <- sandboxManagerReady{client: client, err: err}
+	}
 	socketPath := control.HostSocketPath(env["XDG_RUNTIME_DIR"], os.Getpid())
-	server, err := control.Listen(ctx, socketPath, manager.Handle)
+	server, err := control.ListenConnections(ctx, socketPath, manager.HandleConnection)
 	if err != nil {
 		return err
 	}
@@ -216,46 +208,47 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		return err
 	}
 	commandMounts := sbx.CommandMounts(toolset, socketPath, tobyBinary)
-	run.Exec = func(ctx context.Context, argv []string, options tool.ExecOptions) (int, error) {
-		return sbx.Run(ctx, argv, commandMounts, env, options)
-	}
-	run.Launch = run.Exec
-	if err := toolset.SandboxInit(ctx, run); err != nil {
-		return err
-	}
-	if execMode {
-		return tool.RunCommand(ctx, run.Launch, commandOrShell(extra, env), tool.ExecOptions{})
-	}
-	return toolset.Launch(ctx, run)
-}
+	sandboxManagerExit := newSandboxManagerExit()
+	go func() {
+		code, err := sbx.Run(ctx, []string{sbx.TobyBinaryPath(), "sandbox", "manager"}, commandMounts, env, tool.ExecOptions{})
+		sandboxManagerExit.set(sandboxManagerProcessResult{exitCode: code, err: err})
+	}()
 
-func buildContextFiles(ctx context.Context, service *contextfiles.Service, cfg *tobyconfig.Service, sbx *sandbox.Sandbox, run *tool.RunContext) ([]control.ContextFile, error) {
-	if service == nil {
-		return nil, fmt.Errorf("context files service is not configured")
-	}
-	session := service.NewSession(sbx.TobyContextDir())
-	run.ContextFiles = session
-	if err := registerContextFiles(ctx, session, cfg, run); err != nil {
-		return nil, err
-	}
-	files := session.Files()
-	contextFiles := make([]control.ContextFile, 0, len(files))
-	for _, file := range files {
-		contextFiles = append(contextFiles, control.ContextFile{Path: file.Path, Mode: file.Mode, Data: file.Data})
-	}
-	return contextFiles, nil
-}
-
-func registerContextFiles(ctx context.Context, session *contextfiles.Session, cfg *tobyconfig.Service, run *tool.RunContext) error {
-	if err := contextfiles.RegisterAgentInstructions(session); err != nil {
-		return err
-	}
-	if cfg != nil {
-		if err := cfg.RegisterContextFiles(session); err != nil {
-			return err
+	var sandboxClient *hostmanager.SandboxClient
+	select {
+	case result := <-ready:
+		if result.err != nil {
+			return waitSandboxManagerAfterError(ctx, sandboxManagerExit, result.client, result.err)
 		}
+		sandboxClient = result.client
+	case <-sandboxManagerExit.done:
+		result := sandboxManagerExit.result()
+		if result.err != nil {
+			return result.err
+		}
+		return exitcode.New(result.exitCode, "sandbox manager exited before context init")
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return run.Toolset.RegisterContextFiles(ctx, run)
+	executor := &sandboxManagerExecutor{client: sandboxClient, exits: exits, sandboxManagerExit: sandboxManagerExit}
+	run.Exec = func(ctx context.Context, argv []string, options tool.ExecOptions) (int, error) {
+		return executor.run(ctx, argv, options, false)
+	}
+	run.Launch = func(ctx context.Context, argv []string, options tool.ExecOptions) (int, error) {
+		return executor.run(ctx, argv, options, true)
+	}
+	var runErr error
+	if err := toolset.SandboxInit(ctx, run); err != nil {
+		runErr = err
+	} else if execMode {
+		runErr = tool.RunCommand(ctx, run.Launch, commandOrShell(extra, env), tool.ExecOptions{})
+	} else {
+		runErr = toolset.Launch(ctx, run)
+	}
+	if termErr := terminateSandboxManager(ctx, sandboxClient, sandboxManagerExit); runErr == nil && termErr != nil {
+		return termErr
+	}
+	return runErr
 }
 
 func commandOrShell(extra []string, env tool.Environment) []string {
@@ -269,78 +262,194 @@ func commandOrShell(extra []string, env tool.Environment) []string {
 	return []string{shell, "-i"}
 }
 
-func newSandboxInitCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:                "init -- COMMAND [ARG...]",
-		Short:              "Initialize Toby sandbox context and exec a command.",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 && args[0] == "--" {
-				args = args[1:]
-			}
-			if len(args) == 0 {
-				return exitcode.New(2, "init requires a command after --")
-			}
-			client, err := sandboxControlClient()
-			if err != nil {
-				return err
-			}
-			result, err := client.ContextFiles()
-			if err != nil {
-				return err
-			}
-			contextDir, err := control.DefaultContextDir()
-			if err != nil {
-				return err
-			}
-			if err := writeContextFiles(contextDir, result.Files); err != nil {
-				return err
-			}
-			path, err := exec.LookPath(args[0])
-			if err != nil {
-				return err
-			}
-			return syscall.Exec(path, args, os.Environ())
-		},
+type sandboxManagerReady struct {
+	client *hostmanager.SandboxClient
+	err    error
+}
+
+type sandboxManagerProcessResult struct {
+	exitCode int
+	err      error
+}
+
+type sandboxManagerExit struct {
+	done chan struct{}
+	once sync.Once
+	mu   sync.Mutex
+	res  sandboxManagerProcessResult
+}
+
+func newSandboxManagerExit() *sandboxManagerExit {
+	return &sandboxManagerExit{done: make(chan struct{})}
+}
+
+func (s *sandboxManagerExit) set(result sandboxManagerProcessResult) {
+	s.mu.Lock()
+	s.res = result
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+}
+
+func (s *sandboxManagerExit) result() sandboxManagerProcessResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.res
+}
+
+type commandExits struct {
+	mu      sync.Mutex
+	waiting map[string]chan control.CommandExitParams
+}
+
+func newCommandExits() *commandExits {
+	return &commandExits{waiting: map[string]chan control.CommandExitParams{}}
+}
+
+func (e *commandExits) watch(commandID string) chan control.CommandExitParams {
+	ch := make(chan control.CommandExitParams, 1)
+	e.mu.Lock()
+	e.waiting[commandID] = ch
+	e.mu.Unlock()
+	return ch
+}
+
+func (e *commandExits) unwatch(commandID string) {
+	e.mu.Lock()
+	delete(e.waiting, commandID)
+	e.mu.Unlock()
+}
+
+func (e *commandExits) complete(params control.CommandExitParams) {
+	e.mu.Lock()
+	ch := e.waiting[params.CommandID]
+	delete(e.waiting, params.CommandID)
+	e.mu.Unlock()
+	if ch != nil {
+		ch <- params
 	}
 }
 
-func writeContextFiles(contextDir string, files []control.ContextFile) error {
-	if err := os.RemoveAll(contextDir); err != nil {
+type sandboxManagerExecutor struct {
+	client             *hostmanager.SandboxClient
+	exits              *commandExits
+	sandboxManagerExit *sandboxManagerExit
+}
+
+func (e *sandboxManagerExecutor) run(ctx context.Context, argv []string, options tool.ExecOptions, foreground bool) (int, error) {
+	commandID, err := control.NewCommandID()
+	if err != nil {
+		return 1, err
+	}
+	exitCh := e.exits.watch(commandID)
+	if err := e.client.CommandRun(ctx, control.CommandRunParams{CommandID: commandID, Argv: argv, Foreground: foreground, HideOutput: options.HideOutput}); err != nil {
+		e.exits.unwatch(commandID)
+		return 1, err
+	}
+	select {
+	case result := <-exitCh:
+		if result.Error != "" {
+			return result.ExitCode, errors.New(result.Error)
+		}
+		return result.ExitCode, nil
+	case <-e.sandboxManagerExit.done:
+		result := e.sandboxManagerExit.result()
+		if result.err != nil {
+			return 1, result.err
+		}
+		return result.exitCode, fmt.Errorf("sandbox manager exited before command completed")
+	case <-ctx.Done():
+		e.exits.unwatch(commandID)
+		return 130, ctx.Err()
+	}
+}
+
+type sandboxManagerContextSink struct {
+	ctx    context.Context
+	client *hostmanager.SandboxClient
+	base   string
+}
+
+func (s *sandboxManagerContextSink) AddFile(path string, data []byte, mode uint32) error {
+	target := filepath.Join(s.base, filepath.FromSlash(path))
+	return s.client.FileCreate(s.ctx, target, data, mode)
+}
+
+func initSandboxContext(ctx context.Context, params Params, sbx *sandbox.Sandbox, run *tool.RunContext, client *hostmanager.SandboxClient) error {
+	if params.ContextFiles == nil {
+		return fmt.Errorf("context files service is not configured")
+	}
+	contextDir := sbx.TobyContextDir()
+	if err := client.FileDelete(ctx, contextDir, true); err != nil {
 		return err
 	}
-	for _, file := range files {
-		path, err := cleanContextPath(file.Path)
-		if err != nil {
-			return err
-		}
-		mode := fs.FileMode(file.Mode & 0o777)
-		if mode == 0 {
-			mode = 0o400
-		}
-		target := filepath.Join(contextDir, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(target, file.Data, mode); err != nil {
-			return err
-		}
-		if err := os.Chmod(target, mode); err != nil {
+	if err := client.FileMkdir(ctx, contextDir, 0o700); err != nil {
+		return err
+	}
+	sink := &sandboxManagerContextSink{ctx: ctx, client: client, base: contextDir}
+	run.ContextFiles = params.ContextFiles.NewEmittingSession(contextDir, sink)
+	for _, service := range contextinit.Ordered(params.ContextInit) {
+		if err := service.InitContext(ctx, run); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func cleanContextPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" || path == "." || !fs.ValidPath(path) {
-		return "", fmt.Errorf("invalid context file path: %q", path)
-	}
-	return path, nil
+func waitSandboxManagerAfterError(ctx context.Context, exit *sandboxManagerExit, client *hostmanager.SandboxClient, err error) error {
+	_ = terminateSandboxManager(ctx, client, exit)
+	return err
 }
 
-func newSandboxMCPCommand() *cobra.Command {
+func terminateSandboxManager(ctx context.Context, client *hostmanager.SandboxClient, exit *sandboxManagerExit) error {
+	if client != nil {
+		if err := client.Terminate(ctx); err != nil {
+			return err
+		}
+	}
+	select {
+	case <-exit.done:
+		result := exit.result()
+		if result.err != nil {
+			return result.err
+		}
+		if result.exitCode != 0 {
+			return exitcode.Code(result.exitCode)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func newSandboxCommand(params Params) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "sandbox",
+		Short:  "Run Toby sandbox internals.",
+		Hidden: os.Getenv("TOBY_SANDBOX") != "1",
+	}
+	cmd.AddCommand(newSandboxManagerCommand(params.SandboxManager))
+	cmd.AddCommand(newSandboxMCPCommand(params.MCPServer))
+	cmd.AddCommand(newSandboxGitCommand())
+	return cmd
+}
+
+func newSandboxManagerCommand(runner *sandboxmanager.Runner) *cobra.Command {
+	return &cobra.Command{
+		Use:   "manager",
+		Short: "Run the Toby sandbox manager.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return exitcode.New(2, "manager does not accept arguments")
+			}
+			if runner == nil {
+				return fmt.Errorf("sandbox manager runner is not configured")
+			}
+			return runner.Run(cmd.Context(), "")
+		},
+	}
+}
+
+func newSandboxMCPCommand(runner *mcpserver.Runner) *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
 		Short: "Run the Toby MCP server inside a sandbox.",
@@ -348,7 +457,10 @@ func newSandboxMCPCommand() *cobra.Command {
 			if len(args) != 0 {
 				return exitcode.New(2, "mcp does not accept arguments")
 			}
-			return mcpserver.Run(cmd.Context(), "")
+			if runner == nil {
+				return fmt.Errorf("mcp server runner is not configured")
+			}
+			return runner.Run(cmd.Context(), "")
 		},
 	}
 }
@@ -425,7 +537,7 @@ func sandboxControlClient() (*control.Client, error) {
 		return nil, err
 	}
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("toby-sandbox commands must run inside a Toby sandbox: %s is not available", path)
+		return nil, fmt.Errorf("toby sandbox commands must run inside a Toby sandbox: %s is not available", path)
 	}
 	return control.NewClient(path), nil
 }

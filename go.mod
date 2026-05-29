@@ -3,6 +3,7 @@ module petris.dev/toby
 go 1.26.3
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/fx v1.24.0

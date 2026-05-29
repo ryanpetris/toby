@@ -33,7 +33,7 @@ func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	if toby["type"] != "local" || toby["enabled"] != true {
 		t.Fatalf("mcp.toby = %#v", toby)
 	}
-	if got := toby["command"].([]any); len(got) != 2 || got[0] != "toby-sandbox" || got[1] != "mcp" {
+	if got := toby["command"].([]any); len(got) != 3 || got[0] != "toby" || got[1] != "sandbox" || got[2] != "mcp" {
 		t.Fatalf("mcp.toby.command = %#v", got)
 	}
 

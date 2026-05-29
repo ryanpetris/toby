@@ -66,7 +66,7 @@ func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--tmpfs", paths.XDGRuntimeDir})
 	assertContainsSequence(t, cmd, []string{"--dir", filepath.Join(paths.XDGRuntimeDir, "toby")})
 	assertContainsSequence(t, cmd, []string{"--dir", filepath.Join(paths.XDGRuntimeDir, "toby", "bin")})
-	assertContainsSequence(t, cmd, []string{"--ro-bind", "/host/toby", filepath.Join(paths.XDGRuntimeDir, "toby", "bin", "toby-sandbox")})
+	assertContainsSequence(t, cmd, []string{"--ro-bind", "/host/toby", filepath.Join(paths.XDGRuntimeDir, "toby", "bin", "toby")})
 	assertContainsSequence(t, cmd, []string{"--bind", "/host/control.sock", filepath.Join(paths.XDGRuntimeDir, "toby", "sandbox.sock")})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(paths.XDGRuntimeDir, "pulse"), filepath.Join(paths.XDGRuntimeDir, "pulse")})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(paths.XDGRuntimeDir, "pipewire-test"), filepath.Join(paths.XDGRuntimeDir, "pipewire-test")})
@@ -80,7 +80,7 @@ func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", "/host/readonly", readonlySandboxPath})
 	assertContainsSequence(t, cmd, []string{"--dev-bind-try", "/host/demo.sock", devSandboxPath})
 	assertContainsSequence(t, cmd, []string{"--chdir", projectDir})
-	assertContainsSequence(t, cmd, []string{filepath.Join(paths.XDGRuntimeDir, "toby", "bin", "toby-sandbox"), "init", "--", "/bin/true"})
+	assertContainsSequence(t, cmd, []string{"/bin/true"})
 	if slices.Contains(cmd, "/run/dbus") || slices.Contains(cmd, filepath.Join(paths.XDGRuntimeDir, "bus")) {
 		t.Fatalf("command unexpectedly includes dbus bindings: %#v", cmd)
 	}
@@ -222,6 +222,9 @@ func TestSetupContextPrependsTobyBinAndSetsRuntimeDir(t *testing.T) {
 	}
 	if run.Env["XDG_RUNTIME_DIR"] != filepath.Join(home, "runtime") {
 		t.Fatalf("XDG_RUNTIME_DIR = %q", run.Env["XDG_RUNTIME_DIR"])
+	}
+	if run.Env["TOBY_SANDBOX"] != "1" {
+		t.Fatalf("TOBY_SANDBOX = %q", run.Env["TOBY_SANDBOX"])
 	}
 	if sbx.TobyContextDir() != filepath.Join(home, "runtime", "toby", "context") {
 		t.Fatalf("TobyContextDir = %q", sbx.TobyContextDir())

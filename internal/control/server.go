@@ -12,16 +12,24 @@ import (
 
 type Handler func(context.Context, []byte) ([]byte, error)
 
+type ConnHandler func(context.Context, net.Conn)
+
 type Server struct {
 	Path     string
 	listener net.Listener
-	handler  Handler
+	connFunc ConnHandler
 	ctx      context.Context
 	cancel   context.CancelFunc
 	once     sync.Once
 }
 
 func Listen(ctx context.Context, path string, handler Handler) (*Server, error) {
+	return ListenConnections(ctx, path, func(ctx context.Context, conn net.Conn) {
+		handleOneShot(ctx, conn, handler)
+	})
+}
+
+func ListenConnections(ctx context.Context, path string, handler ConnHandler) (*Server, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -38,7 +46,7 @@ func Listen(ctx context.Context, path string, handler Handler) (*Server, error) 
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
-	server := &Server{Path: path, listener: listener, handler: handler, ctx: serverCtx, cancel: cancel}
+	server := &Server{Path: path, listener: listener, connFunc: handler, ctx: serverCtx, cancel: cancel}
 	go server.serve()
 	return server, nil
 }
@@ -64,17 +72,17 @@ func (s *Server) serve() {
 		if err != nil {
 			return
 		}
-		go s.handleConn(conn)
+		go s.connFunc(s.ctx, conn)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func handleOneShot(ctx context.Context, conn net.Conn, handler Handler) {
 	defer conn.Close()
 	request, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
 		return
 	}
-	response, err := s.handler(s.ctx, request)
+	response, err := handler(ctx, request)
 	if len(response) == 0 && err != nil {
 		response = ResponseError(nil, CodeInternalError, err.Error(), nil)
 	}

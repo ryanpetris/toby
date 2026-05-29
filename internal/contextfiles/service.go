@@ -12,6 +12,10 @@ type Registrar interface {
 	AddFS(path string, fsys fs.FS, name string, mode uint32) error
 }
 
+type FileSink interface {
+	AddFile(path string, data []byte, mode uint32) error
+}
+
 type Service struct{}
 
 type File struct {
@@ -27,6 +31,7 @@ type Builder struct {
 type Session struct {
 	contextDir          string
 	builder             *Builder
+	sink                FileSink
 	instructionPaths    []string
 	instructionContents [][]byte
 }
@@ -41,6 +46,10 @@ func (s *Service) NewBuilder() *Builder {
 
 func (s *Service) NewSession(contextDir string) *Session {
 	return &Session{contextDir: contextDir, builder: s.NewBuilder()}
+}
+
+func (s *Service) NewEmittingSession(contextDir string, sink FileSink) *Session {
+	return &Session{contextDir: contextDir, sink: sink}
 }
 
 func (s *Service) Build(configure func(*Builder) error) ([]File, error) {
@@ -67,10 +76,25 @@ func (s *Session) ContextDir() string {
 }
 
 func (s *Session) AddBytes(path string, data []byte, mode uint32) error {
-	if s == nil || s.builder == nil {
+	if s == nil || (s.builder == nil && s.sink == nil) {
 		return fmt.Errorf("context files session is not configured")
 	}
-	return s.builder.AddBytes(path, data, mode)
+	path, err := cleanPath(path)
+	if err != nil {
+		return err
+	}
+	if mode == 0 {
+		mode = 0o400
+	}
+	if s.builder != nil {
+		if err := s.builder.addCleanBytes(path, data, mode); err != nil {
+			return err
+		}
+	}
+	if s.sink != nil {
+		return s.sink.AddFile(path, data, mode)
+	}
+	return nil
 }
 
 func (s *Session) AddFS(path string, fsys fs.FS, name string, mode uint32) error {
@@ -141,11 +165,14 @@ func (s *Session) Files() []File {
 }
 
 func (s *Session) Close() error {
-	if s == nil || s.builder == nil {
+	if s == nil {
 		return nil
 	}
 	s.instructionPaths = nil
 	s.instructionContents = nil
+	if s.builder == nil {
+		return nil
+	}
 	return s.builder.Close()
 }
 
@@ -157,6 +184,10 @@ func (b *Builder) AddBytes(path string, data []byte, mode uint32) error {
 	if mode == 0 {
 		mode = 0o400
 	}
+	return b.addCleanBytes(path, data, mode)
+}
+
+func (b *Builder) addCleanBytes(path string, data []byte, mode uint32) error {
 	b.files = append(b.files, File{Path: path, Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }

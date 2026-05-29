@@ -1,4 +1,4 @@
-package control
+package hostmanager
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	. "petris.dev/toby/internal/control"
 )
 
 type fakeResolver struct {
@@ -26,30 +28,7 @@ func (m *fakeResolver) VisibleHostPath(repository string) (string, error) {
 	return "", errors.New("repository is not visible")
 }
 
-func TestManagerReturnsContextFiles(t *testing.T) {
-	manager := &Manager{ContextFiles: []ContextFile{{Path: "GIT_AGENTS.md", Mode: 0o400, Data: []byte("git")}}}
-	request, err := NewContextFilesRequest(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := manager.Handle(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := DecodeResponse(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := DecodeContextFilesResult(decoded.Result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Files) != 1 || result.Files[0].Path != "GIT_AGENTS.md" || string(result.Files[0].Data) != "git" {
-		t.Fatalf("context files = %#v", result.Files)
-	}
-}
-
-func TestManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
+func TestHostManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
 	requireGit(t)
 	projectRoot := t.TempDir()
 	repo := filepath.Join(projectRoot, "foo")
@@ -61,7 +40,8 @@ func TestManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "unstaged.txt"), []byte("unstaged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
+	manager := newTestHostManager(t)
+	manager.RepositoryResolver = &fakeResolver{visible: map[string]string{"foo": repo}}
 	response, err := manager.Handle(context.Background(), mustGitCommitRequest(t, "foo", "commit staged"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +59,7 @@ func TestManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
 	}
 }
 
-func TestManagerGitFetchDoesNotAdvanceHEAD(t *testing.T) {
+func TestHostManagerGitFetchDoesNotAdvanceHEAD(t *testing.T) {
 	requireGit(t)
 	projectRoot := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -107,7 +87,8 @@ func TestManagerGitFetchDoesNotAdvanceHEAD(t *testing.T) {
 	runTestGit(t, updater, "push", "origin", "main")
 	newHead := strings.TrimSpace(runTestGit(t, updater, "rev-parse", "HEAD"))
 
-	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
+	manager := newTestHostManager(t)
+	manager.RepositoryResolver = &fakeResolver{visible: map[string]string{"foo": repo}}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo"))
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +105,7 @@ func TestManagerGitFetchDoesNotAdvanceHEAD(t *testing.T) {
 	}
 }
 
-func TestManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
+func TestHostManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
 	requireGit(t)
 	projectRoot := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -145,7 +126,8 @@ func TestManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
 	runTestGit(t, repo, "commit", "-m", "feature commit")
 	featureHead := strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD"))
 
-	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo": repo}}}
+	manager := newTestHostManager(t)
+	manager.RepositoryResolver = &fakeResolver{visible: map[string]string{"foo": repo}}
 	response, err := manager.Handle(context.Background(), mustGitPushRequest(t, "foo", "feature", ""))
 	if err != nil {
 		t.Fatal(err)
@@ -162,8 +144,9 @@ func TestManagerGitPushPushesOnlyRequestedBranch(t *testing.T) {
 	}
 }
 
-func TestManagerGitRejectsDotSegmentRepository(t *testing.T) {
-	manager := &Manager{RepositoryResolver: &fakeResolver{visible: map[string]string{"foo/../bar": t.TempDir()}}}
+func TestHostManagerGitRejectsDotSegmentRepository(t *testing.T) {
+	manager := newTestHostManager(t)
+	manager.RepositoryResolver = &fakeResolver{visible: map[string]string{"foo/../bar": t.TempDir()}}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo/../bar"))
 	if !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("err = %v, want EINVAL", err)
@@ -171,13 +154,23 @@ func TestManagerGitRejectsDotSegmentRepository(t *testing.T) {
 	mustRPCErrorCode(t, response, CodeInvalidParams)
 }
 
-func TestManagerGitRequiresVisibleRepository(t *testing.T) {
-	manager := &Manager{RepositoryResolver: &fakeResolver{}}
+func TestHostManagerGitRequiresVisibleRepository(t *testing.T) {
+	manager := newTestHostManager(t)
+	manager.RepositoryResolver = &fakeResolver{}
 	response, err := manager.Handle(context.Background(), mustGitFetchRequest(t, "foo"))
 	if !errors.Is(err, syscall.EACCES) {
 		t.Fatalf("err = %v, want EACCES", err)
 	}
 	mustRPCErrorCode(t, response, CodeProjectNotVisible)
+}
+
+func newTestHostManager(t *testing.T) *HostManager {
+	t.Helper()
+	registry, err := NewRegistry(RegistryParams{Services: []Service{ContextService{}, CommandService{}, GitService{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &HostManager{Registry: registry}
 }
 
 func mustGitCommitRequest(t *testing.T, repository, message string) []byte {

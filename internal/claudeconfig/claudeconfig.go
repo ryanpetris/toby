@@ -77,8 +77,8 @@ func syntheticMCP(cfg *tobyconfig.Service) (map[string]any, error) {
 func syntheticTobyMCP() map[string]any {
 	return map[string]any{
 		"type":    "stdio",
-		"command": "toby-sandbox",
-		"args":    []any{"mcp"},
+		"command": "toby",
+		"args":    []any{"sandbox", "mcp"},
 	}
 }
 

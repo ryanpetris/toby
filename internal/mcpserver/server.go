@@ -9,6 +9,7 @@ import (
 	"petris.dev/toby/internal/control"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/fx"
 )
 
 type Server struct {
@@ -16,12 +17,64 @@ type Server struct {
 	mu     sync.Mutex
 }
 
+const FxServiceGroup = "toby.sandbox.mcp.services"
+
+type Service interface {
+	Tools() []Tool
+}
+
+type Tool struct {
+	Name     string
+	Register func(*mcp.Server, *Server)
+}
+
+type RunnerParams struct {
+	fx.In
+
+	Services []Service `group:"toby.sandbox.mcp.services"`
+}
+
+type Runner struct {
+	tools []Tool
+}
+
+func NewRunner(params RunnerParams) (*Runner, error) {
+	seen := map[string]bool{}
+	var tools []Tool
+	for _, service := range params.Services {
+		if service == nil {
+			continue
+		}
+		for _, tool := range service.Tools() {
+			if tool.Name == "" {
+				return nil, fmt.Errorf("mcp tool must define a name")
+			}
+			if tool.Register == nil {
+				return nil, fmt.Errorf("mcp tool %s must define a register function", tool.Name)
+			}
+			if seen[tool.Name] {
+				return nil, fmt.Errorf("duplicate mcp tool: %s", tool.Name)
+			}
+			seen[tool.Name] = true
+			tools = append(tools, tool)
+		}
+	}
+	return &Runner{tools: tools}, nil
+}
+
+func Module() fx.Option {
+	return fx.Module(
+		"mcpserver",
+		fx.Provide(NewGitService, NewRunner),
+	)
+}
+
 type GitCommitInput = control.GitCommitParams
 type GitRepositoryInput = control.GitRepositoryParams
 type GitPushInput = control.GitPushParams
 type GitOutput = control.GitResult
 
-const gitServerInstructions = "Toby MCP tools: git_commit, git_fetch, and git_push run host Git for repositories visible in the sandbox."
+const gitServerInstructions = "Toby MCP tools: git.commit, git.fetch, and git.push run host Git for repositories visible in the sandbox."
 
 const gitCommitDescription = "Commit staged files in a visible repository using host Git."
 
@@ -29,7 +82,7 @@ const gitFetchDescription = "Fetch remote refs in a visible repository using hos
 
 const gitPushDescription = "Push one branch from a visible repository using host Git."
 
-func Run(ctx context.Context, controlPath string) error {
+func (r *Runner) Run(ctx context.Context, controlPath string) error {
 	if controlPath == "" {
 		var err error
 		controlPath, err = control.DefaultSocketPath()
@@ -38,26 +91,25 @@ func Run(ctx context.Context, controlPath string) error {
 		}
 	}
 	if _, err := os.Stat(controlPath); err != nil {
-		return fmt.Errorf("toby-sandbox mcp must run inside a Toby sandbox: %s is not available", controlPath)
+		return fmt.Errorf("toby sandbox mcp must run inside a Toby sandbox: %s is not available", controlPath)
 	}
 
 	server := &Server{client: control.NewClient(controlPath)}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: "dev"}, &mcp.ServerOptions{
 		Instructions: gitServerInstructions,
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{
-		Name:        "git_commit",
-		Description: gitCommitDescription,
-	}, server.gitCommit)
-	mcp.AddTool(mcpServer, &mcp.Tool{
-		Name:        "git_fetch",
-		Description: gitFetchDescription,
-	}, server.gitFetch)
-	mcp.AddTool(mcpServer, &mcp.Tool{
-		Name:        "git_push",
-		Description: gitPushDescription,
-	}, server.gitPush)
+	for _, tool := range r.tools {
+		tool.Register(mcpServer, server)
+	}
 	return mcpServer.Run(ctx, &mcp.StdioTransport{})
+}
+
+func Run(ctx context.Context, controlPath string) error {
+	runner, err := NewRunner(RunnerParams{Services: []Service{GitService{}}})
+	if err != nil {
+		return err
+	}
+	return runner.Run(ctx, controlPath)
 }
 
 func (s *Server) gitCommit(ctx context.Context, _ *mcp.CallToolRequest, input GitCommitInput) (*mcp.CallToolResult, GitOutput, error) {

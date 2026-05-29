@@ -8,9 +8,13 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/contextinit"
 	"petris.dev/toby/internal/executil"
+	"petris.dev/toby/internal/hostmanager"
+	"petris.dev/toby/internal/mcpserver"
 	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 
@@ -30,6 +34,9 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), XDGRuntimeDir: filepath.Join(home, "runtime")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
+		hostmanager.Module(),
+		mcpserver.Module(),
+		sandboxmanager.Module(),
 		fx.Supply(paths, args(nil)),
 		fx.Provide(
 			func() *http.Client { return &http.Client{} },
@@ -38,6 +45,7 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 			sandbox.NewFactory,
 			contextfiles.NewService,
 			tobyconfig.New,
+			contextinit.NewServices,
 			tool.NewRegistry,
 			newRootCommand,
 		),
