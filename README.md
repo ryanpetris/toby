@@ -1,4 +1,6 @@
-# Toby
+<p align="center">
+  <img src="docs/logo.png" alt="Toby" width="280">
+</p>
 
 Toby sandboxes software development tools so agents can work on code without inheriting your real home directory.
 
