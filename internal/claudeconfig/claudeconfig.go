@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"petris.dev/toby/internal/staticfiles"
 	"petris.dev/toby/internal/staticmount"
 )
 
@@ -45,30 +46,44 @@ After the tool succeeds, use the returned sandbox_path for subsequent work.
 // PROJECT_MOUNT_AGENTS.md when mountableProjects); they are concatenated into a
 // single file so the launcher can pass exactly one --append-system-prompt-file.
 func StaticFiles(projectRoot string, instructions [][]byte, mountableProjects bool) ([]staticmount.File, error) {
+	builder := staticfiles.NewService().NewBuilder()
+	if err := RegisterStaticFiles(builder, projectRoot, instructions, mountableProjects); err != nil {
+		return nil, err
+	}
+	return builder.Files(), nil
+}
+
+func RegisterStaticFiles(registrar staticfiles.Registrar, projectRoot string, instructions [][]byte, mountableProjects bool) error {
 	mcp, err := marshalJSON(syntheticMCP())
 	if err != nil {
-		return nil, err
+		return err
 	}
 	settings, err := marshalJSON(syntheticSettings(projectRoot))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	files := []staticmount.File{
-		{Path: StaticMcpPath, Data: mcp, Mode: 0o400},
-		{Path: StaticSettingsPath, Data: settings, Mode: 0o400},
-		{Path: StaticInstructionsPath, Data: joinInstructions(instructions), Mode: 0o400},
+	if err := registrar.AddBytes(StaticMcpPath, mcp, 0o400); err != nil {
+		return err
+	}
+	if err := registrar.AddBytes(StaticSettingsPath, settings, 0o400); err != nil {
+		return err
+	}
+	if err := registrar.AddBytes(StaticInstructionsPath, joinInstructions(instructions), 0o400); err != nil {
+		return err
 	}
 	if mountableProjects {
 		manifest, err := marshalJSON(pluginManifest())
 		if err != nil {
-			return nil, err
+			return err
 		}
-		files = append(files,
-			staticmount.File{Path: StaticPluginManifestPath, Data: manifest, Mode: 0o400},
-			staticmount.File{Path: StaticProjectMountCommandPath, Data: projectMountCommand, Mode: 0o400},
-		)
+		if err := registrar.AddBytes(StaticPluginManifestPath, manifest, 0o400); err != nil {
+			return err
+		}
+		if err := registrar.AddBytes(StaticProjectMountCommandPath, projectMountCommand, 0o400); err != nil {
+			return err
+		}
 	}
-	return files, nil
+	return nil
 }
 
 func syntheticMCP() map[string]any {

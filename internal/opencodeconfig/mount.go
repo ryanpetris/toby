@@ -19,6 +19,7 @@ import (
 	"petris.dev/toby/fusekit"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/openai"
+	"petris.dev/toby/internal/staticfiles"
 	"petris.dev/toby/internal/staticmount"
 
 	"gopkg.in/yaml.v3"
@@ -98,19 +99,32 @@ func NewMount(configDir, projectRoot string, instructions []string, opts ...Moun
 }
 
 func StaticFiles(ctx context.Context, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]staticmount.File, []error, error) {
-	mount := NewMount(configDir, projectRoot, instructions, opts...)
-	config, err := mount.render(ctx)
+	builder := staticfiles.NewService().NewBuilder()
+	warnings, err := RegisterStaticFiles(ctx, builder, configDir, projectRoot, instructions, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
-	files := []staticmount.File{
-		{Path: StaticGitignorePath, Data: opencodeGitignore, Mode: 0o400},
-		{Path: StaticConfigPath, Data: config, Mode: 0o400},
+	return builder.Files(), warnings, nil
+}
+
+func RegisterStaticFiles(ctx context.Context, registrar staticfiles.Registrar, configDir, projectRoot string, instructions []string, opts ...MountOption) ([]error, error) {
+	mount := NewMount(configDir, projectRoot, instructions, opts...)
+	config, err := mount.render(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := registrar.AddBytes(StaticGitignorePath, opencodeGitignore, 0o400); err != nil {
+		return nil, err
+	}
+	if err := registrar.AddBytes(StaticConfigPath, config, 0o400); err != nil {
+		return nil, err
 	}
 	if mount.mountableProjects {
-		files = append(files, staticmount.File{Path: StaticProjectMountPath, Data: projectMountCommand, Mode: 0o400})
+		if err := registrar.AddBytes(StaticProjectMountPath, projectMountCommand, 0o400); err != nil {
+			return nil, err
+		}
 	}
-	return files, append([]error(nil), mount.modelWarnings...), nil
+	return append([]error(nil), mount.modelWarnings...), nil
 }
 
 func (m *Mount) ID() string { return "opencode-config" }

@@ -8,6 +8,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/staticfiles"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools"
 
@@ -25,6 +26,7 @@ func Module() fx.Option {
 			config.NewPaths,
 			executil.NewProcessRunner,
 			sandbox.NewFactory,
+			staticfiles.NewService,
 			tool.NewRegistry,
 			newArgs,
 			newRootCommand,
@@ -40,10 +42,11 @@ func newArgs() args {
 	return append([]string(nil), os.Args[1:]...)
 }
 
-func newRootCommand(registry *tool.Registry, factory sandbox.Factory, argv args) *cobra.Command {
+func newRootCommand(registry *tool.Registry, factory sandbox.Factory, staticFiles *staticfiles.Service, argv args) *cobra.Command {
 	return cli.NewRootCommand(cli.Params{
 		Registry:       registry,
 		SandboxFactory: factory,
+		StaticFiles:    staticFiles,
 		Args:           []string(argv),
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,

@@ -24,6 +24,7 @@ import (
 type Params struct {
 	Registry       *tool.Registry
 	SandboxFactory sandbox.Factory
+	StaticFiles    *staticfiles.Service
 	Args           []string
 	Stdout         io.Writer
 	Stderr         io.Writer
@@ -37,6 +38,9 @@ func NewRootCommand(params Params) *cobra.Command {
 	stderr := params.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
+	}
+	if params.StaticFiles == nil {
+		params.StaticFiles = staticfiles.NewService()
 	}
 	cmd := &cobra.Command{
 		Use:           "toby",
@@ -166,8 +170,10 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		return err
 	}
 	var tobyMount *control.Mount
+	var staticMount *staticmount.Mount
 	defer func() {
 		_ = homeFS.Close()
+		_ = staticMount.Close()
 		_ = tobyMount.Close()
 	}()
 	if homeFS != nil {
@@ -176,14 +182,16 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		if err != nil {
 			return err
 		}
-		tobyMount, err = control.NewMountWithCurrentBinaryAt(tobyBase, controlManager.Handle, control.WithMountableProjects(opts.MountableProjects))
+		tobyMount, err = control.NewMountAt(tobyBase, controlManager.Handle, control.WithMountableProjects(opts.MountableProjects))
 		if err == nil {
 			err = homeFS.AddOverlayMount(tobyMount)
 		}
 		if err == nil {
-			err = addStaticOverlayMount(ctx, params.Stderr, sbx, homeFS, tobyBase, opts.MountableProjects)
+			staticMount, err = addStaticOverlayMount(ctx, params.Stderr, params.StaticFiles, sbx, homeFS, tobyBase, opts.MountableProjects)
 		}
 		if err != nil {
+			_ = staticMount.Close()
+			staticMount = nil
 			_ = tobyMount.Close()
 			tobyMount = nil
 			_ = homeFS.Close()
@@ -246,43 +254,46 @@ func startOptionalHomeFS(ctx context.Context, params Params, sbx *sandbox.Sandbo
 	return homeFS, nil
 }
 
-func addStaticOverlayMount(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, homeFS *sandbox.HomeFS, tobyBase string, mountableProjects bool) error {
-	staticFiles, err := buildStaticFiles(ctx, stderr, sbx, mountableProjects)
-	if err != nil {
-		return err
+func addStaticOverlayMount(ctx context.Context, stderr io.Writer, service *staticfiles.Service, sbx *sandbox.Sandbox, homeFS *sandbox.HomeFS, tobyBase string, mountableProjects bool) (*staticmount.Mount, error) {
+	if service == nil {
+		service = staticfiles.NewService()
 	}
-	staticMount, err := staticmount.New("toby-static", pathpkg.Join(tobyBase, "static"), staticFiles)
+	staticMount, err := service.NewMount("toby-static", pathpkg.Join(tobyBase, "static"), func(builder *staticfiles.Builder) error {
+		return buildStaticFiles(ctx, stderr, sbx, builder, mountableProjects)
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return homeFS.AddOverlayMount(staticMount)
+	if err := homeFS.AddOverlayMount(staticMount); err != nil {
+		_ = staticMount.Close()
+		return nil, err
+	}
+	return staticMount, nil
 }
 
-func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, mountableProjects bool) ([]staticmount.File, error) {
+func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbox, builder *staticfiles.Builder, mountableProjects bool) error {
 	instructions := []string{sbx.TobyGitAgentsPath()}
 	if mountableProjects {
 		instructions = append(instructions, sbx.TobyProjectMountAgentsPath())
 	}
-	agentFiles := staticfiles.AgentFiles(mountableProjects)
-	files := append([]staticmount.File(nil), agentFiles...)
-	opencodeFiles, warnings, err := opencodeconfig.StaticFiles(ctx, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
+	if err := staticfiles.RegisterAgentFiles(builder, mountableProjects); err != nil {
+		return err
+	}
+	warnings, err := opencodeconfig.RegisterStaticFiles(ctx, builder, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for _, warning := range warnings {
 		warnOpenCodeModelFetch(stderr, warning)
 	}
-	files = append(files, opencodeFiles...)
-	instructionContent := make([][]byte, 0, len(agentFiles))
-	for _, file := range agentFiles {
-		instructionContent = append(instructionContent, file.Data)
-	}
-	claudeFiles, err := claudeconfig.StaticFiles(sbx.ProjectRoot(), instructionContent, mountableProjects)
+	instructionContent, err := staticfiles.AgentContents(mountableProjects)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	files = append(files, claudeFiles...)
-	return files, nil
+	if err := claudeconfig.RegisterStaticFiles(builder, sbx.ProjectRoot(), instructionContent, mountableProjects); err != nil {
+		return err
+	}
+	return builder.AddCurrentExecutable(pathpkg.Join("bin", "toby"), 0o500)
 }
 
 func warnOpenCodeModelFetch(stderr io.Writer, err error) {

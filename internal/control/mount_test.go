@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/fusekit"
+	"petris.dev/toby/internal/staticmount"
 )
 
 func TestControlMountWriteInvokesHandler(t *testing.T) {
@@ -92,13 +93,8 @@ func TestControlMountReadOpenDenied(t *testing.T) {
 	}
 }
 
-func TestControlMountMergesBinaryDirectory(t *testing.T) {
-	tobyMount, err := NewMountWithCurrentBinary(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tobyMount.Close() })
-	router, err := fusekit.NewRouter([]fusekit.Mount{tobyMount})
+func TestControlMountExposesControlFile(t *testing.T) {
+	router, err := fusekit.NewRouter([]fusekit.Mount{NewMount(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,93 +105,45 @@ func TestControlMountMergesBinaryDirectory(t *testing.T) {
 	if got := res.Attr.Mode & 0o777; got != 0o500 {
 		t.Fatalf("%s mode = %#o, want 0500", BasePath, got)
 	}
-	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpGetAttr, Path: BinPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Attr == nil || !res.Attr.IsDir() {
-		t.Fatalf("%s attr = %#v, want dir", BinPath, res.Attr)
-	}
-	if got := res.Attr.Mode & 0o777; got != 0o500 {
-		t.Fatalf("%s mode = %#o, want 0500", BinPath, got)
-	}
 	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpReadDir, Path: BasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasEntry(res.Entries, "control") || !hasEntry(res.Entries, "bin") || !hasEntry(res.Entries, "static") {
-		t.Fatalf("entries = %#v, want control, bin, and static", res.Entries)
+	if !hasEntry(res.Entries, "control") || hasEntry(res.Entries, "bin") || hasEntry(res.Entries, "static") {
+		t.Fatalf("entries = %#v, want only control", res.Entries)
 	}
-	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpGetAttr, Path: StaticPath})
+	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpGetAttr, Path: ControlPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := res.Attr.Mode & 0o777; got != 0o500 {
-		t.Fatalf("%s mode = %#o, want 0500", StaticPath, got)
-	}
-	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpReadDir, Path: BinPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasEntry(res.Entries, "toby") {
-		t.Fatalf("entries = %#v, want toby", res.Entries)
-	}
-	res, err = router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpOpen, Path: BinaryPath, Flags: syscall.O_RDONLY})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := res.Attr.Mode & 0o777; got != 0o500 {
-		t.Fatalf("%s mode = %#o, want 0500", BinaryPath, got)
+	if got := res.Attr.Mode & 0o777; got != 0o600 {
+		t.Fatalf("%s mode = %#o, want 0600", ControlPath, got)
 	}
 }
 
-func TestControlMountBinaryUsesOpenFileReference(t *testing.T) {
+func TestControlMountMergesStaticDirectoryFromOverlay(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "toby")
-	if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	staticMount, err := staticmount.New("static", BasePath+"/static", []staticmount.File{{Path: "bin/toby", Data: []byte("toby"), Mode: 0o500}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mount, err := newMountWithBinaryFDAt(BasePath, nil, fd)
-	if err != nil {
-		_ = syscall.Close(fd)
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = mount.Close() })
-	if err := os.WriteFile(path+".new", []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(path+".new", path); err != nil {
-		t.Fatal(err)
-	}
-	replaced, err := os.ReadFile(path)
+	router, err := fusekit.NewRouter([]fusekit.Mount{NewMount(nil), staticMount})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(replaced) != "new" {
-		t.Fatalf("replaced binary = %q, want new", replaced)
-	}
-	router, err := fusekit.NewRouter([]fusekit.Mount{mount})
+	res, err := router.Dispatch(ctx, fusekit.Operation{Kind: fusekit.OpReadDir, Path: BasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := router.Dispatch(ctx, fusekit.Operation{Kind: fusekit.OpOpen, Path: BinaryPath, Flags: syscall.O_RDONLY})
+	if !hasEntry(res.Entries, "control") || !hasEntry(res.Entries, "static") {
+		t.Fatalf("entries = %#v, want control and static", res.Entries)
+	}
+	res, err = router.Dispatch(ctx, fusekit.Operation{Kind: fusekit.OpOpen, Path: BasePath + "/static/bin/toby", Flags: syscall.O_RDONLY})
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := res.Handle.(fusekit.FileReader).Read(ctx, make([]byte, 16), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "old" {
-		t.Fatalf("mounted binary = %q, want old", data)
-	}
-	if err := res.Handle.(fusekit.FileReleaser).Release(ctx); err != nil {
-		t.Fatal(err)
+	if got := res.Attr.Mode & 0o777; got != 0o500 {
+		t.Fatalf("static bin mode = %#o, want 0500", got)
 	}
 }
 
@@ -212,8 +160,8 @@ func TestControlMountAtCustomBasePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasEntry(res.Entries, "control") || !hasEntry(res.Entries, "bin") || !hasEntry(res.Entries, "static") {
-		t.Fatalf("entries = %#v, want control, bin, and static", res.Entries)
+	if !hasEntry(res.Entries, "control") || hasEntry(res.Entries, "bin") || hasEntry(res.Entries, "static") {
+		t.Fatalf("entries = %#v, want only control", res.Entries)
 	}
 	if _, err := router.Dispatch(context.Background(), fusekit.Operation{Kind: fusekit.OpGetAttr, Path: "/.state/toby/control"}); err != nil {
 		t.Fatal(err)

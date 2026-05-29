@@ -1,7 +1,8 @@
 package staticfiles
 
 import (
-	_ "embed"
+	"embed"
+	"io/fs"
 
 	"petris.dev/toby/internal/staticmount"
 )
@@ -11,16 +12,39 @@ const (
 	ProjectMountAgentsPath = "PROJECT_MOUNT_AGENTS.md"
 )
 
-//go:embed GIT_AGENTS.md
-var gitAgentsFile []byte
+//go:embed GIT_AGENTS.md PROJECT_MOUNT_AGENTS.md
+var agentFiles embed.FS
 
-//go:embed PROJECT_MOUNT_AGENTS.md
-var projectMountAgentsFile []byte
+func RegisterAgentFiles(registrar Registrar, mountableProjects bool) error {
+	if err := registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400); err != nil {
+		return err
+	}
+	if mountableProjects {
+		return registrar.AddFS(ProjectMountAgentsPath, agentFiles, ProjectMountAgentsPath, 0o400)
+	}
+	return nil
+}
+
+func AgentContents(mountableProjects bool) ([][]byte, error) {
+	paths := []string{GitAgentsPath}
+	if mountableProjects {
+		paths = append(paths, ProjectMountAgentsPath)
+	}
+	contents := make([][]byte, 0, len(paths))
+	for _, path := range paths {
+		data, err := fs.ReadFile(agentFiles, path)
+		if err != nil {
+			return nil, err
+		}
+		contents = append(contents, data)
+	}
+	return contents, nil
+}
 
 func AgentFiles(mountableProjects bool) []staticmount.File {
-	files := []staticmount.File{{Path: GitAgentsPath, Data: gitAgentsFile, Mode: 0o400}}
-	if mountableProjects {
-		files = append(files, staticmount.File{Path: ProjectMountAgentsPath, Data: projectMountAgentsFile, Mode: 0o400})
+	builder := NewService().NewBuilder()
+	if err := RegisterAgentFiles(builder, mountableProjects); err != nil {
+		return nil
 	}
-	return files
+	return builder.Files()
 }

@@ -27,7 +27,7 @@ The sandbox home is not your host home. Toby does not mount host secrets such as
 
 If FUSE is unavailable or fails to start, Toby prints a warning to stderr and continues without Toby MCP, sandbox control commands, synthetic configuration, or mountable projects. If `--mountable-projects` was explicitly requested, missing or failing FUSE is an error.
 
-Toby prepends `$XDG_STATE_HOME/toby/bin` to sandbox `PATH` and exposes the current Toby binary there, so MCP clients launched inside the sandbox can use `toby mcp` directly. The command is intended to run inside a Toby sandbox and fails when `$XDG_STATE_HOME/toby/control` is unavailable. The Toby runtime directory is synthetic and does not pass through files from the sandbox home; attempts to create or modify entries there fail.
+Toby prepends `$XDG_STATE_HOME/toby/static/bin` to sandbox `PATH` and exposes the current Toby binary there, so MCP clients launched inside the sandbox can use `toby mcp` directly. The command is intended to run inside a Toby sandbox and fails when `$XDG_STATE_HOME/toby/control` is unavailable. The Toby runtime directory is synthetic and does not pass through files from the sandbox home; attempts to create or modify entries there fail.
 
 ## MCP
 

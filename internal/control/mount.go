@@ -14,31 +14,19 @@ import (
 
 const (
 	BasePath    = "/.local/state/toby"
-	BinPath     = "/.local/state/toby/bin"
-	BinaryPath  = "/.local/state/toby/bin/toby"
 	ControlPath = "/.local/state/toby/control"
-	StaticPath  = "/.local/state/toby/static"
-	selfExePath = "/proc/self/exe"
 	maxRequest  = 4096
 )
 
 type mountPaths struct {
 	base    string
-	bin     string
-	binary  string
 	control string
-	static  string
-}
-
-type binaryFile struct {
-	fd int
 }
 
 type Handler func(context.Context, []byte) ([]byte, error)
 
 type Mount struct {
 	handler           Handler
-	binary            *binaryFile
 	paths             mountPaths
 	created           time.Time
 	mountableProjects bool
@@ -72,46 +60,8 @@ func NewMountAt(basePath string, handler Handler, opts ...MountOption) (*Mount, 
 	return mount, nil
 }
 
-func NewMountWithCurrentBinary(handler Handler, opts ...MountOption) (*Mount, error) {
-	return NewMountWithCurrentBinaryAt(BasePath, handler, opts...)
-}
-
-func NewMountWithCurrentBinaryAt(basePath string, handler Handler, opts ...MountOption) (*Mount, error) {
-	fd, err := syscall.Open(selfExePath, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	mount, err := newMountWithBinaryFDAt(basePath, handler, fd, opts...)
-	if err != nil {
-		_ = syscall.Close(fd)
-		return nil, err
-	}
-	return mount, nil
-}
-
-func newMountWithBinaryFDAt(basePath string, handler Handler, fd int, opts ...MountOption) (*Mount, error) {
-	mount, err := NewMountAt(basePath, handler, opts...)
-	if err != nil {
-		return nil, err
-	}
-	attr, err := binaryFileAttr(mount.paths.binary, fd, mount.ID())
-	if err != nil {
-		return nil, err
-	}
-	if attr.Mode&syscall.S_IFMT != syscall.S_IFREG {
-		return nil, os.ErrInvalid
-	}
-	mount.binary = &binaryFile{fd: fd}
-	return mount, nil
-}
-
 func (m *Mount) Close() error {
-	if m == nil || m.binary == nil {
-		return nil
-	}
-	fd := m.binary.fd
-	m.binary = nil
-	return syscall.Close(fd)
+	return nil
 }
 
 func (m *Mount) ID() string { return "toby-control" }
@@ -142,15 +92,9 @@ func (m *Mount) getAttr(path string) (fusekit.Result, error) {
 	switch path {
 	case m.paths.base:
 		attr = m.attr("dir", path, syscall.S_IFDIR|0o500)
-	case m.paths.bin:
-		attr = m.attr("dir", path, syscall.S_IFDIR|0o500)
 	case m.paths.control:
 		attr = m.attr("file", path, syscall.S_IFREG|0o600)
 		attr.Size = maxRequest
-	case m.paths.static:
-		attr = m.attr("dir", path, syscall.S_IFDIR|0o500)
-	case m.paths.binary:
-		return m.binaryAttr()
 	default:
 		return fusekit.Result{}, syscall.ENOENT
 	}
@@ -166,28 +110,6 @@ func (m *Mount) readDir(path string) (fusekit.Result, error) {
 				Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "file", Key: m.paths.control},
 				Mode:   syscall.S_IFREG | 0o600,
 			},
-			{
-				Name:   "bin",
-				Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "dir", Key: m.paths.bin},
-				Mode:   syscall.S_IFDIR | 0o500,
-			},
-			{
-				Name:   "static",
-				Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "dir", Key: m.paths.static},
-				Mode:   syscall.S_IFDIR | 0o500,
-			},
-		}
-		return fusekit.Result{Entries: entries}, nil
-	case m.paths.static:
-		return fusekit.Result{Entries: nil}, nil
-	case m.paths.bin:
-		entries := []fusekit.DirEntry{}
-		if m.binary != nil {
-			entries = append(entries, fusekit.DirEntry{
-				Name:   "toby",
-				Object: fusekit.ObjectKey{MountID: m.ID(), Kind: "file", Key: m.paths.binary},
-				Mode:   syscall.S_IFREG | 0o500,
-			})
 		}
 		return fusekit.Result{Entries: entries}, nil
 	default:
@@ -206,8 +128,6 @@ func (m *Mount) open(path string, flags uint32) (fusekit.Result, error) {
 			return fusekit.Result{}, syscall.EROFS
 		}
 		return fusekit.Result{Handle: &controlFile{handler: m.handler}}, nil
-	case m.paths.binary:
-		return m.openBinary(flags)
 	default:
 		if hasWriteFlags(flags) {
 			return fusekit.Result{}, syscall.EROFS
@@ -233,65 +153,10 @@ func (m *Mount) attr(kind, key string, mode uint32) fusekit.Attr {
 	}
 }
 
-func (m *Mount) binaryAttr() (fusekit.Result, error) {
-	if m.binary == nil {
-		return fusekit.Result{}, syscall.ENOENT
-	}
-	attr, err := binaryFileAttr(m.paths.binary, m.binary.fd, m.ID())
-	if err != nil {
-		return fusekit.Result{}, err
-	}
-	return fusekit.Result{Attr: &attr}, nil
-}
-
-func (m *Mount) openBinary(flags uint32) (fusekit.Result, error) {
-	if m.binary == nil {
-		return fusekit.Result{}, syscall.ENOENT
-	}
-	if hasWriteFlags(flags) {
-		return fusekit.Result{}, syscall.EROFS
-	}
-	fd, err := syscall.Dup(m.binary.fd)
-	if err != nil {
-		return fusekit.Result{}, err
-	}
-	syscall.CloseOnExec(fd)
-	attr, err := binaryFileAttr(m.paths.binary, fd, m.ID())
-	if err != nil {
-		_ = syscall.Close(fd)
-		return fusekit.Result{}, err
-	}
-	return fusekit.Result{Attr: &attr, Handle: &hostFile{fd: fd}}, nil
-}
-
-func binaryFileAttr(key string, fd int, mountID string) (fusekit.Attr, error) {
-	st := syscall.Stat_t{}
-	if err := syscall.Fstat(fd, &st); err != nil {
-		return fusekit.Attr{}, err
-	}
-	return fusekit.Attr{
-		Object:  fusekit.ObjectKey{MountID: mountID, Kind: "file", Key: key},
-		Mode:    uint32(st.Mode)&syscall.S_IFMT | 0o500,
-		Size:    uint64(st.Size),
-		UID:     st.Uid,
-		GID:     st.Gid,
-		Nlink:   uint32(st.Nlink),
-		Rdev:    uint32(st.Rdev),
-		Blocks:  uint64(st.Blocks),
-		Blksize: uint32(st.Blksize),
-		ATime:   time.Unix(int64(st.Atim.Sec), int64(st.Atim.Nsec)),
-		MTime:   time.Unix(int64(st.Mtim.Sec), int64(st.Mtim.Nsec)),
-		CTime:   time.Unix(int64(st.Ctim.Sec), int64(st.Ctim.Nsec)),
-	}, nil
-}
-
 func defaultMountPaths() mountPaths {
 	return mountPaths{
 		base:    BasePath,
-		bin:     BinPath,
-		binary:  BinaryPath,
 		control: ControlPath,
-		static:  StaticPath,
 	}
 }
 
@@ -302,10 +167,7 @@ func newMountPaths(basePath string) (mountPaths, error) {
 	}
 	return mountPaths{
 		base:    base,
-		bin:     pathpkg.Join(base, "bin"),
-		binary:  pathpkg.Join(base, "bin", "toby"),
 		control: pathpkg.Join(base, "control"),
-		static:  pathpkg.Join(base, "static"),
 	}, nil
 }
 
@@ -414,57 +276,4 @@ func (f *controlFile) process(ctx context.Context, requireSingleLine bool) error
 
 func (f *controlFile) Fsync(context.Context, uint32) error {
 	return f.err
-}
-
-type staticFile struct {
-	data []byte
-}
-
-var _ = (fusekit.FileReader)((*staticFile)(nil))
-
-func (f *staticFile) Read(ctx context.Context, dest []byte, off int64) ([]byte, error) {
-	if off < 0 {
-		return nil, syscall.EINVAL
-	}
-	if int64(len(f.data)) <= off {
-		return nil, nil
-	}
-	data := f.data[off:]
-	if len(data) > len(dest) {
-		data = data[:len(dest)]
-	}
-	return append([]byte(nil), data...), nil
-}
-
-type hostFile struct {
-	mu sync.Mutex
-	fd int
-}
-
-var _ = (fusekit.FileReader)((*hostFile)(nil))
-var _ = (fusekit.FileReleaser)((*hostFile)(nil))
-
-func (f *hostFile) Read(ctx context.Context, dest []byte, off int64) ([]byte, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fd < 0 {
-		return nil, syscall.EBADF
-	}
-	buf := make([]byte, len(dest))
-	n, err := syscall.Pread(f.fd, buf, off)
-	if err != nil {
-		return nil, err
-	}
-	return buf[:n], nil
-}
-
-func (f *hostFile) Release(context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fd < 0 {
-		return nil
-	}
-	fd := f.fd
-	f.fd = -1
-	return syscall.Close(fd)
 }

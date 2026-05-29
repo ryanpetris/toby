@@ -436,7 +436,7 @@ func (s *Sandbox) SetupContext(ctx *tool.RunContext) {
 	for i := len(entries) - 1; i >= 0; i-- {
 		ctx.Env.Prepend("PATH", entries[i])
 	}
-	ctx.Env.Prepend("PATH", filepath.Join(s.TobyStateDir(), "bin"))
+	ctx.Env.Prepend("PATH", filepath.Join(s.TobyStaticDir(), "bin"))
 }
 
 func (s *Sandbox) BuildCommand(argv []string, mounts CommandMounts) []string {

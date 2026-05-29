@@ -417,7 +417,7 @@ func TestSetupContextPrependsTobyBin(t *testing.T) {
 	run := &tool.RunContext{Toolset: &tool.Toolset{}, Env: tool.Environment{"PATH": "/usr/bin"}}
 	sbx.SetupContext(run)
 	pathEntries := strings.Split(run.Env["PATH"], ":")
-	want := []string{filepath.Join(home, ".local", "state", "toby", "bin"), filepath.Join(home, ".local", "bin"), "/usr/bin"}
+	want := []string{filepath.Join(home, ".local", "state", "toby", "static", "bin"), filepath.Join(home, ".local", "bin"), "/usr/bin"}
 	if !slices.Equal(pathEntries, want) {
 		t.Fatalf("PATH entries = %#v, want %#v", pathEntries, want)
 	}
@@ -452,8 +452,8 @@ func TestTobyStatePathsUseConfiguredStateHome(t *testing.T) {
 	run := &tool.RunContext{Toolset: &tool.Toolset{}, Env: tool.Environment{"PATH": "/usr/bin"}}
 	sbx.SetupContext(run)
 	pathEntries := strings.Split(run.Env["PATH"], ":")
-	if pathEntries[0] != filepath.Join(home, ".state", "toby", "bin") {
-		t.Fatalf("PATH entries = %#v, want custom Toby bin first", pathEntries)
+	if pathEntries[0] != filepath.Join(home, ".state", "toby", "static", "bin") {
+		t.Fatalf("PATH entries = %#v, want custom Toby static bin first", pathEntries)
 	}
 	if run.Env["XDG_STATE_HOME"] != filepath.Join(home, ".state") {
 		t.Fatalf("XDG_STATE_HOME = %q", run.Env["XDG_STATE_HOME"])
