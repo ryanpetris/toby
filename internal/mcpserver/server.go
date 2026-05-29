@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/version"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/fx"
@@ -101,7 +102,7 @@ func (r *Runner) Run(ctx context.Context, controlPath string) error {
 	}
 
 	server := &Server{client: control.NewClient(controlPath)}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: "dev"}, &mcp.ServerOptions{
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: version.String()}, &mcp.ServerOptions{
 		Instructions: gitServerInstructions,
 	})
 	for _, tool := range r.tools {

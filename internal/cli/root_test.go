@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"testing"
 
 	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/version"
 
 	"github.com/spf13/cobra"
 )
@@ -42,6 +44,36 @@ func TestExecCommandGeneratedFromRegisteredTool(t *testing.T) {
 	cmd := NewRootCommand(Params{Registry: registry})
 	if findCommand(cmd, "exec") == nil {
 		t.Fatal("exec command missing")
+	}
+}
+
+func TestVersionFlagPrintsVersion(t *testing.T) {
+	old := version.Version
+	version.Version = "v1.2.3"
+	t.Cleanup(func() { version.Version = old })
+
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Params{Registry: emptyRegistry(t), Args: []string{"--version"}, Stdout: &stdout})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "v1.2.3\n" {
+		t.Fatalf("version output = %q, want %q", got, "v1.2.3\n")
+	}
+}
+
+func TestVersionFlagDefaultsToDev(t *testing.T) {
+	old := version.Version
+	version.Version = ""
+	t.Cleanup(func() { version.Version = old })
+
+	var stdout bytes.Buffer
+	cmd := NewRootCommand(Params{Registry: emptyRegistry(t), Args: []string{"--version"}, Stdout: &stdout})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "dev\n" {
+		t.Fatalf("version output = %q, want %q", got, "dev\n")
 	}
 }
 

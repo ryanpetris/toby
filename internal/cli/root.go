@@ -21,6 +21,7 @@ import (
 	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/version"
 
 	"github.com/spf13/cobra"
 )
@@ -54,6 +55,7 @@ func NewRootCommand(params Params) *cobra.Command {
 		Use:           "toby",
 		Short:         "Run Toby Sandbox development environments.",
 		Long:          "Toby Sandbox runs development tools inside private-home bubblewrap sandboxes.",
+		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,6 +72,7 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.SetArgs(params.Args)
+	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.Flags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
 
 	cmd.AddCommand(newSandboxCommand(params))

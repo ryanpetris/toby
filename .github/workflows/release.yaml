@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Derive version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          describe="$(git describe --tags --long --match 'v*' 2>/dev/null || true)"
+          if [ -z "$describe" ]; then
+            version="dev"
+          elif [[ "$describe" =~ ^(.+)-0-g[0-9a-f]+$ ]]; then
+            version="${BASH_REMATCH[1]}"
+          elif [[ "$describe" =~ ^(.+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
+            version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+          else
+            version="$describe"
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux-x86_64 dist/linux-arm64
+          ldflags="-s -w -extldflags=-static -X petris.dev/toby/internal/version.Version=${VERSION}"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-x86_64/toby .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/linux-arm64/toby .
+
+          tar -C dist/linux-x86_64 -czf dist/toby-linux-x86_64.tar.gz toby
+          tar -C dist/linux-arm64 -czf dist/toby-linux-arm64.tar.gz toby
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(dist/toby-linux-x86_64.tar.gz dist/toby-linux-arm64.tar.gz)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$TAG" --notes "Release $TAG"
+          fi
