@@ -1,53 +1,42 @@
 package tools
 
 import (
-	"net/http"
-	"time"
-
-	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/claude"
+	"petris.dev/toby/internal/tools/codex"
+	"petris.dev/toby/internal/tools/copilot"
+	"petris.dev/toby/internal/tools/docker"
+	"petris.dev/toby/internal/tools/emdash"
+	"petris.dev/toby/internal/tools/forgejocli"
+	"petris.dev/toby/internal/tools/githubcli"
+	"petris.dev/toby/internal/tools/gitlabcli"
+	"petris.dev/toby/internal/tools/grok"
+	"petris.dev/toby/internal/tools/npm"
+	"petris.dev/toby/internal/tools/opencode"
+	"petris.dev/toby/internal/tools/speckit"
+	"petris.dev/toby/internal/tools/t3"
+	"petris.dev/toby/internal/tools/toolutil"
+	"petris.dev/toby/internal/tools/uv"
 
 	"go.uber.org/fx"
 )
 
-type constructor any
-
-var constructors []constructor
-
-func register(c constructor) {
-	constructors = append(constructors, c)
-}
-
 func Module() fx.Option {
-	options := []fx.Option{
-		fx.Provide(newHTTPClient),
-	}
-	for _, c := range constructors {
-		options = append(options, fx.Provide(fx.Annotate(c, fx.ResultTags(`group:"`+tool.FxToolGroup+`"`))))
-	}
-	return fx.Module("tools", options...)
-}
-
-func newHTTPClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
-}
-
-func simpleBase(name, help string, groups ...string) tool.Base {
-	return tool.Base{Metadata: tool.Metadata{Name: name, LaunchHelp: help, ContextGroups: groups}}
-}
-
-func simpleBaseWithDeps(name, help string, deps []string, groups ...string) tool.Base {
-	return tool.Base{Metadata: tool.Metadata{Name: name, LaunchHelp: help, Dependencies: deps, ContextGroups: groups}}
-}
-
-func simpleTool(paths config.Paths, base tool.Base, hostSubpath, sandboxSubpath []string, install []string, sandboxEnv map[string]string) tool.Tool {
-	return &tool.Simple{
-		Base:           base,
-		RootDir:        paths.SandboxRoot,
-		Home:           paths.Home,
-		HostSubpath:    hostSubpath,
-		SandboxSubpath: sandboxSubpath,
-		InstallCommand: install,
-		SandboxEnv:     sandboxEnv,
-	}
+	return fx.Module(
+		"tools",
+		toolutil.Module,
+		npm.Module,
+		docker.Module,
+		claude.Module,
+		copilot.Module,
+		codex.Module,
+		t3.Module,
+		opencode.Module,
+		uv.Module,
+		emdash.Module,
+		grok.Module,
+		speckit.Module,
+		githubcli.Module,
+		gitlabcli.Module,
+		forgejocli.Module,
+	)
 }

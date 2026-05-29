@@ -1,4 +1,4 @@
-package tools
+package toolutil
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"petris.dev/toby/internal/openai"
 )
 
-func getJSON(ctx context.Context, client *http.Client, url, accept string, target any) error {
+func GetJSON(ctx context.Context, client *http.Client, url, accept string, target any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -40,7 +40,7 @@ func getJSON(ctx context.Context, client *http.Client, url, accept string, targe
 	return nil
 }
 
-func goAssetArch(toolName string) (string, error) {
+func GoAssetArch(toolName string) (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "amd64", nil
@@ -51,7 +51,7 @@ func goAssetArch(toolName string) (string, error) {
 	}
 }
 
-func linuxAssetArch(toolName string) (string, error) {
+func LinuxAssetArch(toolName string) (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "x86_64", nil
@@ -62,7 +62,7 @@ func linuxAssetArch(toolName string) (string, error) {
 	}
 }
 
-func rustTargetTriple(toolName string) (string, error) {
+func RustTargetTriple(toolName string) (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "x86_64-unknown-linux-gnu", nil

@@ -19,11 +19,13 @@ type Simple struct {
 	LaunchCommand       string
 }
 
-func (t *Simple) HostInit(context.Context, *CommandOptions) error {
-	if len(t.HostSubpath) == 0 {
-		return nil
-	}
-	return os.MkdirAll(filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...), 0o755)
+func (t *Simple) HostInit(_ context.Context, opts *CommandOptions) error {
+	return HostInitOnce(opts, t.Name(), func() error {
+		if len(t.HostSubpath) == 0 {
+			return nil
+		}
+		return os.MkdirAll(filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...), 0o755)
+	})
 }
 
 func (t *Simple) Binds() []Bind {
@@ -46,13 +48,33 @@ func (t *Simple) Binds() []Bind {
 }
 
 func (t *Simple) SandboxContextSetup(ctx *RunContext) error {
-	for key, value := range t.SandboxEnv {
-		ctx.Env[key] = value
-	}
-	return nil
+	return SandboxContextSetupOnce(ctx, t.Name(), func() error {
+		for key, value := range t.SandboxEnv {
+			ctx.Env[key] = value
+		}
+		return nil
+	})
 }
 
-func (t *Simple) Install(ctx context.Context, run *RunContext, force bool) error {
+func (t *Simple) Install(ctx context.Context, run *RunContext) error {
+	return t.install(ctx, run, false)
+}
+
+func (t *Simple) Upgrade(ctx context.Context, run *RunContext) error {
+	return t.install(ctx, run, true)
+}
+
+func (t *Simple) install(ctx context.Context, run *RunContext, force bool) error {
+	once := InstallOnce
+	if force {
+		once = UpgradeOnce
+	}
+	return once(run, t.Name(), func() error {
+		return t.runInstall(ctx, run, force)
+	})
+}
+
+func (t *Simple) runInstall(ctx context.Context, run *RunContext, force bool) error {
 	if len(t.InstallCommand) == 0 {
 		return nil
 	}

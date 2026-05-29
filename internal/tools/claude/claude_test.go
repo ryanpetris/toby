@@ -1,4 +1,4 @@
-package tools
+package claude
 
 import (
 	"path/filepath"
@@ -7,6 +7,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/npm"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -15,12 +16,19 @@ import (
 func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, StateHome: filepath.Join(home, ".state"), SandboxRoot: filepath.Join(home, "sandboxes")}
-	run := &tool.RunContext{Env: tool.Environment{}}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Env: tool.Environment{}}
 	var claude tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
-		fx.Provide(newClaudeTool),
-		fx.Populate(&claude),
+		npm.Module,
+		Module,
+		fx.Invoke(func(params struct {
+			fx.In
+
+			Claude tool.Tool `name:"claude"`
+		}) {
+			claude = params.Claude
+		}),
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
@@ -33,10 +41,10 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	}
 }
 
-func TestClaudeStaticFlagsInjectedWhenMounted(t *testing.T) {
+func TestStaticFlagsInjectedWhenMounted(t *testing.T) {
 	state := "/home/toby/.state"
 	base := filepath.Join(state, "toby", "static", "claude")
-	flags := claudeStaticFlags(state, true, false)
+	flags := staticFlags(state, true, false)
 
 	for _, want := range [][2]string{
 		{"--mcp-config", filepath.Join(base, "mcp.json")},
@@ -53,17 +61,17 @@ func TestClaudeStaticFlagsInjectedWhenMounted(t *testing.T) {
 	}
 }
 
-func TestClaudeStaticFlagsIncludePluginWhenMountable(t *testing.T) {
+func TestStaticFlagsIncludePluginWhenMountable(t *testing.T) {
 	state := "/home/toby/.state"
-	flags := claudeStaticFlags(state, true, true)
+	flags := staticFlags(state, true, true)
 	i := slices.Index(flags, "--plugin-dir")
 	if i == -1 || flags[i+1] != filepath.Join(state, "toby", "static", "claude", "plugin") {
 		t.Fatalf("--plugin-dir missing or wrong: %v", flags)
 	}
 }
 
-func TestClaudeStaticFlagsAbsentWithoutMount(t *testing.T) {
-	if flags := claudeStaticFlags("/home/toby/.state", false, true); len(flags) != 0 {
+func TestStaticFlagsAbsentWithoutMount(t *testing.T) {
+	if flags := staticFlags("/home/toby/.state", false, true); len(flags) != 0 {
 		t.Fatalf("expected no flags without static mount, got %v", flags)
 	}
 }

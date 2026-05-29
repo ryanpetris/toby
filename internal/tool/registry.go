@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"go.uber.org/fx"
 )
@@ -75,10 +74,18 @@ func (r *Registry) LaunchTools() []Tool {
 }
 
 func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
-	builder := toolBuilder{registry: r}
-	ordered, err := builder.resolve(requested)
-	if err != nil {
-		return nil, err
+	seen := map[string]bool{}
+	ordered := make([]Tool, 0, len(requested)+1)
+	for _, name := range requested {
+		item, ok := r.Get(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown tool: %s", name)
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		ordered = append(ordered, item)
 	}
 	var primaryTool Tool
 	if primary != "" {
@@ -87,73 +94,11 @@ func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown primary tool: %s", primary)
 		}
+		if !seen[primary] {
+			ordered = append(ordered, primaryTool)
+		}
 	}
 	return &Toolset{primary: primaryTool, ordered: ordered}, nil
-}
-
-type toolBuilder struct {
-	registry      *Registry
-	orderedNames  []string
-	visitingTools []string
-	visitingNames map[string]bool
-}
-
-func (b *toolBuilder) resolve(requested []string) ([]Tool, error) {
-	b.visitingNames = map[string]bool{}
-	for _, name := range requested {
-		if _, ok := b.registry.Get(name); !ok {
-			return nil, fmt.Errorf("unknown tool: %s", name)
-		}
-		if err := b.add(name); err != nil {
-			return nil, err
-		}
-	}
-	orderedNames := append([]string(nil), b.orderedNames...)
-	for i, j := 0, len(orderedNames)-1; i < j; i, j = i+1, j-1 {
-		orderedNames[i], orderedNames[j] = orderedNames[j], orderedNames[i]
-	}
-	ordered := make([]Tool, 0, len(orderedNames))
-	for _, name := range orderedNames {
-		ordered = append(ordered, b.registry.MustGet(name))
-	}
-	return ordered, nil
-}
-
-func (b *toolBuilder) add(name string) error {
-	if b.visitingNames[name] {
-		start := 0
-		for i, item := range b.visitingTools {
-			if item == name {
-				start = i
-				break
-			}
-		}
-		cycle := append(append([]string(nil), b.visitingTools[start:]...), name)
-		return fmt.Errorf("tool dependency cycle: %s", strings.Join(cycle, " -> "))
-	}
-	for i, item := range b.orderedNames {
-		if item == name {
-			b.orderedNames = append(b.orderedNames[:i], b.orderedNames[i+1:]...)
-			break
-		}
-	}
-	b.orderedNames = append(b.orderedNames, name)
-	b.visitingTools = append(b.visitingTools, name)
-	b.visitingNames[name] = true
-
-	item := b.registry.MustGet(name)
-	for _, dep := range item.Dependencies() {
-		if _, ok := b.registry.Get(dep); !ok {
-			return fmt.Errorf("tool %s depends on unknown tool: %s", name, dep)
-		}
-		if err := b.add(dep); err != nil {
-			return err
-		}
-	}
-
-	b.visitingTools = b.visitingTools[:len(b.visitingTools)-1]
-	delete(b.visitingNames, name)
-	return nil
 }
 
 func ExpandGroups(groups []string) []string {
@@ -208,16 +153,30 @@ func (t *Toolset) Has(name string) bool {
 
 func (t *Toolset) Binds() []Bind {
 	var binds []Bind
+	seen := map[Bind]bool{}
 	for _, item := range t.ordered {
-		binds = append(binds, item.Binds()...)
+		for _, bind := range item.Binds() {
+			if seen[bind] {
+				continue
+			}
+			seen[bind] = true
+			binds = append(binds, bind)
+		}
 	}
 	return binds
 }
 
 func (t *Toolset) PathEntries() []string {
 	var entries []string
+	seen := map[string]bool{}
 	for _, item := range t.ordered {
-		entries = append(entries, item.PathEntries()...)
+		for _, entry := range item.PathEntries() {
+			if seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			entries = append(entries, entry)
+		}
 	}
 	return entries
 }
@@ -249,9 +208,18 @@ func (t *Toolset) SandboxInit(ctx context.Context, run *RunContext) error {
 	return nil
 }
 
-func (t *Toolset) Install(ctx context.Context, run *RunContext, force bool) error {
+func (t *Toolset) Install(ctx context.Context, run *RunContext) error {
 	for _, item := range t.ordered {
-		if err := item.Install(ctx, run, force); err != nil {
+		if err := item.Install(ctx, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Toolset) Upgrade(ctx context.Context, run *RunContext) error {
+	for _, item := range t.ordered {
+		if err := item.Upgrade(ctx, run); err != nil {
 			return err
 		}
 	}
@@ -263,9 +231,15 @@ func (t *Toolset) Launch(ctx context.Context, run *RunContext) error {
 		return fmt.Errorf("toolset cannot launch without a primary tool")
 	}
 	if run.Options.Install {
-		return t.Install(ctx, run, true)
+		return t.Install(ctx, run)
 	}
-	if err := t.Install(ctx, run, run.Options.Upgrade); err != nil {
+	if run.Options.Upgrade {
+		if err := t.Upgrade(ctx, run); err != nil {
+			return err
+		}
+		return t.primary.Launch(ctx, run)
+	}
+	if err := t.Install(ctx, run); err != nil {
 		return err
 	}
 	return t.primary.Launch(ctx, run)

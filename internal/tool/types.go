@@ -60,6 +60,7 @@ type CommandOptions struct {
 	MountableProjects bool
 	Install           bool
 	Upgrade           bool
+	lifecycle         map[string]bool
 }
 
 type ExecOptions struct {
@@ -83,13 +84,13 @@ type RunContext struct {
 	// StaticMount is true when the read-only FUSE static files overlay (Toby MCP
 	// binary and generated agent configuration) is mounted.
 	StaticMount bool
+	lifecycle   map[string]bool
 }
 
 type Tool interface {
 	Name() string
 	CommandName() string
 	LaunchHelp() string
-	Dependencies() []string
 	ContextGroups() []string
 	Binds() []Bind
 	PathEntries() []string
@@ -97,7 +98,8 @@ type Tool interface {
 	HostInit(context.Context, *CommandOptions) error
 	SandboxContextSetup(*RunContext) error
 	SandboxInit(context.Context, *RunContext) error
-	Install(context.Context, *RunContext, bool) error
+	Install(context.Context, *RunContext) error
+	Upgrade(context.Context, *RunContext) error
 	Launch(context.Context, *RunContext) error
 }
 
@@ -105,7 +107,6 @@ type Metadata struct {
 	Name          string
 	CLIName       string
 	LaunchHelp    string
-	Dependencies  []string
 	ContextGroups []string
 }
 
@@ -126,8 +127,6 @@ func (b Base) CommandName() string { return b.Metadata.CommandName() }
 
 func (b Base) LaunchHelp() string { return b.Metadata.LaunchHelp }
 
-func (b Base) Dependencies() []string { return append([]string(nil), b.Metadata.Dependencies...) }
-
 func (b Base) ContextGroups() []string { return append([]string(nil), b.Metadata.ContextGroups...) }
 
 func (b Base) Binds() []Bind { return nil }
@@ -142,7 +141,9 @@ func (b Base) SandboxContextSetup(*RunContext) error { return nil }
 
 func (b Base) SandboxInit(context.Context, *RunContext) error { return nil }
 
-func (b Base) Install(context.Context, *RunContext, bool) error { return nil }
+func (b Base) Install(context.Context, *RunContext) error { return nil }
+
+func (b Base) Upgrade(context.Context, *RunContext) error { return nil }
 
 func (b Base) Launch(context.Context, *RunContext) error {
 	return ErrNotLaunchable(b.Name())
