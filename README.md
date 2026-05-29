@@ -1,98 +1,95 @@
 # Toby
 
-Toby Sandbox runs development tools inside private-home Bubblewrap environments.
+Toby sandboxes software development tools so agents can work on code without inheriting your real home directory.
 
-## Usage
+Run OpenCode, Claude Code, Codex, Copilot, Grok, Docker, package managers, and VCS CLIs in private Linux homes with access only to the project you choose. Your host `~/.ssh`, `~/.gnupg`, and other personal files stay outside the sandbox.
+
+When a sandboxed agent needs to do something that really should happen on the host, like signing a commit or pushing over SSH, Toby exposes a narrow MCP bridge. The agent can ask Toby to run selected host Git operations for visible repositories without mounting your keys into the sandbox.
+
+## Sandbox Development
+
+- Each named environment gets its own private `$HOME`.
+- Project access is scoped to your XDG Projects directory.
+- Tool installers write into the sandbox home, not your host home.
+- Temporary environments make one-off tasks disposable.
+- Toby MCP bridges host Git operations that need your host SSH agent, GPG setup, Git config, or credential helpers.
+
+## Install
+
+Toby is a Go command-line tool:
 
 ```sh
-toby <tool> <env> -- <tool arguments>
+go install petris.dev/toby@latest
+```
+
+Make sure your Go binary directory, usually `~/go/bin`, is on `PATH`.
+
+Runtime requirements:
+
+- Linux with Bubblewrap available at `/usr/bin/bwrap`.
+- FUSE via `/dev/fuse` for Toby MCP, sandbox control commands, generated OpenCode config, and mountable projects.
+- Tool-specific installers may need common utilities such as `curl`, `tar`, or `npm`.
+
+## Get Started
+
+Create or choose a project under your Projects directory:
+
+```sh
+mkdir -p ~/Projects/my-app
+```
+
+Launch OpenCode in a persistent sandbox named `my-app`:
+
+```sh
+toby opencode my-app
+```
+
+Toby maps the environment name to `~/Projects/my-app`, creates a private sandbox home for that environment, installs missing tool dependencies inside that home, then launches the tool in the project.
+
+Run any command in the same environment:
+
+```sh
+toby exec my-app -- npm test
+```
+
+Use a temporary home for disposable work:
+
+```sh
+toby exec --tmp-env --project ~/Projects/my-app -- bash
+```
+
+## Projects Directory
+
+Toby follows the XDG-style `XDG_PROJECTS_DIR` convention. If `XDG_PROJECTS_DIR` is unset, Toby uses `~/Projects`.
+
+The default project for a named environment is `$XDG_PROJECTS_DIR/<env>`. For example, `toby codex website` uses a persistent sandbox home named `website` and mounts the project at `~/Projects/website` by default.
+
+Use `--project` when the sandbox name and project directory should differ:
+
+```sh
+toby claude review-env --project ~/Projects/customer-api
+```
+
+Project paths must resolve to `XDG_PROJECTS_DIR` or a directory below it. This keeps sandbox project access explicit and prevents accidental access to unrelated host paths.
+
+## Common Commands
+
+```sh
+toby opencode <env>
+toby claude <env>
+toby codex <env>
 toby exec <env> -- <command arguments>
 ```
 
-Use `--tmp-env` for a temporary sandbox home.
+Useful flags:
 
-Toby bind mounts the private sandbox `$HOME` directly. A separate in-process FUSE runtime tree exposes approved project mounts, Toby control files, and generated OpenCode integration config.
+- `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
+- `--tmp-env` uses a temporary sandbox home that is removed on exit.
+- `--mountable-projects` lets agents request additional project mounts through Toby MCP.
+- `--install` installs the selected tool and exits.
+- `--upgrade` reinstalls the selected tool, then launches it.
 
-## Environment
+## More Docs
 
-- `XDG_PROJECTS_DIR` defaults to `~/Projects`.
-- `XDG_CACHE_HOME` defaults to `~/.cache`; sandbox homes are stored under `$XDG_CACHE_HOME/toby/sandboxes`.
-- `XDG_STATE_HOME` defaults to `$HOME/.local/state`; Toby runtime files are exposed under `$XDG_STATE_HOME/toby` inside the sandbox, with shared generated/static files under `$XDG_STATE_HOME/toby/static`.
-- `TOBY_SANDBOX_ROOT` overrides the sandbox home root when set.
-
-Project directories must resolve to `$XDG_PROJECTS_DIR` or a path below `$XDG_PROJECTS_DIR`. The FUSE runtime root is read-only and only exposes selected or approved projects under `$XDG_PROJECTS_DIR`.
-
-## MCP
-
-When FUSE is available, Toby exposes an MCP stdio server inside each sandbox as `toby mcp`. The server provides tools for running selected host Git commands for visible repositories. Passing `--mountable-projects` also enables tools for listing projects, reading project README files, and requesting project mounts.
-
-Available tools:
-
-- `git_commit`: run `git commit -m MESSAGE` on the host for a visible repository. It commits only staged files and does not add files.
-- `git_fetch`: run `git fetch` on the host for a visible repository.
-- `git_push`: run `git push ORIGIN BRANCH` on the host for a visible repository. `origin` defaults to `origin`.
-- `project_list` with `--mountable-projects`: list project directories under `XDG_PROJECTS_DIR`.
-- `project_readme` with `--mountable-projects`: read `README.md` from a project by directory name without mounting it.
-- `project_mount` with `--mountable-projects`: ask the host user to approve mounting a project directory from `XDG_PROJECTS_DIR` into the current sandbox.
-
-`project_list` and `project_readme` do not prompt for confirmation. Use `project_mount` when a task needs access to another project directory. It accepts project directory names, not arbitrary paths. Confirmation opens a tmux popup; without tmux the tool returns an error. Without `--mountable-projects`, Toby bind mounts only the selected project directory instead of exposing the FUSE-backed project root.
-
-The Git MCP tools accept repository names relative to `XDG_PROJECTS_DIR`, including nested repositories such as `foo/bar/baz`. The requested repository must already be visible in the sandbox through the initial project bind mount or `project_mount`; the tools do not mount projects. Repository names with empty, `.`, or `..` path segments are rejected. Use these tools instead of running `git commit`, `git fetch`, or `git push` directly in the sandbox when host Git config, GPG keys, or SSH keys are required.
-
-The same control calls are available inside a sandbox as CLI commands: `toby sandbox git commit REPOSITORY -m MESSAGE`, `toby sandbox git fetch REPOSITORY`, `toby sandbox git push REPOSITORY BRANCH [ORIGIN]`, `toby sandbox project list`, `toby sandbox project readme NAME`, and `toby sandbox project mount NAME`.
-
-If FUSE is unavailable or fails to start, Toby prints a warning to stderr and continues without Toby MCP, sandbox control commands, synthetic configuration, or mountable projects. If `--mountable-projects` was explicitly requested, missing or failing FUSE is an error.
-
-Toby prepends `$XDG_STATE_HOME/toby/bin` to sandbox `PATH` and exposes the current Toby binary there, so MCP clients launched inside the sandbox can use `toby mcp` directly. The command is intended to run inside a Toby sandbox and fails when `$XDG_STATE_HOME/toby/control` is unavailable. The Toby runtime directory is synthetic and does not pass through files from the sandbox home; attempts to create or modify entries there fail.
-
-For OpenCode sandboxes with FUSE available, Toby sets `OPENCODE_CONFIG_DIR=$XDG_STATE_HOME/toby/static/opencode`. That read-only directory contains a generated `.gitignore` and `opencode.json` with the Toby MCP server, `$XDG_STATE_HOME/toby/static/GIT_AGENTS.md` instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and best-effort model lists for OpenAI-compatible providers. With `--mountable-projects`, it also adds `$XDG_STATE_HOME/toby/static/PROJECT_MOUNT_AGENTS.md` and exposes `commands/toby.project.mount.md`, providing the `/toby.project.mount` command to ask OpenCode to mount a project through the Toby MCP server. Model lists are fetched during sandbox startup; fetch failures warn to stderr and continue. The real config remains under `TOBY_SANDBOX_ROOT/.config/opencode/` and does not need these entries.
-
-Equivalent manual OpenCode `opencode.json` entry:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "toby": {
-      "type": "local",
-      "command": ["toby", "mcp"],
-      "enabled": true
-    }
-  }
-}
-```
-
-Claude Code:
-
-```sh
-claude mcp add toby -- toby mcp
-```
-
-Codex CLI `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.toby]
-command = "toby"
-args = ["mcp"]
-```
-
-Equivalent Codex CLI command:
-
-```sh
-codex mcp add toby -- toby mcp
-```
-
-GitHub Copilot CLI `~/.copilot/mcp-config.json`:
-
-```json
-{
-  "mcpServers": {
-    "toby": {
-      "command": "toby",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-If Copilot CLI prompts for a transport type, choose `STDIO`.
+- [Sandbox and integration details](docs/sandbox.md)
+- [fusekit internals](docs/fusekit.md)
