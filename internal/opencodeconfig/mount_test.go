@@ -26,7 +26,7 @@ func TestNewRendererRequiresHTTPClient(t *testing.T) {
 
 func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	projectRoot := filepath.Join(t.TempDir(), "Projects")
-	config := readGeneratedConfig(t, &http.Client{}, t.TempDir(), projectRoot, testInstructions)
+	config := readGeneratedConfig(t, &http.Client{}, projectRoot, testInstructions)
 
 	mcp := config["mcp"].(map[string]any)
 	toby := mcp["toby"].(map[string]any)
@@ -60,8 +60,8 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configDir := t.TempDir()
-	writeJSON(t, filepath.Join(configDir, "opencode.json"), map[string]any{
+	cfgDir := t.TempDir()
+	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
 		"provider": map[string]any{
 			"local": map[string]any{
 				"npm": "@ai-sdk/openai-compatible",
@@ -71,7 +71,11 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 			},
 		},
 	})
-	config := readGeneratedConfig(t, server.Client(), configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions)
+	cfg, err := tobyconfig.Load(cfgDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 
 	models := config["provider"].(map[string]any)["local"].(map[string]any)["models"].(map[string]any)
 	if _, ok := models["alpha"]; !ok {
@@ -109,7 +113,7 @@ func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := readGeneratedConfigWithTobyConfig(t, server.Client(), t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
+	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 
 	mcp := config["mcp"].(map[string]any)
 	if docs := mcp["docs"].(map[string]any); docs["url"] != "https://example.com/mcp" {
@@ -128,8 +132,8 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configDir := t.TempDir()
-	writeJSON(t, filepath.Join(configDir, "opencode.json"), map[string]any{
+	cfgDir := t.TempDir()
+	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
 		"provider": map[string]any{
 			"local": map[string]any{
 				"npm":     "@ai-sdk/openai-compatible",
@@ -137,7 +141,11 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 			},
 		},
 	})
-	files, warnings, err := contextFiles(t, server.Client(), configDir, filepath.Join(t.TempDir(), "Projects"), testInstructions)
+	cfg, err := tobyconfig.Load(cfgDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, warnings, err := contextFilesWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +168,7 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 }
 
 func TestGeneratedFilesAreReadOnly(t *testing.T) {
-	files, warnings, err := contextFiles(t, &http.Client{}, t.TempDir(), filepath.Join(t.TempDir(), "Projects"), testInstructions)
+	files, warnings, err := contextFiles(t, &http.Client{}, filepath.Join(t.TempDir(), "Projects"), testInstructions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,13 +189,13 @@ func TestGeneratedFilesAreReadOnly(t *testing.T) {
 	}
 }
 
-func readGeneratedConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string) map[string]any {
-	return readGeneratedConfigWithTobyConfig(t, client, configDir, projectRoot, instructions, nil)
+func readGeneratedConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string) map[string]any {
+	return readGeneratedConfigWithTobyConfig(t, client, projectRoot, instructions, nil)
 }
 
-func readGeneratedConfigWithTobyConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, cfg *tobyconfig.Service) map[string]any {
+func readGeneratedConfigWithTobyConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string, cfg *tobyconfig.Service) map[string]any {
 	t.Helper()
-	files, warnings, err := contextFilesWithTobyConfig(t, client, configDir, projectRoot, instructions, cfg)
+	files, warnings, err := contextFilesWithTobyConfig(t, client, projectRoot, instructions, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,15 +213,15 @@ func readGeneratedConfigWithTobyConfig(t *testing.T, client *http.Client, config
 	return config
 }
 
-func contextFiles(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string) ([]contextfiles.File, []error, error) {
-	return contextFilesWithTobyConfig(t, client, configDir, projectRoot, instructions, nil)
+func contextFiles(t *testing.T, client *http.Client, projectRoot string, instructions []string) ([]contextfiles.File, []error, error) {
+	return contextFilesWithTobyConfig(t, client, projectRoot, instructions, nil)
 }
 
-func contextFilesWithTobyConfig(t *testing.T, client *http.Client, configDir, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]contextfiles.File, []error, error) {
+func contextFilesWithTobyConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]contextfiles.File, []error, error) {
 	t.Helper()
 	renderer, service := testDeps(t, client)
 	builder := service.NewBuilder()
-	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, configDir, projectRoot, instructions, cfg)
+	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, projectRoot, instructions, cfg)
 	if err != nil {
 		return nil, warnings, err
 	}

@@ -1,7 +1,6 @@
 package opencodeconfig
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,15 +25,9 @@ const (
 
 var opencodeGitignore = []byte("*\n")
 
-type sourceFile struct {
-	path   string
-	format configfile.Format
-}
-
 var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
 
 type Mount struct {
-	configDir     string
 	projectRoot   string
 	instructions  []string
 	tobyConfig    *tobyconfig.Service
@@ -53,15 +46,15 @@ func NewRenderer(client *http.Client) (*Renderer, error) {
 	return &Renderer{http: client}, nil
 }
 
-func (r *Renderer) newMount(configDir, projectRoot string, instructions []string, cfg *tobyconfig.Service) (*Mount, error) {
+func (r *Renderer) newMount(projectRoot string, instructions []string, cfg *tobyconfig.Service) (*Mount, error) {
 	if r == nil || r.http == nil {
 		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
-	return &Mount{configDir: configDir, projectRoot: projectRoot, instructions: append([]string(nil), instructions...), tobyConfig: cfg, http: r.http}, nil
+	return &Mount{projectRoot: projectRoot, instructions: append([]string(nil), instructions...), tobyConfig: cfg, http: r.http}, nil
 }
 
-func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, configDir, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]error, error) {
-	mount, err := r.newMount(configDir, projectRoot, instructions, cfg)
+func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]error, error) {
+	mount, err := r.newMount(projectRoot, instructions, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -79,12 +72,7 @@ func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfi
 }
 
 func (m *Mount) render(ctx context.Context) ([]byte, error) {
-	realConfig, err := m.readSource()
-	if err != nil {
-		return nil, err
-	}
 	config := map[string]any{"$schema": "https://opencode.ai/config.json"}
-	configfile.Merge(config, realConfig)
 	if m.tobyConfig != nil {
 		configfile.Merge(config, m.tobySyntheticConfig())
 	}
@@ -118,48 +106,6 @@ func (m *Mount) tobySyntheticConfig() map[string]any {
 		config["provider"] = providers
 	}
 	return config
-}
-
-func (m *Mount) readSource() (map[string]any, error) {
-	result := map[string]any{}
-	for _, source := range m.sourceFiles() {
-		if _, err := os.Stat(source.path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		data, err := os.ReadFile(source.path)
-		if err != nil {
-			return nil, err
-		}
-		if len(bytes.TrimSpace(data)) == 0 {
-			continue
-		}
-		config, err := configfile.Decode(data, source.format, "opencode config")
-		if err != nil {
-			return nil, err
-		}
-		configfile.Merge(result, config)
-	}
-	return result, nil
-}
-
-func (m *Mount) sourceYAMLPath() string {
-	return filepath.Join(m.sourceDir(), "opencode.yaml")
-}
-
-func (m *Mount) sourceFiles() []sourceFile {
-	return []sourceFile{
-		{path: filepath.Join(m.sourceDir(), "config.json"), format: configfile.FormatJSON},
-		{path: filepath.Join(m.sourceDir(), "opencode.json"), format: configfile.FormatJSON},
-		{path: filepath.Join(m.sourceDir(), "opencode.jsonc"), format: configfile.FormatJSON},
-		{path: m.sourceYAMLPath(), format: configfile.FormatYAML},
-	}
-}
-
-func (m *Mount) sourceDir() string {
-	return m.configDir
 }
 
 func marshalConfig(config map[string]any) ([]byte, error) {
@@ -228,16 +174,10 @@ func (m *Mount) fetchProviderModelIDs(ctx context.Context, providerID string, pr
 }
 
 func (m *Mount) substitutionDirs() []string {
-	dirs := []string{}
-	seen := map[string]bool{}
 	if m.tobyConfig != nil && m.tobyConfig.Dir != "" {
-		dirs = append(dirs, m.tobyConfig.Dir)
-		seen[m.tobyConfig.Dir] = true
+		return []string{m.tobyConfig.Dir}
 	}
-	if dir := m.sourceDir(); dir != "" && !seen[dir] {
-		dirs = append(dirs, dir)
-	}
-	return dirs
+	return nil
 }
 
 func resolveHeaders(providerID string, options map[string]any, configDirs []string) (map[string]string, error) {
