@@ -75,15 +75,58 @@ func (t *dockerTool) Launch(ctx context.Context, run *tool.RunContext) error {
 	return tool.RunCommand(ctx, run.Launch, append([]string{"docker"}, run.Extra...), tool.ExecOptions{})
 }
 
+type claudeTool struct {
+	*tool.Simple
+	paths config.Paths
+}
+
 func newClaudeTool(paths config.Paths) tool.Tool {
-	return simpleTool(
-		paths,
-		simpleBaseWithDeps(tool.ClaudeToolName, "Launch Claude", []string{tool.NpmToolName}, tool.GroupSystem, tool.GroupVCS),
-		[]string{".config", "claude"},
-		[]string{".config", "claude"},
-		[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
-		map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(paths.Home, ".config", "claude")},
-	)
+	return &claudeTool{
+		Simple: simpleTool(
+			paths,
+			simpleBaseWithDeps(tool.ClaudeToolName, "Launch Claude", []string{tool.NpmToolName}, tool.GroupSystem, tool.GroupVCS),
+			[]string{".config", "claude"},
+			[]string{".config", "claude"},
+			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
+			map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(paths.Home, ".config", "claude")},
+		).(*tool.Simple),
+		paths: paths,
+	}
+}
+
+// Launch starts Claude Code, injecting Toby's synthetic configuration (MCP
+// server, instructions, permissions, and the project-mount command) through
+// launch flags pointed at the read-only FUSE static mount. CLAUDE_CONFIG_DIR
+// stays the writable real config because Claude persists credentials and
+// session state there. When the static mount is unavailable, Claude launches
+// with no extra flags and uses only the real config.
+func (t *claudeTool) Launch(ctx context.Context, run *tool.RunContext) error {
+	argv := append([]string{"claude"}, claudeStaticFlags(t.stateHomeDir(), run.StaticMount, run.Options.MountableProjects)...)
+	argv = append(argv, run.Extra...)
+	return tool.RunCommand(ctx, run.Launch, argv, tool.ExecOptions{})
+}
+
+func claudeStaticFlags(stateHome string, staticMount, mountableProjects bool) []string {
+	if !staticMount {
+		return nil
+	}
+	base := filepath.Join(stateHome, "toby", "static", "claude")
+	flags := []string{
+		"--mcp-config", filepath.Join(base, "mcp.json"),
+		"--settings", filepath.Join(base, "settings.json"),
+		"--append-system-prompt-file", filepath.Join(base, "instructions.md"),
+	}
+	if mountableProjects {
+		flags = append(flags, "--plugin-dir", filepath.Join(base, "plugin"))
+	}
+	return flags
+}
+
+func (t *claudeTool) stateHomeDir() string {
+	if t.paths.StateHome != "" {
+		return t.paths.StateHome
+	}
+	return filepath.Join(t.paths.Home, ".local", "state")
 }
 
 func newCopilotTool(paths config.Paths) tool.Tool {

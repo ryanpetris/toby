@@ -80,6 +80,9 @@ type RunContext struct {
 	Env     Environment
 	Exec    Executor
 	Launch  Executor
+	// StaticMount is true when the read-only FUSE static overlay (Toby MCP
+	// binary, control files, and generated agent configuration) is mounted.
+	StaticMount bool
 }
 
 type Tool interface {

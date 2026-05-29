@@ -8,6 +8,7 @@ import (
 	pathpkg "path"
 	"strings"
 
+	"petris.dev/toby/internal/claudeconfig"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/mcpserver"
@@ -195,11 +196,12 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	}
 	env := tool.EnvironmentFromList(os.Environ())
 	run := &tool.RunContext{
-		Sandbox: sbx,
-		Options: opts,
-		Extra:   extra,
-		Toolset: toolset,
-		Env:     env,
+		Sandbox:     sbx,
+		Options:     opts,
+		Extra:       extra,
+		Toolset:     toolset,
+		Env:         env,
+		StaticMount: homeFS != nil,
 	}
 	sbx.SetupContext(run)
 	if err := toolset.SandboxContextSetup(run); err != nil {
@@ -261,7 +263,8 @@ func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbo
 	if mountableProjects {
 		instructions = append(instructions, sbx.TobyProjectMountAgentsPath())
 	}
-	files := staticfiles.AgentFiles(mountableProjects)
+	agentFiles := staticfiles.AgentFiles(mountableProjects)
+	files := append([]staticmount.File(nil), agentFiles...)
 	opencodeFiles, warnings, err := opencodeconfig.StaticFiles(ctx, sbx.OpenCodeConfigDir(), sbx.ProjectRoot(), instructions, opencodeconfig.WithMountableProjects(mountableProjects))
 	if err != nil {
 		return nil, err
@@ -270,6 +273,15 @@ func buildStaticFiles(ctx context.Context, stderr io.Writer, sbx *sandbox.Sandbo
 		warnOpenCodeModelFetch(stderr, warning)
 	}
 	files = append(files, opencodeFiles...)
+	instructionContent := make([][]byte, 0, len(agentFiles))
+	for _, file := range agentFiles {
+		instructionContent = append(instructionContent, file.Data)
+	}
+	claudeFiles, err := claudeconfig.StaticFiles(sbx.ProjectRoot(), instructionContent, mountableProjects)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, claudeFiles...)
 	return files, nil
 }
 

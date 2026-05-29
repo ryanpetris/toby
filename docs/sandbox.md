@@ -71,7 +71,34 @@ Equivalent manual OpenCode `opencode.json` entry:
 }
 ```
 
+## Claude Code
+
+For Claude Code sandboxes with FUSE available, Toby injects its synthetic configuration through launch flags rather than by redirecting the config directory: Claude Code writes credentials, history, and session state into `CLAUDE_CONFIG_DIR`, so that directory stays the writable real config bind-mounted under `TOBY_SANDBOX_ROOT/.config/claude/`. Toby generates read-only files under `$XDG_STATE_HOME/toby/static/claude/` and launches `claude` with:
+
+- `--mcp-config .../claude/mcp.json` adds the Toby MCP server (no trust prompt, since the config is passed explicitly).
+- `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` (and `PROJECT_MOUNT_AGENTS.md` with `--mountable-projects`).
+- `--settings .../claude/settings.json` allows the `/tmp` and project-root directories via `permissions.additionalDirectories`, mirroring OpenCode's external-directory rules.
+- `--plugin-dir .../claude/plugin` (with `--mountable-projects`) provides the `/toby:toby-project-mount` command to request a project mount through the Toby MCP server.
+
+If FUSE is unavailable, Toby launches `claude` with no extra flags and only the real config is used.
+
+Generated `claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "toby": {
+      "type": "stdio",
+      "command": "toby",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Manual Client Setup
+
+Toby configures the clients below automatically when launched through `toby <client>`. The entries here are for using the `toby mcp` server from a client that Toby did not launch.
 
 Claude Code:
 
