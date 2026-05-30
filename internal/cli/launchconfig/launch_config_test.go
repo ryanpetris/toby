@@ -1,4 +1,4 @@
-package cli
+package launchconfig
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/warning"
 )
@@ -145,7 +146,7 @@ tools:
 		t.Fatal(err)
 	}
 
-	launch, err := buildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, []string{"--repo", "x"})
+	launch, err := BuildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, []string{"--repo", "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +193,7 @@ tools:
 		t.Fatal(err)
 	}
 
-	launch, err := buildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, []string{"--", "--watch"})
+	launch, err := BuildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, []string{"--", "--watch"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,13 +237,13 @@ tools:
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed := parsedCommand{Options: tool.CommandOptions{Env: "app"}, Extra: []string{"--foreground"}, RequestedTools: []string{tool.OpenCodeToolName}}
+	parsed := DirectLaunch{Options: tool.CommandOptions{Env: "app"}, Extra: []string{"--foreground"}, RequestedTools: []string{tool.OpenCodeToolName}}
 	paths := config.Paths{Home: home, ProjectRoot: projectRoot}
-	primaryProject, err := resolveDirectLaunchProject(paths, parsed.Options)
+	primaryProject, err := ResolveDirectLaunchProject(paths, parsed.Options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	launch, err := buildOverlayConfiguredLaunch(Params{Registry: registry, Paths: paths}, configPath, parsed, tool.OpenCodeToolName, primaryProject)
+	launch, err := BuildOverlayConfiguredLaunch(Params{Registry: registry, Paths: paths}, configPath, parsed, tool.OpenCodeToolName, primaryProject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,45 +253,9 @@ tools:
 	if launch.Options.Env != "custom-name" || !reflect.DeepEqual(launch.Extra, []string{"--foreground"}) {
 		t.Fatalf("launch = %#v extra %#v", launch.Options, launch.Extra)
 	}
-	var stderr bytes.Buffer
-	if err := prepareConfiguredProjects(&stderr, home, &launch.Options); err != nil {
-		t.Fatal(err)
-	}
-	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "extra", Source: extraProject}}
+	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "duplicate", Source: project}, {Name: "extra", Source: extraProject}}
 	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-}
-
-func TestPrepareConfiguredProjectsWarnsAndSkipsMissingProjects(t *testing.T) {
-	home := t.TempDir()
-	existing := filepath.Join(home, "existing")
-	missing := filepath.Join(home, "missing")
-	if err := os.MkdirAll(existing, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	opts := &tool.CommandOptions{Projects: []tool.ProjectMount{{Name: "missing", Source: missing}, {Name: "existing", Source: existing}}}
-	var stderr bytes.Buffer
-	if err := prepareConfiguredProjects(&stderr, home, opts); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stderr.String(), "warning[project.missing]") || !strings.Contains(stderr.String(), missing) {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-	if opts.Env != "existing" || !reflect.DeepEqual(opts.Projects, []tool.ProjectMount{{Name: "existing", Source: existing}}) {
-		t.Fatalf("options = %#v", opts)
-	}
-
-	stderr.Reset()
-	opts = &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ProjectMissing: true}}, Projects: []tool.ProjectMount{{Name: "missing", Source: missing}}}
-	if err := prepareConfiguredProjects(&stderr, home, opts); err == nil || !strings.Contains(err.Error(), "at least one existing project") {
-		t.Fatalf("error = %v", err)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("suppressed stderr = %q", stderr.String())
 	}
 }
 
@@ -345,10 +310,89 @@ tools:
 		t.Fatal(err)
 	}
 
-	_, err = buildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, nil)
+	_, err = BuildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown tool: unknown-command") {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+func TestMaybeAutoloadProjectConfigWarnsWhenDisabled(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
+	project := filepath.Join(projectRoot, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("projects: []\ntools: []\n"))
+	cfgSvc, err := tobyconfig.Load(t.TempDir(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := DirectLaunch{Options: tool.CommandOptions{Env: "app"}, RequestedTools: []string{tool.OpenCodeToolName}}
+	var stderr bytes.Buffer
+	_, ok, err := MaybeAutoloadProjectConfig(Params{Paths: configPaths(home, projectRoot), Config: cfgSvc, Stderr: &stderr}, parsed, tool.OpenCodeToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("autoload should be disabled")
+	}
+	if got := stderr.String(); !bytes.Contains([]byte(got), []byte("warning[project.autoload-disabled]")) || !bytes.Contains([]byte(got), []byte(projectLaunchConfigName)) {
+		t.Fatalf("warning = %q", got)
+	}
+}
+
+func TestMaybeAutoloadProjectConfigLoadsWhenEnabled(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
+	project := filepath.Join(projectRoot, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte(`
+sandbox:
+  name: review
+projects:
+  - app
+tools:
+  - opencode
+  - npm
+`))
+	configDir := t.TempDir()
+	writeTestFile(t, filepath.Join(configDir, "config.yaml"), []byte(`
+sandbox:
+  autoloadProjectConfig: true
+`))
+	cfgSvc, err := tobyconfig.Load(configDir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch npm"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := DirectLaunch{Options: tool.CommandOptions{Env: "app"}, RequestedTools: []string{tool.OpenCodeToolName}}
+	launch, ok, err := MaybeAutoloadProjectConfig(Params{Registry: registry, Paths: configPaths(home, projectRoot), Config: cfgSvc}, parsed, tool.OpenCodeToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected autoload")
+	}
+	if launch.Options.Env != "review" || launch.Primary != tool.OpenCodeToolName {
+		t.Fatalf("launch = %#v", launch)
+	}
+	wantTools := []string{tool.OpenCodeToolName, tool.NpmToolName}
+	if len(launch.RequestedTools) != len(wantTools) || launch.RequestedTools[0] != wantTools[0] || launch.RequestedTools[1] != wantTools[1] {
+		t.Fatalf("requested tools = %#v", launch.RequestedTools)
+	}
+}
+
+func configPaths(home, projectRoot string) config.Paths {
+	return config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: projectRoot, SandboxRoot: filepath.Join(home, ".cache", "toby", "sandboxes")}
 }
 
 type configTestTool struct{ tool.Base }

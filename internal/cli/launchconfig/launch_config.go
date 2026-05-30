@@ -1,7 +1,9 @@
-package cli
+package launchconfig
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,11 +11,32 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/configfile"
 	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/warning"
 )
 
 const projectLaunchConfigName = ".toby.yaml"
+
+type Params struct {
+	Registry *tool.Registry
+	Paths    config.Paths
+	Config   *tobyconfig.Service
+	Stderr   io.Writer
+}
+
+type DirectLaunch struct {
+	Options        tool.CommandOptions
+	Extra          []string
+	RequestedTools []string
+}
+
+type ConfiguredLaunch struct {
+	Options        tool.CommandOptions
+	Extra          []string
+	RequestedTools []string
+	Primary        string
+}
 
 type launchConfig struct {
 	Sandbox  launchSandboxConfig
@@ -52,29 +75,22 @@ type launchToolConfig struct {
 	Params []string
 }
 
-type configuredLaunch struct {
-	Options        tool.CommandOptions
-	Extra          []string
-	RequestedTools []string
-	Primary        string
-}
-
-func buildConfiguredLaunch(params Params, configPath string, extra []string) (configuredLaunch, error) {
+func BuildConfiguredLaunch(params Params, configPath string, extra []string) (ConfiguredLaunch, error) {
 	cfg, err := loadLaunchConfig(configPath, params.Paths.Home)
 	if err != nil {
-		return configuredLaunch{}, err
+		return ConfiguredLaunch{}, err
 	}
 	if len(cfg.Projects) == 0 {
-		return configuredLaunch{}, exitcode.New(2, "launch config projects must not be empty")
+		return ConfiguredLaunch{}, exitcode.New(2, "launch config projects must not be empty")
 	}
 	if len(cfg.Tools) == 0 {
-		return configuredLaunch{}, exitcode.New(2, "launch config tools must not be empty")
+		return ConfiguredLaunch{}, exitcode.New(2, "launch config tools must not be empty")
 	}
 	tools, err := resolveConfiguredTools(params.Registry, cfg.Tools)
 	if err != nil {
-		return configuredLaunch{}, err
+		return ConfiguredLaunch{}, err
 	}
-	return configuredLaunch{
+	return ConfiguredLaunch{
 		Options:        commandOptionsFromLaunchConfig(cfg),
 		Extra:          configuredLaunchExtra(cfg.Tools[0].Params, extra),
 		RequestedTools: tools,
@@ -82,14 +98,14 @@ func buildConfiguredLaunch(params Params, configPath string, extra []string) (co
 	}, nil
 }
 
-func buildOverlayConfiguredLaunch(params Params, configPath string, parsed parsedCommand, primary string, primaryProject tool.ProjectMount) (configuredLaunch, error) {
+func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed DirectLaunch, primary string, primaryProject tool.ProjectMount) (ConfiguredLaunch, error) {
 	cfg, err := loadLaunchConfig(configPath, params.Paths.Home)
 	if err != nil {
-		return configuredLaunch{}, err
+		return ConfiguredLaunch{}, err
 	}
 	tools, err := resolveConfiguredTools(params.Registry, cfg.Tools)
 	if err != nil {
-		return configuredLaunch{}, err
+		return ConfiguredLaunch{}, err
 	}
 	options := commandOptionsFromLaunchConfig(cfg)
 	if options.Env == "" {
@@ -106,12 +122,43 @@ func buildOverlayConfiguredLaunch(params Params, configPath string, parsed parse
 	for _, name := range tools {
 		requestedTools = appendIfMissing(requestedTools, name)
 	}
-	return configuredLaunch{
+	return ConfiguredLaunch{
 		Options:        options,
 		Extra:          parsed.Extra,
 		RequestedTools: requestedTools,
 		Primary:        primary,
 	}, nil
+}
+
+func MaybeAutoloadProjectConfig(params Params, parsed DirectLaunch, primary string) (ConfiguredLaunch, bool, error) {
+	if strings.TrimSpace(parsed.Options.Env) == "" {
+		return ConfiguredLaunch{}, false, nil
+	}
+	project, err := ResolveDirectLaunchProject(params.Paths, parsed.Options)
+	if err != nil {
+		return ConfiguredLaunch{}, false, err
+	}
+	configPath := filepath.Join(project.Source, projectLaunchConfigName)
+	info, err := os.Stat(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ConfiguredLaunch{}, false, nil
+		}
+		return ConfiguredLaunch{}, false, err
+	}
+	if info.IsDir() {
+		return ConfiguredLaunch{}, false, fmt.Errorf("%s is a directory", configPath)
+	}
+	defaults := params.Config.Sandbox()
+	if !defaults.AutoloadProjectConfigEnabled() {
+		warning.Fprintf(params.Stderr, defaults.SuppressWarnings, warning.ProjectAutoloadDisabled, "found %s but sandbox.autoloadProjectConfig is not enabled; pass --config %s or enable sandbox.autoloadProjectConfig to load it automatically.", configPath, configPath)
+		return ConfiguredLaunch{}, false, nil
+	}
+	launch, err := BuildOverlayConfiguredLaunch(params, configPath, parsed, primary, project)
+	if err != nil {
+		return ConfiguredLaunch{}, false, err
+	}
+	return launch, true, nil
 }
 
 func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
@@ -620,7 +667,7 @@ func resolveLaunchProjectPath(path, dir, home string) (string, error) {
 	return joinConfigRelativePath(dir, path), nil
 }
 
-func resolveDirectLaunchProject(paths config.Paths, opts tool.CommandOptions) (tool.ProjectMount, error) {
+func ResolveDirectLaunchProject(paths config.Paths, opts tool.CommandOptions) (tool.ProjectMount, error) {
 	if strings.TrimSpace(opts.Env) == "" {
 		return tool.ProjectMount{}, exitcode.New(2, "environment name is required")
 	}
@@ -701,6 +748,15 @@ func resolveConfiguredTool(registry *tool.Registry, name string) (string, error)
 		}
 	}
 	return "", fmt.Errorf("unknown tool: %s", name)
+}
+
+func appendIfMissing(values []string, value string) []string {
+	for _, item := range values {
+		if item == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func launchConfigHome(home string) string {

@@ -1,22 +1,17 @@
-package cli
+package commands
 
 import (
 	"strings"
 
+	"petris.dev/toby/internal/cli/launchconfig"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/tool"
 
 	"github.com/spf13/cobra"
 )
 
-type parsedCommand struct {
-	Options        tool.CommandOptions
-	Extra          []string
-	RequestedTools []string
-}
-
-func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, contextTools []tool.Tool) (parsedCommand, error) {
-	var result parsedCommand
+func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, contextTools []tool.Tool) (launchconfig.DirectLaunch, error) {
+	var result launchconfig.DirectLaunch
 	env, extra, err := launchCommandArgs(args, cmd.Flags().ArgsLenAtDash())
 	if err != nil {
 		return result, err

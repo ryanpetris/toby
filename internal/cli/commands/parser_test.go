@@ -1,10 +1,11 @@
-package cli
+package commands
 
 import (
 	"reflect"
 	"strings"
 	"testing"
 
+	"petris.dev/toby/internal/cli/launchconfig"
 	"petris.dev/toby/internal/tool"
 
 	"github.com/spf13/cobra"
@@ -112,10 +113,10 @@ func TestConfiguredLaunchExtraArgs(t *testing.T) {
 	}
 }
 
-func executeTestLaunchParser(t *testing.T, args []string, contextTools []tool.Tool) (parsedCommand, error) {
+func executeTestLaunchParser(t *testing.T, args []string, contextTools []tool.Tool) (launchconfig.DirectLaunch, error) {
 	t.Helper()
 	primary := contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}}
-	var parsed parsedCommand
+	var parsed launchconfig.DirectLaunch
 	cmd := &cobra.Command{
 		Use:           primary.CommandName(),
 		SilenceUsage:  true,
