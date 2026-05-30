@@ -121,6 +121,7 @@ Toby config is its own format. Supported top-level keys are `instructions`, `mcp
 
 - `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url` and are rendered as remote MCP URLs through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby keeps the upstream URL and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
 - `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
+- `permission.paths` entries are host path patterns and permission modes rendered into supported tool configs. Leading `~` expands to the host home directory.
 - `provider` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps upstream `baseURL` and credential `headers` on the host and exposes each provider to tools through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `opencode.model-discovery` and excludes only that provider from generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
 
@@ -173,7 +174,7 @@ The same control calls are available inside a sandbox as CLI commands: `toby san
 
 ## OpenCode
 
-For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config translated for OpenCode, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and provider entries pointed at Toby's `/proxy/<uuid>` proxy. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
+For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config translated for OpenCode, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, and provider entries pointed at Toby's `/proxy/<uuid>` proxy. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
 
 Equivalent generated OpenCode `opencode.json` entry:
 
@@ -196,7 +197,7 @@ For Claude Code sandboxes, Toby injects its generated context through launch fla
 
 - `--mcp-config .../claude/mcp.json` adds the Toby MCP server.
 - `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` and configured Toby instruction files.
-- `--settings .../claude/settings.json` allows the `/tmp` and project-root directories via `permissions.additionalDirectories`, mirroring OpenCode's external-directory rules.
+- `--settings .../claude/settings.json` passes generated Claude settings.
 
 Generated `claude/mcp.json`:
 

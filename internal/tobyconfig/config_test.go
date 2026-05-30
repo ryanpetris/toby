@@ -20,9 +20,15 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
     "docs": { "type": "remote", "url": "https://example.com/mcp" },
   },
   "instructions": ["base.md"],
-	"provider": {
-	    "local": { "type": "openai", "headers": { "Authorization": "Bearer base" } }
-	  },
+  "provider": {
+      "local": { "type": "openai", "headers": { "Authorization": "Bearer base" } }
+    },
+  "permission": {
+    "paths": {
+      "~/allowed": "allow",
+      "~/allowed/**": "allow"
+    }
+  },
   "sandbox": {
     "runtime": {
       "default": "bubblewrap",
@@ -43,6 +49,9 @@ instructions:
 provider:
   local:
     baseURL: https://models.example.com
+permission:
+  paths:
+    /tmp/shared: allow
 sandbox:
   runtime:
     default: docker
@@ -74,6 +83,16 @@ sandbox:
 	provider := cfg.Providers()["local"]
 	if provider.Type != ProviderTypeOpenAI || provider.Headers["Authorization"] != "Bearer base" || provider.BaseURL != "https://models.example.com" {
 		t.Fatalf("provider = %#v", provider)
+	}
+	permission := cfg.Permission()
+	for pattern, mode := range map[string]string{
+		filepath.Join(home, "allowed"):       "allow",
+		filepath.Join(home, "allowed", "**"): "allow",
+		"/tmp/shared":                        "allow",
+	} {
+		if permission.Paths[pattern] != mode {
+			t.Fatalf("permission paths = %#v", permission.Paths)
+		}
 	}
 	sandbox := cfg.Sandbox()
 	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" || sandbox.Runtime.Docker.Home != "/home/base" || sandbox.Runtime.Docker.Projects != "/workspace/custom" {

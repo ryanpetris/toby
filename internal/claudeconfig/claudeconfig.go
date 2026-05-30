@@ -23,7 +23,7 @@ import (
 const (
 	// StaticMcpPath holds the toby MCP server definition (--mcp-config).
 	StaticMcpPath = "claude/mcp.json"
-	// StaticSettingsPath holds permission settings (--settings).
+	// StaticSettingsPath holds generated Claude settings (--settings).
 	StaticSettingsPath = "claude/settings.json"
 	// StaticInstructionsPath holds the combined instruction text
 	// (--append-system-prompt-file).
@@ -43,7 +43,7 @@ func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, 
 	if err != nil {
 		return err
 	}
-	settings, err := marshalJSON(syntheticSettings(projectRoot))
+	settings, err := marshalJSON(syntheticSettings())
 	if err != nil {
 		return err
 	}
@@ -190,23 +190,8 @@ func copyField(dst, src map[string]any, from, to string) {
 	}
 }
 
-func syntheticSettings(projectRoot string) map[string]any {
-	return map[string]any{
-		"permissions": map[string]any{
-			"additionalDirectories": allowedDirectories(projectRoot),
-		},
-	}
-}
-
-// allowedDirectories mirrors opencodeconfig.allowedExternalDirectoryPatterns, but
-// Claude's permissions.additionalDirectories takes directory paths rather than
-// glob patterns, so the "/**" variants are omitted.
-func allowedDirectories(projectRoot string) []any {
-	dirs := []any{"/tmp"}
-	if projectRoot != "" {
-		dirs = append(dirs, projectRoot)
-	}
-	return dirs
+func syntheticSettings() map[string]any {
+	return map[string]any{}
 }
 
 func joinInstructions(instructions [][]byte) []byte {

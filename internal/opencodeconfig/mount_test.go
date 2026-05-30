@@ -42,13 +42,6 @@ func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	if len(instructions) != 1 || instructions[0] != testInstructions[0] {
 		t.Fatalf("instructions = %#v", instructions)
 	}
-
-	external := config["permission"].(map[string]any)["external_directory"].(map[string]any)
-	for _, pattern := range []string{"/tmp", "/tmp/**", projectRoot, filepath.Join(projectRoot, "**")} {
-		if external[pattern] != "allow" {
-			t.Fatalf("external_directory[%q] = %#v, want allow", pattern, external[pattern])
-		}
-	}
 }
 
 func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {

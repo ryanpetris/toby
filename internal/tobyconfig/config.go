@@ -80,7 +80,7 @@ type ProviderConfig struct {
 }
 
 type PermissionConfig struct {
-	ExternalDirectory map[string]string
+	Paths map[string]string
 }
 
 type sourceFile struct {
@@ -97,7 +97,7 @@ func Load(dir, home string) (*Service, error) {
 		MCP:      map[string]MCPServer{},
 		Provider: map[string]ProviderConfig{},
 		Permission: PermissionConfig{
-			ExternalDirectory: map[string]string{},
+			Paths: map[string]string{},
 		},
 	}
 	for _, source := range sourceFiles() {
@@ -145,7 +145,7 @@ func parseConfig(raw map[string]any, dir, home string) (Config, error) {
 		MCP:      map[string]MCPServer{},
 		Provider: map[string]ProviderConfig{},
 		Permission: PermissionConfig{
-			ExternalDirectory: map[string]string{},
+			Paths: map[string]string{},
 		},
 	}
 	for key, value := range raw {
@@ -165,7 +165,7 @@ func parseConfig(raw map[string]any, dir, home string) (Config, error) {
 				result.MCP[name] = MCPServer{raw: server}
 			}
 		case "permission":
-			permission, err := parsePermission(value)
+			permission, err := parsePermission(value, home)
 			if err != nil {
 				return Config{}, err
 			}
@@ -214,11 +214,11 @@ func (c *Config) Merge(src Config) {
 		}
 		c.Provider[name] = provider.Clone()
 	}
-	if c.Permission.ExternalDirectory == nil {
-		c.Permission.ExternalDirectory = map[string]string{}
+	if c.Permission.Paths == nil {
+		c.Permission.Paths = map[string]string{}
 	}
-	for pattern, mode := range src.Permission.ExternalDirectory {
-		c.Permission.ExternalDirectory[pattern] = mode
+	for pattern, mode := range src.Permission.Paths {
+		c.Permission.Paths[pattern] = mode
 	}
 	c.Sandbox.Merge(src.Sandbox)
 }
@@ -347,12 +347,12 @@ func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (
 }
 
 func (s *Service) Permission() PermissionConfig {
-	permission := PermissionConfig{ExternalDirectory: map[string]string{}}
+	permission := PermissionConfig{Paths: map[string]string{}}
 	if s == nil {
 		return permission
 	}
-	for pattern, mode := range s.config.Permission.ExternalDirectory {
-		permission.ExternalDirectory[pattern] = mode
+	for pattern, mode := range s.config.Permission.Paths {
+		permission.Paths[pattern] = mode
 	}
 	return permission
 }
@@ -756,8 +756,8 @@ func readSubstitutionFile(path string, configDirs []string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func parsePermission(raw any) (PermissionConfig, error) {
-	permission := PermissionConfig{ExternalDirectory: map[string]string{}}
+func parsePermission(raw any, home string) (PermissionConfig, error) {
+	permission := PermissionConfig{Paths: map[string]string{}}
 	if raw == nil {
 		return permission, nil
 	}
@@ -766,19 +766,19 @@ func parsePermission(raw any) (PermissionConfig, error) {
 		return PermissionConfig{}, fmt.Errorf("permission must be an object")
 	}
 	for key, value := range items {
-		if key != "external_directory" {
+		if key != "paths" {
 			return PermissionConfig{}, fmt.Errorf("unsupported permission key %q", key)
 		}
-		external, ok := value.(map[string]any)
+		paths, ok := value.(map[string]any)
 		if !ok {
-			return PermissionConfig{}, fmt.Errorf("permission.external_directory must be an object")
+			return PermissionConfig{}, fmt.Errorf("permission.paths must be an object")
 		}
-		for pattern, rawMode := range external {
+		for pattern, rawMode := range paths {
 			mode, ok := rawMode.(string)
 			if !ok {
-				return PermissionConfig{}, fmt.Errorf("permission.external_directory[%q] must be a string", pattern)
+				return PermissionConfig{}, fmt.Errorf("permission.paths[%q] must be a string", pattern)
 			}
-			permission.ExternalDirectory[pattern] = mode
+			permission.Paths[config.ExpandHome(pattern, home)] = mode
 		}
 	}
 	return permission, nil

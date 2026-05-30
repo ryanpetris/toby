@@ -76,6 +76,7 @@ Toby config is its own format. Supported top-level keys are `instructions`, `mcp
 
 - `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`. Remote entries are exposed through per-run `/proxy/<uuid>` URLs, and Toby resolves configured headers on the host side before registering the proxy target. Generated tool config lives under `/tmp/toby/context` inside the sandbox and does not modify the tools' normal config files.
 - `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `/tmp/toby/context/instructions/` inside the sandbox using the source filename, adding a short random suffix before the extension if two files share a filename.
+- `permission.paths` entries are host path patterns and permission modes used for generated tool configs. Leading `~` expands to the host home directory.
 - `provider` entries are Toby provider declarations. Supported provider types are `openai` for OpenAI-compatible APIs and `anthropic` for Anthropic-compatible APIs. Toby exposes each provider to supported tools through a per-run `/proxy/<uuid>` URL, so upstream `baseURL` and credential `headers` stay on the host. OpenCode receives these providers translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are used verbatim, otherwise Toby queries `/models` on the upstream provider during sandbox startup. Discovery failures log `opencode.model-discovery` and leave only that provider out of generated OpenCode config.
 - `sandbox` sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
 
@@ -88,6 +89,10 @@ provider:
       Authorization: "Bearer {env:EXAMPLE_API_KEY}"
     models:
       example-model: {}
+permission:
+  paths:
+    ~/shared: allow
+    ~/shared/**: allow
 ```
 
 Tool state controls whether selected tools use per-environment private state or bind mount the host's tool state directories. It defaults to `private`; the Docker tool is the exception and uses host state unless `docker.state` is explicitly set to `private`. The Docker socket is still passed to the Docker tool when its state is private.

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/configfile"
@@ -110,9 +109,9 @@ func (m *Mount) tobySyntheticConfig(ctx context.Context) (map[string]any, error)
 		config["mcp"] = mcp
 	}
 	permission := m.tobyConfig.Permission()
-	if len(permission.ExternalDirectory) > 0 {
+	if len(permission.Paths) > 0 {
 		external := map[string]any{}
-		for pattern, mode := range permission.ExternalDirectory {
+		for pattern, mode := range permission.Paths {
 			external[pattern] = mode
 		}
 		config["permission"] = map[string]any{"external_directory": external}
@@ -325,15 +324,6 @@ func (m *Mount) addSynthetic(config map[string]any) error {
 	}
 	mcp["toby"] = toby
 	addInstructions(config, m.instructions)
-	permission := objectAt(config, "permission")
-	external, ok := permission["external_directory"].(map[string]any)
-	if !ok {
-		external = map[string]any{}
-		permission["external_directory"] = external
-	}
-	for _, pattern := range allowedExternalDirectoryPatterns(m.projectRoot) {
-		external[pattern] = "allow"
-	}
 	return nil
 }
 
@@ -398,8 +388,4 @@ func (m *Mount) syntheticProxyMCP(name string, server tobyconfig.MCPServer) (map
 		}
 	}
 	return converted, nil
-}
-
-func allowedExternalDirectoryPatterns(projectRoot string) []string {
-	return []string{"/tmp", "/tmp/**", projectRoot, filepath.Join(projectRoot, "**")}
 }

@@ -86,28 +86,6 @@ mcp:
 	}
 }
 
-func TestContextFilesIncludesPermissionDirectories(t *testing.T) {
-	projectRoot := "/home/toby/Projects/app"
-	files, err := renderContextFiles(t, projectRoot, [][]byte{[]byte("# git")})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	settings := decode(t, fileByPath(t, files, StaticSettingsPath).Data)
-	dirs := settings["permissions"].(map[string]any)["additionalDirectories"].([]any)
-	want := map[string]bool{"/tmp": false, projectRoot: false}
-	for _, dir := range dirs {
-		if _, ok := want[dir.(string)]; ok {
-			want[dir.(string)] = true
-		}
-	}
-	for dir, seen := range want {
-		if !seen {
-			t.Fatalf("additionalDirectories missing %q: %#v", dir, dirs)
-		}
-	}
-}
-
 func TestContextFilesCombinesInstructions(t *testing.T) {
 	files, err := renderContextFiles(t, "/p", [][]byte{[]byte("# git\n"), []byte("# context\n")})
 	if err != nil {
