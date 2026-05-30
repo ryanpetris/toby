@@ -230,6 +230,33 @@ func TestConfiguredProjectVisibleHostPathUsesProjectName(t *testing.T) {
 	}
 }
 
+func TestConfiguredProjectsAllowSameSourceWithDifferentNames(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	source := filepath.Join(t.TempDir(), "source")
+	nested := filepath.Join(source, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{
+		Env:      "env",
+		Projects: []tool.ProjectMount{{Name: "foo", Source: source}, {Name: "bar", Source: source}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"foo", "bar"} {
+		visible, err := sbx.VisibleHostPath(name + "/nested")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if visible != nested {
+			t.Fatalf("visible path for %s = %q, want %q", name, visible, nested)
+		}
+	}
+}
+
 func TestVisibleHostPathAllowsNestedRepositoryUnderVisibleProject(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)

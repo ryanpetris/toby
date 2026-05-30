@@ -76,7 +76,7 @@ type launchToolConfig struct {
 }
 
 func BuildConfiguredLaunch(params Params, configPath string, extra []string) (ConfiguredLaunch, error) {
-	cfg, err := loadLaunchConfig(configPath, params.Paths.Home)
+	cfg, err := loadLaunchConfigWithPaths(configPath, params.Paths)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
@@ -99,7 +99,7 @@ func BuildConfiguredLaunch(params Params, configPath string, extra []string) (Co
 }
 
 func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed DirectLaunch, primary string, primaryProject tool.ProjectMount) (ConfiguredLaunch, error) {
-	cfg, err := loadLaunchConfig(configPath, params.Paths.Home)
+	cfg, err := loadLaunchConfigWithPaths(configPath, params.Paths)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
@@ -205,11 +205,16 @@ func configuredLaunchExtra(params, extra []string) []string {
 }
 
 func loadLaunchConfig(path, home string) (launchConfig, error) {
+	return loadLaunchConfigWithPaths(path, config.Paths{Home: home})
+}
+
+func loadLaunchConfigWithPaths(path string, paths config.Paths) (launchConfig, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return launchConfig{}, exitcode.New(2, "--config requires a value")
 	}
-	home = launchConfigHome(home)
+	paths = launchConfigPaths(paths)
+	home := paths.Home
 	expanded := config.ExpandHome(path, home)
 	abs, err := filepath.Abs(expanded)
 	if err != nil {
@@ -223,7 +228,7 @@ func loadLaunchConfig(path, home string) (launchConfig, error) {
 	if err != nil {
 		return launchConfig{}, fmt.Errorf("%s: %w", abs, err)
 	}
-	cfg, err := parseLaunchConfig(raw, filepath.Dir(abs), home)
+	cfg, err := parseLaunchConfigWithPaths(raw, filepath.Dir(abs), paths)
 	if err != nil {
 		return launchConfig{}, fmt.Errorf("%s: %w", abs, err)
 	}
@@ -231,17 +236,22 @@ func loadLaunchConfig(path, home string) (launchConfig, error) {
 }
 
 func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, error) {
+	return parseLaunchConfigWithPaths(raw, dir, config.Paths{Home: home})
+}
+
+func parseLaunchConfigWithPaths(raw map[string]any, dir string, paths config.Paths) (launchConfig, error) {
+	paths = launchConfigPaths(paths)
 	var cfg launchConfig
 	for key, value := range raw {
 		switch key {
 		case "sandbox":
-			sandbox, err := parseLaunchSandbox(value, dir, home)
+			sandbox, err := parseLaunchSandbox(value, dir, paths.Home)
 			if err != nil {
 				return launchConfig{}, err
 			}
 			cfg.Sandbox = sandbox
 		case "projects":
-			projects, err := parseLaunchProjects(value, dir, home)
+			projects, err := parseLaunchProjectsWithPaths(value, dir, paths)
 			if err != nil {
 				return launchConfig{}, err
 			}
@@ -528,13 +538,18 @@ func resolveLaunchConfigPath(path, dir, home string) (string, error) {
 }
 
 func parseLaunchProjects(raw any, dir, home string) ([]tool.ProjectMount, error) {
+	return parseLaunchProjectsWithPaths(raw, dir, config.Paths{Home: home})
+}
+
+func parseLaunchProjectsWithPaths(raw any, dir string, paths config.Paths) ([]tool.ProjectMount, error) {
+	paths = launchConfigPaths(paths)
 	items, ok := raw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("projects must be an array")
 	}
 	projects := make([]tool.ProjectMount, 0, len(items))
 	for i, item := range items {
-		project, err := parseLaunchProject(fmt.Sprintf("projects[%d]", i), item, dir, home)
+		project, err := parseLaunchProjectWithPaths(fmt.Sprintf("projects[%d]", i), item, dir, paths)
 		if err != nil {
 			return nil, err
 		}
@@ -544,8 +559,14 @@ func parseLaunchProjects(raw any, dir, home string) ([]tool.ProjectMount, error)
 }
 
 func parseLaunchProject(label string, raw any, dir, home string) (tool.ProjectMount, error) {
+	return parseLaunchProjectWithPaths(label, raw, dir, config.Paths{Home: home})
+}
+
+func parseLaunchProjectWithPaths(label string, raw any, dir string, paths config.Paths) (tool.ProjectMount, error) {
+	paths = launchConfigPaths(paths)
 	name := ""
-	path := "."
+	path := ""
+	pathSet := false
 	switch value := raw.(type) {
 	case string:
 		name = value
@@ -564,6 +585,7 @@ func parseLaunchProject(label string, raw any, dir, home string) (tool.ProjectMo
 					return tool.ProjectMount{}, fmt.Errorf("%s.path must be a string", label)
 				}
 				path = pathValue
+				pathSet = true
 			default:
 				return tool.ProjectMount{}, fmt.Errorf("unsupported %s key %q", label, key)
 			}
@@ -575,9 +597,13 @@ func parseLaunchProject(label string, raw any, dir, home string) (tool.ProjectMo
 	if name == "" {
 		return tool.ProjectMount{}, fmt.Errorf("%s.name must not be empty", label)
 	}
-	source, err := resolveLaunchProjectPath(path, dir, home)
-	if err != nil {
-		return tool.ProjectMount{}, fmt.Errorf("%s.path: %w", label, err)
+	source := resolveDefaultLaunchProjectPath(name, paths.ProjectRoot)
+	if pathSet {
+		var err error
+		source, err = resolveLaunchProjectPath(path, dir, paths.Home)
+		if err != nil {
+			return tool.ProjectMount{}, fmt.Errorf("%s.path: %w", label, err)
+		}
 	}
 	return tool.ProjectMount{Name: name, Source: source}, nil
 }
@@ -665,6 +691,10 @@ func resolveLaunchProjectPath(path, dir, home string) (string, error) {
 		return dir, nil
 	}
 	return joinConfigRelativePath(dir, path), nil
+}
+
+func resolveDefaultLaunchProjectPath(name, projectRoot string) string {
+	return joinConfigRelativePath(projectRoot, filepath.FromSlash(name))
 }
 
 func ResolveDirectLaunchProject(paths config.Paths, opts tool.CommandOptions) (tool.ProjectMount, error) {
@@ -768,4 +798,19 @@ func launchConfigHome(home string) string {
 		return ""
 	}
 	return userHome
+}
+
+func launchConfigPaths(paths config.Paths) config.Paths {
+	paths.Home = launchConfigHome(paths.Home)
+	paths.ProjectRoot = strings.TrimSpace(paths.ProjectRoot)
+	if paths.ProjectRoot != "" {
+		paths.ProjectRoot = config.ExpandHome(paths.ProjectRoot, paths.Home)
+		return paths
+	}
+	if paths.Home == "" {
+		paths.ProjectRoot = "Projects"
+		return paths
+	}
+	paths.ProjectRoot = filepath.Join(paths.Home, "Projects")
+	return paths
 }

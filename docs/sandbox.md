@@ -44,8 +44,10 @@ sandbox:
     - tool.host-state
 workdir: ~/tmp
 projects:
+  - app
   - name: foo
     path: ~/Projects/bar
+  - name: qux
   - name: baz
     path: /foo/bar
 tools:
@@ -54,17 +56,17 @@ tools:
   - uv
 ```
 
-Inside both Bubblewrap and Docker sandboxes, those projects appear under the sandbox-visible projects directory, `$XDG_PROJECTS_DIR/foo` and `$XDG_PROJECTS_DIR/baz` by default. Toby Git and MCP repository names use those configured project names, not the host source paths.
+Inside both Bubblewrap and Docker sandboxes, those projects appear under the sandbox-visible projects directory, `$XDG_PROJECTS_DIR/app`, `$XDG_PROJECTS_DIR/foo`, `$XDG_PROJECTS_DIR/qux`, and `$XDG_PROJECTS_DIR/baz` by default. Toby Git and MCP repository names use those configured project names, not the host source paths.
 
-Path values in launch config expand a leading `~` to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
+If a configured project is a string or an object with only `name`, the host source defaults to the host `$XDG_PROJECTS_DIR/<name>`. Explicit relative project `path` values resolve from the launch config file directory, absolute paths are used as-is, and leading `~` expands to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
 
 If `workdir` is set, Toby passes it to the selected runtime after leading `~` expansion to the sandbox home without otherwise resolving or validating it. If omitted, the working directory is the first configured project's sandbox path.
 
 Configured `tools` entries can be strings or objects with `name`; `params` is only allowed on the first tool. Tool names must be registered Toby tools. In config-owned launches, the first tool launches, later tools are installed and made available in order. Toby parses all CLI arguments before the first `--`; arguments after that first `--`, including later `--` values, are appended to the first tool's configured `params`. In overlay launches, the CLI-selected tool launches in the foreground and configured tools are additional; duplicate tools are loaded once.
 
-`sandbox.tools` controls where each selected tool stores its own state. The default state is `private`, which lets each environment use its private sandbox home and avoids bind mounting host tool directories such as `~/.config/claude` or `~/.local/share/opencode`. Set `state: host` to bind mount state for a tool from `stateRoot`, which is treated like `$HOME` for the tool's known state paths. If `stateRoot` is omitted, host state uses the host `$HOME`. Relative `stateRoot` paths in launch config resolve from the launch config file directory. The Docker tool defaults to host state unless `docker.state` is explicitly set to `private`; its `/var/run/docker.sock` bind remains enabled even when Docker state is private. Toby emits the `tool.host-state` warning when host state is enabled for non-Docker tools because concurrent instances can corrupt shared tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`, or `project.missing`. Synthetic Toby config is generated in both modes.
+`sandbox.tools` controls where each selected tool stores its own state. The default state is `private`, which lets each environment use its private sandbox home and avoids bind mounting host tool directories such as `~/.config/claude` or `~/.local/share/opencode`. Set `state: host` to bind mount state for a tool from `stateRoot`, which is treated like `$HOME` for the tool's known state paths. If `stateRoot` is omitted, host state uses the host `$HOME`. Relative `stateRoot` paths in launch config resolve from the launch config file directory. The Docker tool defaults to host state unless `docker.state` is explicitly set to `private`; its `/var/run/docker.sock` bind remains enabled even when Docker state is private. Toby emits the `tool.host-state` warning when host state is enabled for non-Docker tools because concurrent instances can corrupt shared tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Synthetic Toby config is generated in both modes.
 
-Configured project paths that do not exist are skipped with `project.missing`. If all configured projects are missing in a config-owned launch, Toby exits after printing the warnings. If a CLI project is specified and exists, missing configured projects only reduce the additional project set.
+Configured project paths that do not exist are skipped with `project.missing`. Duplicate configured project names are skipped with `project.duplicate`; the same host source path may be mounted multiple times under different project names. If all configured projects are missing or duplicate in a config-owned launch, Toby exits after printing the warnings. If a CLI project is specified and exists, missing or duplicate configured projects only reduce the additional project set.
 
 For example, OpenCode with `stateRoot: .toby/opencode-state` in a config file at `/repo/toby.yaml` uses `/repo/.toby/opencode-state/.config/opencode` and `/repo/.toby/opencode-state/.local/share/opencode` as the host sources.
 

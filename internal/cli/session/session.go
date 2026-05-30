@@ -186,24 +186,21 @@ func prepareConfiguredProjects(stderr io.Writer, home string, opts *tool.Command
 		return nil
 	}
 	projects := make([]tool.ProjectMount, 0, len(opts.Projects))
-	seen := map[string]bool{}
-	seenMissing := map[string]bool{}
+	seen := map[string]tool.ProjectMount{}
 	for _, project := range opts.Projects {
 		resolved, exists, err := resolveConfiguredProjectSource(project, home)
 		if err != nil {
 			return err
 		}
 		if !exists {
-			if !seenMissing[resolved.Source] {
-				seenMissing[resolved.Source] = true
-				warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectMissing, "configured project %q does not exist: %s; skipping it.", resolved.Name, resolved.Source)
-			}
+			warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectMissing, "configured project %q does not exist: %s; skipping it.", resolved.Name, resolved.Source)
 			continue
 		}
-		if seen[resolved.Source] {
+		if previous, ok := seen[resolved.Name]; ok {
+			warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectDuplicate, "configured project %q duplicates an earlier project name; using %s and skipping %s.", resolved.Name, previous.Source, resolved.Source)
 			continue
 		}
-		seen[resolved.Source] = true
+		seen[resolved.Name] = resolved
 		projects = append(projects, resolved)
 	}
 	if len(projects) == 0 {

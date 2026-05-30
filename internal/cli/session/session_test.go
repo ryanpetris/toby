@@ -214,6 +214,58 @@ func TestPrepareConfiguredProjectsWarnsAndSkipsMissingProjects(t *testing.T) {
 	}
 }
 
+func TestPrepareConfiguredProjectsWarnsAndSkipsDuplicateNames(t *testing.T) {
+	home := t.TempDir()
+	first := filepath.Join(home, "first")
+	second := filepath.Join(home, "second")
+	if err := os.MkdirAll(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := &tool.CommandOptions{Projects: []tool.ProjectMount{{Name: "app", Source: first}, {Name: "app", Source: second}}}
+	var stderr bytes.Buffer
+	if err := prepareConfiguredProjects(&stderr, home, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "warning[project.duplicate]") || !strings.Contains(stderr.String(), second) {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if opts.Env != "app" || !reflect.DeepEqual(opts.Projects, []tool.ProjectMount{{Name: "app", Source: first}}) {
+		t.Fatalf("options = %#v", opts)
+	}
+
+	stderr.Reset()
+	opts = &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ProjectDuplicate: true}}, Projects: []tool.ProjectMount{{Name: "app", Source: first}, {Name: "app", Source: second}}}
+	if err := prepareConfiguredProjects(&stderr, home, opts); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("suppressed stderr = %q", stderr.String())
+	}
+}
+
+func TestPrepareConfiguredProjectsAllowsSameSourceWithDifferentNames(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(home, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := &tool.CommandOptions{Projects: []tool.ProjectMount{{Name: "foo", Source: source}, {Name: "bar", Source: source}}}
+	var stderr bytes.Buffer
+	if err := prepareConfiguredProjects(&stderr, home, opts); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	want := []tool.ProjectMount{{Name: "foo", Source: source}, {Name: "bar", Source: source}}
+	if opts.Env != "foo" || !reflect.DeepEqual(opts.Projects, want) {
+		t.Fatalf("options = %#v, want projects %#v", opts, want)
+	}
+}
+
 type statefulTestTool struct{ name string }
 
 func (t statefulTestTool) Name() string { return t.name }

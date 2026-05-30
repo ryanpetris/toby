@@ -16,6 +16,7 @@ import (
 
 func TestLoadLaunchConfigDefaultsSandboxNameAndResolvesProjectPaths(t *testing.T) {
 	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
 	dir := filepath.Join(home, "configs", "app")
 	absolute := filepath.Join(home, "absolute")
 	configPath := filepath.Join(dir, "toby.yaml")
@@ -44,6 +45,9 @@ sandbox:
 workdir: ~/literal-workdir/../raw
 projects:
   - foo
+  - name: named
+  - name: dot
+    path: .
   - name: bar
     path: ../bar-src
   - name: abs
@@ -56,7 +60,7 @@ tools:
   - npm
 `))
 
-	cfg, err := loadLaunchConfig(configPath, home)
+	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +90,9 @@ tools:
 		t.Fatalf("suppress warnings = %#v", cfg.Sandbox.SuppressWarnings)
 	}
 	wantProjects := []tool.ProjectMount{
-		{Name: "foo", Source: dir},
+		{Name: "foo", Source: filepath.Join(projectRoot, "foo")},
+		{Name: "named", Source: filepath.Join(projectRoot, "named")},
+		{Name: "dot", Source: dir},
 		{Name: "bar", Source: dir + string(filepath.Separator) + "../bar-src"},
 		{Name: "abs", Source: absolute},
 		{Name: "tilde", Source: home + "/tilde-source/../raw"},
@@ -102,10 +108,11 @@ tools:
 
 func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
 	configPath := filepath.Join(home, "toby.json")
 	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"bubblewrap"},"projects":["foo"],"tools":["opencode"]}`))
 
-	cfg, err := loadLaunchConfig(configPath, home)
+	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +122,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	if cfg.Sandbox.Runtime.Default != "bubblewrap" {
 		t.Fatalf("runtime = %#v", cfg.Sandbox.Runtime)
 	}
-	if got, want := cfg.Projects[0].Source, home; got != want {
+	if got, want := cfg.Projects[0].Source, filepath.Join(projectRoot, "foo"); got != want {
 		t.Fatalf("project source = %q, want %q", got, want)
 	}
 }
@@ -210,8 +217,12 @@ func TestBuildOverlayConfiguredLaunchKeepsCLIPrimaryAndAddsConfigToolsProjects(t
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	project := filepath.Join(projectRoot, "app")
+	sharedProject := filepath.Join(projectRoot, "shared")
 	extraProject := filepath.Join(home, "extra")
 	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sharedProject, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(extraProject, 0o755); err != nil {
@@ -224,6 +235,7 @@ sandbox:
 projects:
   - name: duplicate
     path: Projects/app
+  - shared
   - name: extra
     path: extra
 tools:
@@ -253,7 +265,7 @@ tools:
 	if launch.Options.Env != "custom-name" || !reflect.DeepEqual(launch.Extra, []string{"--foreground"}) {
 		t.Fatalf("launch = %#v extra %#v", launch.Options, launch.Extra)
 	}
-	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "duplicate", Source: project}, {Name: "extra", Source: extraProject}}
+	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "duplicate", Source: project}, {Name: "shared", Source: sharedProject}, {Name: "extra", Source: extraProject}}
 	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
 	}
@@ -346,14 +358,18 @@ func TestMaybeAutoloadProjectConfigLoadsWhenEnabled(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	project := filepath.Join(projectRoot, "app")
+	sibling := filepath.Join(projectRoot, "sibling")
 	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte(`
 sandbox:
   name: review
 projects:
-  - app
+  - sibling
 tools:
   - opencode
   - npm
@@ -388,6 +404,10 @@ sandbox:
 	wantTools := []string{tool.OpenCodeToolName, tool.NpmToolName}
 	if len(launch.RequestedTools) != len(wantTools) || launch.RequestedTools[0] != wantTools[0] || launch.RequestedTools[1] != wantTools[1] {
 		t.Fatalf("requested tools = %#v", launch.RequestedTools)
+	}
+	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "sibling", Source: sibling}}
+	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
+		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
 	}
 }
 

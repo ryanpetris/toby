@@ -112,9 +112,9 @@ sandbox:
   autoloadProjectConfig: true # optional; load <project>/.toby.yaml on direct launches
 ```
 
-When host state is enabled, `stateRoot` is treated like `$HOME` for that tool's known state paths. For OpenCode, `stateRoot: ~/.config/toby/tool-state/opencode` uses `~/.config/toby/tool-state/opencode/.config/opencode` and `~/.config/toby/tool-state/opencode/.local/share/opencode`. If `stateRoot` is omitted, host state uses `$HOME`; relative `stateRoot` values in Toby config resolve from the config file directory. When host state is enabled for a non-Docker tool, Toby emits the `tool.host-state` warning because running multiple instances against the same host tool state can corrupt tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`, or `project.missing`. Toby still generates synthetic tool config in both modes.
+When host state is enabled, `stateRoot` is treated like `$HOME` for that tool's known state paths. For OpenCode, `stateRoot: ~/.config/toby/tool-state/opencode` uses `~/.config/toby/tool-state/opencode/.config/opencode` and `~/.config/toby/tool-state/opencode/.local/share/opencode`. If `stateRoot` is omitted, host state uses `$HOME`; relative `stateRoot` values in Toby config resolve from the config file directory. When host state is enabled for a non-Docker tool, Toby emits the `tool.host-state` warning because running multiple instances against the same host tool state can corrupt tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Toby still generates synthetic tool config in both modes.
 
-Set `sandbox.autoloadProjectConfig: true` in host config to load `<project>/.toby.yaml` during direct launches such as `toby opencode my-app`. If `.toby.yaml` exists and autoload is disabled, Toby emits `project.autoload-disabled`. In autoload mode, the CLI tool and project stay foreground and primary; tools and projects from `.toby.yaml` are added and deduplicated.
+Set `sandbox.autoloadProjectConfig: true` in host config to load `<project>/.toby.yaml` during direct launches such as `toby opencode my-app`. If `.toby.yaml` exists and autoload is disabled, Toby emits `project.autoload-disabled`. In autoload mode, the CLI tool and project stay foreground and primary; tools and projects from `.toby.yaml` are added, with duplicate project names skipped after warning.
 
 Example global Docker sandbox defaults:
 
@@ -161,8 +161,9 @@ sandbox:
 workdir: ~/tmp # optional; defaults to the primary project path inside the sandbox
 projects:
   - foo
+  - name: baz # equivalent to `baz`; source defaults to $XDG_PROJECTS_DIR/baz
   - name: bar
-    path: ../bar-source # relative to this config file, defaults to "."; leading ~ expands
+    path: ../bar-source # optional source; relative to this config file, leading ~ expands
 tools:
   - name: opencode
     params: ["--model", "anthropic/claude-sonnet-4-5"] # optional; only valid on the first tool
@@ -170,7 +171,7 @@ tools:
   - npm
 ```
 
-In config-owned launches, the first existing project is the working directory. Configured project paths that do not exist are skipped with the suppressible `project.missing` warning. In overlay launches, the CLI project remains first and configured projects are additional. In config-owned launches, the first tool is the launch tool, and later tools are installed and made available in order. In overlay launches, configured tools are additional and are deduplicated with the CLI tool. Tool entries may be strings or objects with `name`; `params` is only applied to the first tool in config-owned launches. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
+In config-owned launches, the first existing project is the working directory. Configured project paths that do not exist are skipped with the suppressible `project.missing` warning. Duplicate configured project names are skipped with the suppressible `project.duplicate` warning; the same host source path may be mounted multiple times under different project names. In overlay launches, the CLI project remains first and configured projects are additional. In config-owned launches, the first tool is the launch tool, and later tools are installed and made available in order. In overlay launches, configured tools are additional and are deduplicated with the CLI tool. Tool entries may be strings or objects with `name`; `params` is only applied to the first tool in config-owned launches. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
 
 Bubblewrap private homes are stored under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default. Configure `sandbox.runtime.bubblewrap.root` to use a different host directory. Docker homes use named Docker volumes instead.
 
@@ -186,7 +187,7 @@ toby --config myconfig.yaml -- --additional-param value
 
 Use `exec` as the primary tool to run arbitrary sandbox commands from `params` or from CLI arguments.
 
-Configured project `path` values are host source directories. Each project always appears inside the sandbox under `$XDG_PROJECTS_DIR/<name>`, even when the source directory is elsewhere. For example, `name: baz` with `path: /foo/bar` is mounted as `$XDG_PROJECTS_DIR/baz` in the sandbox.
+Configured project `path` values are host source directories. If a project is a string or an object with only `name`, the host source defaults to the host `$XDG_PROJECTS_DIR/<name>`. Explicit relative `path` values resolve from the launch config file directory, absolute paths are used as-is, and leading `~` expands to the host home. Each project always appears inside the sandbox under `$XDG_PROJECTS_DIR/<name>`, even when the source directory is elsewhere. For example, `name: baz` with `path: /foo/bar` is mounted as `$XDG_PROJECTS_DIR/baz` in the sandbox.
 
 ```yaml
 projects:

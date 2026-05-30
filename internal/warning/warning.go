@@ -13,6 +13,7 @@ const (
 	ToolHostState           ID = "tool.host-state"
 	OpenCodeModelDiscovery  ID = "opencode.model-discovery"
 	ProjectAutoloadDisabled ID = "project.autoload-disabled"
+	ProjectDuplicate        ID = "project.duplicate"
 	ProjectMissing          ID = "project.missing"
 )
 
@@ -90,9 +91,9 @@ func parseIDList(items []any, label string) (Suppression, error) {
 
 func ParseID(value string) (ID, error) {
 	switch id := ID(strings.TrimSpace(value)); id {
-	case ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectMissing:
+	case ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing:
 		return id, nil
 	default:
-		return "", fmt.Errorf("warning id must be one of %q, %q, %q, or %q", ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectMissing)
+		return "", fmt.Errorf("warning id must be one of %q, %q, %q, %q, or %q", ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing)
 	}
 }
