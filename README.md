@@ -74,7 +74,7 @@ Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.js
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server.
+- `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server. Generated tool config lives under `/tmp/toby/context` inside the sandbox and does not modify the tools' normal config files.
 - `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `/tmp/toby/context/instructions/` inside the sandbox using the source filename, adding a short random suffix before the extension if two files share a filename.
 - `provider` entries use OpenCode's provider schema and are currently applied to OpenCode only. If a provider includes `models`, Toby uses those models verbatim. For OpenAI-compatible providers without `models`, Toby queries the provider at sandbox startup; if discovery fails, Toby logs the `opencode.model-discovery` warning and leaves that provider out of the generated OpenCode config.
 - `sandbox` sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
@@ -213,7 +213,9 @@ Useful flags:
 
 ## MCP
 
-Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. The server uses Toby's authenticated WebSocket control connection and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag` for repositories already visible in the sandbox.
+Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. For OpenCode, Claude Code, Copilot, and Grok, Toby injects this server through synthetic tool configuration generated under `/tmp/toby/context`. Grok discovers that generated config through a `~/.grok/managed_config.toml` symlink. Codex receives Toby MCP through launch-time `-c` config overrides instead of a generated profile file. The server uses Toby's authenticated WebSocket control connection and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag` for repositories already visible in the sandbox.
+
+Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok's `managed_config.toml` symlink points back to `/tmp/toby/context/grok/config.toml`. Tool-specific instruction injection is also session-scoped: Copilot receives a generated `AGENTS.md` directory through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, Grok receives combined rules through `--rules`, and Codex receives combined developer instructions through `-c developer_instructions=...`.
 
 Inside the sandbox, Toby downloads the sandbox-facing Toby binary as `toby` and enables hidden `toby sandbox ...` commands. On the host these commands are hidden from help but still registered for diagnostics.
 

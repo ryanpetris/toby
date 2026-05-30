@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 
+	"petris.dev/toby/internal/codexconfig"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -89,4 +90,29 @@ func (t *codexTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
 		return err
 	}
 	return t.Simple.Upgrade(ctx, run)
+}
+
+func (t *codexTool) Launch(ctx context.Context, run *tool.RunContext) error {
+	args, err := launchArgs(run)
+	if err != nil {
+		return err
+	}
+	return tool.RunCommand(ctx, run.Launch, append([]string{"codex"}, args...), tool.ExecOptions{})
+}
+
+func launchArgs(run *tool.RunContext) ([]string, error) {
+	extra := []string(nil)
+	var instructions [][]byte
+	if run != nil {
+		extra = run.Extra
+		if run.ContextFiles != nil {
+			instructions = run.ContextFiles.InstructionContents()
+		}
+	}
+	args, err := codexconfig.ConfigArgs(instructions)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, extra...)
+	return args, nil
 }

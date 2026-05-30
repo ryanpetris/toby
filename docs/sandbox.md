@@ -119,7 +119,7 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` config is rendered into OpenCode and Claude Code synthetic MCP files. Toby's own MCP server is always injected as `toby` after host config is merged.
+- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
 - `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
 - `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby emits the `opencode.model-discovery` warning on stderr and excludes that provider from the generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
@@ -209,3 +209,51 @@ Generated `claude/mcp.json`:
   }
 }
 ```
+
+## Codex
+
+For Codex sandboxes, Toby injects its built-in MCP server and combined instructions through launch-time config overrides. It does not write to `CODEX_HOME`, does not create a profile file, and does not pass MCP secrets as argv values. The launch includes overrides equivalent to:
+
+```sh
+codex \
+  -c 'mcp_servers.toby.command="toby"' \
+  -c 'mcp_servers.toby.args=["sandbox", "mcp"]' \
+  -c 'mcp_servers.toby.enabled=true' \
+  -c 'mcp_servers.toby.env_vars=["TOBY_CONTROL_URL", "TOBY_CONTROL_TOKEN"]' \
+  -c 'developer_instructions="..."'
+```
+
+Codex has no session config-file flag for arbitrary MCP config. To avoid writing regular Codex config files or leaking configured MCP secrets through argv, Toby only injects its built-in `toby` MCP server for Codex.
+
+## Copilot
+
+For Copilot sandboxes, Toby generates `copilot/mcp-config.json` and `copilot/AGENTS.md` under `/tmp/toby/context`, sets `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` to include the generated Copilot context directory, and launches Copilot with:
+
+```sh
+copilot --additional-mcp-config @/tmp/toby/context/copilot/mcp-config.json
+```
+
+Generated `copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "toby": {
+      "type": "stdio",
+      "command": "toby",
+      "args": ["sandbox", "mcp"],
+      "env": {
+        "TOBY_CONTROL_URL": "${TOBY_CONTROL_URL}",
+        "TOBY_CONTROL_TOKEN": "${TOBY_CONTROL_TOKEN}"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+## Grok
+
+For Grok sandboxes, Toby keeps Grok state in the normal `.grok` state bind so `sandbox.tools.grok.stateRoot` works like other tools. Toby generates `grok/config.toml` under `/tmp/toby/context`, then links `~/.grok/managed_config.toml` to that generated file during sandbox startup so Grok discovers Toby MCP through its native config loader. Combined instructions are passed with `--rules`.
+
+The generated Grok config contains Toby's MCP server and does not write to `~/.grok/config.toml`.

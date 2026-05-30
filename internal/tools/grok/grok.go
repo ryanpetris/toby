@@ -2,11 +2,15 @@ package grok
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/grokconfig"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -17,6 +21,13 @@ const baseURL = "https://x.ai/cli"
 
 var Module = fx.Module("tools.grok", fx.Provide(Provide))
 
+type Params struct {
+	fx.In
+
+	Paths  config.Paths
+	Config *tobyconfig.Service `optional:"true"`
+}
+
 type Result struct {
 	fx.Out
 
@@ -24,22 +35,68 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(paths config.Paths) Result {
+func Provide(params Params) Result {
 	svc := &grokTool{Simple: &tool.Simple{
 		Base:           toolutil.Base(tool.GrokToolName, "Launch Grok", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
-		RootDir:        paths.SandboxRoot,
+		RootDir:        params.Paths.SandboxRoot,
 		HostSubpath:    []string{".grok"},
 		SandboxSubpath: []string{".grok"},
-	}}
+	}, config: params.Config}
 	return Result{Service: svc, Registry: svc}
 }
 
 type grokTool struct {
 	*tool.Simple
+	config *tobyconfig.Service
 }
 
 func (t *grokTool) PathEntries() []tool.PathTarget {
 	return []tool.PathTarget{tool.HomeTarget(".grok", "bin")}
+}
+
+func (t *grokTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	return grokconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config)
+}
+
+func (t *grokTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
+	if err := t.Simple.SandboxInit(ctx, run); err != nil {
+		return err
+	}
+	return tool.SandboxInitOnce(run, t.Name()+".managed-config", func() error {
+		contextDir := ""
+		home := ""
+		if run != nil {
+			if run.ContextFiles != nil {
+				contextDir = run.ContextFiles.ContextDir()
+			}
+			if contextDir == "" && run.Sandbox != nil {
+				contextDir = run.Sandbox.TobyContextDir()
+			}
+			if run.Sandbox != nil {
+				home = run.Sandbox.HomeDir()
+			}
+			if home == "" {
+				home = run.Env["HOME"]
+			}
+		}
+		if contextDir == "" {
+			return fmt.Errorf("context files session is not configured")
+		}
+		if home == "" {
+			return fmt.Errorf("sandbox home is not configured")
+		}
+		if run == nil || run.Exec == nil {
+			return fmt.Errorf("sandbox executor is not configured")
+		}
+		grokHome := filepath.Join(home, ".grok")
+		if err := tool.RunCommand(ctx, run.Exec, []string{"mkdir", "-p", grokHome}, tool.ExecOptions{}); err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{"ln", "-sfn", grokconfig.ConfigPath(contextDir), filepath.Join(grokHome, "managed_config.toml")}, tool.ExecOptions{})
+	})
 }
 
 func (t *grokTool) Install(ctx context.Context, run *tool.RunContext) error {
@@ -91,5 +148,26 @@ func (t *grokTool) install(ctx context.Context, run *tool.RunContext, force bool
 }
 
 func (t *grokTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"grok"}, run.Extra...), tool.ExecOptions{})
+	args, err := launchArgs(run)
+	if err != nil {
+		return err
+	}
+	return tool.RunCommand(ctx, run.Launch, append([]string{"grok"}, args...), tool.ExecOptions{})
+}
+
+func launchArgs(run *tool.RunContext) ([]string, error) {
+	extra := []string(nil)
+	var instructions [][]byte
+	if run != nil {
+		extra = run.Extra
+		if run.ContextFiles != nil {
+			instructions = run.ContextFiles.InstructionContents()
+		}
+	}
+	args := []string{}
+	if rules := grokconfig.Rules(instructions); rules != "" {
+		args = append(args, "--rules", rules)
+	}
+	args = append(args, extra...)
+	return args, nil
 }
