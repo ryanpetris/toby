@@ -18,10 +18,12 @@ import (
 	"petris.dev/toby/internal/hostmanager"
 	"petris.dev/toby/internal/mcpserver"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/sandboxbinary"
 	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/version"
+	"petris.dev/toby/internal/warning"
 
 	"github.com/spf13/cobra"
 )
@@ -113,6 +115,8 @@ func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
 	cmd.Flags().String("sandbox-runtime", "", "Sandbox runtime to use: bubblewrap or docker.")
 	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
+	cmd.Flags().String("tool-state", "", "Tool state source to use by default: private or host.")
+	cmd.Flags().String("tool-state-root", "", "Host root to use as HOME for tool state when --tool-state=host.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {
@@ -155,6 +159,8 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	if err != nil {
 		return err
 	}
+	toolset.SetToolStates(opts.ToolStates)
+	warnHostToolState(params.Stderr, opts.SuppressWarnings, toolset)
 	if err := toolset.HostInit(ctx, opts); err != nil {
 		return err
 	}
@@ -186,16 +192,18 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
 		ready <- sandboxManagerReady{client: client, err: err}
 	}
-	socketPath := sbx.HostControlSocketPath()
-	server, err := control.ListenConnections(ctx, socketPath, manager.HandleConnection)
+	endpoint := sbx.HostControlEndpoint()
+	endpoint.BinarySource = sandboxbinary.SourceBytes
+	server, err := control.ListenEndpoint(ctx, endpoint, manager.HandleConnection)
 	if err != nil {
 		return err
 	}
 	defer server.Close()
+	sbx.SetupControlEndpoint(env, server.Endpoint)
 
 	sandboxManagerExit := newSandboxManagerExit()
 	go func() {
-		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: []string{sbx.TobyBinaryPath(), "sandbox", "manager"}, Toolset: toolset, Env: env})
+		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Toolset: toolset, Env: env})
 		sandboxManagerExit.set(sandboxManagerProcessResult{exitCode: code, err: err})
 	}()
 
@@ -240,22 +248,45 @@ func applySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 	}
 	result := *opts
 	defaults := config.Sandbox()
+	result.ToolStates = defaults.Tools.Clone()
+	result.ToolStates.Merge(opts.ToolStates)
+	result.SuppressWarnings = defaults.SuppressWarnings.Clone()
+	result.SuppressWarnings.Merge(opts.SuppressWarnings)
+	if result.BubblewrapRoot == "" {
+		result.BubblewrapRoot = defaults.Runtime.Bubblewrap.Root
+	}
 	if result.SandboxRuntime == "" {
-		result.SandboxRuntime = defaults.Runtime
+		result.SandboxRuntime = defaults.Runtime.Default
 	}
 	if result.SandboxRuntime != "docker" {
 		return result
 	}
 	if result.DockerImage == "" {
-		result.DockerImage = defaults.Docker.Image
+		result.DockerImage = defaults.Runtime.Docker.Image
 	}
 	if result.DockerHome == "" {
-		result.DockerHome = defaults.Docker.Home
+		result.DockerHome = defaults.Runtime.Docker.Home
 	}
 	if result.DockerProjects == "" {
-		result.DockerProjects = defaults.Docker.Projects
+		result.DockerProjects = defaults.Runtime.Docker.Projects
 	}
 	return result
+}
+
+func warnHostToolState(stderr io.Writer, suppression warning.Suppression, toolset *tool.Toolset) {
+	names := toolset.HostStateToolNames()
+	if len(names) == 0 {
+		return
+	}
+	warning.Fprintf(stderr, suppression, warning.ToolHostState, "using host tool state for %s; running multiple sandbox instances with the same host tool state can corrupt tool databases.", strings.Join(names, ", "))
+}
+
+func sandboxManagerArgv(sbx sandbox.Instance) []string {
+	return []string{
+		"/bin/sh", "-c",
+		`set -e; mkdir -p /tmp/toby/bin; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN}" "${TOBY_BINARY_URL}" -o /tmp/toby/bin/toby; chmod 755 /tmp/toby/bin/toby; exec "$@"`,
+		"toby-startup", sbx.TobyBinaryPath(), "sandbox", "manager",
+	}
 }
 
 type sandboxManagerReady struct {
@@ -594,14 +625,11 @@ func newSandboxGitCommand() *cobra.Command {
 }
 
 func sandboxControlClient() (*control.Client, error) {
-	path, err := control.DefaultSocketPath()
+	endpoint, err := control.DefaultEndpoint()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("toby sandbox commands must run inside a Toby sandbox: %s is not available", path)
-	}
-	return control.NewClient(path), nil
+	return control.NewEndpointClient(endpoint), nil
 }
 
 func writeGitResult(cmd *cobra.Command, result control.GitResult) error {

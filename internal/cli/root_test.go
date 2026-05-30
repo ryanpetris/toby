@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/version"
+	"petris.dev/toby/internal/warning"
 
 	"github.com/spf13/cobra"
 )
@@ -85,11 +87,18 @@ func TestApplySandboxDefaultsUsesHostDockerDefaults(t *testing.T) {
 	dir := t.TempDir()
 	writeTobyConfig(t, dir, []byte(`
 sandbox:
-  runtime: docker
-  docker:
-    image: node:host
-    home: /home/host
-    projects: /workspace/host
+  runtime:
+    default: docker
+    docker:
+      image: node:host
+      home: /home/host
+      projects: /workspace/host
+    bubblewrap:
+      root: ./sandboxes
+  tools:
+    default:
+      state: host
+      stateRoot: ./state
 `))
 	config, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -100,6 +109,12 @@ sandbox:
 	if got.SandboxRuntime != "docker" || got.DockerImage != "node:host" || got.DockerHome != "/home/host" || got.DockerProjects != "/workspace/host" {
 		t.Fatalf("defaults = %#v", got)
 	}
+	if got.BubblewrapRoot != filepath.Join(dir, "sandboxes") {
+		t.Fatalf("defaults = %#v", got)
+	}
+	if got.ToolStates.Default.State != tool.ToolStateHost || got.ToolStates.Default.StateRoot != filepath.Join(dir, "state") {
+		t.Fatalf("tool states = %#v", got.ToolStates)
+	}
 }
 
 func TestApplySandboxDefaultsPreservesExplicitLaunchValues(t *testing.T) {
@@ -107,11 +122,12 @@ func TestApplySandboxDefaultsPreservesExplicitLaunchValues(t *testing.T) {
 	dir := t.TempDir()
 	writeTobyConfig(t, dir, []byte(`
 sandbox:
-  runtime: docker
-  docker:
-    image: node:host
-    home: /home/host
-    projects: /workspace/host
+  runtime:
+    default: docker
+    docker:
+      image: node:host
+      home: /home/host
+      projects: /workspace/host
 `))
 	config, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -124,15 +140,97 @@ sandbox:
 	}
 }
 
+func TestApplySandboxDefaultsMergesLaunchToolStateOverrides(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+sandbox:
+  tools:
+    default:
+      state: host
+      stateRoot: ~/state/default
+    claude:
+      state: host
+      stateRoot: state/claude
+`))
+	config, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := applySandboxDefaults(&tool.CommandOptions{ToolStates: tool.ToolStateSettings{Tools: map[string]tool.ToolStateConfig{tool.ClaudeToolName: {State: tool.ToolStatePrivate}}}}, config)
+	if got.ToolStates.StateFor(tool.OpenCodeToolName) != tool.ToolStateHost || got.ToolStates.StateFor(tool.ClaudeToolName) != tool.ToolStatePrivate {
+		t.Fatalf("tool states = %#v", got.ToolStates)
+	}
+	if got.ToolStates.StateRootFor(tool.OpenCodeToolName) != filepath.Join(home, "state", "default") || got.ToolStates.StateRootFor(tool.ClaudeToolName) != filepath.Join(dir, "state", "claude") {
+		t.Fatalf("tool roots = %#v", got.ToolStates)
+	}
+}
+
+func TestApplySandboxDefaultsMergesWarningSuppression(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+sandbox:
+  suppressWarnings: true
+`))
+	config, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := applySandboxDefaults(&tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ToolHostState: true}}}, config)
+	if !got.SuppressWarnings.Suppresses(warning.ToolHostState) || got.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+		t.Fatalf("suppress warnings = %#v", got.SuppressWarnings)
+	}
+}
+
+func TestWarnHostToolStateSkipsDocker(t *testing.T) {
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		statefulTestTool{name: tool.OpenCodeToolName},
+		statefulTestTool{name: tool.DockerToolName},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset, err := registry.Build([]string{tool.OpenCodeToolName, tool.DockerToolName}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset.SetToolStates(tool.ToolStateSettings{Default: tool.ToolStateConfig{State: tool.ToolStateHost, StateRoot: t.TempDir()}})
+	var stderr bytes.Buffer
+	warnHostToolState(&stderr, warning.Suppression{}, toolset)
+	if got := stderr.String(); got == "" || !bytes.Contains(stderr.Bytes(), []byte("warning[tool.host-state]")) || !bytes.Contains(stderr.Bytes(), []byte(tool.OpenCodeToolName)) || bytes.Contains(stderr.Bytes(), []byte(tool.DockerToolName)) {
+		t.Fatalf("warning = %q", got)
+	}
+	stderr.Reset()
+	warnHostToolState(&stderr, warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ToolHostState: true}}, toolset)
+	if stderr.Len() != 0 {
+		t.Fatalf("suppressed warning = %q", stderr.String())
+	}
+
+	toolset, err = registry.Build([]string{tool.DockerToolName}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset.SetToolStates(tool.ToolStateSettings{})
+	stderr.Reset()
+	warnHostToolState(&stderr, warning.Suppression{}, toolset)
+	if stderr.Len() != 0 {
+		t.Fatalf("docker warning = %q", stderr.String())
+	}
+}
+
 func TestApplySandboxDefaultsDoesNotApplyDormantDockerDefaults(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
 	writeTobyConfig(t, dir, []byte(`
 sandbox:
-  docker:
-    image: node:host
-    home: /home/host
-    projects: /workspace/host
+  runtime:
+    docker:
+      image: node:host
+      home: /home/host
+      projects: /workspace/host
 `))
 	config, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -153,6 +251,36 @@ func emptyRegistry(t *testing.T) *tool.Registry {
 	}
 	return registry
 }
+
+type statefulTestTool struct{ name string }
+
+func (t statefulTestTool) Name() string { return t.name }
+
+func (t statefulTestTool) CommandName() string { return t.name }
+
+func (t statefulTestTool) LaunchHelp() string { return "Launch " + t.name }
+
+func (t statefulTestTool) ContextGroups() []string { return nil }
+
+func (t statefulTestTool) Binds() []tool.Bind {
+	return []tool.Bind{{HostPath: "/host/" + t.name, Target: tool.HomeTarget("." + t.name), State: true}}
+}
+
+func (t statefulTestTool) PathEntries() []tool.PathTarget { return nil }
+
+func (t statefulTestTool) ConfigureCommand(*cobra.Command) {}
+
+func (t statefulTestTool) HostInit(context.Context, *tool.CommandOptions) error { return nil }
+
+func (t statefulTestTool) SandboxContextSetup(*tool.RunContext) error { return nil }
+
+func (t statefulTestTool) SandboxInit(context.Context, *tool.RunContext) error { return nil }
+
+func (t statefulTestTool) Install(context.Context, *tool.RunContext) error { return nil }
+
+func (t statefulTestTool) Upgrade(context.Context, *tool.RunContext) error { return nil }
+
+func (t statefulTestTool) Launch(context.Context, *tool.RunContext) error { return nil }
 
 func writeTobyConfig(t *testing.T, dir string, data []byte) {
 	t.Helper()

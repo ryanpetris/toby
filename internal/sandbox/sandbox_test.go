@@ -37,7 +37,7 @@ func (t bindTool) Binds() []tool.Bind {
 	return append([]tool.Bind(nil), t.binds...)
 }
 
-func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
+func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	projectDir := filepath.Join(projectRoot, "demo")
@@ -45,9 +45,10 @@ func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := testPaths(home)
-	paths.XAuthority = filepath.Join(home, ".Xauthority")
-	factory := NewFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo"})
+	runtimeDir := filepath.Join(home, "runtime")
+	xauthority := filepath.Join(home, ".Xauthority")
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeBubblewrap})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,16 +76,11 @@ func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
 	}
 	assertContainsSequence(t, cmd, []string{"/usr/bin/bwrap", "--die-with-parent", "--unshare-pid"})
 	assertContainsSequence(t, cmd, []string{"--dev-bind", "/dev", "/dev"})
-	assertContainsSequence(t, cmd, []string{"--tmpfs", paths.XDGRuntimeDir})
-	assertContainsSequence(t, cmd, []string{"--dir", filepath.Join(paths.XDGRuntimeDir, "toby")})
-	assertContainsSequence(t, cmd, []string{"--dir", filepath.Join(paths.XDGRuntimeDir, "toby", "bin")})
-	assertContainsSequence(t, cmd, []string{"--ro-bind", executablePath(t), filepath.Join(paths.XDGRuntimeDir, "toby", "bin", "toby")})
-	assertContainsSequence(t, cmd, []string{"--bind", sbx.HostControlSocketPath(), filepath.Join(paths.XDGRuntimeDir, "toby", "sandbox.sock")})
-	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(paths.XDGRuntimeDir, "pulse"), filepath.Join(paths.XDGRuntimeDir, "pulse")})
-	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(paths.XDGRuntimeDir, "pipewire-test"), filepath.Join(paths.XDGRuntimeDir, "pipewire-test")})
-	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(paths.XDGRuntimeDir, "wayland-test"), filepath.Join(paths.XDGRuntimeDir, "wayland-test")})
+	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(runtimeDir, "pulse"), filepath.Join(runtimeDir, "pulse")})
+	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(runtimeDir, "pipewire-test"), filepath.Join(runtimeDir, "pipewire-test")})
+	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(runtimeDir, "wayland-test"), filepath.Join(runtimeDir, "wayland-test")})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", "/run/udev", "/run/udev"})
-	assertContainsSequence(t, cmd, []string{"--ro-bind-try", paths.XAuthority, paths.XAuthority})
+	assertContainsSequence(t, cmd, []string{"--ro-bind-try", xauthority, xauthority})
 	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "demo"), home})
 	assertContainsSequence(t, cmd, []string{"--bind", projectDir, projectDir})
 	assertContainsSequence(t, cmd, []string{"--bind", "/usr/bin/true", "/usr/bin/xdg-open"})
@@ -93,7 +89,7 @@ func TestBuildCommandBindsRuntimeSocketBinaryProjectAndToolBinds(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--dev-bind-try", "/host/demo.sock", devSandboxPath})
 	assertContainsSequence(t, cmd, []string{"--chdir", projectDir})
 	assertContainsSequence(t, cmd, []string{"/bin/true"})
-	if slices.Contains(cmd, "/run/dbus") || slices.Contains(cmd, filepath.Join(paths.XDGRuntimeDir, "bus")) {
+	if slices.Contains(cmd, "/run/dbus") || slices.Contains(cmd, filepath.Join(runtimeDir, "bus")) {
 		t.Fatalf("command unexpectedly includes dbus bindings: %#v", cmd)
 	}
 }
@@ -102,7 +98,7 @@ func TestProjectOutsideHomeRejected(t *testing.T) {
 	home := t.TempDir()
 	outside := t.TempDir()
 	paths := testPaths(home)
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	_, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", Project: outside})
 	if err == nil {
 		t.Fatal("expected project outside home to be rejected")
@@ -115,7 +111,7 @@ func TestProjectUnderProjectRootAccepted(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(testPaths(home), fakeRunner{})
+	factory := testFactory(testPaths(home), fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", Project: projectDir})
 	if err != nil {
 		t.Fatal(err)
@@ -144,10 +140,11 @@ func TestConfiguredProjectsMountUnderProjectRootByName(t *testing.T) {
 	if err := os.MkdirAll(secondSource, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{
-		Env:     "env",
-		Workdir: "/tmp/custom-workdir",
+		Env:            "env",
+		SandboxRuntime: RuntimeBubblewrap,
+		Workdir:        "/tmp/custom-workdir",
 		Projects: []tool.ProjectMount{
 			{Name: "foo", Source: firstSource},
 			{Name: "baz", Source: secondSource},
@@ -174,10 +171,11 @@ func TestConfiguredProjectsDefaultWorkdirIsPrimaryProject(t *testing.T) {
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{
-		Env:      "env",
-		Projects: []tool.ProjectMount{{Name: "foo", Source: source}},
+		Env:            "env",
+		SandboxRuntime: RuntimeBubblewrap,
+		Projects:       []tool.ProjectMount{{Name: "foo", Source: source}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +195,7 @@ func TestConfiguredProjectVisibleHostPathUsesProjectName(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{
 		Env:      "env",
 		Projects: []tool.ProjectMount{{Name: "baz", Source: source}},
@@ -225,7 +223,7 @@ func TestVisibleHostPathAllowsNestedRepositoryUnderVisibleProject(t *testing.T) 
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "foobar"})
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +244,7 @@ func TestVisibleHostPathRejectsDotSegmentRepository(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "foobar"})
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +261,7 @@ func TestVisibleHostPathRejectsInvisibleRepository(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "foobar"})
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +285,7 @@ func TestVisibleHostPathRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(project, "link")); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "foobar"})
 	if err != nil {
 		t.Fatal(err)
@@ -297,45 +295,45 @@ func TestVisibleHostPathRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestSetupContextPrependsTobyBinAndSetsRuntimeDir(t *testing.T) {
+func TestSetupContextPrependsTobyBinAndUsesFixedRuntimeDir(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
-	sbx := &BubblewrapInstance{baseInstance: baseInstance{paths: paths, label: "demo", homeDir: home, projectsDir: paths.ProjectRoot, runtimeDir: paths.XDGRuntimeDir}}
-	run := &tool.RunContext{Toolset: &tool.Toolset{}, Env: tool.Environment{"PATH": "/usr/bin"}}
+	sbx := &BubblewrapInstance{baseInstance: baseInstance{paths: paths, label: "demo", homeDir: home, projectsDir: paths.ProjectRoot, runtimeDir: RuntimeDir}}
+	run := &tool.RunContext{Toolset: &tool.Toolset{}, Env: tool.Environment{"PATH": "/usr/bin", "XDG_RUNTIME_DIR": "/keep"}}
 	sbx.SetupContext(run)
 	pathEntries := strings.Split(run.Env["PATH"], ":")
-	want := []string{filepath.Join(home, "runtime", "toby", "bin"), filepath.Join(home, ".local", "bin"), "/usr/bin"}
+	want := []string{filepath.Join(RuntimeDir, "bin"), filepath.Join(home, ".local", "bin"), "/usr/bin"}
 	if !slices.Equal(pathEntries, want) {
 		t.Fatalf("PATH entries = %#v, want %#v", pathEntries, want)
 	}
-	if run.Env["XDG_RUNTIME_DIR"] != filepath.Join(home, "runtime") {
+	if run.Env["XDG_RUNTIME_DIR"] != "/keep" {
 		t.Fatalf("XDG_RUNTIME_DIR = %q", run.Env["XDG_RUNTIME_DIR"])
 	}
 	if run.Env["TOBY_SANDBOX"] != "1" {
 		t.Fatalf("TOBY_SANDBOX = %q", run.Env["TOBY_SANDBOX"])
 	}
-	if sbx.TobyContextDir() != filepath.Join(home, "runtime", "toby", "context") {
+	if sbx.TobyContextDir() != filepath.Join(RuntimeDir, "context") {
 		t.Fatalf("TobyContextDir = %q", sbx.TobyContextDir())
 	}
-	if sbx.TobyGitAgentsPath() != filepath.Join(home, "runtime", "toby", "context", "GIT_AGENTS.md") {
+	if sbx.TobyGitAgentsPath() != filepath.Join(RuntimeDir, "context", "GIT_AGENTS.md") {
 		t.Fatalf("TobyGitAgentsPath = %q", sbx.TobyGitAgentsPath())
 	}
 }
 
-func TestDockerBuildCommandMountsHomeRuntimeProjectsAndUsesDefaultImage(t *testing.T) {
+func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
 	projectDir := filepath.Join(paths.ProjectRoot, "demo")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker})
 	if err != nil {
 		t.Fatal(err)
 	}
 	docker := sbx.(*DockerInstance)
-	env := tool.Environment{"HOME": docker.HomeDir(), "XDG_PROJECTS_DIR": docker.Projects(), "XDG_RUNTIME_DIR": docker.runtimeDir}
+	env := tool.Environment{"HOME": docker.HomeDir(), "XDG_PROJECTS_DIR": docker.Projects()}
 	cmd, err := docker.BuildCommand(RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: env})
 	if err != nil {
 		t.Fatal(err)
@@ -343,8 +341,6 @@ func TestDockerBuildCommandMountsHomeRuntimeProjectsAndUsesDefaultImage(t *testi
 	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--init", "-i"})
 	assertContainsSequence(t, cmd, []string{"--network", "host"})
 	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(docker.hostRuntimeDir, docker.runtimeDir, false)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(executablePath(t), docker.TobyBinaryPath(), true)})
 	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(paths.ProjectRoot, "demo"), false)})
 	assertContainsSequence(t, cmd, []string{"--env", "HOME=" + paths.Home})
 	assertContainsSequence(t, cmd, []string{"--env", "XDG_PROJECTS_DIR=" + paths.ProjectRoot})
@@ -354,7 +350,51 @@ func TestDockerBuildCommandMountsHomeRuntimeProjectsAndUsesDefaultImage(t *testi
 	assertContainsSequence(t, initCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "sh"})
 	assertContainsSequence(t, initCmd, []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
 	assertContainsSequence(t, initCmd, []string{"--env", "HOME=" + paths.Home})
-	assertContainsSequence(t, initCmd, []string{DefaultDockerImage, "-c", `set -e; mkdir -p "$1"; chown -R "$2:$3" "$1" 2>/dev/null || true; chmod -R u+rwX,go+rwX "$1"`, "sh", paths.Home})
+	assertContainsSequence(t, initCmd, []string{DefaultDockerImage, "-c", `set -e; mkdir -p "$1" "$1/.local/bin" "$1/.local/share" "$1/.cache" "$1/.config"; chown -R "$2:$3" "$1" 2>/dev/null || true; chmod -R u+rwX,go+rwX "$1"`, "sh", paths.Home})
+}
+
+func TestFactoryResolvesRelativeToolStateRootFromPrimaryProject(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	opts := &tool.CommandOptions{
+		Env:            "demo",
+		SandboxRuntime: RuntimeBubblewrap,
+		ToolStates: tool.ToolStateSettings{Default: tool.ToolStateConfig{
+			State:     tool.ToolStateHost,
+			StateRoot: "state/root",
+		}},
+	}
+	if _, err := factory.FromOptions(opts); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := opts.ToolStates.StateRootFor(tool.OpenCodeToolName), filepath.Join(projectDir, "state", "root"); got != want {
+		t.Fatalf("state root = %q, want %q", got, want)
+	}
+}
+
+func TestBubblewrapRootOptionOverridesDefaultSandboxRoot(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customRoot := filepath.Join(home, "CustomSandboxes")
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeBubblewrap, BubblewrapRoot: customRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := sbx.(*BubblewrapInstance).BuildCommand(RunSpec{Argv: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(customRoot, "demo"), paths.Home})
 }
 
 func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
@@ -365,7 +405,7 @@ func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{}
-	factory := NewFactory(paths, runner)
+	factory := testFactory(paths, runner)
 	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker})
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +430,7 @@ func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	sbx, err := factory.FromOptions(&tool.CommandOptions{
 		Env:            "demo",
 		SandboxRuntime: RuntimeDocker,
@@ -423,7 +463,7 @@ func TestSandboxAndProjectNamesRejectSlashes(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewFactory(paths, fakeRunner{})
+	factory := testFactory(paths, fakeRunner{})
 	if _, err := factory.FromOptions(&tool.CommandOptions{Env: "team/demo"}); err == nil {
 		t.Fatal("expected slash in sandbox name to be rejected")
 	}
@@ -440,13 +480,21 @@ func TestDockerHomeVolumeNameSanitizesLabel(t *testing.T) {
 
 func testPaths(home string) config.Paths {
 	return config.Paths{
-		Home:           home,
-		ProjectRoot:    filepath.Join(home, "Projects"),
-		SandboxRoot:    filepath.Join(home, "Scratch", "Toby"),
-		XDGRuntimeDir:  filepath.Join(home, "runtime"),
-		PipewireCore:   "pipewire-test",
-		WaylandDisplay: "wayland-test",
+		Home:        home,
+		ProjectRoot: filepath.Join(home, "Projects"),
+		SandboxRoot: filepath.Join(home, "Scratch", "Toby"),
 	}
+}
+
+func testFactory(paths config.Paths, runner executil.Runner) Factory {
+	factory, err := newFactory(paths, []Environment{
+		newDockerEnvironment(paths, runner, "docker", nil),
+		newBubblewrapEnvironment(paths, runner, "/usr/bin/bwrap", filepath.Join(paths.Home, "runtime"), "pipewire-test", "wayland-test", filepath.Join(paths.Home, ".Xauthority"), nil),
+	})
+	if err != nil {
+		panic(err)
+	}
+	return factory
 }
 
 func assertContainsSequence(t *testing.T, values, sequence []string) {
@@ -457,13 +505,4 @@ func assertContainsSequence(t *testing.T, values, sequence []string) {
 		}
 	}
 	t.Fatalf("%#v does not contain sequence %#v", values, sequence)
-}
-
-func executablePath(t *testing.T) string {
-	t.Helper()
-	path, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

@@ -1,54 +1,72 @@
 package control
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"net"
-	"os"
-	"path/filepath"
+	"net/http"
+	"strconv"
 	"sync"
 )
-
-type Handler func(context.Context, []byte) ([]byte, error)
 
 type ConnHandler func(context.Context, net.Conn)
 
 type Server struct {
-	Path     string
+	Endpoint Endpoint
 	listener net.Listener
-	connFunc ConnHandler
+	http     *http.Server
 	ctx      context.Context
 	cancel   context.CancelFunc
 	once     sync.Once
 }
 
-func Listen(ctx context.Context, path string, handler Handler) (*Server, error) {
-	return ListenConnections(ctx, path, func(ctx context.Context, conn net.Conn) {
-		handleOneShot(ctx, conn, handler)
-	})
-}
-
-func ListenConnections(ctx context.Context, path string, handler ConnHandler) (*Server, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+func ListenEndpoint(ctx context.Context, endpoint Endpoint, handler ConnHandler) (*Server, error) {
+	address := endpoint.ListenAddress
+	if address == "" {
+		address = "127.0.0.1:0"
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	listener, err := net.Listen("unix", path)
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = listener.Close()
-		_ = os.Remove(path)
-		return nil, err
-	}
 	serverCtx, cancel := context.WithCancel(ctx)
-	server := &Server{Path: path, listener: listener, connFunc: handler, ctx: serverCtx, cancel: cancel}
-	go server.serve()
+	actual := endpoint
+	actual.ListenAddress = listener.Addr().String()
+	actual.URL = "ws://" + actual.ListenAddress + "/toby/control"
+	actual.BinaryURL = "http://" + actual.ListenAddress + "/toby/binary"
+	server := &Server{Endpoint: actual, listener: listener, ctx: serverCtx, cancel: cancel}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/toby/control", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := acceptWebSocket(w, r, endpoint.Token)
+		if err != nil {
+			return
+		}
+		handler(serverCtx, conn)
+	})
+	mux.HandleFunc("/toby/binary", func(w http.ResponseWriter, r *http.Request) {
+		serveBinary(w, r, endpoint.Token, endpoint.BinarySource)
+	})
+	server.http = &http.Server{Handler: mux}
+	go func() { _ = server.http.Serve(listener) }()
 	return server, nil
+}
+
+func serveBinary(w http.ResponseWriter, r *http.Request, token string, source BinarySource) {
+	if token != "" && r.Header.Get("Authorization") != "Bearer "+token {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if source == nil {
+		http.Error(w, "binary source is not configured", http.StatusInternalServerError)
+		return
+	}
+	data, err := source()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 func (s *Server) Close() error {
@@ -58,33 +76,11 @@ func (s *Server) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.cancel()
-		err = s.listener.Close()
-		if removeErr := os.Remove(s.Path); err == nil && !errors.Is(removeErr, os.ErrNotExist) {
-			err = removeErr
+		if s.http != nil {
+			err = s.http.Close()
+		} else if s.listener != nil {
+			err = s.listener.Close()
 		}
 	})
 	return err
-}
-
-func (s *Server) serve() {
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			return
-		}
-		go s.connFunc(s.ctx, conn)
-	}
-}
-
-func handleOneShot(ctx context.Context, conn net.Conn, handler Handler) {
-	defer conn.Close()
-	request, err := bufio.NewReader(conn).ReadBytes('\n')
-	if err != nil {
-		return
-	}
-	response, err := handler(ctx, request)
-	if len(response) == 0 && err != nil {
-		response = ResponseError(nil, CodeInternalError, err.Error(), nil)
-	}
-	_, _ = conn.Write(response)
 }

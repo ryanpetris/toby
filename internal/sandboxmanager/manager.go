@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -55,17 +54,11 @@ func NewRuntime(registry *Registry) *Runtime {
 }
 
 func (r *Runtime) Run(ctx context.Context, controlPath string) error {
-	if controlPath == "" {
-		var err error
-		controlPath, err = control.DefaultSocketPath()
-		if err != nil {
-			return err
-		}
+	endpoint, err := control.DefaultEndpoint()
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(controlPath); err != nil {
-		return fmt.Errorf("toby sandbox manager must run inside a Toby sandbox: %s is not available", controlPath)
-	}
-	conn, err := net.Dial("unix", controlPath)
+	conn, err := control.DialEndpoint(endpoint)
 	if err != nil {
 		return err
 	}

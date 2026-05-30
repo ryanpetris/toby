@@ -48,12 +48,22 @@ func TestParseSandboxArgsDoesNotHandlePrintFlag(t *testing.T) {
 	}
 }
 
-func TestParseSandboxArgsSandboxRuntimeAndImage(t *testing.T) {
-	parsed, err := parseSandboxArgs([]string{"env", "--sandbox-runtime", "docker", "--sandbox-image=node:test"}, false, "", nil, nil)
+func TestParseSandboxArgsSandboxRuntimeImageAndToolState(t *testing.T) {
+	parsed, err := parseSandboxArgs([]string{"env", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--tool-state", "host", "--tool-state-root=state/root"}, false, "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
 		t.Fatalf("parsed options = %#v", parsed.Options)
+	}
+	if parsed.Options.ToolStates.Default.State != tool.ToolStateHost || parsed.Options.ToolStates.Default.StateRoot != "state/root" {
+		t.Fatalf("tool state = %#v", parsed.Options.ToolStates)
+	}
+}
+
+func TestParseSandboxArgsRejectsInvalidToolState(t *testing.T) {
+	_, err := parseSandboxArgs([]string{"env", "--tool-state=shared"}, false, "", nil, nil)
+	if err == nil {
+		t.Fatal("expected invalid tool state to fail")
 	}
 }

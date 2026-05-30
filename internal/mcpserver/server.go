@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 
 	"petris.dev/toby/internal/control"
@@ -90,18 +89,12 @@ const gitRebaseDescription = "Start, continue, or abort a rebase in a visible re
 const gitTagDescription = "Create an annotated tag in a visible repository using host Git."
 
 func (r *Runner) Run(ctx context.Context, controlPath string) error {
-	if controlPath == "" {
-		var err error
-		controlPath, err = control.DefaultSocketPath()
-		if err != nil {
-			return err
-		}
-	}
-	if _, err := os.Stat(controlPath); err != nil {
-		return fmt.Errorf("toby sandbox mcp must run inside a Toby sandbox: %s is not available", controlPath)
+	endpoint, err := control.DefaultEndpoint()
+	if err != nil {
+		return err
 	}
 
-	server := &Server{client: control.NewClient(controlPath)}
+	server := &Server{client: control.NewEndpointClient(endpoint)}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: version.String()}, &mcp.ServerOptions{
 		Instructions: gitServerInstructions,
 	})

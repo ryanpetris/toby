@@ -4,23 +4,22 @@ info:
   version: 0.2.0
   description: >
     Schema documentation for the Toby sandbox control protocol. The protocol is
-    JSON-RPC 2.0 over a private Unix stream socket. The host listens on
-    `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket into
-    the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`. The sandbox manager
-    connects to that socket and both sides can issue newline-terminated JSON-RPC
-    requests over the same connection.
+    JSON-RPC 2.0 over an authenticated WebSocket. The host listens on
+    `127.0.0.1`, the sandbox connects to the configured
+    `ws://.../toby/control` URL with a per-run bearer token, and both sides
+    issue JSON-RPC requests over the same persistent bidirectional connection.
 servers:
-  - url: unix://$XDG_RUNTIME_DIR/toby/sandbox.sock
-    description: Sandbox Unix socket transport, not an HTTP server.
+  - url: ws://127.0.0.1/toby/control
+    description: WebSocket control transport with a per-run bearer token.
 paths:
   /rpc:
     post:
       operationId: sendControlMessage
-      summary: Send one JSON-RPC message over the sandbox Unix socket.
+      summary: Send one JSON-RPC message over the sandbox control transport.
       description: >
-        This OpenAPI operation models the control payload. It does not imply an
-        HTTP endpoint; the actual transport is newline-terminated JSON-RPC over
-        `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside a Toby sandbox.
+        This OpenAPI operation models the control payload. It does not imply a
+        normal HTTP request/response endpoint; the actual transport is JSON-RPC
+        over a persistent WebSocket connection.
       requestBody:
         required: true
         content:
@@ -42,7 +41,7 @@ paths:
                 - $ref: '#/components/schemas/GitTagRequest'
       responses:
         '200':
-          description: JSON-RPC response payload read from the Unix socket.
+          description: JSON-RPC response payload read from the WebSocket.
           content:
             application/json:
               schema:

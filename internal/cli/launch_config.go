@@ -10,6 +10,7 @@ import (
 	"petris.dev/toby/internal/configfile"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/warning"
 )
 
 type launchConfig struct {
@@ -20,16 +21,27 @@ type launchConfig struct {
 }
 
 type launchSandboxConfig struct {
-	Name        string
-	AutoUpgrade bool
-	Runtime     string
-	Docker      launchDockerConfig
+	Name             string
+	AutoUpgrade      bool
+	Runtime          launchRuntimeConfig
+	Tools            tool.ToolStateSettings
+	SuppressWarnings warning.Suppression
+}
+
+type launchRuntimeConfig struct {
+	Default    string
+	Docker     launchDockerConfig
+	Bubblewrap launchBubblewrapConfig
 }
 
 type launchDockerConfig struct {
 	Image    string
 	Home     string
 	Projects string
+}
+
+type launchBubblewrapConfig struct {
+	Root string
 }
 
 type launchToolConfig struct {
@@ -58,14 +70,17 @@ func buildConfiguredLaunch(params Params, configPath string, extra []string) (co
 	}
 	return configuredLaunch{
 		Options: tool.CommandOptions{
-			Env:            cfg.Sandbox.Name,
-			Upgrade:        cfg.Sandbox.AutoUpgrade,
-			Projects:       cfg.Projects,
-			Workdir:        cfg.Workdir,
-			SandboxRuntime: cfg.Sandbox.Runtime,
-			DockerImage:    cfg.Sandbox.Docker.Image,
-			DockerHome:     cfg.Sandbox.Docker.Home,
-			DockerProjects: cfg.Sandbox.Docker.Projects,
+			Env:              cfg.Sandbox.Name,
+			Upgrade:          cfg.Sandbox.AutoUpgrade,
+			Projects:         cfg.Projects,
+			Workdir:          cfg.Workdir,
+			SandboxRuntime:   cfg.Sandbox.Runtime.Default,
+			DockerImage:      cfg.Sandbox.Runtime.Docker.Image,
+			DockerHome:       cfg.Sandbox.Runtime.Docker.Home,
+			DockerProjects:   cfg.Sandbox.Runtime.Docker.Projects,
+			BubblewrapRoot:   cfg.Sandbox.Runtime.Bubblewrap.Root,
+			ToolStates:       cfg.Sandbox.Tools,
+			SuppressWarnings: cfg.Sandbox.SuppressWarnings,
 		},
 		Extra:          configuredLaunchExtra(cfg.Tools[0].Params, extra),
 		RequestedTools: tools,
@@ -111,7 +126,7 @@ func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, erro
 	for key, value := range raw {
 		switch key {
 		case "sandbox":
-			sandbox, err := parseLaunchSandbox(value)
+			sandbox, err := parseLaunchSandbox(value, dir, home)
 			if err != nil {
 				return launchConfig{}, err
 			}
@@ -150,7 +165,7 @@ func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, erro
 	return cfg, nil
 }
 
-func parseLaunchSandbox(raw any) (launchSandboxConfig, error) {
+func parseLaunchSandbox(raw any, dir, home string) (launchSandboxConfig, error) {
 	var cfg launchSandboxConfig
 	if raw == nil {
 		return cfg, nil
@@ -174,17 +189,23 @@ func parseLaunchSandbox(raw any) (launchSandboxConfig, error) {
 			}
 			cfg.AutoUpgrade = autoUpgrade
 		case "runtime":
-			runtime, ok := value.(string)
-			if !ok {
-				return launchSandboxConfig{}, fmt.Errorf("sandbox.runtime must be a string")
-			}
-			cfg.Runtime = strings.TrimSpace(runtime)
-		case "docker":
-			docker, err := parseLaunchDocker(value)
+			runtime, err := parseLaunchRuntime(value, dir, home)
 			if err != nil {
 				return launchSandboxConfig{}, err
 			}
-			cfg.Docker = docker
+			cfg.Runtime = runtime
+		case "tools":
+			tools, err := parseLaunchSandboxTools(value, dir, home)
+			if err != nil {
+				return launchSandboxConfig{}, err
+			}
+			cfg.Tools = tools
+		case "suppressWarnings":
+			suppression, err := warning.ParseSuppression(value, "sandbox.suppressWarnings")
+			if err != nil {
+				return launchSandboxConfig{}, err
+			}
+			cfg.SuppressWarnings = suppression
 		default:
 			return launchSandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
 		}
@@ -192,16 +213,52 @@ func parseLaunchSandbox(raw any) (launchSandboxConfig, error) {
 	return cfg, nil
 }
 
+func parseLaunchRuntime(raw any, dir, home string) (launchRuntimeConfig, error) {
+	switch value := raw.(type) {
+	case string:
+		return launchRuntimeConfig{Default: strings.TrimSpace(value)}, nil
+	case map[string]any:
+		var cfg launchRuntimeConfig
+		for key, item := range value {
+			switch key {
+			case "default":
+				name, ok := item.(string)
+				if !ok {
+					return launchRuntimeConfig{}, fmt.Errorf("sandbox.runtime.default must be a string")
+				}
+				cfg.Default = strings.TrimSpace(name)
+			case "docker":
+				docker, err := parseLaunchDocker(item)
+				if err != nil {
+					return launchRuntimeConfig{}, err
+				}
+				cfg.Docker = docker
+			case "bubblewrap":
+				bubblewrap, err := parseLaunchBubblewrap(item, dir, home)
+				if err != nil {
+					return launchRuntimeConfig{}, err
+				}
+				cfg.Bubblewrap = bubblewrap
+			default:
+				return launchRuntimeConfig{}, fmt.Errorf("unsupported sandbox.runtime key %q", key)
+			}
+		}
+		return cfg, nil
+	default:
+		return launchRuntimeConfig{}, fmt.Errorf("sandbox.runtime must be a string or object")
+	}
+}
+
 func parseLaunchDocker(raw any) (launchDockerConfig, error) {
 	items, ok := raw.(map[string]any)
 	if !ok {
-		return launchDockerConfig{}, fmt.Errorf("sandbox.docker must be an object")
+		return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker must be an object")
 	}
 	var cfg launchDockerConfig
 	for key, value := range items {
 		s, ok := value.(string)
 		if !ok {
-			return launchDockerConfig{}, fmt.Errorf("sandbox.docker.%s must be a string", key)
+			return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.%s must be a string", key)
 		}
 		s = strings.TrimSpace(s)
 		switch key {
@@ -212,10 +269,113 @@ func parseLaunchDocker(raw any) (launchDockerConfig, error) {
 		case "projects":
 			cfg.Projects = s
 		default:
-			return launchDockerConfig{}, fmt.Errorf("unsupported sandbox.docker key %q", key)
+			return launchDockerConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker key %q", key)
 		}
 	}
 	return cfg, nil
+}
+
+func parseLaunchSandboxTools(raw any, dir, home string) (tool.ToolStateSettings, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools must be an object")
+	}
+	settings := tool.ToolStateSettings{}
+	for name, rawTool := range items {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools keys must not be empty")
+		}
+		toolConfig, ok := rawTool.(map[string]any)
+		if !ok {
+			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools.%s must be an object", name)
+		}
+		cfg, err := parseLaunchSandboxTool(name, toolConfig, dir, home)
+		if err != nil {
+			return tool.ToolStateSettings{}, err
+		}
+		if cfg.State == "" && cfg.StateRoot == "" {
+			continue
+		}
+		if name == "default" {
+			settings.Default = cfg
+			continue
+		}
+		if settings.Tools == nil {
+			settings.Tools = map[string]tool.ToolStateConfig{}
+		}
+		settings.Tools[name] = cfg
+	}
+	return settings, nil
+}
+
+func parseLaunchSandboxTool(name string, raw map[string]any, dir, home string) (tool.ToolStateConfig, error) {
+	var cfg tool.ToolStateConfig
+	for key, value := range raw {
+		switch key {
+		case "state":
+			rawState, ok := value.(string)
+			if !ok {
+				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state must be a string", name)
+			}
+			parsed, err := tool.ParseToolState(rawState)
+			if err != nil {
+				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state: %w", name, err)
+			}
+			cfg.State = parsed
+		case "stateRoot":
+			rawRoot, ok := value.(string)
+			if !ok {
+				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot must be a string", name)
+			}
+			root, err := tool.ResolveStateRoot(rawRoot, home, dir)
+			if err != nil {
+				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot: %w", name, err)
+			}
+			cfg.StateRoot = root
+		default:
+			return tool.ToolStateConfig{}, fmt.Errorf("unsupported sandbox.tools.%s key %q", name, key)
+		}
+	}
+	return cfg, nil
+}
+
+func parseLaunchBubblewrap(raw any, dir, home string) (launchBubblewrapConfig, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap must be an object")
+	}
+	var cfg launchBubblewrapConfig
+	for key, value := range items {
+		s, ok := value.(string)
+		if !ok {
+			return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.%s must be a string", key)
+		}
+		s = strings.TrimSpace(s)
+		switch key {
+		case "root":
+			root, err := resolveLaunchConfigPath(s, dir, home)
+			if err != nil {
+				return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
+			}
+			cfg.Root = root
+		default:
+			return launchBubblewrapConfig{}, fmt.Errorf("unsupported sandbox.runtime.bubblewrap key %q", key)
+		}
+	}
+	return cfg, nil
+}
+
+func resolveLaunchConfigPath(path, dir, home string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("must not be empty")
+	}
+	path = config.ExpandHome(path, home)
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	return joinConfigRelativePath(dir, path), nil
 }
 
 func parseLaunchProjects(raw any, dir, home string) ([]tool.ProjectMount, error) {

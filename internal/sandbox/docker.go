@@ -7,39 +7,46 @@ import (
 	"os"
 	"os/exec"
 	pathpkg "path"
-	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/tool"
 )
 
-const (
-	DefaultDockerImage = "node:lts-bookworm"
-	dockerRuntimeDir   = "/tmp/toby-runtime"
-)
+const DefaultDockerImage = "node:lts-bookworm"
 
 type DockerEnvironment struct {
-	paths  config.Paths
-	runner executil.Runner
+	paths     config.Paths
+	runner    executil.Runner
+	docker    string
+	available error
 }
 
 type DockerInstance struct {
 	baseInstance
 	runner        executil.Runner
+	docker        string
 	image         string
 	containerName string
 	homeVolume    string
 }
 
 func NewDockerEnvironment(paths config.Paths, runner executil.Runner) *DockerEnvironment {
-	return &DockerEnvironment{paths: paths, runner: runner}
+	docker, err := exec.LookPath("docker")
+	return newDockerEnvironment(paths, runner, docker, err)
+}
+
+func newDockerEnvironment(paths config.Paths, runner executil.Runner, docker string, available error) *DockerEnvironment {
+	if docker == "" {
+		docker = "docker"
+	}
+	return &DockerEnvironment{paths: paths, runner: runner, docker: docker, available: available}
 }
 
 func ProvideDockerEnvironment(paths config.Paths, runner executil.Runner) EnvironmentResult {
@@ -47,6 +54,10 @@ func ProvideDockerEnvironment(paths config.Paths, runner executil.Runner) Enviro
 }
 
 func (e *DockerEnvironment) Name() string { return RuntimeDocker }
+
+func (e *DockerEnvironment) Priority() int { return 0 }
+
+func (e *DockerEnvironment) Available() error { return e.available }
 
 func (e *DockerEnvironment) NewInstance(spec Spec) (Instance, error) {
 	image := spec.DockerImage
@@ -71,22 +82,29 @@ func (e *DockerEnvironment) NewInstance(spec Spec) (Instance, error) {
 	if !pathpkg.IsAbs(projectsDir) {
 		return nil, exitcode.New(2, "docker projects must be an absolute sandbox path: %s", projectsDir)
 	}
-	runtimeHostDir := filepath.Join(e.paths.XDGRuntimeDir, "toby", "docker", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
+	token, err := newControlToken()
+	if err != nil {
+		return nil, err
+	}
+	sandboxControlHost := ""
+	if runtime.GOOS == "darwin" {
+		sandboxControlHost = "host.docker.internal"
+	}
 	base := baseInstance{
-		paths:                 e.paths,
-		label:                 spec.Label,
-		homeDir:               home,
-		projectsDir:           projectsDir,
-		runtimeDir:            dockerRuntimeDir,
-		hostRuntimeDir:        runtimeHostDir,
-		hostControlSocketPath: filepath.Join(runtimeHostDir, "toby", control.SandboxSocketName),
-		workdir:               spec.Workdir,
-		projects:              newProjectMounts(spec.Projects, projectsDir),
-		tempRuntime:           runtimeHostDir,
+		paths:              e.paths,
+		label:              spec.Label,
+		homeDir:            home,
+		projectsDir:        projectsDir,
+		runtimeDir:         RuntimeDir,
+		controlToken:       token,
+		sandboxControlHost: sandboxControlHost,
+		workdir:            spec.Workdir,
+		projects:           newProjectMounts(spec.Projects, projectsDir),
 	}
 	return &DockerInstance{
 		baseInstance:  base,
 		runner:        e.runner,
+		docker:        e.docker,
 		image:         image,
 		containerName: fmt.Sprintf("toby-%d-%d", os.Getpid(), time.Now().UnixNano()),
 		homeVolume:    dockerHomeVolumeName(spec.Label),
@@ -94,9 +112,6 @@ func (e *DockerEnvironment) NewInstance(spec Spec) (Instance, error) {
 }
 
 func (s *DockerInstance) Run(ctx context.Context, spec RunSpec) (int, error) {
-	if err := s.prepareHostDirs(); err != nil {
-		return 1, err
-	}
 	initCmd := s.BuildHomeVolumeInitCommand()
 	initCode, initErr := s.runner.Run(ctx, initCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 	if initErr != nil {
@@ -111,45 +126,43 @@ func (s *DockerInstance) Run(ctx context.Context, spec RunSpec) (int, error) {
 	}
 	code, runErr := s.runner.Run(ctx, cmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 	if ctx.Err() != nil && s.containerName != "" {
-		_ = exec.Command("docker", "rm", "-f", s.containerName).Run()
+		_ = exec.Command(s.docker, "rm", "-f", s.containerName).Run()
 	}
 	return code, runErr
 }
 
 func (s *DockerInstance) BuildHomeVolumeInitCommand() []string {
 	return []string{
-		"docker", "run", "--rm",
+		s.docker, "run", "--rm",
 		"--user", "0:0",
 		"--entrypoint", "sh",
 		"--mount", dockerVolume(s.homeVolume, s.HomeDir()),
 		"--env", "HOME=" + s.HomeDir(),
 		s.image,
-		"-c", `set -e; mkdir -p "$1"; chown -R "$2:$3" "$1" 2>/dev/null || true; chmod -R u+rwX,go+rwX "$1"`,
+		"-c", `set -e; mkdir -p "$1" "$1/.local/bin" "$1/.local/share" "$1/.cache" "$1/.config"; chown -R "$2:$3" "$1" 2>/dev/null || true; chmod -R u+rwX,go+rwX "$1"`,
 		"sh", s.HomeDir(), strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()),
 	}
 }
 
 func (s *DockerInstance) BuildCommand(spec RunSpec) ([]string, error) {
-	tobyBinary, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	args := []string{"docker", "run", "--rm", "--init", "-i"}
+	args := []string{s.docker, "run", "--rm", "--init", "-i"}
 	if stdinIsTerminal() && stdoutIsTerminal() {
 		args = append(args, "-t")
 	}
 	args = append(args,
 		"--name", s.containerName,
-		"--network", "host",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 	)
+	if runtime.GOOS != "darwin" {
+		args = append(args, "--network", "host")
+	}
 	groups, err := os.Getgroups()
 	if err == nil {
 		for _, group := range groups {
 			args = append(args, "--group-add", strconv.Itoa(group))
 		}
 	}
-	for _, mount := range s.mounts(tobyBinary, spec.Toolset) {
+	for _, mount := range s.mounts(spec.Toolset) {
 		args = append(args, "--mount", mount)
 	}
 	for _, item := range dockerEnv(spec.Env) {
@@ -160,11 +173,9 @@ func (s *DockerInstance) BuildCommand(spec RunSpec) ([]string, error) {
 	return args, nil
 }
 
-func (s *DockerInstance) mounts(tobyBinary string, toolset *tool.Toolset) []string {
+func (s *DockerInstance) mounts(toolset *tool.Toolset) []string {
 	mounts := []string{
 		dockerVolume(s.homeVolume, s.HomeDir()),
-		dockerBind(s.hostRuntimeDir, s.runtimeDir, false),
-		dockerBind(tobyBinary, s.TobyBinaryPath(), true),
 	}
 	for _, project := range s.projects {
 		mounts = append(mounts, dockerBind(project.hostPath, project.sandboxPath, false))

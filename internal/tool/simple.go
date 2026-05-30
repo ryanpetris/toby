@@ -19,11 +19,15 @@ type Simple struct {
 }
 
 func (t *Simple) HostInit(_ context.Context, opts *CommandOptions) error {
+	if opts.ToolStateFor(t.Name()) != ToolStateHost {
+		return nil
+	}
 	return HostInitOnce(opts, t.Name(), func() error {
 		if len(t.HostSubpath) == 0 {
 			return nil
 		}
-		return os.MkdirAll(filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...), 0o755)
+		root := opts.ToolStateRootFor(t.Name())
+		return os.MkdirAll(filepath.Join(append([]string{root}, t.HostSubpath...)...), 0o755)
 	})
 }
 
@@ -43,6 +47,7 @@ func (t *Simple) Binds() []Bind {
 		HostPath: filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...),
 		Target:   HomeTarget(sandboxParts...),
 		Type:     bindType,
+		State:    true,
 	}}
 }
 

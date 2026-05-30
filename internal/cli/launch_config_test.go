@@ -9,6 +9,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/warning"
 )
 
 func TestLoadLaunchConfigDefaultsSandboxNameAndResolvesProjectPaths(t *testing.T) {
@@ -19,11 +20,22 @@ func TestLoadLaunchConfigDefaultsSandboxNameAndResolvesProjectPaths(t *testing.T
 	writeTestFile(t, configPath, []byte(`
 sandbox:
   autoUpgrade: true
-  runtime: docker
-  docker:
-    image: custom-node
-    home: /home/custom
-    projects: /workspace/custom
+  runtime:
+    default: docker
+    docker:
+      image: custom-node
+      home: /home/custom
+      projects: /workspace/custom
+    bubblewrap:
+      root: sandboxes/review
+  tools:
+    default:
+      state: private
+      stateRoot: ~/unused-default
+    opencode:
+      state: host
+      stateRoot: state/opencode
+  suppressWarnings: true
 workdir: ~/literal-workdir/../raw
 projects:
   - foo
@@ -50,8 +62,20 @@ tools:
 	if cfg.Workdir != wantWorkdir {
 		t.Fatalf("workdir = %q", cfg.Workdir)
 	}
-	if cfg.Sandbox.Runtime != "docker" || cfg.Sandbox.Docker.Image != "custom-node" || cfg.Sandbox.Docker.Home != "/home/custom" || cfg.Sandbox.Docker.Projects != "/workspace/custom" {
+	if cfg.Sandbox.Runtime.Default != "docker" || cfg.Sandbox.Runtime.Docker.Image != "custom-node" || cfg.Sandbox.Runtime.Docker.Home != "/home/custom" || cfg.Sandbox.Runtime.Docker.Projects != "/workspace/custom" {
 		t.Fatalf("sandbox docker config = %#v", cfg.Sandbox)
+	}
+	if cfg.Sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "review") {
+		t.Fatalf("sandbox bubblewrap config = %#v", cfg.Sandbox)
+	}
+	if cfg.Sandbox.Tools.Default.State != tool.ToolStatePrivate || cfg.Sandbox.Tools.StateFor("opencode") != tool.ToolStateHost {
+		t.Fatalf("sandbox tools = %#v", cfg.Sandbox.Tools)
+	}
+	if cfg.Sandbox.Tools.Default.StateRoot != filepath.Join(home, "unused-default") || cfg.Sandbox.Tools.StateRootFor("opencode") != filepath.Join(dir, "state", "opencode") {
+		t.Fatalf("sandbox tool roots = %#v", cfg.Sandbox.Tools)
+	}
+	if !cfg.Sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) || !cfg.Sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+		t.Fatalf("suppress warnings = %#v", cfg.Sandbox.SuppressWarnings)
 	}
 	wantProjects := []tool.ProjectMount{
 		{Name: "foo", Source: dir},
@@ -71,7 +95,7 @@ tools:
 func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.json")
-	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env"},"projects":["foo"],"tools":["opencode"]}`))
+	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"bubblewrap"},"projects":["foo"],"tools":["opencode"]}`))
 
 	cfg, err := loadLaunchConfig(configPath, home)
 	if err != nil {
@@ -79,6 +103,9 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	}
 	if cfg.Sandbox.Name != "json-env" {
 		t.Fatalf("sandbox name = %q", cfg.Sandbox.Name)
+	}
+	if cfg.Sandbox.Runtime.Default != "bubblewrap" {
+		t.Fatalf("runtime = %#v", cfg.Sandbox.Runtime)
 	}
 	if got, want := cfg.Projects[0].Source, home; got != want {
 		t.Fatalf("project source = %q, want %q", got, want)
@@ -92,6 +119,13 @@ func TestBuildConfiguredLaunchResolvesCommandNames(t *testing.T) {
 projects:
   - foo
 workdir: /tmp/work
+sandbox:
+  tools:
+    claude:
+      state: host
+      stateRoot: ./claude-state
+  suppressWarnings:
+    - opencode.model-discovery
 tools:
   - gh
   - npm
@@ -117,6 +151,15 @@ tools:
 	}
 	if launch.Options.Env != "foo" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
 		t.Fatalf("options = %#v", launch.Options)
+	}
+	if launch.Options.ToolStates.StateFor("claude") != tool.ToolStateHost {
+		t.Fatalf("tool states = %#v", launch.Options.ToolStates)
+	}
+	if !launch.Options.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.ToolHostState) {
+		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
+	}
+	if launch.Options.ToolStates.StateRootFor("claude") != filepath.Join(home, "claude-state") {
+		t.Fatalf("tool roots = %#v", launch.Options.ToolStates)
 	}
 	if got, want := launch.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("extra = %#v, want %#v", got, want)
@@ -169,6 +212,25 @@ tools:
 
 	_, err := loadLaunchConfig(configPath, home)
 	if err == nil || !strings.Contains(err.Error(), "tools[1].params is only supported on the primary tool") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadLaunchConfigRejectsInvalidSuppressedWarning(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "toby.yaml")
+	writeTestFile(t, configPath, []byte(`
+sandbox:
+  suppressWarnings:
+    - unknown.warning
+projects:
+  - foo
+tools:
+  - exec
+`))
+
+	_, err := loadLaunchConfig(configPath, home)
+	if err == nil || !strings.Contains(err.Error(), "sandbox.suppressWarnings[0]") {
 		t.Fatalf("error = %v", err)
 	}
 }

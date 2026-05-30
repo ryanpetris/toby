@@ -79,7 +79,6 @@ func (t *claudeTool) SandboxContextSetup(ctx *tool.RunContext) error {
 	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
 		return err
 	}
-	ctx.Env["CLAUDE_CONFIG_DIR"] = filepath.Join(ctx.Sandbox.HomeDir(), ".config", "claude")
 	return nil
 }
 
@@ -112,8 +111,7 @@ func (t *claudeTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
 }
 
 // Launch starts Claude Code, injecting Toby's generated context files through
-// launch flags. CLAUDE_CONFIG_DIR stays the writable real config because Claude
-// persists credentials and session state there.
+// launch flags while Claude keeps its normal writable config directory.
 func (t *claudeTool) Launch(ctx context.Context, run *tool.RunContext) error {
 	argv := append([]string{"claude"}, contextFlags(run.Sandbox.TobyContextDir())...)
 	argv = append(argv, run.Extra...)

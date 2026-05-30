@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 )
 
+type Handler func(context.Context, []byte) ([]byte, error)
+
 type Peer struct {
 	conn    net.Conn
 	handler Handler

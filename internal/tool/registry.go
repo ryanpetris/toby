@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"go.uber.org/fx"
@@ -126,8 +127,16 @@ func ExpandGroups(groups []string) []string {
 }
 
 type Toolset struct {
-	primary Tool
-	ordered []Tool
+	primary    Tool
+	ordered    []Tool
+	toolStates ToolStateSettings
+}
+
+func (t *Toolset) SetToolStates(settings ToolStateSettings) {
+	if t == nil {
+		return
+	}
+	t.toolStates = settings.Clone()
 }
 
 func (t *Toolset) OrderedTools() []Tool {
@@ -155,7 +164,14 @@ func (t *Toolset) Binds() []Bind {
 	var binds []Bind
 	seen := map[Bind]bool{}
 	for _, item := range t.ordered {
+		state := t.toolStates.StateFor(item.Name())
 		for _, bind := range item.Binds() {
+			if bind.State && state != ToolStateHost {
+				continue
+			}
+			if bind.State {
+				bind.HostPath = t.stateBindHostPath(item.Name(), bind)
+			}
 			if seen[bind] {
 				continue
 			}
@@ -164,6 +180,41 @@ func (t *Toolset) Binds() []Bind {
 		}
 	}
 	return binds
+}
+
+func (t *Toolset) stateBindHostPath(name string, bind Bind) string {
+	root := t.toolStates.StateRootFor(name)
+	statePath := bind.StatePath
+	if statePath == "" && bind.Target.Base == PathHome {
+		statePath = bind.Target.Path
+	}
+	if root == "" || statePath == "" {
+		return bind.HostPath
+	}
+	return filepath.Join(root, filepath.FromSlash(statePath))
+}
+
+func (t *Toolset) HostStateToolNames() []string {
+	var names []string
+	if t == nil {
+		return names
+	}
+	for _, item := range t.ordered {
+		if item.Name() == DockerToolName || t.toolStates.StateFor(item.Name()) != ToolStateHost || !hasStateBind(item) {
+			continue
+		}
+		names = append(names, item.Name())
+	}
+	return names
+}
+
+func hasStateBind(item Tool) bool {
+	for _, bind := range item.Binds() {
+		if bind.State {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Toolset) PathEntries() []PathTarget {

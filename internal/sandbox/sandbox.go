@@ -2,10 +2,13 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"petris.dev/toby/internal/config"
@@ -20,12 +23,15 @@ import (
 const (
 	RuntimeBubblewrap = "bubblewrap"
 	RuntimeDocker     = "docker"
+	RuntimeDir        = "/tmp/toby"
 
 	FxEnvironmentGroup = "toby.sandbox.environments"
 )
 
 type Environment interface {
 	Name() string
+	Priority() int
+	Available() error
 	NewInstance(Spec) (Instance, error)
 }
 
@@ -37,12 +43,12 @@ type EnvironmentResult struct {
 
 type Spec struct {
 	Label          string
-	HomeHostPath   string
 	Projects       []Project
 	Workdir        string
 	DockerImage    string
 	DockerHome     string
 	DockerProjects string
+	BubblewrapRoot string
 }
 
 type Project struct {
@@ -63,10 +69,10 @@ type Instance interface {
 	ProjectPath(string) (string, bool)
 	TobyBinDir() string
 	TobyBinaryPath() string
-	TobySandboxSocketPath() string
 	TobyGitAgentsPath() string
 	SetupContext(*tool.RunContext)
-	HostControlSocketPath() string
+	HostControlEndpoint() control.Endpoint
+	SetupControlEndpoint(tool.Environment, control.Endpoint)
 	Run(context.Context, RunSpec) (int, error)
 	Cleanup() error
 	VisibleHostPath(string) (string, error)
@@ -75,6 +81,7 @@ type Instance interface {
 type Factory struct {
 	paths        config.Paths
 	environments map[string]Environment
+	ordered      []Environment
 }
 
 type FactoryParams struct {
@@ -110,7 +117,19 @@ func newFactory(paths config.Paths, environments []Environment) (Factory, error)
 		}
 		items[env.Name()] = env
 	}
-	return Factory{paths: paths, environments: items}, nil
+	ordered := make([]Environment, 0, len(environments))
+	for _, env := range environments {
+		if env != nil {
+			ordered = append(ordered, env)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Priority() == ordered[j].Priority() {
+			return ordered[i].Name() < ordered[j].Name()
+		}
+		return ordered[i].Priority() < ordered[j].Priority()
+	})
+	return Factory{paths: paths, environments: items, ordered: ordered}, nil
 }
 
 func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
@@ -118,12 +137,23 @@ func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
 		opts = &tool.CommandOptions{}
 	}
 	runtime := strings.TrimSpace(opts.SandboxRuntime)
+	var env Environment
 	if runtime == "" {
-		runtime = RuntimeBubblewrap
-	}
-	env, ok := f.environments[runtime]
-	if !ok {
-		return nil, exitcode.New(2, "unknown sandbox runtime: %s", runtime)
+		selected, err := f.defaultEnvironment()
+		if err != nil {
+			return nil, err
+		}
+		env = selected
+		runtime = env.Name()
+	} else {
+		selected, ok := f.environments[runtime]
+		if !ok {
+			return nil, exitcode.New(2, "unknown sandbox runtime: %s", runtime)
+		}
+		if err := selected.Available(); err != nil {
+			return nil, exitcode.New(2, "sandbox runtime %q is not available: %v", runtime, err)
+		}
+		env = selected
 	}
 	if runtime != RuntimeDocker && (opts.DockerImage != "" || opts.DockerHome != "" || opts.DockerProjects != "") {
 		return nil, exitcode.New(2, "docker sandbox settings require sandbox runtime %q", RuntimeDocker)
@@ -134,6 +164,21 @@ func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
 		return nil, err
 	}
 	return env.NewInstance(spec)
+}
+
+func (f Factory) defaultEnvironment() (Environment, error) {
+	var unavailable []string
+	for _, env := range f.ordered {
+		if err := env.Available(); err != nil {
+			unavailable = append(unavailable, fmt.Sprintf("%s: %v", env.Name(), err))
+			continue
+		}
+		return env, nil
+	}
+	if len(unavailable) == 0 {
+		return nil, exitcode.New(2, "no sandbox runtimes are registered")
+	}
+	return nil, exitcode.New(2, "no sandbox runtimes are available: %s", strings.Join(unavailable, "; "))
 }
 
 func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
@@ -147,16 +192,31 @@ func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
+	stateRootBase := f.paths.ProjectRoot
+	if len(spec.Projects) > 0 {
+		stateRootBase = spec.Projects[0].HostPath
+	}
+	toolStates, err := opts.ToolStates.ResolveStateRoots(f.paths.Home, stateRootBase)
+	if err != nil {
+		return Spec{}, exitcode.New(2, "%s", err)
+	}
+	opts.ToolStates = toolStates
 	spec.DockerImage = strings.TrimSpace(opts.DockerImage)
 	spec.DockerHome = strings.TrimSpace(opts.DockerHome)
 	spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
+	spec.BubblewrapRoot = strings.TrimSpace(opts.BubblewrapRoot)
 	return spec, nil
 }
 
-func (f Factory) configuredSpec(opts *tool.CommandOptions) (Spec, error) {
-	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
-		return Spec{}, err
+func newControlToken() (string, error) {
+	var data [32]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
 	}
+	return hex.EncodeToString(data[:]), nil
+}
+
+func (f Factory) configuredSpec(opts *tool.CommandOptions) (Spec, error) {
 	env := filepath.ToSlash(strings.TrimSpace(opts.Env))
 	if env == "" {
 		env = filepath.ToSlash(strings.TrimSpace(opts.Projects[0].Name))
@@ -178,10 +238,9 @@ func (f Factory) configuredSpec(opts *tool.CommandOptions) (Spec, error) {
 		projects = append(projects, project)
 	}
 	return Spec{
-		Label:        env,
-		HomeHostPath: filepath.Join(f.paths.SandboxRoot, filepath.FromSlash(env)),
-		Projects:     projects,
-		Workdir:      opts.Workdir,
+		Label:    env,
+		Projects: projects,
+		Workdir:  opts.Workdir,
 	}, nil
 }
 
@@ -193,9 +252,6 @@ func (f Factory) persistentSpec(opts *tool.CommandOptions) (Spec, error) {
 	if err := validateRelativeName("sandbox name", env); err != nil {
 		return Spec{}, exitcode.New(2, "%s", err)
 	}
-	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
-		return Spec{}, err
-	}
 	projectDir, err := f.resolveProjectDir(env, opts.Project)
 	if err != nil {
 		return Spec{}, err
@@ -205,10 +261,9 @@ func (f Factory) persistentSpec(opts *tool.CommandOptions) (Spec, error) {
 		return Spec{}, err
 	}
 	return Spec{
-		Label:        env,
-		HomeHostPath: filepath.Join(f.paths.SandboxRoot, env),
-		Projects:     []Project{{Name: name, HostPath: projectDir}},
-		Workdir:      opts.Workdir,
+		Label:    env,
+		Projects: []Project{{Name: name, HostPath: projectDir}},
+		Workdir:  opts.Workdir,
 	}, nil
 }
 
@@ -301,17 +356,15 @@ type projectMount struct {
 }
 
 type baseInstance struct {
-	paths                 config.Paths
-	label                 string
-	homeHostPath          string
-	homeDir               string
-	projectsDir           string
-	runtimeDir            string
-	hostRuntimeDir        string
-	hostControlSocketPath string
-	workdir               string
-	projects              []projectMount
-	tempRuntime           string
+	paths              config.Paths
+	label              string
+	homeDir            string
+	projectsDir        string
+	runtimeDir         string
+	controlToken       string
+	sandboxControlHost string
+	workdir            string
+	projects           []projectMount
 }
 
 func newProjectMounts(projects []Project, projectsDir string) []projectMount {
@@ -341,7 +394,7 @@ func (s *baseInstance) ProjectPath(name string) (string, bool) {
 }
 
 func (s *baseInstance) TobyRuntimeDir() string {
-	return filepath.Join(s.runtimeDir, "toby")
+	return s.runtimeDir
 }
 
 func (s *baseInstance) TobyContextDir() string {
@@ -356,10 +409,6 @@ func (s *baseInstance) TobyBinaryPath() string {
 	return filepath.Join(s.TobyBinDir(), "toby")
 }
 
-func (s *baseInstance) TobySandboxSocketPath() string {
-	return filepath.Join(s.TobyRuntimeDir(), control.SandboxSocketName)
-}
-
 func (s *baseInstance) TobyGitAgentsPath() string {
 	return filepath.Join(s.TobyContextDir(), "GIT_AGENTS.md")
 }
@@ -368,40 +417,37 @@ func (s *baseInstance) TobyOpenCodeConfigDir() string {
 	return filepath.Join(s.TobyContextDir(), "opencode")
 }
 
-func (s *baseInstance) HostControlSocketPath() string { return s.hostControlSocketPath }
-
-func (s *baseInstance) Cleanup() error {
-	var err error
-	if s.tempRuntime != "" {
-		tempRuntime := s.tempRuntime
-		s.tempRuntime = ""
-		if removeErr := os.RemoveAll(tempRuntime); err == nil {
-			err = removeErr
-		}
-	}
-	return err
+func (s *baseInstance) HostControlEndpoint() control.Endpoint {
+	return control.WebSocketEndpoint("127.0.0.1:0", s.controlToken)
 }
 
-func (s *baseInstance) prepareHostDirs() error {
-	if s.homeHostPath != "" {
-		if err := os.MkdirAll(s.homeHostPath, 0o755); err != nil {
-			return err
-		}
+func (s *baseInstance) SetupControlEndpoint(env tool.Environment, endpoint control.Endpoint) {
+	env[control.EnvControlURL] = s.sandboxURL(endpoint.URL)
+	env[control.EnvControlToken] = endpoint.Token
+	env[control.EnvBinaryURL] = s.sandboxURL(endpoint.BinaryURL)
+}
+
+func (s *baseInstance) sandboxURL(hostURL string) string {
+	if s.sandboxControlHost == "" {
+		return hostURL
 	}
-	if s.hostRuntimeDir != "" {
-		if err := os.MkdirAll(filepath.Join(s.hostRuntimeDir, "toby", "bin"), 0o700); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Join(s.hostRuntimeDir, "toby", "context"), 0o700); err != nil {
-			return err
-		}
+	old := "//127.0.0.1:"
+	if strings.Contains(hostURL, old) {
+		return strings.Replace(hostURL, old, "//"+s.sandboxControlHost+":", 1)
 	}
+	old = "//[::1]:"
+	if strings.Contains(hostURL, old) {
+		return strings.Replace(hostURL, old, "//"+s.sandboxControlHost+":", 1)
+	}
+	return hostURL
+}
+
+func (s *baseInstance) Cleanup() error {
 	return nil
 }
 
 func (s *baseInstance) SetupContext(ctx *tool.RunContext) {
 	ctx.Env["HOME"] = s.HomeDir()
-	ctx.Env["XDG_RUNTIME_DIR"] = s.runtimeDir
 	ctx.Env["XDG_PROJECTS_DIR"] = s.Projects()
 	ctx.Env["GRML_CHROOT"] = "1"
 	ctx.Env["CHROOT"] = "(" + s.label + ")"

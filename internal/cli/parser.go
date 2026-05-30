@@ -76,6 +76,46 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 			result.Options.DockerImage = scriptArgs[i]
 			continue
 		}
+		if value, ok := strings.CutPrefix(arg, "--tool-state="); ok {
+			state, err := parseToolStateFlag(value)
+			if err != nil {
+				return result, err
+			}
+			result.Options.ToolStates.Default.State = state
+			continue
+		}
+		if arg == "--tool-state" {
+			if i+1 >= len(scriptArgs) {
+				return result, exitcode.New(2, "--tool-state requires a value")
+			}
+			i++
+			state, err := parseToolStateFlag(scriptArgs[i])
+			if err != nil {
+				return result, err
+			}
+			result.Options.ToolStates.Default.State = state
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--tool-state-root="); ok {
+			root, err := parseToolStateRootFlag(value)
+			if err != nil {
+				return result, err
+			}
+			result.Options.ToolStates.Default.StateRoot = root
+			continue
+		}
+		if arg == "--tool-state-root" {
+			if i+1 >= len(scriptArgs) {
+				return result, exitcode.New(2, "--tool-state-root requires a value")
+			}
+			i++
+			root, err := parseToolStateRootFlag(scriptArgs[i])
+			if err != nil {
+				return result, err
+			}
+			result.Options.ToolStates.Default.StateRoot = root
+			continue
+		}
 		if toolName, ok := withFlags[arg]; ok {
 			result.RequestedTools = appendIfMissing(result.RequestedTools, toolName)
 			continue
@@ -112,6 +152,22 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 	}
 	result.Extra = append(result.Extra, passthrough...)
 	return result, nil
+}
+
+func parseToolStateFlag(value string) (tool.ToolState, error) {
+	state, err := tool.ParseToolState(value)
+	if err != nil {
+		return "", exitcode.New(2, "--tool-state: %v", err)
+	}
+	return state, nil
+}
+
+func parseToolStateRootFlag(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", exitcode.New(2, "--tool-state-root requires a value")
+	}
+	return value, nil
 }
 
 func splitPassthrough(raw []string) ([]string, []string) {

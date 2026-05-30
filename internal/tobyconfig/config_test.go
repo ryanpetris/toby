@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/warning"
 )
 
 func TestLoadDeepMergesConfigFiles(t *testing.T) {
@@ -22,8 +24,13 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
     "local": { "npm": "@ai-sdk/openai-compatible", "options": { "apiKey": "base" } }
   },
   "sandbox": {
-    "runtime": "bubblewrap",
-    "docker": { "image": "node:base", "home": "/home/base" }
+    "runtime": {
+      "default": "bubblewrap",
+      "docker": { "image": "node:base", "home": "/home/base" },
+      "bubblewrap": { "root": "sandboxes/base" }
+    },
+    "tools": { "default": { "state": "host", "stateRoot": "~/state/default" }, "opencode": { "state": "private" } },
+    "suppressWarnings": true
   },
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
@@ -37,10 +44,17 @@ provider:
     options:
       baseURL: https://models.example.com
 sandbox:
-  runtime: docker
-  docker:
-    image: node:custom
-    projects: /workspace/custom
+  runtime:
+    default: docker
+    docker:
+      image: node:custom
+      projects: /workspace/custom
+  tools:
+    claude:
+      state: host
+      stateRoot: state/claude
+  suppressWarnings:
+    - tool.host-state
 `))
 
 	cfg, err := Load(dir, home)
@@ -60,8 +74,20 @@ sandbox:
 		t.Fatalf("provider options = %#v", options)
 	}
 	sandbox := cfg.Sandbox()
-	if sandbox.Runtime != "docker" || sandbox.Docker.Image != "node:custom" || sandbox.Docker.Home != "/home/base" || sandbox.Docker.Projects != "/workspace/custom" {
+	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" || sandbox.Runtime.Docker.Home != "/home/base" || sandbox.Runtime.Docker.Projects != "/workspace/custom" {
 		t.Fatalf("sandbox = %#v", sandbox)
+	}
+	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "base") {
+		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
+	}
+	if sandbox.Tools.Default.State != tool.ToolStateHost || sandbox.Tools.StateFor("opencode") != tool.ToolStatePrivate || sandbox.Tools.StateFor("claude") != tool.ToolStateHost {
+		t.Fatalf("sandbox tools = %#v", sandbox.Tools)
+	}
+	if sandbox.Tools.StateRootFor("opencode") != filepath.Join(home, "state", "default") || sandbox.Tools.StateRootFor("claude") != filepath.Join(dir, "state", "claude") {
+		t.Fatalf("sandbox tool roots = %#v", sandbox.Tools)
+	}
+	if !sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) || sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
 	}
 }
 
@@ -70,11 +96,23 @@ func TestLoadParsesSandboxDefaults(t *testing.T) {
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
 sandbox:
-  runtime: docker
-  docker:
-    image: node:lts-bookworm
-    home: /home/toby
-    projects: /workspace
+  runtime:
+    default: docker
+    docker:
+      image: node:lts-bookworm
+      home: /home/toby
+      projects: /workspace
+    bubblewrap:
+      root: ~/sandboxes
+  tools:
+    default:
+      state: private
+      stateRoot: ~/unused
+    opencode:
+      state: host
+      stateRoot: /tmp/opencode-state
+  suppressWarnings:
+    - opencode.model-discovery
 `))
 
 	cfg, err := Load(dir, home)
@@ -82,8 +120,49 @@ sandbox:
 		t.Fatal(err)
 	}
 	sandbox := cfg.Sandbox()
-	if sandbox.Runtime != "docker" || sandbox.Docker.Image != "node:lts-bookworm" || sandbox.Docker.Home != "/home/toby" || sandbox.Docker.Projects != "/workspace" {
+	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:lts-bookworm" || sandbox.Runtime.Docker.Home != "/home/toby" || sandbox.Runtime.Docker.Projects != "/workspace" {
 		t.Fatalf("sandbox = %#v", sandbox)
+	}
+	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(home, "sandboxes") {
+		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
+	}
+	if sandbox.Tools.Default.State != tool.ToolStatePrivate || sandbox.Tools.StateFor("opencode") != tool.ToolStateHost {
+		t.Fatalf("sandbox tools = %#v", sandbox.Tools)
+	}
+	if sandbox.Tools.StateRootFor("opencode") != "/tmp/opencode-state" {
+		t.Fatalf("sandbox tool roots = %#v", sandbox.Tools)
+	}
+	if !sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) {
+		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
+	}
+}
+
+func TestLoadRejectsInvalidToolState(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+sandbox:
+  tools:
+    opencode:
+      state: shared
+`))
+
+	if _, err := Load(dir, home); err == nil {
+		t.Fatal("expected invalid tool state to fail")
+	}
+}
+
+func TestLoadRejectsInvalidSuppressedWarning(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+sandbox:
+  suppressWarnings:
+    - unknown.warning
+`))
+
+	if _, err := Load(dir, home); err == nil {
+		t.Fatal("expected invalid suppressed warning to fail")
 	}
 }
 

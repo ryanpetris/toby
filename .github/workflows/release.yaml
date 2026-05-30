@@ -47,14 +47,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/linux-x86_64 dist/linux-arm64
+          mkdir -p dist/linux-x86_64 dist/linux-arm64 dist/darwin-x86_64 dist/darwin-arm64
           ldflags="-s -w -extldflags=-static -X petris.dev/toby/internal/version.Version=${VERSION}"
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-x86_64/toby .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/linux-arm64/toby .
 
+          cp dist/linux-x86_64/toby internal/sandboxbinary/embedded/toby-linux
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -tags toby_embed_linux -ldflags "$ldflags" -o dist/darwin-x86_64/toby .
+          cp dist/linux-arm64/toby internal/sandboxbinary/embedded/toby-linux
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -tags toby_embed_linux -ldflags "$ldflags" -o dist/darwin-arm64/toby .
+
           tar -C dist/linux-x86_64 -czf dist/toby-linux-x86_64.tar.gz toby
           tar -C dist/linux-arm64 -czf dist/toby-linux-arm64.tar.gz toby
+          tar -C dist/darwin-x86_64 -czf dist/toby-darwin-x86_64.tar.gz toby
+          tar -C dist/darwin-arm64 -czf dist/toby-darwin-arm64.tar.gz toby
 
       - name: Publish release
         env:
@@ -63,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          assets=(dist/toby-linux-x86_64.tar.gz dist/toby-linux-arm64.tar.gz)
+          assets=(dist/toby-linux-x86_64.tar.gz dist/toby-linux-arm64.tar.gz dist/toby-darwin-x86_64.tar.gz dist/toby-darwin-arm64.tar.gz)
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
           else

@@ -6,16 +6,15 @@ This page covers Toby's environment layout, project access rules, runtime contex
 
 - `XDG_PROJECTS_DIR` defaults to `~/Projects`.
 - `XDG_CONFIG_HOME` defaults to `~/.config`; Toby host configuration is loaded from `$XDG_CONFIG_HOME/toby`. If `XDG_CONFIG_HOME` is unset, Toby also accepts `XDG_CONFIG_DIR` before falling back to `~/.config`.
-- `XDG_CACHE_HOME` defaults to `~/.cache`; sandbox homes are stored under `$XDG_CACHE_HOME/toby/sandboxes`.
-- `XDG_RUNTIME_DIR` is required. Toby uses `$XDG_RUNTIME_DIR/toby` inside the sandbox for its private socket, generated context files, and the sandbox-facing `toby` binary mount.
-- `TOBY_SANDBOX_ROOT` overrides the sandbox home root when set.
-- The default sandbox runtime is Bubblewrap. Launch configs can set `sandbox.runtime: docker` to use Docker instead.
+- `XDG_CACHE_HOME` defaults to `~/.cache`; Bubblewrap sandbox homes are stored under `$XDG_CACHE_HOME/toby/sandboxes` unless configured with `sandbox.runtime.bubblewrap.root`.
+- Toby selects the available sandbox runtime with the lowest priority number. Docker has priority 0 and Bubblewrap has priority 1, making Docker the default when available.
+- Toby uses `/tmp/toby` inside the sandbox for its runtime files, generated context, and sandbox-facing `toby` binary.
 
 Project directories must resolve to `$XDG_PROJECTS_DIR` or a path below `$XDG_PROJECTS_DIR`. Toby bind mounts only the selected project directory into the sandbox.
 
 ## Projects
 
-For persistent environments, Toby requires an environment name. By default, that environment name is also the project directory name under `$XDG_PROJECTS_DIR`. `toby opencode my-app` uses the sandbox home `$XDG_CACHE_HOME/toby/sandboxes/my-app` and the project `$XDG_PROJECTS_DIR/my-app`.
+For persistent environments, Toby requires an environment name. By default, that environment name is also the project directory name under `$XDG_PROJECTS_DIR`. `toby opencode my-app` uses the Bubblewrap sandbox home `$XDG_CACHE_HOME/toby/sandboxes/my-app` and the project `$XDG_PROJECTS_DIR/my-app`.
 
 Use `--project` to point an environment at a different project directory. The value can be an absolute path or a `~`-relative path, but the resolved directory must be `$XDG_PROJECTS_DIR` or below it.
 
@@ -26,9 +25,20 @@ Example:
 ```yaml
 sandbox:
   name: review
-  runtime: docker
-  docker:
-    image: node:lts-bookworm
+  runtime:
+    default: docker
+    docker:
+      image: node:lts-bookworm
+    bubblewrap:
+      root: .toby/sandboxes
+  tools:
+    default:
+      state: private
+    opencode:
+      state: host
+      stateRoot: .toby/opencode-state
+  suppressWarnings:
+    - tool.host-state
 workdir: ~/tmp
 projects:
   - name: foo
@@ -49,6 +59,10 @@ If `workdir` is set, Toby passes it to the selected runtime after leading `~` ex
 
 Configured `tools` entries can be strings or objects with `name`; `params` is only allowed on the first tool. Tool names must be registered Toby tools. The first tool launches, and later tools are installed and made available in order. CLI arguments after `--` are appended to the first tool's configured `params`.
 
+`sandbox.tools` controls where each selected tool stores its own state. The default state is `private`, which lets each environment use its private sandbox home and avoids bind mounting host tool directories such as `~/.config/claude` or `~/.local/share/opencode`. Set `state: host` to bind mount state for a tool from `stateRoot`, which is treated like `$HOME` for the tool's known state paths. If `stateRoot` is omitted, host state uses the host `$HOME`. Relative `stateRoot` paths in launch config resolve from the launch config file directory. The Docker tool defaults to host state unless `docker.state` is explicitly set to `private`; its `/var/run/docker.sock` bind remains enabled even when Docker state is private. Toby emits the `tool.host-state` warning when host state is enabled for non-Docker tools because concurrent instances can corrupt shared tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state` or `opencode.model-discovery`. Synthetic Toby config is generated in both modes.
+
+For example, OpenCode with `stateRoot: .toby/opencode-state` in a config file at `/repo/toby.yaml` uses `/repo/.toby/opencode-state/.config/opencode` and `/repo/.toby/opencode-state/.local/share/opencode` as the host sources.
+
 Use `exec` as the first tool to run arbitrary sandbox commands:
 
 ```yaml
@@ -66,23 +80,31 @@ tools:
 
 Toby bind mounts the private sandbox `$HOME` directly and bind mounts the selected project directory. Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox. Operations that need host credentials should go through Toby's control bridge instead of copying keys into the environment.
 
-For each sandbox session, the selected runtime launches `$XDG_RUNTIME_DIR/toby/bin/toby sandbox manager`. The sandbox manager connects to `$XDG_RUNTIME_DIR/toby/sandbox.sock`, sends `context.init`, handles generic file commands such as `file.create` and `file.mkdir`, and then runs host-requested `command.run` requests inside the sandbox.
+For each sandbox session, the selected runtime starts a small shell bootstrap that downloads the sandbox-facing Toby binary from the host control server to `/tmp/toby/bin/toby`, marks it executable, and launches `/tmp/toby/bin/toby sandbox manager`. The sandbox manager connects to the authenticated WebSocket control endpoint, sends `context.init`, handles generic file commands such as `file.create` and `file.mkdir`, and then runs host-requested `command.run` requests inside the sandbox.
 
-The host control server listens on `$XDG_RUNTIME_DIR/toby/control/<pid>.sock` and bind mounts that socket into the sandbox as `$XDG_RUNTIME_DIR/toby/sandbox.sock`. The current Toby executable is bind-mounted into the sandbox as `$XDG_RUNTIME_DIR/toby/bin/toby`, and that directory is prepended to `PATH`.
+The host control server listens on `127.0.0.1` with a random per-run bearer token. Docker on macOS connects through `host.docker.internal`. The same listener serves `/toby/control` for WebSocket JSON-RPC and `/toby/binary` for the sandbox helper download. `/tmp/toby/bin` is prepended to `PATH`.
 
 The host manager runs registered context init services after `context.init`. Services add context through the context service, which translates those requests into sandbox manager file commands. When the foreground command exits, the sandbox manager sends `command.exit` with the command UUID and exit code. The host manager then sends `sandbox.terminate`; the sandbox manager exits with code 0, while the host exits with the foreground command's exit code.
 
 ### Docker Runtime
 
-Docker-backed sandboxes use `docker run --rm --init` with the selected image. The default image is `node:lts-bookworm`. Docker uses the same `$HOME` path and projects path as the host by default. These paths can be overridden in launch config with `sandbox.docker.home` and `sandbox.docker.projects`.
+Docker-backed sandboxes use `docker run --rm --init` with the selected image. The default image is `node:lts-bookworm`. Docker uses the same `$HOME` path and projects path as the host by default. These paths can be overridden in launch config with `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects`.
 
 Docker `$HOME` is backed by a named Docker volume such as `toby-home-my-app`, based on the sandbox name, so it persists across runs without bind mounting the host home contents.
 
-Docker `sandbox.docker.home`, `sandbox.docker.projects`, and `workdir` values are sandbox-visible paths. A leading `~` expands to the Docker sandbox home.
+Docker `sandbox.runtime.docker.home`, `sandbox.runtime.docker.projects`, and `workdir` values are sandbox-visible paths. A leading `~` expands to the Docker sandbox home.
 
-The Docker image is responsible for containing the tools required by the selected Toby tools. Toby mounts the private home, selected projects, Toby runtime directory, control socket, and sandbox-facing Toby binary; it does not install base OS packages into the image.
+The Docker image is responsible for containing the tools required by the selected Toby tools, including `curl` for the bootstrap download. Toby mounts the private home and selected projects; it does not install base OS packages into the image.
+
+On Linux, the sandbox-facing Toby binary is served from `/proc/self/exe`. macOS release builds embed the matching Linux helper. Local Darwin builds without the release embed tag require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
 
 Docker bind mounts require a local Docker daemon that can access the same host paths as Toby. Remote Docker contexts are not expected to work reliably with host project mounts.
+
+### Bubblewrap Runtime
+
+Bubblewrap-backed sandboxes store private homes under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default. Set `sandbox.runtime.bubblewrap.root` in host or launch config to use another host directory. Absolute paths are used as-is, `~` expands to the host home, and relative paths resolve from the config file directory.
+
+If no runtime-specific settings are needed, `sandbox.runtime` can be a string such as `runtime: bubblewrap`. Use the object form with `default` when setting runtime-specific options.
 
 ## Host Configuration
 
@@ -91,17 +113,34 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
 - `mcp` config is rendered into OpenCode and Claude Code synthetic MCP files. Toby's own MCP server is always injected as `toby` after host config is merged.
-- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `$XDG_RUNTIME_DIR/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
-- `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby warns on stderr and excludes that provider from the generated OpenCode config.
+- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
+- `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby emits the `opencode.model-discovery` warning on stderr and excludes that provider from the generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
+
+Global tool state defaults use the same shape as launch config:
+
+```yaml
+sandbox:
+  tools:
+    default:
+      state: private
+    claude:
+      state: host
+      stateRoot: ~/tool-state/claude
+  suppressWarnings:
+    - tool.host-state
+```
+
+Relative `stateRoot` paths in global Toby config resolve from the Toby config file directory. Relative `--tool-state-root` values on direct CLI launches resolve from the selected project root. Set `sandbox.suppressWarnings: true` to suppress all warning IDs from that config, or provide a list of IDs to suppress only those warnings.
 
 Example global Docker sandbox defaults:
 
 ```yaml
 sandbox:
-  runtime: docker
-  docker:
-    image: node:lts-bookworm
+  runtime:
+    default: docker
+    docker:
+      image: node:lts-bookworm
 ```
 
 ## MCP
@@ -124,7 +163,7 @@ The same control calls are available inside a sandbox as CLI commands: `toby san
 
 ## OpenCode
 
-For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=$XDG_RUNTIME_DIR/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config, the Toby MCP server, `$XDG_RUNTIME_DIR/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and discovered model lists for OpenAI-compatible providers that need them. Model discovery failures warn to stderr and omit only the provider that failed discovery.
+For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and discovered model lists for OpenAI-compatible providers that need them. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
 
 Equivalent generated OpenCode `opencode.json` entry:
 
@@ -143,7 +182,7 @@ Equivalent generated OpenCode `opencode.json` entry:
 
 ## Claude Code
 
-For Claude Code sandboxes, Toby injects its generated context through launch flags rather than by redirecting the config directory: Claude Code writes credentials, history, and session state into `CLAUDE_CONFIG_DIR`, so that directory stays the writable real config bind-mounted under `TOBY_SANDBOX_ROOT/.config/claude/`. Toby generates files under `$XDG_RUNTIME_DIR/toby/context/claude/` and launches `claude` with:
+For Claude Code sandboxes, Toby injects its generated context through launch flags rather than by redirecting the config directory. Claude Code writes credentials, history, and session state into its normal config directory, which uses private sandbox state unless host tool state is enabled. Toby generates files under `/tmp/toby/context/claude/` and launches `claude` with:
 
 - `--mcp-config .../claude/mcp.json` adds the Toby MCP server.
 - `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` and configured Toby instruction files.

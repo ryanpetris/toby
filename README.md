@@ -27,9 +27,10 @@ Make sure your Go binary directory, usually `~/go/bin`, is on `PATH`.
 
 Runtime requirements:
 
-- Linux with Bubblewrap available at `/usr/bin/bwrap` for the default runtime, or Docker for Docker-backed sandboxes.
-- `XDG_RUNTIME_DIR` must be set.
-- Tool-specific installers may need common utilities such as `curl`, `tar`, or `npm`.
+- Docker for the highest-priority sandbox runtime. On Linux, Bubblewrap is used as a lower-priority fallback when `bwrap` is available.
+- `curl` must be available inside the sandbox image or Bubblewrap environment so Toby can download its sandbox helper at startup.
+- macOS release builds embed the Linux sandbox helper used inside Docker. Local Darwin builds without the release embed tag require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
+- Tool-specific installers may need common utilities such as `tar` or `npm`.
 
 ## Get Started
 
@@ -74,18 +75,41 @@ Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.js
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
 - `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server.
-- `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `$XDG_RUNTIME_DIR/toby/context/instructions/` using the source filename, adding a short random suffix before the extension if two files share a filename.
-- `provider` entries use OpenCode's provider schema and are currently applied to OpenCode only. If a provider includes `models`, Toby uses those models verbatim. For OpenAI-compatible providers without `models`, Toby queries the provider at sandbox startup; if discovery fails, Toby logs a warning and leaves that provider out of the generated OpenCode config.
+- `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into `/tmp/toby/context/instructions/` inside the sandbox using the source filename, adding a short random suffix before the extension if two files share a filename.
+- `provider` entries use OpenCode's provider schema and are currently applied to OpenCode only. If a provider includes `models`, Toby uses those models verbatim. For OpenAI-compatible providers without `models`, Toby queries the provider at sandbox startup; if discovery fails, Toby logs the `opencode.model-discovery` warning and leaves that provider out of the generated OpenCode config.
 - `sandbox` sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
+
+Tool state controls whether selected tools use per-environment private state or bind mount the host's tool state directories. It defaults to `private`; the Docker tool is the exception and uses host state unless `docker.state` is explicitly set to `private`. The Docker socket is still passed to the Docker tool when its state is private.
+
+```yaml
+sandbox:
+  tools:
+    default:
+      state: private
+    opencode:
+      state: host
+      stateRoot: ~/.config/toby/tool-state/opencode
+    docker:
+      state: private
+  suppressWarnings:
+    - tool.host-state
+```
+
+When host state is enabled, `stateRoot` is treated like `$HOME` for that tool's known state paths. For OpenCode, `stateRoot: ~/.config/toby/tool-state/opencode` uses `~/.config/toby/tool-state/opencode/.config/opencode` and `~/.config/toby/tool-state/opencode/.local/share/opencode`. If `stateRoot` is omitted, host state uses `$HOME`; relative `stateRoot` values in Toby config resolve from the config file directory. When host state is enabled for a non-Docker tool, Toby emits the `tool.host-state` warning because running multiple instances against the same host tool state can corrupt tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state` or `opencode.model-discovery`. Toby still generates synthetic tool config in both modes.
 
 Example global Docker sandbox defaults:
 
 ```yaml
 sandbox:
-  runtime: docker
-  docker:
-    image: node:lts-bookworm
+  runtime:
+    default: docker
+    docker:
+      image: node:lts-bookworm
+    bubblewrap:
+      root: ~/.cache/toby/sandboxes
 ```
+
+If no runtime-specific settings are needed, `sandbox.runtime` can also be a string, for example `runtime: docker`.
 
 ## Launch Configuration
 
@@ -95,11 +119,21 @@ Use `--config` to launch from a per-run YAML or JSON file instead of specifying 
 sandbox:
   name: foo # optional; defaults to the first project name
   autoUpgrade: true # optional; defaults to false
-  runtime: docker # optional; defaults to bubblewrap
-  docker:
-    image: node:lts-bookworm # optional; defaults to node:lts-bookworm
-    home: /home/toby # optional; defaults to your host $HOME path
-    projects: /workspace # optional; defaults to your host XDG_PROJECTS_DIR path
+  runtime:
+    default: docker # optional; defaults to the highest-priority available runtime
+    docker:
+      image: node:lts-bookworm # optional; defaults to node:lts-bookworm
+      home: /home/toby # optional; defaults to your host $HOME path
+      projects: /workspace # optional; defaults to your host XDG_PROJECTS_DIR path
+    bubblewrap:
+      root: .toby/sandboxes # optional; relative to this config file
+  tools:
+    default:
+      state: private # optional; private or host
+    claude:
+      state: host # optional; overrides default for this tool
+      stateRoot: .toby/claude-state # optional; relative to this config file
+  suppressWarnings: [tool.host-state] # optional; true suppresses all warnings
 workdir: ~/tmp # optional; defaults to the primary project path inside the sandbox
 projects:
   - foo
@@ -113,6 +147,8 @@ tools:
 ```
 
 The first project is the working directory. The first tool is the launch tool, and later tools are installed and made available in order. Tool entries may be strings or objects with `name`; `params` is only allowed on the first tool. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
+
+Bubblewrap private homes are stored under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default. Configure `sandbox.runtime.bubblewrap.root` to use a different host directory. Docker homes use named Docker volumes instead.
 
 Path values in launch config expand a leading `~` to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
 
@@ -143,9 +179,9 @@ toby --config myconfig.yaml -- -- --watch
 
 This runs `npm test -- --watch` in `$XDG_PROJECTS_DIR/foo`.
 
-For Docker sandboxes, projects are mounted under the same path as host `XDG_PROJECTS_DIR` by default, so `~/Projects/foo` remains visible at that path. Docker uses the same `$HOME` path as the host by default, backed by a named Docker volume such as `toby-home-foo`. The Docker image is responsible for containing the tools needed by the selected Toby tools; use `sandbox.docker.image` when a custom image is required.
+For Docker sandboxes, projects are mounted under the same path as host `XDG_PROJECTS_DIR` by default, so `~/Projects/foo` remains visible at that path. Docker uses the same `$HOME` path as the host by default, backed by a named Docker volume such as `toby-home-foo`. The Docker image is responsible for containing the tools needed by the selected Toby tools; use `sandbox.runtime.docker.image` when a custom image is required. At startup, the sandbox downloads the Toby helper from the host control server into `/tmp/toby/bin/toby`.
 
-Docker `sandbox.docker.home`, `sandbox.docker.projects`, and `workdir` values are sandbox-visible paths. A leading `~` expands to the Docker sandbox home.
+Docker `sandbox.runtime.docker.home`, `sandbox.runtime.docker.projects`, and `workdir` values are sandbox-visible paths. A leading `~` expands to the Docker sandbox home.
 
 ## Common Commands
 
@@ -161,15 +197,17 @@ Useful flags:
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
 - `--sandbox-runtime <bubblewrap|docker>` selects the sandbox runtime.
 - `--sandbox-image <image>` selects the Docker image for Docker-backed direct launches.
+- `--tool-state <private|host>` selects the default tool state source for direct launches.
+- `--tool-state-root <dir>` selects the default host state root for direct launches with host state; relative paths resolve from the project root.
 - `--config <file>` launches from a YAML or JSON launch configuration.
 - `--install` installs the selected tool and exits.
 - `--upgrade` reinstalls the selected tool, then launches it.
 
 ## MCP
 
-Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. The server uses a private Unix socket at `$XDG_RUNTIME_DIR/toby/sandbox.sock` inside the sandbox and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag` for repositories already visible in the sandbox.
+Toby automatically exposes a sandbox-only `toby sandbox mcp` server to supported tools launched through `toby <client>`. The server uses Toby's authenticated WebSocket control connection and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag` for repositories already visible in the sandbox.
 
-Inside the sandbox, Toby bind-mounts the same binary as `toby` and enables hidden `toby sandbox ...` commands. On the host these commands are hidden from help but still registered for diagnostics.
+Inside the sandbox, Toby downloads the sandbox-facing Toby binary as `toby` and enables hidden `toby sandbox ...` commands. On the host these commands are hidden from help but still registered for diagnostics.
 
 ## More Docs
 

@@ -31,7 +31,7 @@ func Provide(params Params) Result {
 		Simple: toolutil.Simple(
 			params.Paths,
 			toolutil.Base(tool.CopilotToolName, "Launch Copilot", tool.GroupSystem, tool.GroupVCS),
-			[]string{".config", "copilot"},
+			[]string{".copilot"},
 			[]string{".copilot"},
 			[]string{"npm", "install", "-g", "@github/copilot"},
 			nil,

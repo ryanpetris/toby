@@ -8,11 +8,14 @@ import (
 
 type fakeTool struct {
 	Base
+	binds []Bind
 }
 
 func newFakeTool(name string) fakeTool {
 	return fakeTool{Base: Base{Metadata: Metadata{Name: name}}}
 }
+
+func (t fakeTool) Binds() []Bind { return append([]Bind(nil), t.binds...) }
 
 type lifecycleTool struct {
 	Base
@@ -107,6 +110,42 @@ func TestToolsetLifecycleStopsOnError(t *testing.T) {
 	}
 	if err := toolset.HostInit(ctx, &CommandOptions{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestToolsetBindsFiltersStateBinds(t *testing.T) {
+	home := t.TempDir()
+	stateBind := Bind{HostPath: "/host/opencode", Target: HomeTarget(".config", "opencode"), State: true}
+	dockerState := Bind{HostPath: "/host/docker", Target: HomeTarget(".docker"), State: true}
+	dockerSocket := Bind{HostPath: "/var/run/docker.sock", Target: AbsoluteTarget("/var/run/docker.sock"), Type: BindDev}
+	resolvedStateBind := stateBind
+	resolvedStateBind.HostPath = home + "/.config/opencode"
+	resolvedDockerState := dockerState
+	resolvedDockerState.HostPath = home + "/.docker"
+	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
+		fakeTool{Base: Base{Metadata: Metadata{Name: OpenCodeToolName}}, binds: []Bind{stateBind}},
+		fakeTool{Base: Base{Metadata: Metadata{Name: DockerToolName}}, binds: []Bind{dockerState, dockerSocket}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolset, err := registry.Build([]string{OpenCodeToolName, DockerToolName}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStatePrivate, StateRoot: home}, Tools: map[string]ToolStateConfig{DockerToolName: {State: ToolStateHost}}})
+	got := toolset.Binds()
+	want := []Bind{resolvedDockerState, dockerSocket}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("private/default binds = %#v, want %#v", got, want)
+	}
+
+	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: home}, Tools: map[string]ToolStateConfig{DockerToolName: {State: ToolStatePrivate}}})
+	got = toolset.Binds()
+	want = []Bind{resolvedStateBind, dockerSocket}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("host/private docker binds = %#v, want %#v", got, want)
 	}
 }
 

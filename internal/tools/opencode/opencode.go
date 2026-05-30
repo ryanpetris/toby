@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
+	"petris.dev/toby/internal/warning"
 
 	"go.uber.org/fx"
 )
@@ -62,12 +63,14 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 	if err := toolutil.HostInitDependencies(ctx, opts, t.npm); err != nil {
 		return err
 	}
+	if opts.ToolStateFor(t.Name()) != tool.ToolStateHost {
+		return nil
+	}
 	return tool.HostInitOnce(opts, t.Name(), func() error {
-		if err := os.MkdirAll(filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), 0o755); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Join(t.paths.SandboxRoot, ".config", "opencode-share"), 0o755); err != nil {
-			return err
+		for _, dir := range t.stateDirs(opts.ToolStateRootFor(t.Name())) {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -75,10 +78,17 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 
 func (t *openCodeTool) Binds() []tool.Bind {
 	own := []tool.Bind{
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), Target: tool.HomeTarget(".config", "opencode"), Type: tool.BindRegular},
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode-share"), Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular},
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), Target: tool.HomeTarget(".config", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".config", "opencode"))},
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".local", "share", "opencode"), Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".local", "share", "opencode"))},
 	}
 	return toolutil.Binds(t.deps(), own)
+}
+
+func (t *openCodeTool) stateDirs(root string) []string {
+	return []string{
+		filepath.Join(root, ".config", "opencode"),
+		filepath.Join(root, ".local", "share", "opencode"),
+	}
 }
 
 func (t *openCodeTool) SandboxContextSetup(ctx *tool.RunContext) error {
@@ -106,12 +116,12 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunCo
 	if err != nil {
 		return err
 	}
-	stderr := run.Stderr
-	if stderr == nil {
-		stderr = os.Stderr
+	var suppression warning.Suppression
+	if run.Options != nil {
+		suppression = run.Options.SuppressWarnings
 	}
-	for _, warning := range warnings {
-		_, _ = fmt.Fprintf(stderr, "toby: failed to fetch OpenCode models: %v\n", warning)
+	for _, item := range warnings {
+		warning.Fprintf(run.Stderr, suppression, warning.OpenCodeModelDiscovery, "failed to fetch OpenCode models: %v", item)
 	}
 	return nil
 }

@@ -31,7 +31,7 @@ func Provide(params Params) Result {
 		Simple: toolutil.Simple(
 			params.Paths,
 			toolutil.Base(tool.CodexToolName, "Launch Codex", tool.GroupSystem, tool.GroupVCS),
-			[]string{".config", "codex"},
+			[]string{".codex"},
 			[]string{".codex"},
 			[]string{"npm", "install", "-g", "@openai/codex"},
 			nil,

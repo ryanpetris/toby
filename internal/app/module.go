@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 
 	"petris.dev/toby/internal/cli"
@@ -19,8 +22,49 @@ import (
 	"petris.dev/toby/internal/tools"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/dig"
 	"go.uber.org/fx"
 )
+
+func Run() {
+	os.Exit(runApp(fx.New(Module()), os.Stderr))
+}
+
+func runApp(app *fx.App, stderr io.Writer) int {
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	if err := app.Err(); err != nil {
+		reportAppError(stderr, err)
+		return 1
+	}
+	startCtx, cancel := context.WithTimeout(context.Background(), app.StartTimeout())
+	startErr := app.Start(startCtx)
+	cancel()
+	if startErr != nil {
+		reportAppError(stderr, startErr)
+		return 1
+	}
+	signal := <-app.Wait()
+	stopCtx, cancel := context.WithTimeout(context.Background(), app.StopTimeout())
+	stopErr := app.Stop(stopCtx)
+	cancel()
+	if stopErr != nil {
+		reportAppError(stderr, stopErr)
+		return 1
+	}
+	return signal.ExitCode
+}
+
+func reportAppError(stderr io.Writer, err error) {
+	if cause := dig.RootCause(err); cause != nil {
+		var digErr dig.Error
+		if !errors.As(cause, &digErr) {
+			err = cause
+		}
+	}
+	fmt.Fprintln(stderr, err)
+}
 
 type args []string
 

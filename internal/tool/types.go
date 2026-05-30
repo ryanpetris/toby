@@ -2,10 +2,14 @@ package tool
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/warning"
 
 	"github.com/spf13/cobra"
 )
@@ -53,10 +57,160 @@ const (
 )
 
 type Bind struct {
-	HostPath string
-	Target   PathTarget
-	Type     BindType
-	Optional bool
+	HostPath  string
+	Target    PathTarget
+	Type      BindType
+	Optional  bool
+	State     bool
+	StatePath string
+}
+
+type ToolState string
+
+const (
+	ToolStatePrivate ToolState = "private"
+	ToolStateHost    ToolState = "host"
+)
+
+type ToolStateSettings struct {
+	Default ToolStateConfig
+	Tools   map[string]ToolStateConfig
+}
+
+type ToolStateConfig struct {
+	State     ToolState
+	StateRoot string
+}
+
+func ParseToolState(value string) (ToolState, error) {
+	switch state := ToolState(strings.TrimSpace(value)); state {
+	case ToolStatePrivate, ToolStateHost:
+		return state, nil
+	default:
+		return "", fmt.Errorf("tool state must be %q or %q", ToolStatePrivate, ToolStateHost)
+	}
+}
+
+func (s ToolStateSettings) Clone() ToolStateSettings {
+	clone := ToolStateSettings{Default: s.Default}
+	if len(s.Tools) > 0 {
+		clone.Tools = make(map[string]ToolStateConfig, len(s.Tools))
+		for name, cfg := range s.Tools {
+			clone.Tools[name] = cfg
+		}
+	}
+	return clone
+}
+
+func (s *ToolStateSettings) Merge(src ToolStateSettings) {
+	if src.Default.State != "" {
+		s.Default.State = src.Default.State
+	}
+	if src.Default.StateRoot != "" {
+		s.Default.StateRoot = src.Default.StateRoot
+	}
+	if len(src.Tools) == 0 {
+		return
+	}
+	if s.Tools == nil {
+		s.Tools = map[string]ToolStateConfig{}
+	}
+	for name, srcCfg := range src.Tools {
+		cfg := s.Tools[name]
+		if srcCfg.State != "" {
+			cfg.State = srcCfg.State
+		}
+		if srcCfg.StateRoot != "" {
+			cfg.StateRoot = srcCfg.StateRoot
+		}
+		s.Tools[name] = cfg
+	}
+}
+
+func (s ToolStateSettings) StateFor(name string) ToolState {
+	cfg := s.configFor(name)
+	if cfg.State != "" {
+		return cfg.State
+	}
+	if name == DockerToolName {
+		return ToolStateHost
+	}
+	return ToolStatePrivate
+}
+
+func (s ToolStateSettings) StateRootFor(name string) string {
+	cfg := s.configFor(name)
+	if cfg.StateRoot != "" {
+		return cfg.StateRoot
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
+}
+
+func (s ToolStateSettings) configFor(name string) ToolStateConfig {
+	name = strings.TrimSpace(name)
+	cfg := s.Default
+	if toolCfg, ok := s.Tools[name]; ok {
+		if toolCfg.State != "" {
+			cfg.State = toolCfg.State
+		}
+		if toolCfg.StateRoot != "" {
+			cfg.StateRoot = toolCfg.StateRoot
+		}
+	}
+	return cfg
+}
+
+func (s ToolStateSettings) ResolveStateRoots(home, base string) (ToolStateSettings, error) {
+	resolved := s.Clone()
+	if resolved.Default.StateRoot == "" {
+		resolved.Default.StateRoot = home
+	} else {
+		root, err := ResolveStateRoot(resolved.Default.StateRoot, home, base)
+		if err != nil {
+			return ToolStateSettings{}, err
+		}
+		resolved.Default.StateRoot = root
+	}
+	for name, cfg := range resolved.Tools {
+		if cfg.StateRoot == "" {
+			continue
+		}
+		root, err := ResolveStateRoot(cfg.StateRoot, home, base)
+		if err != nil {
+			return ToolStateSettings{}, err
+		}
+		cfg.StateRoot = root
+		resolved.Tools[name] = cfg
+	}
+	return resolved, nil
+}
+
+func ResolveStateRoot(value, home, base string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("stateRoot must not be empty")
+	}
+	value = expandHome(value, home)
+	if filepath.IsAbs(value) {
+		return value, nil
+	}
+	if base == "" {
+		base = "."
+	}
+	return filepath.Join(base, value), nil
+}
+
+func expandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return home + path[1:]
+	}
+	return path
 }
 
 type PathBase string
@@ -111,17 +265,34 @@ func joinSandboxPath(base, rel string) string {
 }
 
 type CommandOptions struct {
-	Env            string
-	Project        string
-	Projects       []ProjectMount
-	Workdir        string
-	SandboxRuntime string
-	DockerImage    string
-	DockerHome     string
-	DockerProjects string
-	Install        bool
-	Upgrade        bool
-	lifecycle      map[string]bool
+	Env              string
+	Project          string
+	Projects         []ProjectMount
+	Workdir          string
+	SandboxRuntime   string
+	DockerImage      string
+	DockerHome       string
+	DockerProjects   string
+	BubblewrapRoot   string
+	ToolStates       ToolStateSettings
+	SuppressWarnings warning.Suppression
+	Install          bool
+	Upgrade          bool
+	lifecycle        map[string]bool
+}
+
+func (o *CommandOptions) ToolStateFor(name string) ToolState {
+	if o == nil {
+		return ToolStateSettings{}.StateFor(name)
+	}
+	return o.ToolStates.StateFor(name)
+}
+
+func (o *CommandOptions) ToolStateRootFor(name string) string {
+	if o == nil {
+		return ToolStateSettings{}.StateRootFor(name)
+	}
+	return o.ToolStates.StateRootFor(name)
 }
 
 type ProjectMount struct {

@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/config"
@@ -31,7 +34,7 @@ func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Opt
 
 func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	home := t.TempDir()
-	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes"), XDGRuntimeDir: filepath.Join(home, "runtime")}
+	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
 		hostmanager.Module(),
@@ -58,8 +61,49 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	}
 }
 
+func TestRunAppReportsInvalidConfig(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes")}
+	configDir := paths.TobyConfigDir()
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("sandbox:\n  invalid: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	app := fx.New(
+		fx.NopLogger,
+		hostmanager.Module(),
+		mcpserver.Module(),
+		sandbox.Module(),
+		sandboxmanager.Module(),
+		fx.Supply(paths, args([]string{"--help"})),
+		fx.Provide(
+			func() *http.Client { return &http.Client{} },
+			func() executil.Runner { return fakeRunner{} },
+			opencodeconfig.NewRenderer,
+			contextfiles.NewService,
+			tobyconfig.New,
+			contextinit.NewServices,
+			tool.NewRegistry,
+			newRootCommand,
+		),
+		fx.Invoke(runCLI),
+	)
+
+	if code := runApp(app, &stderr); code == 0 {
+		t.Fatal("expected invalid config to fail")
+	}
+	got := strings.TrimSpace(stderr.String())
+	want := configPath + `: unsupported sandbox key "invalid"`
+	if got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 func TestModuleDependencyGraphIsValid(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	if err := fx.ValidateApp(Module()); err != nil {
 		t.Fatal(err)
 	}

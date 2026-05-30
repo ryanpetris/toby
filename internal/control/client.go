@@ -5,47 +5,16 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net"
-	"os"
-	"path/filepath"
 	"sync/atomic"
-
-	"petris.dev/toby/internal/config"
 )
 
-const SandboxSocketName = "sandbox.sock"
-
 type Client struct {
-	Path string
-	next atomic.Int64
+	Endpoint Endpoint
+	next     atomic.Int64
 }
 
-func NewClient(path string) *Client {
-	return &Client{Path: path}
-}
-
-func DefaultSocketPath() (string, error) {
-	runtimeDir, err := defaultRuntimeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(runtimeDir, "toby", SandboxSocketName), nil
-}
-
-func HostSocketPath(runtimeDir string, pid int) string {
-	return filepath.Join(runtimeDir, "toby", "control", fmt.Sprintf("%d.sock", pid))
-}
-
-func defaultRuntimeDir() (string, error) {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return "", fmt.Errorf("XDG_RUNTIME_DIR is required")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return config.ExpandHome(runtimeDir, home), nil
+func NewEndpointClient(endpoint Endpoint) *Client {
+	return &Client{Endpoint: endpoint}
 }
 
 func (c *Client) GitCommit(repository, message string, amend bool) (GitResult, error) {
@@ -134,7 +103,7 @@ func (c *Client) call(request []byte) (RPCResponse, error) {
 }
 
 func (c *Client) roundTrip(request []byte) ([]byte, error) {
-	conn, err := net.Dial("unix", c.Path)
+	conn, err := DialEndpoint(c.Endpoint)
 	if err != nil {
 		return nil, err
 	}
