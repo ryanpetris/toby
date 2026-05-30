@@ -8,7 +8,9 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/configfile"
+	"petris.dev/toby/internal/httpproxy"
+	"petris.dev/toby/internal/proxyconfig"
 	"petris.dev/toby/internal/tobyconfig"
 )
 
@@ -17,37 +19,20 @@ const TobyServerName = "toby"
 // ConfigArgs returns Codex CLI config overrides for Toby's per-session
 // synthetic context. Codex has no flag for an arbitrary config file, so use
 // -c overrides and avoid writing profile files into CODEX_HOME.
-func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service) ([]string, error) {
+func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) ([]string, error) {
 	overrides := []string{}
-	items := []struct {
-		key   string
-		value any
-	}{
-		{key: "mcp_servers." + TobyServerName + ".command", value: "toby"},
-		{key: "mcp_servers." + TobyServerName + ".args", value: []string{"sandbox", "mcp"}},
+	if strings.TrimSpace(tobyMCPURL) == "" {
+		return nil, fmt.Errorf("toby MCP proxy URL is required")
+	}
+	items := []configItem{
+		{key: "mcp_servers." + TobyServerName + ".url", value: strings.TrimSpace(tobyMCPURL)},
 		{key: "mcp_servers." + TobyServerName + ".enabled", value: true},
-		{key: "mcp_servers." + TobyServerName + ".env_vars", value: []string{control.EnvControlURL, control.EnvControlToken}},
 	}
-	for _, name := range proxyMCPServerNames(cfg) {
-		items = append(items,
-			struct {
-				key   string
-				value any
-			}{key: "mcp_servers." + name + ".command", value: "toby"},
-			struct {
-				key   string
-				value any
-			}{key: "mcp_servers." + name + ".args", value: []string{"sandbox", "mcp", name}},
-			struct {
-				key   string
-				value any
-			}{key: "mcp_servers." + name + ".enabled", value: true},
-			struct {
-				key   string
-				value any
-			}{key: "mcp_servers." + name + ".env_vars", value: []string{control.EnvControlURL, control.EnvControlToken}},
-		)
+	configured, err := configuredMCPItems(cfg, controlHost, proxy)
+	if err != nil {
+		return nil, err
 	}
+	items = append(items, configured...)
 	for _, item := range items {
 		override, err := configOverride(item.key, item.value)
 		if err != nil {
@@ -69,20 +54,102 @@ func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service) ([]string, error
 	return args, nil
 }
 
-func proxyMCPServerNames(cfg *tobyconfig.Service) []string {
+type configItem struct {
+	key   string
+	value any
+}
+
+func configuredMCPItems(cfg *tobyconfig.Service, controlHost string, proxy *httpproxy.Service) ([]configItem, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 	servers := cfg.MCPServers()
 	names := make([]string, 0, len(servers))
 	for name, server := range servers {
-		if name == TobyServerName || !server.Enabled() || !server.HTTPProxyable() {
+		if name == TobyServerName || !server.Enabled() {
 			continue
 		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names
+	items := []configItem{}
+	for _, name := range names {
+		server := servers[name]
+		serverItems, err := mcpServerItems(name, server, controlHost, proxy)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, serverItems...)
+	}
+	return items, nil
+}
+
+func mcpServerItems(name string, server tobyconfig.MCPServer, controlHost string, proxy *httpproxy.Service) ([]configItem, error) {
+	if server.HTTPProxyable() {
+		url, err := proxyconfig.MCPURL(controlHost, proxy, server)
+		if err != nil {
+			return nil, fmt.Errorf("mcp.%s: %w", name, err)
+		}
+		return []configItem{
+			{key: "mcp_servers." + name + ".url", value: url},
+			{key: "mcp_servers." + name + ".enabled", value: true},
+		}, nil
+	}
+	return localMCPItems(name, server.Raw())
+}
+
+func localMCPItems(name string, server map[string]any) ([]configItem, error) {
+	command, args, err := commandParts(name, server["command"])
+	if err != nil {
+		return nil, err
+	}
+	items := []configItem{
+		{key: "mcp_servers." + name + ".command", value: command},
+		{key: "mcp_servers." + name + ".enabled", value: true},
+	}
+	if len(args) > 0 {
+		items = append(items, configItem{key: "mcp_servers." + name + ".args", value: args})
+	}
+	if value, ok := server["env"]; ok {
+		items = append(items, configItem{key: "mcp_servers." + name + ".env", value: configfile.Clone(value)})
+	} else if value, ok := server["environment"]; ok {
+		items = append(items, configItem{key: "mcp_servers." + name + ".env", value: configfile.Clone(value)})
+	}
+	for _, key := range []string{"env_vars", "cwd", "startup_timeout_sec", "tool_timeout_sec"} {
+		if value, ok := server[key]; ok {
+			items = append(items, configItem{key: "mcp_servers." + name + "." + key, value: configfile.Clone(value)})
+		}
+	}
+	return items, nil
+}
+
+func commandParts(name string, raw any) (string, []string, error) {
+	switch command := raw.(type) {
+	case string:
+		if command == "" {
+			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
+		}
+		return command, nil, nil
+	case []any:
+		if len(command) == 0 {
+			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
+		}
+		first, ok := command[0].(string)
+		if !ok || first == "" {
+			return "", nil, fmt.Errorf("mcp server %q command must start with a string", name)
+		}
+		args := make([]string, 0, len(command)-1)
+		for _, item := range command[1:] {
+			arg, ok := item.(string)
+			if !ok {
+				return "", nil, fmt.Errorf("mcp server %q command arguments must be strings", name)
+			}
+			args = append(args, arg)
+		}
+		return first, args, nil
+	default:
+		return "", nil, fmt.Errorf("mcp server %q command is required", name)
+	}
 }
 
 func configOverride(key string, value any) (string, error) {

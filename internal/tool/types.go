@@ -332,6 +332,7 @@ type RunContext struct {
 	Env          Environment
 	Stderr       io.Writer
 	ContextFiles *contextfiles.Session
+	TobyMCPURL   string
 	Exec         Executor
 	Launch       Executor
 	lifecycle    map[string]bool

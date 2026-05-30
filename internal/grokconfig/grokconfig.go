@@ -4,18 +4,21 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"petris.dev/toby/internal/configfile"
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/httpproxy"
+	"petris.dev/toby/internal/proxyconfig"
 	"petris.dev/toby/internal/tobyconfig"
 )
 
 const StaticConfigPath = "grok/config.toml"
 
-func RegisterContextFiles(registrar contextfiles.Registrar, _ [][]byte, cfg *tobyconfig.Service) error {
-	config, err := syntheticConfig(cfg)
+func RegisterContextFiles(registrar contextfiles.Registrar, _ [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) error {
+	config, err := syntheticConfig(cfg, controlHost, tobyMCPURL, proxy)
 	if err != nil {
 		return err
 	}
@@ -30,26 +33,30 @@ func Rules(instructions [][]byte) string {
 	return joinInstructions(instructions)
 }
 
-func syntheticConfig(cfg *tobyconfig.Service) ([]byte, error) {
-	servers, err := syntheticMCPServers(cfg)
+func syntheticConfig(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) ([]byte, error) {
+	servers, err := syntheticMCPServers(cfg, controlHost, tobyMCPURL, proxy)
 	if err != nil {
 		return nil, err
 	}
 	return marshalConfig(servers)
 }
 
-func syntheticMCPServers(cfg *tobyconfig.Service) (map[string]map[string]any, error) {
+func syntheticMCPServers(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) (map[string]map[string]any, error) {
 	servers := map[string]map[string]any{}
 	if cfg != nil {
 		for name, configured := range cfg.MCPServers() {
 			if !configured.Enabled() {
 				continue
 			}
-			raw := configured.Raw()
 			if configured.HTTPProxyable() {
-				servers[name] = syntheticProxyMCP(name, raw)
+				converted, err := syntheticProxyMCP(controlHost, proxy, name, configured)
+				if err != nil {
+					return nil, err
+				}
+				servers[name] = converted
 				continue
 			}
+			raw := configured.Raw()
 			converted, err := convertMCPServer(name, raw)
 			if err != nil {
 				return nil, err
@@ -57,26 +64,35 @@ func syntheticMCPServers(cfg *tobyconfig.Service) (map[string]map[string]any, er
 			servers[name] = converted
 		}
 	}
-	servers["toby"] = syntheticTobyMCP()
+	toby, err := syntheticTobyMCP(tobyMCPURL)
+	if err != nil {
+		return nil, err
+	}
+	servers["toby"] = toby
 	return servers, nil
 }
 
-func syntheticTobyMCP() map[string]any {
-	return map[string]any{
-		"command": "toby",
-		"args":    []any{"sandbox", "mcp"},
-		"enabled": true,
+func syntheticTobyMCP(url string) (map[string]any, error) {
+	if strings.TrimSpace(url) == "" {
+		return nil, fmt.Errorf("toby MCP proxy URL is required")
 	}
+	return map[string]any{
+		"url":     strings.TrimSpace(url),
+		"enabled": true,
+	}, nil
 }
 
-func syntheticProxyMCP(name string, server map[string]any) map[string]any {
+func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
+	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, server)
+	if err != nil {
+		return nil, fmt.Errorf("mcp.%s: %w", name, err)
+	}
 	converted := map[string]any{
-		"command": "toby",
-		"args":    []any{"sandbox", "mcp", name},
+		"url":     proxyURL,
 		"enabled": true,
 	}
-	copyCommonFields(converted, server)
-	return converted
+	copyCommonFields(converted, server.Raw())
+	return converted, nil
 }
 
 func convertMCPServer(name string, server map[string]any) (map[string]any, error) {
@@ -90,12 +106,10 @@ func convertMCPServer(name string, server map[string]any) (map[string]any, error
 			return convertRemoteMCPServer(name, "", server)
 		}
 		return nil, fmt.Errorf("mcp server %q command or url is required", name)
-	case "local", "stdio":
+	case "local":
 		return convertLocalMCPServer(name, server)
-	case "remote", "http", "streamable-http":
+	case "remote":
 		return convertRemoteMCPServer(name, "", server)
-	case "sse":
-		return convertRemoteMCPServer(name, "sse", server)
 	default:
 		return nil, fmt.Errorf("unsupported Grok mcp server %q type %q", name, typ)
 	}

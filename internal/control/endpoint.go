@@ -2,23 +2,22 @@ package control
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
 )
 
 const (
-	EnvControlURL   = "TOBY_CONTROL_URL"
+	EnvControlHost  = "TOBY_CONTROL_HOST"
 	EnvControlToken = "TOBY_CONTROL_TOKEN"
-	EnvBinaryURL    = "TOBY_BINARY_URL"
 )
 
 type BinarySource func() ([]byte, error)
 
 type Endpoint struct {
 	ListenAddress string
-	URL           string
-	BinaryURL     string
+	Host          string
 	Token         string
 	BinarySource  BinarySource
 }
@@ -27,17 +26,36 @@ func WebSocketEndpoint(listenAddress, token string) Endpoint {
 	return Endpoint{ListenAddress: listenAddress, Token: token}
 }
 
+func (e Endpoint) ControlURL() string {
+	return "ws://" + e.Host + "/control"
+}
+
+func (e Endpoint) BinaryURL() string {
+	return "http://" + e.Host + "/binary"
+}
+
+func (e Endpoint) ProxyBaseURL(id string) string {
+	return "http://" + e.Host + "/proxy/" + url.PathEscape(id)
+}
+
 func DefaultEndpoint() (Endpoint, error) {
-	endpointURL := strings.TrimSpace(os.Getenv(EnvControlURL))
-	if endpointURL == "" {
-		return Endpoint{}, fmt.Errorf("%s is required", EnvControlURL)
+	host := strings.TrimSpace(os.Getenv(EnvControlHost))
+	if host == "" {
+		return Endpoint{}, fmt.Errorf("%s is required", EnvControlHost)
 	}
-	parsed, err := url.Parse(endpointURL)
+	if err := validateHostPort(host); err != nil {
+		return Endpoint{}, fmt.Errorf("invalid %s: %w", EnvControlHost, err)
+	}
+	return Endpoint{Host: host, Token: os.Getenv(EnvControlToken)}, nil
+}
+
+func validateHostPort(host string) error {
+	name, port, err := net.SplitHostPort(host)
 	if err != nil {
-		return Endpoint{}, fmt.Errorf("invalid %s: %w", EnvControlURL, err)
+		return err
 	}
-	if parsed.Scheme != "ws" || parsed.Host == "" {
-		return Endpoint{}, fmt.Errorf("%s must be a ws:// URL", EnvControlURL)
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("must be host:port")
 	}
-	return Endpoint{URL: endpointURL, Token: os.Getenv(EnvControlToken)}, nil
+	return nil
 }

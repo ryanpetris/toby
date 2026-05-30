@@ -8,11 +8,14 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
+
+const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
 
 func fileByPath(t *testing.T, files []contextfiles.File, path string) contextfiles.File {
 	t.Helper()
@@ -42,11 +45,8 @@ func TestContextFilesIncludesTobyMCPServer(t *testing.T) {
 
 	mcp := decode(t, fileByPath(t, files, StaticMcpPath).Data)
 	toby := mcp["mcpServers"].(map[string]any)["toby"].(map[string]any)
-	if toby["type"] != "stdio" || toby["command"] != "toby" {
+	if toby["type"] != "http" || toby["url"] != testTobyMCPURL {
 		t.Fatalf("mcp.toby = %#v", toby)
-	}
-	if args := toby["args"].([]any); len(args) != 2 || args[0] != "sandbox" || args[1] != "mcp" {
-		t.Fatalf("mcp.toby.args = %#v", args)
 	}
 }
 
@@ -78,15 +78,11 @@ mcp:
 		t.Fatalf("docs args = %#v", args)
 	}
 	remote := servers["remote"].(map[string]any)
-	if remote["type"] != "stdio" || remote["command"] != "toby" {
+	if remote["type"] != "http" {
 		t.Fatalf("remote mcp = %#v", remote)
 	}
-	remoteArgs := remote["args"].([]any)
-	if len(remoteArgs) != 3 || remoteArgs[0] != "sandbox" || remoteArgs[1] != "mcp" || remoteArgs[2] != "remote" {
-		t.Fatalf("remote args = %#v", remoteArgs)
-	}
-	if _, ok := remote["url"]; ok {
-		t.Fatalf("remote URL leaked into generated config: %#v", remote)
+	if url, _ := remote["url"].(string); !strings.HasPrefix(url, "http://127.0.0.1:12345/proxy/") {
+		t.Fatalf("remote url = %#v", remote["url"])
 	}
 }
 
@@ -149,7 +145,7 @@ func renderContextFilesWithConfig(t *testing.T, projectRoot string, instructions
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
-	if err := RegisterContextFiles(builder, projectRoot, instructions, cfg); err != nil {
+	if err := RegisterContextFiles(builder, projectRoot, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{})); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

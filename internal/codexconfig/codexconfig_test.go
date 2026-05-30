@@ -7,19 +7,20 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 )
 
+const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
+
 func TestConfigArgsIncludeTobyMCPAndInstructions(t *testing.T) {
-	args, err := ConfigArgs([][]byte{[]byte("# git\n"), []byte("# extra\n")}, nil)
+	args, err := ConfigArgs([][]byte{[]byte("# git\n"), []byte("# extra\n")}, nil, "", testTobyMCPURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`mcp_servers.toby.command='toby'`,
-		`mcp_servers.toby.args=['sandbox', 'mcp']`,
+		`mcp_servers.toby.url='http://127.0.0.1:12345/proxy/toby'`,
 		`mcp_servers.toby.enabled=true`,
-		`mcp_servers.toby.env_vars=['TOBY_CONTROL_URL', 'TOBY_CONTROL_TOKEN']`,
 		`developer_instructions="# git\n\n# extra\n"`,
 	} {
 		if !containsConfigOverride(args, want) {
@@ -44,26 +45,21 @@ mcp:
     url: https://off.example.com/mcp
     enabled: false
 `))
-	args, err := ConfigArgs(nil, cfg)
+	args, err := ConfigArgs(nil, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`mcp_servers.docs.command='toby'`,
-		`mcp_servers.docs.args=['sandbox', 'mcp', 'docs']`,
+		`mcp_servers.local.command='local-mcp'`,
+		`mcp_servers.local.enabled=true`,
 		`mcp_servers.docs.enabled=true`,
-		`mcp_servers.docs.env_vars=['TOBY_CONTROL_URL', 'TOBY_CONTROL_TOKEN']`,
 	} {
 		if !containsConfigOverride(args, want) {
 			t.Fatalf("args missing %q: %#v", want, args)
 		}
 	}
-	for _, unwanted := range []string{"example.com", "Bearer secret", "mcp_servers.local", "mcp_servers.off"} {
-		for _, arg := range args {
-			if strings.Contains(arg, unwanted) {
-				t.Fatalf("args leaked %q: %#v", unwanted, args)
-			}
-		}
+	if !containsConfigOverridePrefix(args, `mcp_servers.docs.url='http://127.0.0.1:12345/proxy/`) {
+		t.Fatalf("args missing proxied docs URL: %#v", args)
 	}
 }
 
@@ -74,6 +70,18 @@ func containsConfigOverride(args []string, override string) bool {
 		}
 	}
 	return slices.Contains(args, override)
+}
+
+func containsConfigOverridePrefix(args []string, prefix string) bool {
+	for i, arg := range args {
+		if arg == "-c" && i+1 < len(args) && strings.HasPrefix(args[i+1], prefix) {
+			return true
+		}
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func testTobyConfig(t *testing.T, data []byte) *tobyconfig.Service {

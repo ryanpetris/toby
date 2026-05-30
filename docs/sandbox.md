@@ -87,7 +87,7 @@ Toby bind mounts the private sandbox `$HOME` directly and bind mounts the select
 
 For each sandbox session, the selected runtime starts a small shell bootstrap that downloads the sandbox-facing Toby binary from the host control server to `/tmp/toby/bin/toby`, marks it executable, and launches `/tmp/toby/bin/toby sandbox manager`. The sandbox manager connects to the authenticated WebSocket control endpoint, sends `context.init`, handles generic file commands such as `file.create` and `file.mkdir`, and then runs host-requested `command.run` requests inside the sandbox.
 
-The host control server listens on `127.0.0.1` with a random per-run bearer token. Docker on macOS connects through `host.docker.internal`. The same listener serves `/toby/control` for WebSocket JSON-RPC and `/toby/binary` for the sandbox helper download. `/tmp/toby/bin` is prepended to `PATH`.
+The host control server listens on `127.0.0.1` with a random per-run bearer token. Docker on macOS connects through `host.docker.internal`. The same listener serves `/control` for WebSocket JSON-RPC, `/binary` for the sandbox helper download, and `/proxy/<uuid>` for per-run HTTP proxy targets. Sandboxes receive `TOBY_CONTROL_HOST=host:port` and infer the protocol-specific URLs from it. `/tmp/toby/bin` is prepended to `PATH`.
 
 The host manager runs registered context init services after `context.init`. Services add context through the context service, which translates those requests into sandbox manager file commands. When the foreground command exits, the sandbox manager sends `command.exit` with the command UUID and exit code. The host manager then sends `sandbox.terminate`; the sandbox manager exits with code 0, while the host exits with the foreground command's exit code.
 
@@ -119,9 +119,9 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. HTTP-backed MCP entries are rendered as stdio commands such as `toby sandbox mcp docs`, while the host Toby process keeps the remote URL and authentication headers. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
+- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url` and are rendered as remote MCP URLs through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby keeps the upstream URL and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
 - `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
-- `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby emits the `opencode.model-discovery` warning on stderr and excludes that provider from the generated OpenCode config.
+- `provider` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps upstream `baseURL` and credential `headers` on the host and exposes each provider to tools through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `opencode.model-discovery` and excludes only that provider from generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
 
 Global tool state defaults use the same shape as launch config:
@@ -153,11 +153,11 @@ sandbox:
 
 ## MCP
 
-Toby exposes an MCP stdio server inside each sandbox as `toby sandbox mcp`. The server provides tools for running selected host Git commands for repositories visible through the initial project bind mount.
+Toby exposes its built-in MCP server through a per-run HTTP proxy URL. The server provides tools for running selected host Git commands for repositories visible through the initial project bind mount.
 
 Git MCP calls run through the host Toby process, so host Git config, SSH agents, GPG signing setup, and credential helpers remain available without being mounted into the sandbox.
 
-Toby also exposes each configured HTTP-backed MCP server as its own stdio instance: `toby sandbox mcp NAME`. Supported proxied types are `remote`, `http`, `streamable-http`, and `sse`. The sandbox-visible tool config keeps the original MCP name and only contains the `toby` command plus that name; the host Toby process opens the remote HTTP/SSE endpoint and applies configured headers or host environment tokens. Local and stdio MCP entries are not proxied on the host.
+Toby also exposes each configured remote MCP server through a per-run HTTP proxy URL. Supported remote entries use `type: remote` and `url`; generated tool config keeps the original MCP name and points the tool at `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. The built-in Toby MCP uses the same shape, with the proxy dispatching to the in-process MCP handler. The host Toby process opens upstream endpoints for configured remote MCPs and applies configured headers or host environment tokens. Local MCP entries are rendered as local commands for tools that support them.
 
 Available tools:
 
@@ -173,7 +173,7 @@ The same control calls are available inside a sandbox as CLI commands: `toby san
 
 ## OpenCode
 
-For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and discovered model lists for OpenAI-compatible providers that need them. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
+For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config translated for OpenCode, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, allowed external-directory rules for `/tmp` and `XDG_PROJECTS_DIR`, and provider entries pointed at Toby's `/proxy/<uuid>` proxy. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
 
 Equivalent generated OpenCode `opencode.json` entry:
 
@@ -182,8 +182,8 @@ Equivalent generated OpenCode `opencode.json` entry:
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "toby": {
-      "type": "local",
-      "command": ["toby", "sandbox", "mcp"],
+      "type": "remote",
+      "url": "http://$TOBY_CONTROL_HOST/proxy/<uuid>",
       "enabled": true
     }
   }
@@ -204,9 +204,8 @@ Generated `claude/mcp.json`:
 {
   "mcpServers": {
     "toby": {
-      "type": "stdio",
-      "command": "toby",
-      "args": ["sandbox", "mcp"]
+      "type": "http",
+      "url": "http://$TOBY_CONTROL_HOST/proxy/<uuid>"
     }
   }
 }
@@ -214,18 +213,16 @@ Generated `claude/mcp.json`:
 
 ## Codex
 
-For Codex sandboxes, Toby injects its built-in MCP server, configured HTTP MCP proxies, and combined instructions through launch-time config overrides. It does not write to `CODEX_HOME`, does not create a profile file, and does not pass MCP secrets as argv values. The launch includes overrides equivalent to:
+For Codex sandboxes, Toby injects its built-in MCP server, configured MCP entries, and combined instructions through launch-time config overrides. Remote MCP entries use per-run `/proxy/<uuid>` URLs; local MCP entries use command overrides. It does not write to `CODEX_HOME`, does not create a profile file, and does not pass configured HTTP MCP credentials as argv values. The launch includes overrides equivalent to:
 
 ```sh
 codex \
-  -c 'mcp_servers.toby.command="toby"' \
-  -c 'mcp_servers.toby.args=["sandbox", "mcp"]' \
+  -c 'mcp_servers.toby.url="http://$TOBY_CONTROL_HOST/proxy/<uuid>"' \
   -c 'mcp_servers.toby.enabled=true' \
-  -c 'mcp_servers.toby.env_vars=["TOBY_CONTROL_URL", "TOBY_CONTROL_TOKEN"]' \
   -c 'developer_instructions="..."'
 ```
 
-Codex has no session config-file flag for arbitrary MCP config. To avoid writing regular Codex config files or leaking configured MCP secrets through argv, Toby injects configured MCPs only when they can be represented as HTTP proxy stdio entries.
+Codex has no session config-file flag for arbitrary MCP config, so Toby uses launch-time `-c` overrides instead of writing regular Codex config files.
 
 ## Copilot
 
@@ -241,13 +238,8 @@ Generated `copilot/mcp-config.json`:
 {
   "mcpServers": {
     "toby": {
-      "type": "stdio",
-      "command": "toby",
-      "args": ["sandbox", "mcp"],
-      "env": {
-        "TOBY_CONTROL_URL": "${TOBY_CONTROL_URL}",
-        "TOBY_CONTROL_TOKEN": "${TOBY_CONTROL_TOKEN}"
-      },
+      "type": "http",
+      "url": "http://$TOBY_CONTROL_HOST/proxy/<uuid>",
       "tools": ["*"]
     }
   }

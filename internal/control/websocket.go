@@ -30,7 +30,7 @@ func DialEndpoint(endpoint Endpoint) (net.Conn, error) {
 }
 
 func dialWebSocket(endpoint Endpoint) (net.Conn, error) {
-	parsed, err := url.Parse(endpoint.URL)
+	parsed, err := url.Parse(endpoint.ControlURL())
 	if err != nil {
 		return nil, err
 	}

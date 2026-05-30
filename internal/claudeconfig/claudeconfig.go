@@ -11,9 +11,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"petris.dev/toby/internal/configfile"
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/httpproxy"
+	"petris.dev/toby/internal/proxyconfig"
 	"petris.dev/toby/internal/tobyconfig"
 )
 
@@ -31,8 +34,8 @@ const (
 // instructions is the content of Toby's instruction files; they are concatenated
 // into a single file so the launcher can pass exactly one
 // --append-system-prompt-file.
-func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, instructions [][]byte, cfg *tobyconfig.Service) error {
-	mcpConfig, err := syntheticMCP(cfg)
+func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) error {
+	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy)
 	if err != nil {
 		return err
 	}
@@ -56,18 +59,22 @@ func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, 
 	return nil
 }
 
-func syntheticMCP(cfg *tobyconfig.Service) (map[string]any, error) {
+func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) (map[string]any, error) {
 	servers := map[string]any{}
 	if cfg != nil {
 		for name, configured := range cfg.MCPServers() {
 			if !configured.Enabled() {
 				continue
 			}
-			raw := configured.Raw()
 			if configured.HTTPProxyable() {
-				servers[name] = syntheticProxyMCP(name, raw)
+				converted, err := syntheticProxyMCP(controlHost, proxy, name, configured)
+				if err != nil {
+					return nil, err
+				}
+				servers[name] = converted
 				continue
 			}
+			raw := configured.Raw()
 			converted, err := convertMCPServer(name, raw)
 			if err != nil {
 				return nil, err
@@ -75,27 +82,38 @@ func syntheticMCP(cfg *tobyconfig.Service) (map[string]any, error) {
 			servers[name] = converted
 		}
 	}
-	servers["toby"] = syntheticTobyMCP()
+	toby, err := syntheticTobyMCP(tobyMCPURL)
+	if err != nil {
+		return nil, err
+	}
+	servers["toby"] = toby
 	return map[string]any{"mcpServers": servers}, nil
 }
 
-func syntheticTobyMCP() map[string]any {
-	return map[string]any{
-		"type":    "stdio",
-		"command": "toby",
-		"args":    []any{"sandbox", "mcp"},
+func syntheticTobyMCP(url string) (map[string]any, error) {
+	if strings.TrimSpace(url) == "" {
+		return nil, fmt.Errorf("toby MCP proxy URL is required")
 	}
+	return map[string]any{
+		"type": "http",
+		"url":  strings.TrimSpace(url),
+	}, nil
 }
 
-func syntheticProxyMCP(name string, server map[string]any) map[string]any {
-	converted := map[string]any{
-		"type":    "stdio",
-		"command": "toby",
-		"args":    []any{"sandbox", "mcp", name},
+func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
+	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, server)
+	if err != nil {
+		return nil, fmt.Errorf("mcp.%s: %w", name, err)
 	}
-	copyField(converted, server, "timeout", "timeout")
-	copyField(converted, server, "alwaysLoad", "alwaysLoad")
-	return converted
+	converted := map[string]any{
+		"type": "http",
+		"url":  proxyURL,
+	}
+	raw := server.Raw()
+	copyField(converted, raw, "enabled", "enabled")
+	copyField(converted, raw, "timeout", "timeout")
+	copyField(converted, raw, "alwaysLoad", "alwaysLoad")
+	return converted, nil
 }
 
 func convertMCPServer(name string, server map[string]any) (map[string]any, error) {
@@ -105,8 +123,6 @@ func convertMCPServer(name string, server map[string]any) (map[string]any, error
 		return convertLocalMCPServer(name, server)
 	case "remote":
 		return convertRemoteMCPServer(server), nil
-	case "stdio", "http", "streamable-http", "sse", "ws":
-		return configfile.CloneMap(server), nil
 	default:
 		return nil, fmt.Errorf("unsupported mcp server %q type %q", name, typ)
 	}

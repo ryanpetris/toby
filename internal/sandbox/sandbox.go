@@ -424,24 +424,23 @@ func (s *baseInstance) HostControlEndpoint() control.Endpoint {
 }
 
 func (s *baseInstance) SetupControlEndpoint(env tool.Environment, endpoint control.Endpoint) {
-	env[control.EnvControlURL] = s.sandboxURL(endpoint.URL)
+	env[control.EnvControlHost] = s.sandboxHost(endpoint.Host)
 	env[control.EnvControlToken] = endpoint.Token
-	env[control.EnvBinaryURL] = s.sandboxURL(endpoint.BinaryURL)
 }
 
-func (s *baseInstance) sandboxURL(hostURL string) string {
+func (s *baseInstance) sandboxHost(host string) string {
 	if s.sandboxControlHost == "" {
-		return hostURL
+		return host
 	}
-	old := "//127.0.0.1:"
-	if strings.Contains(hostURL, old) {
-		return strings.Replace(hostURL, old, "//"+s.sandboxControlHost+":", 1)
+	old := "127.0.0.1:"
+	if strings.HasPrefix(host, old) {
+		return strings.Replace(host, old, s.sandboxControlHost+":", 1)
 	}
-	old = "//[::1]:"
-	if strings.Contains(hostURL, old) {
-		return strings.Replace(hostURL, old, "//"+s.sandboxControlHost+":", 1)
+	old = "[::1]:"
+	if strings.HasPrefix(host, old) {
+		return strings.Replace(host, old, s.sandboxControlHost+":", 1)
 	}
-	return hostURL
+	return host
 }
 
 func (s *baseInstance) Cleanup() error {

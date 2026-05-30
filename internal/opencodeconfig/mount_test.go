@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 
 	"go.uber.org/fx"
@@ -17,6 +19,8 @@ import (
 )
 
 var testInstructions = []string{"/run/user/1000/toby/context/GIT_AGENTS.md"}
+var testControlHost = "127.0.0.1:12345"
+var testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
 
 func TestNewRendererRequiresHTTPClient(t *testing.T) {
 	if _, err := NewRenderer(nil); err == nil {
@@ -30,11 +34,8 @@ func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 
 	mcp := config["mcp"].(map[string]any)
 	toby := mcp["toby"].(map[string]any)
-	if toby["type"] != "local" || toby["enabled"] != true {
+	if toby["type"] != "remote" || toby["url"] != testTobyMCPURL || toby["enabled"] != true {
 		t.Fatalf("mcp.toby = %#v", toby)
-	}
-	if got := toby["command"].([]any); len(got) != 3 || got[0] != "toby" || got[1] != "sandbox" || got[2] != "mcp" {
-		t.Fatalf("mcp.toby.command = %#v", got)
 	}
 
 	instructions := config["instructions"].([]any)
@@ -64,10 +65,8 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
 		"provider": map[string]any{
 			"local": map[string]any{
-				"npm": "@ai-sdk/openai-compatible",
-				"options": map[string]any{
-					"baseURL": server.URL,
-				},
+				"type":    "openai",
+				"baseURL": server.URL,
 			},
 		},
 	})
@@ -77,7 +76,12 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 	}
 	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 
-	models := config["provider"].(map[string]any)["local"].(map[string]any)["models"].(map[string]any)
+	provider := config["provider"].(map[string]any)["local"].(map[string]any)
+	options := provider["options"].(map[string]any)
+	if baseURL, _ := options["baseURL"].(string); !strings.HasPrefix(baseURL, "http://"+testControlHost+"/proxy/") {
+		t.Fatalf("provider options = %#v", options)
+	}
+	models := provider["models"].(map[string]any)
 	if _, ok := models["alpha"]; !ok {
 		t.Fatalf("models = %#v, want alpha", models)
 	}
@@ -99,10 +103,8 @@ func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 		},
 		"provider": map[string]any{
 			"local": map[string]any{
-				"npm": "@ai-sdk/openai-compatible",
-				"options": map[string]any{
-					"baseURL": server.URL,
-				},
+				"type":    "openai",
+				"baseURL": server.URL,
 				"models": map[string]any{
 					"custom": map[string]any{"name": "Configured Custom"},
 				},
@@ -116,15 +118,11 @@ func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 
 	mcp := config["mcp"].(map[string]any)
-	if docs := mcp["docs"].(map[string]any); docs["type"] != "local" {
+	if docs := mcp["docs"].(map[string]any); docs["type"] != "remote" {
 		t.Fatalf("mcp.docs = %#v", docs)
 	} else {
-		command := docs["command"].([]any)
-		if len(command) != 4 || command[0] != "toby" || command[1] != "sandbox" || command[2] != "mcp" || command[3] != "docs" {
-			t.Fatalf("mcp.docs.command = %#v", command)
-		}
-		if _, ok := docs["url"]; ok {
-			t.Fatalf("mcp.docs leaked URL: %#v", docs)
+		if url, _ := docs["url"].(string); !strings.HasPrefix(url, "http://"+testControlHost+"/proxy/") {
+			t.Fatalf("mcp.docs.url = %#v", docs["url"])
 		}
 	}
 	models := config["provider"].(map[string]any)["local"].(map[string]any)["models"].(map[string]any)
@@ -144,8 +142,8 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
 		"provider": map[string]any{
 			"local": map[string]any{
-				"npm":     "@ai-sdk/openai-compatible",
-				"options": map[string]any{"baseURL": server.URL},
+				"type":    "openai",
+				"baseURL": server.URL,
 			},
 		},
 	})
@@ -227,27 +225,28 @@ func contextFiles(t *testing.T, client *http.Client, projectRoot string, instruc
 
 func contextFilesWithTobyConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]contextfiles.File, []error, error) {
 	t.Helper()
-	renderer, service := testDeps(t, client)
+	renderer, service, proxy := testDeps(t, client)
 	builder := service.NewBuilder()
-	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, projectRoot, instructions, cfg)
+	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, projectRoot, testControlHost, testTobyMCPURL, instructions, cfg, proxy)
 	if err != nil {
 		return nil, warnings, err
 	}
 	return builder.Files(), warnings, nil
 }
 
-func testDeps(t *testing.T, client *http.Client) (*Renderer, *contextfiles.Service) {
+func testDeps(t *testing.T, client *http.Client) (*Renderer, *contextfiles.Service, *httpproxy.Service) {
 	t.Helper()
 	var renderer *Renderer
 	var service *contextfiles.Service
+	var proxy *httpproxy.Service
 	app := fxtest.New(t,
 		fx.Supply(client),
-		fx.Provide(NewRenderer, contextfiles.NewService),
-		fx.Populate(&renderer, &service),
+		fx.Provide(NewRenderer, contextfiles.NewService, httpproxy.NewService),
+		fx.Populate(&renderer, &service, &proxy),
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
-	return renderer, service
+	return renderer, service, proxy
 }
 
 func writeJSON(t *testing.T, path string, value map[string]any) {

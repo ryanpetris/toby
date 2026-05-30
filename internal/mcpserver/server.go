@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"petris.dev/toby/internal/control"
@@ -13,8 +14,16 @@ import (
 )
 
 type Server struct {
-	client *control.Client
+	client GitClient
 	mu     sync.Mutex
+}
+
+type GitClient interface {
+	GitCommit(context.Context, GitCommitInput) (GitOutput, error)
+	GitFetch(context.Context, GitRepositoryInput) (GitOutput, error)
+	GitPush(context.Context, GitPushInput) (GitOutput, error)
+	GitRebase(context.Context, GitRebaseInput) (GitOutput, error)
+	GitTag(context.Context, GitTagInput) (GitOutput, error)
 }
 
 const FxServiceGroup = "toby.sandbox.mcp.services"
@@ -88,34 +97,27 @@ const gitRebaseDescription = "Start, continue, or abort a rebase in a visible re
 
 const gitTagDescription = "Create an annotated tag in a visible repository using host Git."
 
-func (r *Runner) Run(ctx context.Context, controlPath string) error {
-	endpoint, err := control.DefaultEndpoint()
-	if err != nil {
-		return err
-	}
+func (r *Runner) Handler(client GitClient) http.Handler {
+	server := &Server{client: client}
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return r.server(server)
+	}, nil)
+}
 
-	server := &Server{client: control.NewEndpointClient(endpoint)}
+func (r *Runner) server(server *Server) *mcp.Server {
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: version.String()}, &mcp.ServerOptions{
 		Instructions: gitServerInstructions,
 	})
 	for _, tool := range r.tools {
 		tool.Register(mcpServer, server)
 	}
-	return mcpServer.Run(ctx, &mcp.StdioTransport{})
-}
-
-func Run(ctx context.Context, controlPath string) error {
-	runner, err := NewRunner(RunnerParams{Services: []Service{GitService{}}})
-	if err != nil {
-		return err
-	}
-	return runner.Run(ctx, controlPath)
+	return mcpServer
 }
 
 func (s *Server) gitCommit(ctx context.Context, _ *mcp.CallToolRequest, input GitCommitInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitCommit(input.Repository, input.Message, input.Amend)
+	result, err := s.client.GitCommit(ctx, input)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}
@@ -125,7 +127,7 @@ func (s *Server) gitCommit(ctx context.Context, _ *mcp.CallToolRequest, input Gi
 func (s *Server) gitFetch(ctx context.Context, _ *mcp.CallToolRequest, input GitRepositoryInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitFetch(input.Repository)
+	result, err := s.client.GitFetch(ctx, input)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}
@@ -135,7 +137,7 @@ func (s *Server) gitFetch(ctx context.Context, _ *mcp.CallToolRequest, input Git
 func (s *Server) gitPush(ctx context.Context, _ *mcp.CallToolRequest, input GitPushInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitPush(input.Repository, input.Branch, input.Origin, input.Tags)
+	result, err := s.client.GitPush(ctx, input)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}
@@ -145,7 +147,7 @@ func (s *Server) gitPush(ctx context.Context, _ *mcp.CallToolRequest, input GitP
 func (s *Server) gitRebase(ctx context.Context, _ *mcp.CallToolRequest, input GitRebaseInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitRebase(input.Repository, input.Base, input.Continue, input.Abort)
+	result, err := s.client.GitRebase(ctx, input)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}
@@ -155,7 +157,7 @@ func (s *Server) gitRebase(ctx context.Context, _ *mcp.CallToolRequest, input Gi
 func (s *Server) gitTag(ctx context.Context, _ *mcp.CallToolRequest, input GitTagInput) (*mcp.CallToolResult, GitOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.client.GitTag(input.Repository, input.Tag, input.Message, input.Target)
+	result, err := s.client.GitTag(ctx, input)
 	if err != nil {
 		return nil, GitOutput{}, err
 	}

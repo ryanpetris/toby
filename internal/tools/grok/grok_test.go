@@ -44,7 +44,7 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 	home := t.TempDir()
 	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}}).Service.(tool.ContextFileTool)
 	service := contextfiles.NewService()
-	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context"))}
+	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby"}
 	if err := run.ContextFiles.AddInstructionBytes("GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 			continue
 		}
 		config := string(file.Data)
-		if !strings.Contains(config, `[mcp_servers.toby]`) || !strings.Contains(config, `command`) || !strings.Contains(config, `toby`) {
+		if !strings.Contains(config, `[mcp_servers.toby]`) || !strings.Contains(config, `url = 'http://127.0.0.1:12345/proxy/toby'`) {
 			t.Fatalf("config = %s", config)
 		}
 		return

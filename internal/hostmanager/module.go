@@ -1,7 +1,7 @@
 package hostmanager
 
 import (
-	"petris.dev/toby/internal/mcpproxy"
+	"petris.dev/toby/internal/httpproxy"
 
 	"go.uber.org/fx"
 )
@@ -10,7 +10,7 @@ func Module() fx.Option {
 	return fx.Module(
 		"hostmanager",
 		fx.Provide(
-			mcpproxy.NewService,
+			httpproxy.NewService,
 			NewContextService,
 			NewCommandService,
 			NewGitService,

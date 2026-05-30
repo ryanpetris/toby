@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
+	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 
-	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/configfile"
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/openai"
+	"petris.dev/toby/internal/proxyconfig"
 	"petris.dev/toby/internal/tobyconfig"
 )
 
@@ -25,12 +27,13 @@ const (
 
 var opencodeGitignore = []byte("*\n")
 
-var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
-
 type Mount struct {
 	projectRoot   string
+	controlHost   string
+	tobyMCPURL    string
 	instructions  []string
 	tobyConfig    *tobyconfig.Service
+	proxy         *httpproxy.Service
 	http          *http.Client
 	modelWarnings []error
 }
@@ -46,15 +49,15 @@ func NewRenderer(client *http.Client) (*Renderer, error) {
 	return &Renderer{http: client}, nil
 }
 
-func (r *Renderer) newMount(projectRoot string, instructions []string, cfg *tobyconfig.Service) (*Mount, error) {
+func (r *Renderer) newMount(projectRoot, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service) (*Mount, error) {
 	if r == nil || r.http == nil {
 		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
-	return &Mount{projectRoot: projectRoot, instructions: append([]string(nil), instructions...), tobyConfig: cfg, http: r.http}, nil
+	return &Mount{projectRoot: projectRoot, controlHost: controlHost, tobyMCPURL: tobyMCPURL, instructions: append([]string(nil), instructions...), tobyConfig: cfg, proxy: proxy, http: r.http}, nil
 }
 
-func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]error, error) {
-	mount, err := r.newMount(projectRoot, instructions, cfg)
+func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, projectRoot, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service) ([]error, error) {
+	mount, err := r.newMount(projectRoot, controlHost, tobyMCPURL, instructions, cfg, proxy)
 	if err != nil {
 		return nil, err
 	}
@@ -74,14 +77,19 @@ func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfi
 func (m *Mount) render(ctx context.Context) ([]byte, error) {
 	config := map[string]any{"$schema": "https://opencode.ai/config.json"}
 	if m.tobyConfig != nil {
-		configfile.Merge(config, m.tobySyntheticConfig())
+		synthetic, err := m.tobySyntheticConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		configfile.Merge(config, synthetic)
 	}
-	m.populateProviderModels(ctx, config)
-	addSynthetic(config, m.projectRoot, m.instructions)
+	if err := m.addSynthetic(config); err != nil {
+		return nil, err
+	}
 	return marshalConfig(config)
 }
 
-func (m *Mount) tobySyntheticConfig() map[string]any {
+func (m *Mount) tobySyntheticConfig(ctx context.Context) (map[string]any, error) {
 	config := map[string]any{}
 	mcp := map[string]any{}
 	for name, server := range m.tobyConfig.MCPServers() {
@@ -89,7 +97,11 @@ func (m *Mount) tobySyntheticConfig() map[string]any {
 			continue
 		}
 		if server.HTTPProxyable() {
-			mcp[name] = syntheticProxyMCP(name, server.Raw())
+			converted, err := m.syntheticProxyMCP(name, server)
+			if err != nil {
+				return nil, err
+			}
+			mcp[name] = converted
 			continue
 		}
 		mcp[name] = server.Raw()
@@ -107,12 +119,18 @@ func (m *Mount) tobySyntheticConfig() map[string]any {
 	}
 	providers := map[string]any{}
 	for name, provider := range m.tobyConfig.Providers() {
-		providers[name] = provider.Raw()
+		converted, err := m.syntheticProvider(ctx, name, provider)
+		if err != nil {
+			return nil, err
+		}
+		if converted != nil {
+			providers[name] = converted
+		}
 	}
 	if len(providers) > 0 {
 		config["provider"] = providers
 	}
-	return config
+	return config, nil
 }
 
 func marshalConfig(config map[string]any) ([]byte, error) {
@@ -123,167 +141,172 @@ func marshalConfig(config map[string]any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-func (m *Mount) populateProviderModels(ctx context.Context, config map[string]any) {
-	providers, ok := config["provider"].(map[string]any)
-	if !ok {
-		return
+func (m *Mount) syntheticProvider(ctx context.Context, providerID string, provider tobyconfig.ProviderConfig) (map[string]any, error) {
+	if provider.Type != tobyconfig.ProviderTypeAnthropic && provider.Type != tobyconfig.ProviderTypeOpenAI {
+		return nil, nil
 	}
-	for providerID, rawProvider := range providers {
-		provider, ok := rawProvider.(map[string]any)
-		if !ok {
-			continue
-		}
-		if _, specified := provider["models"]; specified {
-			continue
-		}
-		if !isOpenAICompatibleProvider(provider) {
-			continue
-		}
-		modelIDs, err := m.fetchProviderModelIDs(ctx, providerID, provider)
-		if err != nil {
-			m.modelWarnings = append(m.modelWarnings, fmt.Errorf("fetch OpenCode models for provider %q: %w", providerID, err))
-			delete(providers, providerID)
-			continue
-		}
-		provider["models"] = providerModels(modelIDs)
+	if m.controlHost == "" {
+		return nil, fmt.Errorf("provider %q requires %s", providerID, control.EnvControlHost)
 	}
-}
-
-func isOpenAICompatibleProvider(provider map[string]any) bool {
-	if provider["npm"] != "@ai-sdk/openai-compatible" {
-		return false
+	if m.proxy == nil {
+		return nil, fmt.Errorf("provider %q requires http proxy service", providerID)
 	}
-	options, ok := provider["options"].(map[string]any)
-	if !ok {
-		return false
-	}
-	baseURL, ok := options["baseURL"].(string)
-	return ok && strings.TrimSpace(baseURL) != ""
-}
-
-func (m *Mount) fetchProviderModelIDs(ctx context.Context, providerID string, provider map[string]any) ([]string, error) {
-	options := provider["options"].(map[string]any)
-	baseURL := strings.TrimSpace(options["baseURL"].(string))
-	headers, err := resolveHeaders(providerID, options, m.substitutionDirs())
+	headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
 	if err != nil {
 		return nil, err
 	}
-	token := ""
-	if auth := headers["Authorization"]; strings.HasPrefix(auth, "Bearer ") {
-		token = strings.TrimPrefix(auth, "Bearer ")
-		delete(headers, "Authorization")
+	proxyID, err := m.proxy.Register(httpproxy.Target{BaseURL: provider.BaseURL, Headers: headers})
+	if err != nil {
+		return nil, fmt.Errorf("register provider %q proxy: %w", providerID, err)
 	}
-	client, err := openai.NewClient(m.http, baseURL, token, headers)
+	proxyURL := control.Endpoint{Host: m.controlHost}.ProxyBaseURL(proxyID)
+	converted := map[string]any{
+		"options": map[string]any{
+			"baseURL": proxyURL,
+		},
+	}
+	if provider.Type == tobyconfig.ProviderTypeOpenAI {
+		converted["npm"] = "@ai-sdk/openai-compatible"
+	} else {
+		converted["npm"] = "@ai-sdk/anthropic"
+	}
+	if provider.Name != "" {
+		converted["name"] = provider.Name
+	}
+	if provider.HasModels() {
+		converted["models"] = configfile.CloneMap(provider.Models)
+		return converted, nil
+	}
+	models, err := m.fetchProviderModels(ctx, providerID, provider)
+	if err != nil {
+		m.modelWarnings = append(m.modelWarnings, fmt.Errorf("fetch OpenCode models for provider %q: %w", providerID, err))
+		return nil, nil
+	}
+	converted["models"] = models
+	return converted, nil
+}
+
+func (m *Mount) fetchProviderModels(ctx context.Context, providerID string, provider tobyconfig.ProviderConfig) (map[string]any, error) {
+	if provider.Type == tobyconfig.ProviderTypeAnthropic {
+		return m.fetchAnthropicProviderModels(ctx, providerID, provider)
+	}
+	headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
 	if err != nil {
 		return nil, err
 	}
-	return client.ModelIDs(ctx)
+	client, err := openai.NewClient(m.http, provider.BaseURL, "", headerStrings(headers))
+	if err != nil {
+		return nil, err
+	}
+	ids, err := client.ModelIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return providerModels(ids), nil
 }
 
-func (m *Mount) substitutionDirs() []string {
-	if m.tobyConfig != nil && m.tobyConfig.Dir != "" {
-		return []string{m.tobyConfig.Dir}
+func (m *Mount) fetchAnthropicProviderModels(ctx context.Context, providerID string, provider tobyconfig.ProviderConfig) (map[string]any, error) {
+	headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
+	if err != nil {
+		return nil, err
 	}
-	return nil
-}
-
-func resolveHeaders(providerID string, options map[string]any, configDirs []string) (map[string]string, error) {
-	headers := map[string]string{}
-	rawHeaders := options["headers"]
-	if rawHeaders == nil {
-		rawHeaders = map[string]any{}
-	}
-	headerMap, ok := rawHeaders.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("provider %q has non-object options.headers", providerID)
-	}
-	for key, rawValue := range headerMap {
-		value, ok := rawValue.(string)
-		if !ok {
-			return nil, fmt.Errorf("provider %q has non-string header values", providerID)
-		}
-		resolved, err := resolveString(value, configDirs)
+	models := map[string]any{}
+	var after string
+	for {
+		endpoint, err := anthropicModelsURL(provider.BaseURL, after)
 		if err != nil {
 			return nil, err
 		}
-		headers[key] = resolved
-	}
-	if rawAPIKey, exists := options["apiKey"]; exists && rawAPIKey != nil {
-		apiKey, ok := rawAPIKey.(string)
-		if !ok {
-			return nil, fmt.Errorf("provider %q has non-string options.apiKey", providerID)
-		}
-		resolved, err := resolveString(apiKey, configDirs)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
 		}
-		if resolved != "" {
-			if _, exists := headers["Authorization"]; !exists {
-				headers["Authorization"] = "Bearer " + resolved
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", openai.UserAgent)
+		for key, values := range headers {
+			req.Header.Del(key)
+			for _, value := range values {
+				req.Header.Add(key, value)
 			}
 		}
-	}
-	return headers, nil
-}
-
-func resolveString(value string, configDirs []string) (string, error) {
-	var firstErr error
-	resolved := substitutionPattern.ReplaceAllStringFunc(value, func(match string) string {
-		if firstErr != nil {
-			return ""
-		}
-		parts := substitutionPattern.FindStringSubmatch(match)
-		kind := parts[1]
-		target := strings.TrimSpace(parts[2])
-		if kind == "env" {
-			return os.Getenv(target)
-		}
-		path := config.ExpandHome(target, homeDir())
-		data, err := readSubstitutionFile(path, configDirs)
+		resp, err := m.http.Do(req)
 		if err != nil {
-			firstErr = fmt.Errorf("unable to read file substitution %q: %w", target, err)
-			return ""
+			return nil, fmt.Errorf("request failed: %w", err)
 		}
-		return strings.TrimSpace(string(data))
-	})
-	if firstErr != nil {
-		return "", firstErr
-	}
-	return resolved, nil
-}
-
-func readSubstitutionFile(path string, configDirs []string) ([]byte, error) {
-	if filepath.IsAbs(path) {
-		return os.ReadFile(path)
-	}
-	var firstErr error
-	for _, dir := range configDirs {
-		if dir == "" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, path))
-		if err == nil {
-			return data, nil
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+		payload, err := decodeAnthropicModelsResponse(resp)
+		if err != nil {
 			return nil, err
 		}
+		for _, model := range payload.Data {
+			if model.ID == "" {
+				continue
+			}
+			entry := map[string]any{"name": model.ID}
+			if model.DisplayName != "" {
+				entry["name"] = model.DisplayName
+			}
+			models[model.ID] = entry
+		}
+		if !payload.HasMore || payload.LastID == "" || payload.LastID == after {
+			return models, nil
+		}
+		after = payload.LastID
 	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return os.ReadFile(path)
 }
 
-func homeDir() string {
-	home, err := os.UserHomeDir()
+type anthropicModelsResponse struct {
+	Data []struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+	} `json:"data"`
+	HasMore bool   `json:"has_more"`
+	LastID  string `json:"last_id"`
+}
+
+func anthropicModelsURL(baseURL, after string) (string, error) {
+	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return home
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
+	if after != "" {
+		query := parsed.Query()
+		query.Set("after_id", after)
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String(), nil
+}
+
+func decodeAnthropicModelsResponse(resp *http.Response) (anthropicModelsResponse, error) {
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		details := strings.TrimSpace(string(body))
+		if details == "" {
+			details = resp.Status
+		}
+		return anthropicModelsResponse{}, fmt.Errorf("request failed with HTTP %d: %s", resp.StatusCode, details)
+	}
+	var payload anthropicModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return anthropicModelsResponse{}, err
+	}
+	return payload, nil
+}
+
+func headerStrings(headers http.Header) map[string]string {
+	items := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) == 0 {
+			continue
+		}
+		if len(values) == 1 {
+			items[key] = values[0]
+			continue
+		}
+		items[key] = strings.Join(values, ",")
+	}
+	return items
 }
 
 func providerModels(modelIDs []string) map[string]any {
@@ -294,19 +317,24 @@ func providerModels(modelIDs []string) map[string]any {
 	return models
 }
 
-func addSynthetic(config map[string]any, projectRoot string, instructions []string) {
+func (m *Mount) addSynthetic(config map[string]any) error {
 	mcp := objectAt(config, "mcp")
-	mcp["toby"] = syntheticMCP()
-	addInstructions(config, instructions)
+	toby, err := syntheticMCP(m.tobyMCPURL)
+	if err != nil {
+		return err
+	}
+	mcp["toby"] = toby
+	addInstructions(config, m.instructions)
 	permission := objectAt(config, "permission")
 	external, ok := permission["external_directory"].(map[string]any)
 	if !ok {
 		external = map[string]any{}
 		permission["external_directory"] = external
 	}
-	for _, pattern := range allowedExternalDirectoryPatterns(projectRoot) {
+	for _, pattern := range allowedExternalDirectoryPatterns(m.projectRoot) {
 		external[pattern] = "allow"
 	}
+	return nil
 }
 
 func addInstructions(config map[string]any, paths []string) {
@@ -342,26 +370,34 @@ func objectAt(config map[string]any, key string) map[string]any {
 	return value
 }
 
-func syntheticMCP() map[string]any {
-	return map[string]any{
-		"type":    "local",
-		"command": []any{"toby", "sandbox", "mcp"},
-		"enabled": true,
+func syntheticMCP(url string) (map[string]any, error) {
+	if strings.TrimSpace(url) == "" {
+		return nil, fmt.Errorf("toby MCP proxy URL is required")
 	}
+	return map[string]any{
+		"type":    "remote",
+		"url":     strings.TrimSpace(url),
+		"enabled": true,
+	}, nil
 }
 
-func syntheticProxyMCP(name string, server map[string]any) map[string]any {
+func (m *Mount) syntheticProxyMCP(name string, server tobyconfig.MCPServer) (map[string]any, error) {
+	proxyURL, err := proxyconfig.MCPURL(m.controlHost, m.proxy, server)
+	if err != nil {
+		return nil, fmt.Errorf("mcp.%s: %w", name, err)
+	}
 	converted := map[string]any{
-		"type":    "local",
-		"command": []any{"toby", "sandbox", "mcp", name},
+		"type":    "remote",
+		"url":     proxyURL,
 		"enabled": true,
 	}
+	raw := server.Raw()
 	for _, key := range []string{"tools"} {
-		if value, ok := server[key]; ok {
+		if value, ok := raw[key]; ok {
 			converted[key] = configfile.Clone(value)
 		}
 	}
-	return converted
+	return converted, nil
 }
 
 func allowedExternalDirectoryPatterns(projectRoot string) []string {

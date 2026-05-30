@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
@@ -25,6 +27,7 @@ type Params struct {
 	NPM      tool.Tool                `name:"npm"`
 	Renderer *opencodeconfig.Renderer `optional:"true"`
 	Config   *tobyconfig.Service      `optional:"true"`
+	Proxy    *httpproxy.Service       `optional:"true"`
 }
 
 type Result struct {
@@ -41,6 +44,7 @@ func Provide(params Params) Result {
 		npm:      params.NPM,
 		renderer: params.Renderer,
 		config:   params.Config,
+		proxy:    params.Proxy,
 	}
 	return Result{Service: svc, Registry: svc}
 }
@@ -51,6 +55,7 @@ type openCodeTool struct {
 	npm      tool.Tool
 	renderer *opencodeconfig.Renderer
 	config   *tobyconfig.Service
+	proxy    *httpproxy.Service
 }
 
 func (t *openCodeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -117,7 +122,7 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunCo
 			return err
 		}
 	}
-	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionPaths(), t.config)
+	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.Env[control.EnvControlHost], run.TobyMCPURL, run.ContextFiles.InstructionPaths(), t.config, t.proxy)
 	if err != nil {
 		return err
 	}

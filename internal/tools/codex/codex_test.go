@@ -31,6 +31,7 @@ func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	var got []string
 	run := &tool.RunContext{
 		ContextFiles: contextSession,
+		TobyMCPURL:   "http://127.0.0.1:12345/proxy/toby",
 		Extra:        []string{"--model", "gpt-5"},
 		Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 			got = append([]string(nil), argv...)
@@ -43,10 +44,8 @@ func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	}
 	want := []string{
 		"codex",
-		"-c", `mcp_servers.toby.command='toby'`,
-		"-c", `mcp_servers.toby.args=['sandbox', 'mcp']`,
+		"-c", `mcp_servers.toby.url='http://127.0.0.1:12345/proxy/toby'`,
 		"-c", `mcp_servers.toby.enabled=true`,
-		"-c", `mcp_servers.toby.env_vars=['TOBY_CONTROL_URL', 'TOBY_CONTROL_TOKEN']`,
 		"-c", `developer_instructions="# git\n"`,
 		"--model", "gpt-5",
 	}

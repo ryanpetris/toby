@@ -22,7 +22,6 @@ const (
 	MethodGitPush          = "git.push"
 	MethodGitRebase        = "git.rebase"
 	MethodGitTag           = "git.tag"
-	MethodMCPProxy         = "mcp.proxy"
 )
 
 const (
@@ -128,10 +127,6 @@ type GitResult struct {
 	Stderr     string `json:"stderr" jsonschema:"git standard error"`
 }
 
-type MCPProxyParams struct {
-	Name string `json:"name" jsonschema:"configured MCP server name to proxy"`
-}
-
 func NewContextInitRequest(id int64) ([]byte, error) {
 	return newRequest(id, MethodContextInit, nil)
 }
@@ -226,14 +221,6 @@ func NewGitTagRequest(id int64, repository, tag, message, target string) ([]byte
 		return nil, err
 	}
 	return newRequest(id, MethodGitTag, params)
-}
-
-func NewMCPProxyRequest(id int64, name string) ([]byte, error) {
-	params, err := json.Marshal(MCPProxyParams{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	return newRequest(id, MethodMCPProxy, params)
 }
 
 func newRequest(id int64, method string, params json.RawMessage) ([]byte, error) {
@@ -418,17 +405,6 @@ func DecodeCommandExitParams(raw json.RawMessage) (CommandExitParams, error) {
 	}
 	if params.CommandID == "" {
 		return CommandExitParams{}, errors.New("command_id is required")
-	}
-	return params, nil
-}
-
-func DecodeMCPProxyParams(raw json.RawMessage) (MCPProxyParams, error) {
-	var params MCPProxyParams
-	if err := decodeRequiredParams(raw, &params); err != nil {
-		return MCPProxyParams{}, err
-	}
-	if params.Name == "" {
-		return MCPProxyParams{}, errors.New("name is required")
 	}
 	return params, nil
 }

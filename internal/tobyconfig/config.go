@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -18,6 +20,13 @@ import (
 )
 
 const InstructionsDir = "instructions"
+
+const (
+	ProviderTypeAnthropic = "anthropic"
+	ProviderTypeOpenAI    = "openai"
+)
+
+var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
 
 type Service struct {
 	Dir    string
@@ -62,7 +71,12 @@ type MCPServer struct {
 }
 
 type ProviderConfig struct {
-	raw map[string]any
+	Type      string
+	Name      string
+	BaseURL   string
+	Headers   map[string]string
+	Models    map[string]any
+	modelsSet bool
 }
 
 type PermissionConfig struct {
@@ -111,6 +125,9 @@ func Load(dir, home string) (*Service, error) {
 		}
 		merged.Merge(parsed)
 	}
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
 	return &Service{Dir: dir, Home: home, config: merged}, nil
 }
 
@@ -154,13 +171,11 @@ func parseConfig(raw map[string]any, dir, home string) (Config, error) {
 			}
 			result.Permission = permission
 		case "provider":
-			providers, err := parseObjectMap("provider", value)
+			providers, err := parseProviderMap(value)
 			if err != nil {
 				return Config{}, err
 			}
-			for name, provider := range providers {
-				result.Provider[name] = ProviderConfig{raw: provider}
-			}
+			result.Provider = providers
 		case "sandbox":
 			sandbox, err := parseSandbox(value, dir, home)
 			if err != nil {
@@ -193,12 +208,11 @@ func (c *Config) Merge(src Config) {
 	}
 	for name, provider := range src.Provider {
 		if existing, ok := c.Provider[name]; ok {
-			merged := existing.Raw()
-			configfile.Merge(merged, provider.Raw())
-			c.Provider[name] = ProviderConfig{raw: merged}
+			existing.Merge(provider)
+			c.Provider[name] = existing
 			continue
 		}
-		c.Provider[name] = ProviderConfig{raw: provider.Raw()}
+		c.Provider[name] = provider.Clone()
 	}
 	if c.Permission.ExternalDirectory == nil {
 		c.Permission.ExternalDirectory = map[string]string{}
@@ -207,6 +221,28 @@ func (c *Config) Merge(src Config) {
 		c.Permission.ExternalDirectory[pattern] = mode
 	}
 	c.Sandbox.Merge(src.Sandbox)
+}
+
+func (c Config) Validate() error {
+	for name, server := range c.MCP {
+		typ, _ := server.raw["type"].(string)
+		typ = strings.TrimSpace(typ)
+		if typ != "" && typ != "local" && typ != "remote" {
+			return fmt.Errorf("mcp.%s.type is unsupported", name)
+		}
+	}
+	for name, provider := range c.Provider {
+		if provider.Type == "" {
+			return fmt.Errorf("provider.%s.type is required", name)
+		}
+		if !providerTypeSupported(provider.Type) {
+			return fmt.Errorf("provider.%s.type is unsupported", name)
+		}
+		if provider.BaseURL == "" {
+			return fmt.Errorf("provider.%s.baseURL is required", name)
+		}
+	}
+	return nil
 }
 
 func (c *SandboxConfig) Merge(src SandboxConfig) {
@@ -268,9 +304,46 @@ func (s *Service) Providers() map[string]ProviderConfig {
 		return providers
 	}
 	for name, provider := range s.config.Provider {
-		providers[name] = ProviderConfig{raw: provider.Raw()}
+		providers[name] = provider.Clone()
 	}
 	return providers
+}
+
+func (s *Service) Provider(name string) (ProviderConfig, bool) {
+	if s == nil {
+		return ProviderConfig{}, false
+	}
+	provider, ok := s.config.Provider[name]
+	if !ok {
+		return ProviderConfig{}, false
+	}
+	return provider.Clone(), true
+}
+
+func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (http.Header, error) {
+	provider = provider.Clone()
+	configDirs := []string{}
+	if s != nil && s.Dir != "" {
+		configDirs = append(configDirs, s.Dir)
+	}
+	home := ""
+	if s != nil {
+		home = s.Home
+	}
+	if home == "" {
+		if detected, err := os.UserHomeDir(); err == nil {
+			home = detected
+		}
+	}
+	headers := http.Header{}
+	for key, value := range provider.Headers {
+		resolved, err := resolveString(value, configDirs, home)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q header %q: %w", name, key, err)
+		}
+		headers.Set(key, resolved)
+	}
+	return headers, nil
 }
 
 func (s *Service) Permission() PermissionConfig {
@@ -332,11 +405,19 @@ func (s MCPServer) HTTPProxyable() bool {
 	return MCPServerHTTPProxyable(s.raw)
 }
 
+func (s MCPServer) URL() string {
+	return MCPServerURL(s.raw)
+}
+
+func (s MCPServer) Headers() (http.Header, error) {
+	return MCPServerHeaders(s.raw)
+}
+
 func MCPServerHTTPProxyable(server map[string]any) bool {
 	typ, _ := server["type"].(string)
 	typ = strings.TrimSpace(typ)
 	switch typ {
-	case "remote", "http", "streamable-http", "sse":
+	case "remote":
 		return true
 	case "":
 		if _, ok := server["command"]; ok {
@@ -349,8 +430,144 @@ func MCPServerHTTPProxyable(server map[string]any) bool {
 	}
 }
 
+func MCPServerURL(server map[string]any) string {
+	url, _ := server["url"].(string)
+	return strings.TrimSpace(url)
+}
+
+func MCPServerHeaders(raw map[string]any) (http.Header, error) {
+	headers := http.Header{}
+	for _, key := range []string{"headers", "http_headers"} {
+		if err := mergeHeaderMap(headers, raw[key]); err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	if err := mergeEnvHeaderMap(headers, raw["env_http_headers"]); err != nil {
+		return nil, fmt.Errorf("env_http_headers: %w", err)
+	}
+	if name, _ := raw["bearer_token_env_var"].(string); strings.TrimSpace(name) != "" && headers.Get("Authorization") == "" {
+		if token := os.Getenv(strings.TrimSpace(name)); token != "" {
+			headers.Set("Authorization", "Bearer "+token)
+		}
+	}
+	return headers, nil
+}
+
+func mergeHeaderMap(headers http.Header, raw any) error {
+	if raw == nil {
+		return nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("must be an object")
+	}
+	for name, rawValue := range values {
+		switch value := rawValue.(type) {
+		case string:
+			headers.Set(name, value)
+		case []any:
+			headers.Del(name)
+			for _, item := range value {
+				text, ok := item.(string)
+				if !ok {
+					return fmt.Errorf("header %q entries must be strings", name)
+				}
+				headers.Add(name, text)
+			}
+		default:
+			return fmt.Errorf("header %q value must be a string or string array", name)
+		}
+	}
+	return nil
+}
+
+func mergeEnvHeaderMap(headers http.Header, raw any) error {
+	if raw == nil {
+		return nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("must be an object")
+	}
+	for headerName, rawEnvName := range values {
+		envName, ok := rawEnvName.(string)
+		if !ok || strings.TrimSpace(envName) == "" {
+			return fmt.Errorf("header %q env var name must be a string", headerName)
+		}
+		if value := os.Getenv(strings.TrimSpace(envName)); value != "" {
+			headers.Set(headerName, value)
+		}
+	}
+	return nil
+}
+
 func (p ProviderConfig) Raw() map[string]any {
-	return configfile.CloneMap(p.raw)
+	raw := map[string]any{}
+	if p.Type != "" {
+		raw["type"] = p.Type
+	}
+	if p.Name != "" {
+		raw["name"] = p.Name
+	}
+	if p.BaseURL != "" {
+		raw["baseURL"] = p.BaseURL
+	}
+	if len(p.Headers) > 0 {
+		headers := map[string]any{}
+		for key, value := range p.Headers {
+			headers[key] = value
+		}
+		raw["headers"] = headers
+	}
+	if p.modelsSet {
+		raw["models"] = configfile.CloneMap(p.Models)
+	}
+	return raw
+}
+
+func (p ProviderConfig) Clone() ProviderConfig {
+	clone := p
+	if p.Headers != nil {
+		clone.Headers = make(map[string]string, len(p.Headers))
+		for key, value := range p.Headers {
+			clone.Headers[key] = value
+		}
+	}
+	if p.Models != nil {
+		clone.Models = configfile.CloneMap(p.Models)
+	}
+	return clone
+}
+
+func (p *ProviderConfig) Merge(src ProviderConfig) {
+	if src.Type != "" {
+		p.Type = src.Type
+	}
+	if src.Name != "" {
+		p.Name = src.Name
+	}
+	if src.BaseURL != "" {
+		p.BaseURL = src.BaseURL
+	}
+	if len(src.Headers) > 0 {
+		if p.Headers == nil {
+			p.Headers = map[string]string{}
+		}
+		for key, value := range src.Headers {
+			p.Headers[key] = value
+		}
+	}
+	if src.modelsSet {
+		if p.Models == nil {
+			p.Models = map[string]any{}
+		}
+		configfile.Merge(p.Models, src.Models)
+		p.modelsSet = true
+	}
+}
+
+func (p ProviderConfig) HasModels() bool {
+	return p.modelsSet
 }
 
 func parseStringList(label string, raw any) ([]string, error) {
@@ -389,6 +606,154 @@ func parseObjectMap(label string, raw any) (map[string]map[string]any, error) {
 		result[name] = configfile.CloneMap(item)
 	}
 	return result, nil
+}
+
+func parseProviderMap(raw any) (map[string]ProviderConfig, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("provider must be an object")
+	}
+	providers := make(map[string]ProviderConfig, len(items))
+	for name, rawProvider := range items {
+		provider, ok := rawProvider.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("provider.%s must be an object", name)
+		}
+		parsed, err := parseProviderConfig(name, provider)
+		if err != nil {
+			return nil, err
+		}
+		providers[name] = parsed
+	}
+	return providers, nil
+}
+
+func parseProviderConfig(name string, raw map[string]any) (ProviderConfig, error) {
+	var cfg ProviderConfig
+	for key, value := range raw {
+		switch key {
+		case "type":
+			typ, ok := value.(string)
+			if !ok {
+				return ProviderConfig{}, fmt.Errorf("provider.%s.type must be a string", name)
+			}
+			cfg.Type = strings.TrimSpace(typ)
+		case "name":
+			text, ok := value.(string)
+			if !ok {
+				return ProviderConfig{}, fmt.Errorf("provider.%s.name must be a string", name)
+			}
+			cfg.Name = text
+		case "baseURL":
+			text, ok := value.(string)
+			if !ok {
+				return ProviderConfig{}, fmt.Errorf("provider.%s.baseURL must be a string", name)
+			}
+			cfg.BaseURL = strings.TrimSpace(text)
+		case "headers":
+			headers, err := parseProviderHeaders(name, value)
+			if err != nil {
+				return ProviderConfig{}, err
+			}
+			cfg.Headers = headers
+		case "models":
+			models, ok := value.(map[string]any)
+			if !ok {
+				return ProviderConfig{}, fmt.Errorf("provider.%s.models must be an object", name)
+			}
+			cfg.Models = configfile.CloneMap(models)
+			cfg.modelsSet = true
+		default:
+			return ProviderConfig{}, fmt.Errorf("unsupported provider.%s key %q", name, key)
+		}
+	}
+	if cfg.Type != "" && !providerTypeSupported(cfg.Type) {
+		return ProviderConfig{}, fmt.Errorf("provider.%s.type is unsupported", name)
+	}
+	return cfg, nil
+}
+
+func providerTypeSupported(typ string) bool {
+	switch typ {
+	case ProviderTypeAnthropic, ProviderTypeOpenAI:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseProviderHeaders(name string, raw any) (map[string]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("provider.%s.headers must be an object", name)
+	}
+	headers := make(map[string]string, len(items))
+	for key, rawValue := range items {
+		value, ok := rawValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("provider.%s.headers.%s must be a string", name, key)
+		}
+		headers[key] = value
+	}
+	return headers, nil
+}
+
+func resolveString(value string, configDirs []string, home string) (string, error) {
+	var firstErr error
+	resolved := substitutionPattern.ReplaceAllStringFunc(value, func(match string) string {
+		if firstErr != nil {
+			return ""
+		}
+		parts := substitutionPattern.FindStringSubmatch(match)
+		kind := parts[1]
+		target := strings.TrimSpace(parts[2])
+		if kind == "env" {
+			return os.Getenv(target)
+		}
+		path := config.ExpandHome(target, home)
+		data, err := readSubstitutionFile(path, configDirs)
+		if err != nil {
+			firstErr = fmt.Errorf("unable to read file substitution %q: %w", target, err)
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	})
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return resolved, nil
+}
+
+func readSubstitutionFile(path string, configDirs []string) ([]byte, error) {
+	if filepath.IsAbs(path) {
+		return os.ReadFile(path)
+	}
+	var firstErr error
+	for _, dir := range configDirs {
+		if dir == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, path))
+		if err == nil {
+			return data, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return os.ReadFile(path)
 }
 
 func parsePermission(raw any) (PermissionConfig, error) {

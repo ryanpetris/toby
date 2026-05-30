@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/grokconfig"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -31,6 +33,7 @@ type Params struct {
 
 	Paths  config.Paths
 	Config *tobyconfig.Service `optional:"true"`
+	Proxy  *httpproxy.Service  `optional:"true"`
 }
 
 type Result struct {
@@ -47,12 +50,14 @@ func Provide(params Params) Result {
 		HostSubpath:    []string{".grok"},
 		SandboxSubpath: []string{".grok"},
 	}, config: params.Config}
+	svc.proxy = params.Proxy
 	return Result{Service: svc, Registry: svc}
 }
 
 type grokTool struct {
 	*tool.Simple
 	config *tobyconfig.Service
+	proxy  *httpproxy.Service
 }
 
 func (t *grokTool) PathEntries() []tool.PathTarget {
@@ -70,7 +75,7 @@ func (t *grokTool) RegisterContextFiles(_ context.Context, run *tool.RunContext)
 	if err := run.ContextFiles.AddBytes(grokInstallPath, data, 0o500); err != nil {
 		return err
 	}
-	return grokconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config)
+	return grokconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
 }
 
 func (t *grokTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {

@@ -5,6 +5,8 @@ import (
 
 	"petris.dev/toby/internal/codexconfig"
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -20,6 +22,7 @@ type Params struct {
 	Paths  config.Paths
 	NPM    tool.Tool           `name:"npm"`
 	Config *tobyconfig.Service `optional:"true"`
+	Proxy  *httpproxy.Service  `optional:"true"`
 }
 
 type Result struct {
@@ -41,6 +44,7 @@ func Provide(params Params) Result {
 		),
 		npm:    params.NPM,
 		config: params.Config,
+		proxy:  params.Proxy,
 	}
 	return Result{Service: svc, Registry: svc}
 }
@@ -49,6 +53,7 @@ type codexTool struct {
 	*tool.Simple
 	npm    tool.Tool
 	config *tobyconfig.Service
+	proxy  *httpproxy.Service
 }
 
 func (t *codexTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -104,23 +109,27 @@ func (t *codexTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
 }
 
 func (t *codexTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	args, err := launchArgs(run, t.config)
+	args, err := launchArgs(run, t.config, t.proxy)
 	if err != nil {
 		return err
 	}
 	return tool.RunCommand(ctx, run.Launch, append([]string{"codex"}, args...), tool.ExecOptions{})
 }
 
-func launchArgs(run *tool.RunContext, cfg *tobyconfig.Service) ([]string, error) {
+func launchArgs(run *tool.RunContext, cfg *tobyconfig.Service, proxy *httpproxy.Service) ([]string, error) {
 	extra := []string(nil)
 	var instructions [][]byte
+	controlHost := ""
+	tobyMCPURL := ""
 	if run != nil {
 		extra = run.Extra
+		controlHost = run.Env[control.EnvControlHost]
+		tobyMCPURL = run.TobyMCPURL
 		if run.ContextFiles != nil {
 			instructions = run.ContextFiles.InstructionContents()
 		}
 	}
-	args, err := codexconfig.ConfigArgs(instructions, cfg)
+	args, err := codexconfig.ConfigArgs(instructions, cfg, controlHost, tobyMCPURL, proxy)
 	if err != nil {
 		return nil, err
 	}

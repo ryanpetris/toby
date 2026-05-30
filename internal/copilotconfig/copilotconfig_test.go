@@ -8,11 +8,14 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
+
+const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
 
 func TestContextFilesIncludeTobyMCPAndInstructions(t *testing.T) {
 	files, err := renderContextFiles(t, [][]byte{[]byte("# git\n"), []byte("# extra\n")}, nil)
@@ -21,7 +24,7 @@ func TestContextFilesIncludeTobyMCPAndInstructions(t *testing.T) {
 	}
 	mcp := decodeMCP(t, fileByPath(t, files, StaticMCPPath).Data)
 	toby := mcp["mcpServers"].(map[string]any)["toby"].(map[string]any)
-	if toby["type"] != "stdio" || toby["command"] != "toby" {
+	if toby["type"] != "http" || toby["url"] != testTobyMCPURL {
 		t.Fatalf("toby server = %#v", toby)
 	}
 	if got := string(fileByPath(t, files, StaticInstructionsPath).Data); got != "# git\n\n# extra\n" {
@@ -56,31 +59,13 @@ mcp:
 		t.Fatal(err)
 	}
 	data := string(fileByPath(t, files, StaticMCPPath).Data)
-	for _, want := range []string{`"docs"`, `"command": "npx"`, `"-y"`, `"docs-mcp"`, `"TOKEN": "abc"`, `"tools": [`, `"remote"`, `"command": "toby"`, `"sandbox"`, `"mcp"`} {
+	for _, want := range []string{`"docs"`, `"command": "npx"`, `"-y"`, `"docs-mcp"`, `"TOKEN": "abc"`, `"tools": [`, `"remote"`, `"type": "http"`, `"url": "http://127.0.0.1:12345/proxy/`} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("config missing %q:\n%s", want, data)
 		}
 	}
-	for _, leaked := range []string{`"url": "https://example.com/mcp"`, `"X-Token": "abc"`} {
-		if strings.Contains(data, leaked) {
-			t.Fatalf("config leaked %q:\n%s", leaked, data)
-		}
-	}
 	if strings.Contains(data, `"off"`) {
 		t.Fatalf("disabled server rendered:\n%s", data)
-	}
-}
-
-func TestContextFilesRejectUnsupportedMCPServer(t *testing.T) {
-	cfg := testTobyConfig(t, []byte(`
-mcp:
-  ws:
-    type: ws
-    url: wss://example.com/mcp
-`))
-	_, err := renderContextFiles(t, nil, cfg)
-	if err == nil || !strings.Contains(err.Error(), `unsupported Copilot mcp server "ws" type "ws"`) {
-		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -94,7 +79,7 @@ func renderContextFiles(t *testing.T, instructions [][]byte, cfg *tobyconfig.Ser
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
-	if err := RegisterContextFiles(builder, instructions, cfg); err != nil {
+	if err := RegisterContextFiles(builder, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{})); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

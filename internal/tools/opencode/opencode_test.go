@@ -13,6 +13,8 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
@@ -174,7 +176,7 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 
 	home := t.TempDir()
 	cfgDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(fmt.Sprintf(`{"provider":{"local":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":%q}}}}`, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(fmt.Sprintf(`{"provider":{"local":{"type":"openai","baseURL":%q}}}`, server.URL)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := tobyconfig.Load(cfgDir, home)
@@ -186,12 +188,12 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
-	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Renderer: renderer, Config: cfg}).Service.(tool.ContextFileTool)
+	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Renderer: renderer, Config: cfg, Proxy: httpproxy.NewService(httpproxy.ServiceParams{})}).Service.(tool.ContextFileTool)
 	service := contextfiles.NewService()
 	sandbox := fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}
 
 	var stderr bytes.Buffer
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context")), Stderr: &stderr}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby", Env: tool.Environment{control.EnvControlHost: "127.0.0.1:12345"}, Stderr: &stderr}
 	if err := oc.RegisterContextFiles(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 	}
 
 	stderr.Reset()
-	run = &tool.RunContext{Options: &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.OpenCodeModelDiscovery: true}}}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context-suppressed")), Stderr: &stderr}
+	run = &tool.RunContext{Options: &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.OpenCodeModelDiscovery: true}}}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context-suppressed")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby", Env: tool.Environment{control.EnvControlHost: "127.0.0.1:12345"}, Stderr: &stderr}
 	if err := oc.RegisterContextFiles(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}

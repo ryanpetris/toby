@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/copilotconfig"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -22,6 +24,7 @@ type Params struct {
 	Paths  config.Paths
 	NPM    tool.Tool           `name:"npm"`
 	Config *tobyconfig.Service `optional:"true"`
+	Proxy  *httpproxy.Service  `optional:"true"`
 }
 
 type Result struct {
@@ -43,6 +46,7 @@ func Provide(params Params) Result {
 		),
 		npm:    params.NPM,
 		config: params.Config,
+		proxy:  params.Proxy,
 	}
 	return Result{Service: svc, Registry: svc}
 }
@@ -51,6 +55,7 @@ type copilotTool struct {
 	*tool.Simple
 	npm    tool.Tool
 	config *tobyconfig.Service
+	proxy  *httpproxy.Service
 }
 
 func (t *copilotTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -104,7 +109,7 @@ func (t *copilotTool) RegisterContextFiles(ctx context.Context, run *tool.RunCon
 			return err
 		}
 	}
-	return copilotconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config)
+	return copilotconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
 }
 
 func (t *copilotTool) Install(ctx context.Context, run *tool.RunContext) error {

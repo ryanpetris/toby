@@ -20,9 +20,9 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
     "docs": { "type": "remote", "url": "https://example.com/mcp" },
   },
   "instructions": ["base.md"],
-  "provider": {
-    "local": { "npm": "@ai-sdk/openai-compatible", "options": { "apiKey": "base" } }
-  },
+	"provider": {
+	    "local": { "type": "openai", "headers": { "Authorization": "Bearer base" } }
+	  },
   "sandbox": {
     "runtime": {
       "default": "bubblewrap",
@@ -42,8 +42,7 @@ instructions:
   - extra.md
 provider:
   local:
-    options:
-      baseURL: https://models.example.com
+    baseURL: https://models.example.com
 sandbox:
   runtime:
     default: docker
@@ -72,9 +71,9 @@ sandbox:
 	if len(instructions) != 2 || instructions[0] != "base.md" || instructions[1] != "extra.md" {
 		t.Fatalf("instructions = %#v", instructions)
 	}
-	options := cfg.Providers()["local"].Raw()["options"].(map[string]any)
-	if options["apiKey"] != "base" || options["baseURL"] != "https://models.example.com" {
-		t.Fatalf("provider options = %#v", options)
+	provider := cfg.Providers()["local"]
+	if provider.Type != ProviderTypeOpenAI || provider.Headers["Authorization"] != "Bearer base" || provider.BaseURL != "https://models.example.com" {
+		t.Fatalf("provider = %#v", provider)
 	}
 	sandbox := cfg.Sandbox()
 	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" || sandbox.Runtime.Docker.Home != "/home/base" || sandbox.Runtime.Docker.Projects != "/workspace/custom" {
@@ -182,6 +181,21 @@ sandbox:
 
 	if _, err := Load(dir, home); err == nil {
 		t.Fatal("expected invalid suppressed warning to fail")
+	}
+}
+
+func TestLoadRejectsUnsupportedProviderType(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+provider:
+  local:
+    type: bedrock
+    baseURL: https://example.com/v1
+`))
+
+	if _, err := Load(dir, home); err == nil {
+		t.Fatal("expected unsupported provider type to fail")
 	}
 }
 

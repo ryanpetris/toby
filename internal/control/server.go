@@ -10,6 +10,13 @@ import (
 
 type ConnHandler func(context.Context, net.Conn)
 
+type HTTPHandler func(context.Context, http.ResponseWriter, *http.Request)
+
+type HTTPRoute struct {
+	Pattern string
+	Handler HTTPHandler
+}
+
 type Server struct {
 	Endpoint Endpoint
 	listener net.Listener
@@ -19,7 +26,7 @@ type Server struct {
 	once     sync.Once
 }
 
-func ListenEndpoint(ctx context.Context, endpoint Endpoint, handler ConnHandler) (*Server, error) {
+func ListenEndpoint(ctx context.Context, endpoint Endpoint, handler ConnHandler, routes ...HTTPRoute) (*Server, error) {
 	address := endpoint.ListenAddress
 	if address == "" {
 		address = "127.0.0.1:0"
@@ -31,20 +38,28 @@ func ListenEndpoint(ctx context.Context, endpoint Endpoint, handler ConnHandler)
 	serverCtx, cancel := context.WithCancel(ctx)
 	actual := endpoint
 	actual.ListenAddress = listener.Addr().String()
-	actual.URL = "ws://" + actual.ListenAddress + "/toby/control"
-	actual.BinaryURL = "http://" + actual.ListenAddress + "/toby/binary"
+	actual.Host = actual.ListenAddress
 	server := &Server{Endpoint: actual, listener: listener, ctx: serverCtx, cancel: cancel}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/toby/control", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := acceptWebSocket(w, r, endpoint.Token)
 		if err != nil {
 			return
 		}
 		handler(serverCtx, conn)
 	})
-	mux.HandleFunc("/toby/binary", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/binary", func(w http.ResponseWriter, r *http.Request) {
 		serveBinary(w, r, endpoint.Token, endpoint.BinarySource)
 	})
+	for _, route := range routes {
+		route := route
+		if route.Pattern == "" || route.Handler == nil {
+			continue
+		}
+		mux.HandleFunc(route.Pattern, func(w http.ResponseWriter, r *http.Request) {
+			route.Handler(serverCtx, w, r)
+		})
+	}
 	server.http = &http.Server{Handler: mux}
 	go func() { _ = server.http.Serve(listener) }()
 	return server, nil

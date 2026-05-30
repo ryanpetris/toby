@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/hostmanager"
-	"petris.dev/toby/internal/mcpproxy"
+	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/mcpserver"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandboxbinary"
@@ -271,12 +272,22 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	}
 	endpoint := sbx.HostControlEndpoint()
 	endpoint.BinarySource = sandboxbinary.SourceBytes
-	server, err := control.ListenEndpoint(ctx, endpoint, manager.HandleConnection)
+	routes := []control.HTTPRoute{}
+	if manager.HTTPProxy != nil {
+		routes = append(routes, control.HTTPRoute{Pattern: "/proxy/", Handler: func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+			manager.HTTPProxy.HandleHTTP(ctx, w, r)
+		}})
+	}
+	server, err := control.ListenEndpoint(ctx, endpoint, manager.HandleConnection, routes...)
 	if err != nil {
 		return err
 	}
 	defer server.Close()
 	sbx.SetupControlEndpoint(env, server.Endpoint)
+	run.TobyMCPURL, err = registerTobyMCPProxy(params, manager, env[control.EnvControlHost])
+	if err != nil {
+		return err
+	}
 
 	sandboxManagerExit := newSandboxManagerExit()
 	go func() {
@@ -416,7 +427,7 @@ func warnHostToolState(stderr io.Writer, suppression warning.Suppression, toolse
 func sandboxManagerArgv(sbx sandbox.Instance) []string {
 	return []string{
 		"/bin/sh", "-c",
-		`set -e; mkdir -p /tmp/toby/bin; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN}" "${TOBY_BINARY_URL}" -o /tmp/toby/bin/toby; chmod 755 /tmp/toby/bin/toby; exec "$@"`,
+		`set -e; mkdir -p /tmp/toby/bin; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN}" "http://${TOBY_CONTROL_HOST}/binary" -o /tmp/toby/bin/toby; chmod 755 /tmp/toby/bin/toby; exec "$@"`,
 		"toby-startup", sbx.TobyBinaryPath(), "sandbox", "manager",
 	}
 }
@@ -551,6 +562,83 @@ func initSandboxContext(ctx context.Context, params Params, sbx sandbox.Instance
 	return nil
 }
 
+func registerTobyMCPProxy(params Params, manager *hostmanager.HostManager, controlHost string) (string, error) {
+	if params.MCPServer == nil {
+		return "", fmt.Errorf("mcp server runner is not configured")
+	}
+	if manager == nil || manager.HTTPProxy == nil {
+		return "", fmt.Errorf("http proxy service is not configured")
+	}
+	if strings.TrimSpace(controlHost) == "" {
+		return "", fmt.Errorf("%s is required", control.EnvControlHost)
+	}
+	id, err := manager.HTTPProxy.Register(httpproxy.Target{Handler: params.MCPServer.Handler(&hostManagerMCPClient{manager: manager})})
+	if err != nil {
+		return "", err
+	}
+	return control.Endpoint{Host: controlHost}.ProxyBaseURL(id), nil
+}
+
+type hostManagerMCPClient struct {
+	manager *hostmanager.HostManager
+}
+
+func (c *hostManagerMCPClient) GitCommit(ctx context.Context, input mcpserver.GitCommitInput) (mcpserver.GitOutput, error) {
+	request, err := control.NewGitCommitRequest(1, input.Repository, input.Message, input.Amend)
+	return c.call(ctx, request, err)
+}
+
+func (c *hostManagerMCPClient) GitFetch(ctx context.Context, input mcpserver.GitRepositoryInput) (mcpserver.GitOutput, error) {
+	request, err := control.NewGitFetchRequest(1, input.Repository)
+	return c.call(ctx, request, err)
+}
+
+func (c *hostManagerMCPClient) GitPush(ctx context.Context, input mcpserver.GitPushInput) (mcpserver.GitOutput, error) {
+	request, err := control.NewGitPushRequest(1, input.Repository, input.Branch, input.Origin, input.Tags)
+	return c.call(ctx, request, err)
+}
+
+func (c *hostManagerMCPClient) GitRebase(ctx context.Context, input mcpserver.GitRebaseInput) (mcpserver.GitOutput, error) {
+	request, err := control.NewGitRebaseRequest(1, input.Repository, input.Base, input.Continue, input.Abort)
+	return c.call(ctx, request, err)
+}
+
+func (c *hostManagerMCPClient) GitTag(ctx context.Context, input mcpserver.GitTagInput) (mcpserver.GitOutput, error) {
+	request, err := control.NewGitTagRequest(1, input.Repository, input.Tag, input.Message, input.Target)
+	return c.call(ctx, request, err)
+}
+
+func (c *hostManagerMCPClient) call(ctx context.Context, request []byte, err error) (mcpserver.GitOutput, error) {
+	if err != nil {
+		return mcpserver.GitOutput{}, err
+	}
+	if c == nil || c.manager == nil {
+		return mcpserver.GitOutput{}, fmt.Errorf("host manager is not configured")
+	}
+	response, err := c.manager.Handle(ctx, request)
+	if len(response) == 0 {
+		if err != nil {
+			return mcpserver.GitOutput{}, err
+		}
+		return mcpserver.GitOutput{}, io.ErrUnexpectedEOF
+	}
+	decoded, decodeErr := control.DecodeResponse(response)
+	if decodeErr != nil {
+		if err != nil {
+			return mcpserver.GitOutput{}, fmt.Errorf("%w; decode response: %v", err, decodeErr)
+		}
+		return mcpserver.GitOutput{}, decodeErr
+	}
+	if decoded.Error != nil {
+		return mcpserver.GitOutput{}, decoded.Error
+	}
+	if err != nil {
+		return mcpserver.GitOutput{}, err
+	}
+	result, err := control.DecodeGitResult(decoded.Result)
+	return mcpserver.GitOutput(result), err
+}
+
 func waitSandboxManagerAfterError(ctx context.Context, exit *sandboxManagerExit, client *hostmanager.SandboxClient, err error) error {
 	_ = terminateSandboxManager(ctx, client, exit)
 	return err
@@ -584,7 +672,6 @@ func newSandboxCommand(params Params) *cobra.Command {
 		Hidden: os.Getenv("TOBY_SANDBOX") != "1",
 	}
 	cmd.AddCommand(newSandboxManagerCommand(params.SandboxManager))
-	cmd.AddCommand(newSandboxMCPCommand(params.MCPServer))
 	cmd.AddCommand(newSandboxGitCommand())
 	return cmd
 }
@@ -601,26 +688,6 @@ func newSandboxManagerCommand(runner *sandboxmanager.Runner) *cobra.Command {
 				return fmt.Errorf("sandbox manager runner is not configured")
 			}
 			return runner.Run(cmd.Context(), "")
-		},
-	}
-}
-
-func newSandboxMCPCommand(runner *mcpserver.Runner) *cobra.Command {
-	return &cobra.Command{
-		Use:   "mcp [NAME]",
-		Short: "Run the Toby MCP server or a configured MCP proxy inside a sandbox.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			switch len(args) {
-			case 0:
-				if runner == nil {
-					return fmt.Errorf("mcp server runner is not configured")
-				}
-				return runner.Run(cmd.Context(), "")
-			case 1:
-				return mcpproxy.RunSandbox(cmd.Context(), args[0], os.Stdin, cmd.OutOrStdout())
-			default:
-				return exitcode.New(2, "mcp accepts at most one MCP server name")
-			}
 		},
 	}
 }

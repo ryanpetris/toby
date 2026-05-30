@@ -44,7 +44,7 @@ func TestRegisterContextFilesWritesCopilotFiles(t *testing.T) {
 		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
 	}).Service.(tool.ContextFileTool)
 	service := contextfiles.NewService()
-	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context"))}
+	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby"}
 	if err := run.ContextFiles.AddInstructionBytes("GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
 		t.Fatal(err)
 	}
