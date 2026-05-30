@@ -328,6 +328,27 @@ func (s MCPServer) Enabled() bool {
 	return true
 }
 
+func (s MCPServer) HTTPProxyable() bool {
+	return MCPServerHTTPProxyable(s.raw)
+}
+
+func MCPServerHTTPProxyable(server map[string]any) bool {
+	typ, _ := server["type"].(string)
+	typ = strings.TrimSpace(typ)
+	switch typ {
+	case "remote", "http", "streamable-http", "sse":
+		return true
+	case "":
+		if _, ok := server["command"]; ok {
+			return false
+		}
+		url, _ := server["url"].(string)
+		return strings.TrimSpace(url) != ""
+	default:
+		return false
+	}
+}
+
 func (p ProviderConfig) Raw() map[string]any {
 	return configfile.CloneMap(p.raw)
 }

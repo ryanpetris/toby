@@ -116,8 +116,16 @@ func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
 
 	mcp := config["mcp"].(map[string]any)
-	if docs := mcp["docs"].(map[string]any); docs["url"] != "https://example.com/mcp" {
+	if docs := mcp["docs"].(map[string]any); docs["type"] != "local" {
 		t.Fatalf("mcp.docs = %#v", docs)
+	} else {
+		command := docs["command"].([]any)
+		if len(command) != 4 || command[0] != "toby" || command[1] != "sandbox" || command[2] != "mcp" || command[3] != "docs" {
+			t.Fatalf("mcp.docs.command = %#v", command)
+		}
+		if _, ok := docs["url"]; ok {
+			t.Fatalf("mcp.docs leaked URL: %#v", docs)
+		}
 	}
 	models := config["provider"].(map[string]any)["local"].(map[string]any)["models"].(map[string]any)
 	custom := models["custom"].(map[string]any)

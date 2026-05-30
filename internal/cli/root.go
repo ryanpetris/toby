@@ -16,6 +16,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/hostmanager"
+	"petris.dev/toby/internal/mcpproxy"
 	"petris.dev/toby/internal/mcpserver"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandboxbinary"
@@ -606,16 +607,20 @@ func newSandboxManagerCommand(runner *sandboxmanager.Runner) *cobra.Command {
 
 func newSandboxMCPCommand(runner *mcpserver.Runner) *cobra.Command {
 	return &cobra.Command{
-		Use:   "mcp",
-		Short: "Run the Toby MCP server inside a sandbox.",
+		Use:   "mcp [NAME]",
+		Short: "Run the Toby MCP server or a configured MCP proxy inside a sandbox.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.New(2, "mcp does not accept arguments")
+			switch len(args) {
+			case 0:
+				if runner == nil {
+					return fmt.Errorf("mcp server runner is not configured")
+				}
+				return runner.Run(cmd.Context(), "")
+			case 1:
+				return mcpproxy.RunSandbox(cmd.Context(), args[0], os.Stdin, cmd.OutOrStdout())
+			default:
+				return exitcode.New(2, "mcp accepts at most one MCP server name")
 			}
-			if runner == nil {
-				return fmt.Errorf("mcp server runner is not configured")
-			}
-			return runner.Run(cmd.Context(), "")
 		},
 	}
 }

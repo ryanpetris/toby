@@ -3,11 +3,13 @@ package codexconfig
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/tobyconfig"
 )
 
 const TobyServerName = "toby"
@@ -15,9 +17,9 @@ const TobyServerName = "toby"
 // ConfigArgs returns Codex CLI config overrides for Toby's per-session
 // synthetic context. Codex has no flag for an arbitrary config file, so use
 // -c overrides and avoid writing profile files into CODEX_HOME.
-func ConfigArgs(instructions [][]byte) ([]string, error) {
+func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service) ([]string, error) {
 	overrides := []string{}
-	for _, item := range []struct {
+	items := []struct {
 		key   string
 		value any
 	}{
@@ -25,7 +27,28 @@ func ConfigArgs(instructions [][]byte) ([]string, error) {
 		{key: "mcp_servers." + TobyServerName + ".args", value: []string{"sandbox", "mcp"}},
 		{key: "mcp_servers." + TobyServerName + ".enabled", value: true},
 		{key: "mcp_servers." + TobyServerName + ".env_vars", value: []string{control.EnvControlURL, control.EnvControlToken}},
-	} {
+	}
+	for _, name := range proxyMCPServerNames(cfg) {
+		items = append(items,
+			struct {
+				key   string
+				value any
+			}{key: "mcp_servers." + name + ".command", value: "toby"},
+			struct {
+				key   string
+				value any
+			}{key: "mcp_servers." + name + ".args", value: []string{"sandbox", "mcp", name}},
+			struct {
+				key   string
+				value any
+			}{key: "mcp_servers." + name + ".enabled", value: true},
+			struct {
+				key   string
+				value any
+			}{key: "mcp_servers." + name + ".env_vars", value: []string{control.EnvControlURL, control.EnvControlToken}},
+		)
+	}
+	for _, item := range items {
 		override, err := configOverride(item.key, item.value)
 		if err != nil {
 			return nil, err
@@ -44,6 +67,22 @@ func ConfigArgs(instructions [][]byte) ([]string, error) {
 		args = append(args, "-c", override)
 	}
 	return args, nil
+}
+
+func proxyMCPServerNames(cfg *tobyconfig.Service) []string {
+	if cfg == nil {
+		return nil
+	}
+	servers := cfg.MCPServers()
+	names := make([]string, 0, len(servers))
+	for name, server := range servers {
+		if name == TobyServerName || !server.Enabled() || !server.HTTPProxyable() {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func configOverride(key string, value any) (string, error) {

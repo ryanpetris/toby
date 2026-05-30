@@ -5,6 +5,7 @@ import (
 
 	"petris.dev/toby/internal/codexconfig"
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,8 +17,9 @@ var Module = fx.Module("tools.codex", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	Paths config.Paths
-	NPM   tool.Tool `name:"npm"`
+	Paths  config.Paths
+	NPM    tool.Tool           `name:"npm"`
+	Config *tobyconfig.Service `optional:"true"`
 }
 
 type Result struct {
@@ -37,14 +39,16 @@ func Provide(params Params) Result {
 			[]string{"npm", "install", "-g", "@openai/codex"},
 			nil,
 		),
-		npm: params.NPM,
+		npm:    params.NPM,
+		config: params.Config,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type codexTool struct {
 	*tool.Simple
-	npm tool.Tool
+	npm    tool.Tool
+	config *tobyconfig.Service
 }
 
 func (t *codexTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -100,14 +104,14 @@ func (t *codexTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
 }
 
 func (t *codexTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	args, err := launchArgs(run)
+	args, err := launchArgs(run, t.config)
 	if err != nil {
 		return err
 	}
 	return tool.RunCommand(ctx, run.Launch, append([]string{"codex"}, args...), tool.ExecOptions{})
 }
 
-func launchArgs(run *tool.RunContext) ([]string, error) {
+func launchArgs(run *tool.RunContext, cfg *tobyconfig.Service) ([]string, error) {
 	extra := []string(nil)
 	var instructions [][]byte
 	if run != nil {
@@ -116,7 +120,7 @@ func launchArgs(run *tool.RunContext) ([]string, error) {
 			instructions = run.ContextFiles.InstructionContents()
 		}
 	}
-	args, err := codexconfig.ConfigArgs(instructions)
+	args, err := codexconfig.ConfigArgs(instructions, cfg)
 	if err != nil {
 		return nil, err
 	}

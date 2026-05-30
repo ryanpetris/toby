@@ -119,7 +119,7 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
+- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. HTTP-backed MCP entries are rendered as stdio commands such as `toby sandbox mcp docs`, while the host Toby process keeps the remote URL and authentication headers. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
 - `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
 - `provider` config uses OpenCode's provider schema and currently applies to OpenCode only. If a provider has a `models` field, Toby keeps it verbatim. If an OpenAI-compatible provider omits `models`, Toby queries `/models` during sandbox startup. If discovery fails, Toby emits the `opencode.model-discovery` warning on stderr and excludes that provider from the generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
@@ -156,6 +156,8 @@ sandbox:
 Toby exposes an MCP stdio server inside each sandbox as `toby sandbox mcp`. The server provides tools for running selected host Git commands for repositories visible through the initial project bind mount.
 
 Git MCP calls run through the host Toby process, so host Git config, SSH agents, GPG signing setup, and credential helpers remain available without being mounted into the sandbox.
+
+Toby also exposes each configured HTTP-backed MCP server as its own stdio instance: `toby sandbox mcp NAME`. Supported proxied types are `remote`, `http`, `streamable-http`, and `sse`. The sandbox-visible tool config keeps the original MCP name and only contains the `toby` command plus that name; the host Toby process opens the remote HTTP/SSE endpoint and applies configured headers or host environment tokens. Local and stdio MCP entries are not proxied on the host.
 
 Available tools:
 
@@ -212,7 +214,7 @@ Generated `claude/mcp.json`:
 
 ## Codex
 
-For Codex sandboxes, Toby injects its built-in MCP server and combined instructions through launch-time config overrides. It does not write to `CODEX_HOME`, does not create a profile file, and does not pass MCP secrets as argv values. The launch includes overrides equivalent to:
+For Codex sandboxes, Toby injects its built-in MCP server, configured HTTP MCP proxies, and combined instructions through launch-time config overrides. It does not write to `CODEX_HOME`, does not create a profile file, and does not pass MCP secrets as argv values. The launch includes overrides equivalent to:
 
 ```sh
 codex \
@@ -223,7 +225,7 @@ codex \
   -c 'developer_instructions="..."'
 ```
 
-Codex has no session config-file flag for arbitrary MCP config. To avoid writing regular Codex config files or leaking configured MCP secrets through argv, Toby only injects its built-in `toby` MCP server for Codex.
+Codex has no session config-file flag for arbitrary MCP config. To avoid writing regular Codex config files or leaking configured MCP secrets through argv, Toby injects configured MCPs only when they can be represented as HTTP proxy stdio entries.
 
 ## Copilot
 

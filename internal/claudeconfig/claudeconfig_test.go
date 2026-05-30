@@ -78,8 +78,15 @@ mcp:
 		t.Fatalf("docs args = %#v", args)
 	}
 	remote := servers["remote"].(map[string]any)
-	if remote["type"] != "http" || remote["url"] != "https://example.com/mcp" {
+	if remote["type"] != "stdio" || remote["command"] != "toby" {
 		t.Fatalf("remote mcp = %#v", remote)
+	}
+	remoteArgs := remote["args"].([]any)
+	if len(remoteArgs) != 3 || remoteArgs[0] != "sandbox" || remoteArgs[1] != "mcp" || remoteArgs[2] != "remote" {
+		t.Fatalf("remote args = %#v", remoteArgs)
+	}
+	if _, ok := remote["url"]; ok {
+		t.Fatalf("remote URL leaked into generated config: %#v", remote)
 	}
 }
 

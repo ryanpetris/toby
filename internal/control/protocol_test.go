@@ -30,3 +30,14 @@ func TestDecodeCommandRunParamsRejectsBackgroundEmptyArgv(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestDecodeMCPProxyParamsRequiresName(t *testing.T) {
+	raw, err := json.Marshal(MCPProxyParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = DecodeMCPProxyParams(raw)
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("error = %v", err)
+	}
+}

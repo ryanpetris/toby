@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Toby Control JSON-RPC
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Schema documentation for the Toby sandbox control protocol. The protocol is
     JSON-RPC 2.0 over an authenticated WebSocket. The host listens on
@@ -39,6 +39,7 @@ paths:
                 - $ref: '#/components/schemas/GitPushRequest'
                 - $ref: '#/components/schemas/GitRebaseRequest'
                 - $ref: '#/components/schemas/GitTagRequest'
+                - $ref: '#/components/schemas/MCPProxyRequest'
       responses:
         '200':
           description: JSON-RPC response payload read from the WebSocket.
@@ -323,6 +324,33 @@ components:
           const: git.tag
         params:
           $ref: '#/components/schemas/GitTagParams'
+    MCPProxyRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      description: >
+        Sent by `toby sandbox mcp NAME` to ask the host to bridge the current
+        authenticated WebSocket to the configured HTTP-backed MCP server named
+        `NAME`. After an EmptyResponse, the connection switches from Toby
+        control JSON-RPC to newline-delimited MCP JSON-RPC forwarding.
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: mcp.proxy
+        params:
+          $ref: '#/components/schemas/MCPProxyParams'
+    MCPProxyParams:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Enabled configured MCP server name to proxy. Only HTTP-backed MCP servers are supported.
     GitRepositoryParams:
       type: object
       required: [repository]

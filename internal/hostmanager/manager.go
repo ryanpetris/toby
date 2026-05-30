@@ -10,6 +10,9 @@ import (
 	"syscall"
 
 	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/mcpproxy"
+
+	"go.uber.org/fx"
 )
 
 type RepositoryResolver interface {
@@ -23,6 +26,14 @@ type HostManager struct {
 	SandboxReady       func(*SandboxClient, error)
 	SandboxDone        func(error)
 	CommandExit        func(control.CommandExitParams)
+	MCPProxy           *mcpproxy.Service
+}
+
+type HostManagerParams struct {
+	fx.In
+
+	Registry *Registry
+	MCPProxy *mcpproxy.Service `optional:"true"`
 }
 
 type Runtime struct {
@@ -34,8 +45,8 @@ type SandboxClient struct {
 	peer *control.Peer
 }
 
-func NewHostManager(registry *Registry) *HostManager {
-	return &HostManager{Registry: registry}
+func NewHostManager(params HostManagerParams) *HostManager {
+	return &HostManager{Registry: params.Registry, MCPProxy: params.MCPProxy}
 }
 
 func (m *HostManager) HandleConnection(ctx context.Context, conn net.Conn) {
@@ -46,6 +57,10 @@ func (m *HostManager) HandleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 	req, err := control.DecodeRequest(bytes.TrimSpace(request))
+	if err == nil && req.Method == control.MethodMCPProxy {
+		m.handleMCPProxyConnection(ctx, conn, reader, req)
+		return
+	}
 	if err != nil || req.Method != control.MethodContextInit {
 		response, err := m.Handle(ctx, request)
 		if len(response) == 0 && err != nil {
@@ -55,6 +70,26 @@ func (m *HostManager) HandleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 	m.handleSandboxConnection(ctx, conn, reader, req)
+}
+
+func (m *HostManager) handleMCPProxyConnection(ctx context.Context, conn net.Conn, reader *bufio.Reader, req control.RPCRequest) {
+	params, err := control.DecodeMCPProxyParams(req.Params)
+	if err != nil {
+		_, _ = conn.Write(control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil))
+		return
+	}
+	if m.MCPProxy == nil {
+		_, _ = conn.Write(control.ResponseError(req.ID, control.CodeInternalError, "mcp proxy is not configured", nil))
+		return
+	}
+	if err := m.MCPProxy.Validate(params.Name); err != nil {
+		_, _ = conn.Write(control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil))
+		return
+	}
+	if _, err := conn.Write(control.ResponseOK(req.ID, control.EmptyResult{})); err != nil {
+		return
+	}
+	_ = m.MCPProxy.Proxy(ctx, params.Name, conn, reader)
 }
 
 func (m *HostManager) Handle(ctx context.Context, data []byte) ([]byte, error) {

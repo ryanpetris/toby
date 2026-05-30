@@ -47,7 +47,12 @@ func syntheticMCP(cfg *tobyconfig.Service) (map[string]any, error) {
 			if !configured.Enabled() {
 				continue
 			}
-			converted, err := convertMCPServer(name, configured.Raw())
+			raw := configured.Raw()
+			if configured.HTTPProxyable() {
+				servers[name] = syntheticProxyMCP(name, raw)
+				continue
+			}
+			converted, err := convertMCPServer(name, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -69,6 +74,20 @@ func syntheticTobyMCP() map[string]any {
 		},
 		"tools": []any{"*"},
 	}
+}
+
+func syntheticProxyMCP(name string, server map[string]any) map[string]any {
+	converted := map[string]any{
+		"type":    "stdio",
+		"command": "toby",
+		"args":    []any{"sandbox", "mcp", name},
+		"env": map[string]any{
+			control.EnvControlURL:   "${" + control.EnvControlURL + "}",
+			control.EnvControlToken: "${" + control.EnvControlToken + "}",
+		},
+	}
+	copyCommonFields(converted, server)
+	return converted
 }
 
 func convertMCPServer(name string, server map[string]any) (map[string]any, error) {

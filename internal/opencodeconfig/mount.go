@@ -85,6 +85,13 @@ func (m *Mount) tobySyntheticConfig() map[string]any {
 	config := map[string]any{}
 	mcp := map[string]any{}
 	for name, server := range m.tobyConfig.MCPServers() {
+		if !server.Enabled() {
+			continue
+		}
+		if server.HTTPProxyable() {
+			mcp[name] = syntheticProxyMCP(name, server.Raw())
+			continue
+		}
 		mcp[name] = server.Raw()
 	}
 	if len(mcp) > 0 {
@@ -341,6 +348,20 @@ func syntheticMCP() map[string]any {
 		"command": []any{"toby", "sandbox", "mcp"},
 		"enabled": true,
 	}
+}
+
+func syntheticProxyMCP(name string, server map[string]any) map[string]any {
+	converted := map[string]any{
+		"type":    "local",
+		"command": []any{"toby", "sandbox", "mcp", name},
+		"enabled": true,
+	}
+	for _, key := range []string{"tools"} {
+		if value, ok := server[key]; ok {
+			converted[key] = configfile.Clone(value)
+		}
+	}
+	return converted
 }
 
 func allowedExternalDirectoryPatterns(projectRoot string) []string {

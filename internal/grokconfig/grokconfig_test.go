@@ -53,9 +53,14 @@ mcp:
 		t.Fatal(err)
 	}
 	config := string(fileByPath(t, files, StaticConfigPath).Data)
-	for _, want := range []string{`[mcp_servers.docs]`, `command`, `npx`, `-y`, `docs-mcp`, `TOKEN`, `abc`, `startup_timeout_sec = 3`, `[mcp_servers.remote]`, `url`, `https://example.com/mcp`, `X-Token`} {
+	for _, want := range []string{`[mcp_servers.docs]`, `command`, `npx`, `-y`, `docs-mcp`, `TOKEN`, `abc`, `startup_timeout_sec = 3`, `[mcp_servers.remote]`, `toby`, `sandbox`, `mcp`, `remote`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
+		}
+	}
+	for _, leaked := range []string{`url`, `https://example.com/mcp`, `X-Token`} {
+		if strings.Contains(config, leaked) {
+			t.Fatalf("config leaked %q:\n%s", leaked, config)
 		}
 	}
 	if strings.Contains(config, `mcp_servers.off`) {
