@@ -177,7 +177,7 @@ components:
       properties:
         path:
           type: string
-          description: Path to write inside the sandbox.
+          description: Path to write inside the sandbox. Parent directories are created before writing.
         mode:
           type: integer
           format: uint32

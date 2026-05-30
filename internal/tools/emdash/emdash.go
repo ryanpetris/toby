@@ -2,7 +2,9 @@ package emdash
 
 import (
 	"context"
-	"strings"
+	"embed"
+	"fmt"
+	"path/filepath"
 
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -13,6 +15,11 @@ import (
 const appImageURL = "https://github.com/generalaction/emdash/releases/latest/download/emdash-x86_64.AppImage"
 
 var Module = fx.Module("tools.emdash", fx.Provide(Provide))
+
+const emdashInstallPath = "emdash/install"
+
+//go:embed install
+var emdashFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -27,6 +34,17 @@ func Provide() Result {
 }
 
 type emdashTool struct{ tool.Base }
+
+func (t *emdashTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := emdashFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(emdashInstallPath, data, 0o500)
+}
 
 func (t *emdashTool) Install(ctx context.Context, run *tool.RunContext) error {
 	return t.install(ctx, run, false)
@@ -48,26 +66,28 @@ func (t *emdashTool) install(ctx context.Context, run *tool.RunContext, force bo
 				return err
 			}
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`if ! command -v curl >/dev/null 2>&1; then printf "curl is required to install emdash\n" >&2; exit 127; fi;`,
-			`apps_dir="$HOME/.local/apps";`,
-			`appimage="$apps_dir/emdash.AppImage";`,
-			`tmp_appimage="$appimage.tmp";`,
-			`bin_dir="$HOME/.local/bin";`,
-			`launcher="$bin_dir/emdash";`,
-			`mkdir -p "$apps_dir" "$bin_dir";`,
-			`rm -rf "$apps_dir/emdash" "$tmp_appimage";`,
-			`cleanup() { rm -f "$tmp_appimage"; };`,
-			`trap cleanup EXIT;`,
-			`curl -fsSL "` + appImageURL + `" -o "$tmp_appimage";`,
-			`chmod +x "$tmp_appimage";`,
-			`mv -f "$tmp_appimage" "$appimage";`,
-			`printf '%s\n' '#!/bin/sh' 'APPIMAGE_EXTRACT_AND_RUN=1 exec "$HOME/.local/apps/emdash.AppImage" "$@"' > "$launcher";`,
-			`chmod +x "$launcher"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := emdashInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, appImageURL}, tool.ExecOptions{})
 	})
+}
+
+func emdashInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(emdashInstallPath)), nil
 }
 
 func (t *emdashTool) Launch(ctx context.Context, run *tool.RunContext) error {

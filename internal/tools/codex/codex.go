@@ -78,6 +78,13 @@ func (t *codexTool) SandboxInit(ctx context.Context, run *tool.RunContext) error
 	return t.Simple.SandboxInit(ctx, run)
 }
 
+func (t *codexTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
+	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+		return registrar.RegisterContextFiles(ctx, run)
+	}
+	return nil
+}
+
 func (t *codexTool) Install(ctx context.Context, run *tool.RunContext) error {
 	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
 		return err

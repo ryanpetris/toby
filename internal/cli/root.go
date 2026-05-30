@@ -560,9 +560,6 @@ func initSandboxContext(ctx context.Context, params Params, sbx sandbox.Instance
 	if err := client.FileDelete(ctx, contextDir, true); err != nil {
 		return err
 	}
-	if err := client.FileMkdir(ctx, contextDir, 0o700); err != nil {
-		return err
-	}
 	sink := &sandboxManagerContextSink{ctx: ctx, client: client, base: contextDir}
 	run.ContextFiles = params.ContextFiles.NewEmittingSession(contextDir, sink)
 	for _, service := range contextinit.Ordered(params.ContextInit) {

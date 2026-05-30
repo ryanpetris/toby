@@ -89,9 +89,14 @@ func (t *claudeTool) SandboxInit(ctx context.Context, run *tool.RunContext) erro
 	return t.Simple.SandboxInit(ctx, run)
 }
 
-func (t *claudeTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+func (t *claudeTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
+	}
+	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			return err
+		}
 	}
 	return claudeconfig.RegisterContextFiles(run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionContents(), t.config)
 }

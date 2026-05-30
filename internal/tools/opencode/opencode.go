@@ -112,6 +112,11 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunCo
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
 	}
+	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			return err
+		}
+	}
 	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionPaths(), t.config)
 	if err != nil {
 		return err

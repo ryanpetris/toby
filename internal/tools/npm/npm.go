@@ -2,6 +2,8 @@ package npm
 
 import (
 	"context"
+	"embed"
+	"fmt"
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
@@ -12,6 +14,11 @@ import (
 )
 
 var Module = fx.Module("tools.npm", fx.Provide(Provide))
+
+const npmSandboxInitPath = "npm/sandbox-init"
+
+//go:embed sandbox-init
+var npmFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -51,9 +58,39 @@ func (t *npmTool) SandboxContextSetup(ctx *tool.RunContext) error {
 
 func (t *npmTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
 	return tool.SandboxInitOnce(run, t.Name(), func() error {
-		script := `if ! command -v npm >/dev/null 2>&1; then printf "npm is not available inside the sandbox\n" >&2; exit 127; fi; if [ -d "$NPM_CONFIG_PREFIX/bin" ] && [ -d "$NPM_CONFIG_PREFIX/lib/node_modules" ]; then exit 0; fi; mkdir -p "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib/node_modules" "$NPM_CONFIG_CACHE"`
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := npmSandboxInitLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path}, tool.ExecOptions{})
 	})
+}
+
+func (t *npmTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := npmFiles.ReadFile("sandbox-init")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(npmSandboxInitPath, data, 0o500)
+}
+
+func npmSandboxInitLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(npmSandboxInitPath)), nil
 }
 
 func (t *npmTool) Launch(ctx context.Context, run *tool.RunContext) error {

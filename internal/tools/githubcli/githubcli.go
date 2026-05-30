@@ -2,13 +2,14 @@ package githubcli
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/shellquote"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,6 +17,11 @@ import (
 )
 
 var Module = fx.Module("tools.githubcli", fx.Provide(Provide))
+
+const githubCLIInstallPath = "github_cli/install"
+
+//go:embed install
+var githubCLIFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -43,6 +49,17 @@ func (t *githubCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) e
 	})
 }
 
+func (t *githubCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := githubCLIFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(githubCLIInstallPath, data, 0o500)
+}
+
 func (t *githubCLITool) Install(ctx context.Context, run *tool.RunContext) error {
 	return t.install(ctx, run, false)
 }
@@ -68,17 +85,28 @@ func (t *githubCLITool) install(ctx context.Context, run *tool.RunContext, force
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`tmp="$(mktemp -d)";`,
-			`trap 'rm -rf "$tmp"' EXIT;`,
-			`archive="$tmp/gh.tar.gz";`,
-			"curl -fsSL " + shellquote.Quote(archiveURL) + ` -o "$archive";`,
-			`tar -xzf "$archive" -C "$tmp";`,
-			`install -m 0755 "$tmp"/*/bin/gh "$HOME/.local/bin/gh"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := githubCLIInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
 	})
+}
+
+func githubCLIInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(githubCLIInstallPath)), nil
 }
 
 func (t *githubCLITool) Launch(ctx context.Context, run *tool.RunContext) error {

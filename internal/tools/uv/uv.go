@@ -2,6 +2,7 @@ package uv
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,7 +11,6 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/shellquote"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -18,6 +18,11 @@ import (
 )
 
 var Module = fx.Module("tools.uv", fx.Provide(Provide))
+
+const uvInstallPath = "uv/install"
+
+//go:embed install
+var uvFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -62,6 +67,17 @@ func (t *uvTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
 	})
 }
 
+func (t *uvTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := uvFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(uvInstallPath, data, 0o500)
+}
+
 func (t *uvTool) Install(ctx context.Context, run *tool.RunContext) error {
 	return t.install(ctx, run, false)
 }
@@ -87,18 +103,28 @@ func (t *uvTool) install(ctx context.Context, run *tool.RunContext, force bool) 
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`tmp="$(mktemp -d)";`,
-			`trap 'rm -rf "$tmp"' EXIT;`,
-			`archive="$tmp/uv.tar.gz";`,
-			"curl -fsSL " + shellquote.Quote(archiveURL) + ` -o "$archive";`,
-			`tar -xzf "$archive" -C "$tmp";`,
-			`install -m 0755 "$tmp"/*/uv "$HOME/.local/bin/uv";`,
-			`install -m 0755 "$tmp"/*/uvx "$HOME/.local/bin/uvx"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := uvInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
 	})
+}
+
+func uvInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(uvInstallPath)), nil
 }
 
 func (t *uvTool) Launch(ctx context.Context, run *tool.RunContext) error {

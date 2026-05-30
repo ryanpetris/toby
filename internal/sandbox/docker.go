@@ -207,12 +207,11 @@ func (s *DockerInstance) BuildHomeVolumeInitCommand() []string {
 	return []string{
 		s.docker, "run", "--rm",
 		"--user", "0:0",
-		"--entrypoint", "sh",
+		"--entrypoint", "chown",
 		"--mount", dockerVolume(s.homeVolume, s.HomeDir()),
 		"--env", "HOME=" + s.HomeDir(),
 		s.image,
-		"-c", `set -e; mkdir -p "$1" "$1/.local/bin" "$1/.local/share" "$1/.cache" "$1/.config"; chown -R "$2:$3" "$1" 2>/dev/null || true; chmod -R u+rwX,go+rwX "$1"`,
-		"sh", s.HomeDir(), strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()),
+		"-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), s.HomeDir(),
 	}
 }
 

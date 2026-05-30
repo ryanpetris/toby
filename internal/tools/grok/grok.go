@@ -2,10 +2,10 @@ package grok
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"path/filepath"
-	"strings"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/exitcode"
@@ -20,6 +20,11 @@ import (
 const baseURL = "https://x.ai/cli"
 
 var Module = fx.Module("tools.grok", fx.Provide(Provide))
+
+const grokInstallPath = "grok/install"
+
+//go:embed install
+var grokFiles embed.FS
 
 type Params struct {
 	fx.In
@@ -57,6 +62,13 @@ func (t *grokTool) PathEntries() []tool.PathTarget {
 func (t *grokTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := grokFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	if err := run.ContextFiles.AddBytes(grokInstallPath, data, 0o500); err != nil {
+		return err
 	}
 	return grokconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config)
 }
@@ -124,27 +136,28 @@ func (t *grokTool) install(ctx context.Context, run *tool.RunContext, force bool
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`if ! command -v curl >/dev/null 2>&1; then printf "curl is required to install grok\n" >&2; exit 127; fi;`,
-			`grok_dir="$HOME/.grok";`,
-			`downloads_dir="$grok_dir/downloads";`,
-			`bin_dir="$grok_dir/bin";`,
-			`mkdir -p "$downloads_dir" "$bin_dir";`,
-			`version="$(curl -fsSL "` + baseURL + `/stable")";`,
-			`if [ -z "$version" ]; then printf "failed to resolve latest Grok version\n" >&2; exit 1; fi;`,
-			`url="` + baseURL + `/grok-${version}-linux-` + arch + `";`,
-			`binary="$downloads_dir/grok-linux-` + arch + `";`,
-			`tmp_binary="$binary.tmp";`,
-			`trap 'rm -f "$tmp_binary"' EXIT;`,
-			`curl -fsSL "$url" -o "$tmp_binary";`,
-			`chmod +x "$tmp_binary";`,
-			`mv -f "$tmp_binary" "$binary";`,
-			`ln -sf "../downloads/$(basename "$binary")" "$bin_dir/grok";`,
-			`ln -sf "../downloads/$(basename "$binary")" "$bin_dir/agent"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := grokInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, baseURL, arch}, tool.ExecOptions{})
 	})
+}
+
+func grokInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(grokInstallPath)), nil
 }
 
 func (t *grokTool) Launch(ctx context.Context, run *tool.RunContext) error {

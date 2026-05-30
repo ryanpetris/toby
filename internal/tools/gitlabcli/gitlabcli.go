@@ -2,13 +2,14 @@ package gitlabcli
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/shellquote"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,6 +17,11 @@ import (
 )
 
 var Module = fx.Module("tools.gitlabcli", fx.Provide(Provide))
+
+const gitlabCLIInstallPath = "gitlab_cli/install"
+
+//go:embed install
+var gitlabCLIFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -43,6 +49,17 @@ func (t *gitlabCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) e
 	})
 }
 
+func (t *gitlabCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := gitlabCLIFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(gitlabCLIInstallPath, data, 0o500)
+}
+
 func (t *gitlabCLITool) Install(ctx context.Context, run *tool.RunContext) error {
 	return t.install(ctx, run, false)
 }
@@ -68,17 +85,28 @@ func (t *gitlabCLITool) install(ctx context.Context, run *tool.RunContext, force
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`tmp="$(mktemp -d)";`,
-			`trap 'rm -rf "$tmp"' EXIT;`,
-			`archive="$tmp/glab.tar.gz";`,
-			"curl -fsSL " + shellquote.Quote(archiveURL) + ` -o "$archive";`,
-			`tar -xzf "$archive" -C "$tmp";`,
-			`install -m 0755 "$tmp/bin/glab" "$HOME/.local/bin/glab"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := gitlabCLIInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
 	})
+}
+
+func gitlabCLIInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(gitlabCLIInstallPath)), nil
 }
 
 func (t *gitlabCLITool) Launch(ctx context.Context, run *tool.RunContext) error {

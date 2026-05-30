@@ -80,9 +80,14 @@ func (t *t3Tool) SandboxContextSetup(ctx *tool.RunContext) error {
 	return t.Simple.SandboxContextSetup(ctx)
 }
 
-func (t *t3Tool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+func (t *t3Tool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
+	}
+	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			return err
+		}
 	}
 	data, err := t3Files.ReadFile("t3-wrapper")
 	if err != nil {

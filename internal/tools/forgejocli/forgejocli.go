@@ -2,13 +2,14 @@ package forgejocli
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/shellquote"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,6 +17,11 @@ import (
 )
 
 var Module = fx.Module("tools.forgejocli", fx.Provide(Provide))
+
+const forgejoCLIInstallPath = "fj/install"
+
+//go:embed install
+var forgejoCLIFiles embed.FS
 
 type Result struct {
 	fx.Out
@@ -43,6 +49,17 @@ func (t *forgejoCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) 
 	})
 }
 
+func (t *forgejoCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
+	if run == nil || run.ContextFiles == nil {
+		return fmt.Errorf("context files session is not configured")
+	}
+	data, err := forgejoCLIFiles.ReadFile("install")
+	if err != nil {
+		return err
+	}
+	return run.ContextFiles.AddBytes(forgejoCLIInstallPath, data, 0o500)
+}
+
 func (t *forgejoCLITool) Install(ctx context.Context, run *tool.RunContext) error {
 	return t.install(ctx, run, false)
 }
@@ -68,17 +85,28 @@ func (t *forgejoCLITool) install(ctx context.Context, run *tool.RunContext, forc
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		script := strings.Join([]string{
-			"set -euo pipefail;",
-			`tmp="$(mktemp -d)";`,
-			`trap 'rm -rf "$tmp"' EXIT;`,
-			`archive="$tmp/fj.tar.gz";`,
-			"curl -fsSL " + shellquote.Quote(archiveURL) + ` -o "$archive";`,
-			`tar -xzf "$archive" -C "$tmp";`,
-			`install -m 0755 "$tmp/fj" "$HOME/.local/bin/fj"`,
-		}, " ")
-		return tool.RunCommand(ctx, run.Exec, []string{"bash", "-lc", script}, tool.ExecOptions{})
+		path, err := forgejoCLIInstallLaunchPath(run)
+		if err != nil {
+			return err
+		}
+		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
 	})
+}
+
+func forgejoCLIInstallLaunchPath(run *tool.RunContext) (string, error) {
+	contextDir := ""
+	if run != nil {
+		if run.ContextFiles != nil {
+			contextDir = run.ContextFiles.ContextDir()
+		}
+		if contextDir == "" && run.Sandbox != nil {
+			contextDir = run.Sandbox.TobyContextDir()
+		}
+	}
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	return filepath.Join(contextDir, filepath.FromSlash(forgejoCLIInstallPath)), nil
 }
 
 func (t *forgejoCLITool) Launch(ctx context.Context, run *tool.RunContext) error {
