@@ -30,7 +30,8 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
       "bubblewrap": { "root": "sandboxes/base" }
     },
     "tools": { "default": { "state": "host", "stateRoot": "~/state/default" }, "opencode": { "state": "private" } },
-    "suppressWarnings": true
+    "suppressWarnings": true,
+    "autoloadProjectConfig": true
   },
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
@@ -49,12 +50,14 @@ sandbox:
     docker:
       image: node:custom
       projects: /workspace/custom
+      build: {}
   tools:
     claude:
       state: host
       stateRoot: state/claude
   suppressWarnings:
     - tool.host-state
+  autoloadProjectConfig: false
 `))
 
 	cfg, err := Load(dir, home)
@@ -77,6 +80,9 @@ sandbox:
 	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" || sandbox.Runtime.Docker.Home != "/home/base" || sandbox.Runtime.Docker.Projects != "/workspace/custom" {
 		t.Fatalf("sandbox = %#v", sandbox)
 	}
+	if sandbox.Runtime.Docker.Build.Context != dir || sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "Dockerfile") {
+		t.Fatalf("docker build = %#v", sandbox.Runtime.Docker.Build)
+	}
 	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "base") {
 		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
 	}
@@ -88,6 +94,9 @@ sandbox:
 	}
 	if !sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) || sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
+	}
+	if sandbox.AutoloadProjectConfigEnabled() {
+		t.Fatalf("autoloadProjectConfig = %#v", sandbox.AutoloadProjectConfig)
 	}
 }
 
@@ -102,6 +111,9 @@ sandbox:
       image: node:lts-bookworm
       home: /home/toby
       projects: /workspace
+      build:
+        context: docker/context
+        dockerfile: ../Dockerfile.toby
     bubblewrap:
       root: ~/sandboxes
   tools:
@@ -113,6 +125,7 @@ sandbox:
       stateRoot: /tmp/opencode-state
   suppressWarnings:
     - opencode.model-discovery
+  autoloadProjectConfig: true
 `))
 
 	cfg, err := Load(dir, home)
@@ -122,6 +135,9 @@ sandbox:
 	sandbox := cfg.Sandbox()
 	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:lts-bookworm" || sandbox.Runtime.Docker.Home != "/home/toby" || sandbox.Runtime.Docker.Projects != "/workspace" {
 		t.Fatalf("sandbox = %#v", sandbox)
+	}
+	if sandbox.Runtime.Docker.Build.Context != filepath.Join(dir, "docker", "context") || sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
+		t.Fatalf("docker build = %#v", sandbox.Runtime.Docker.Build)
 	}
 	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(home, "sandboxes") {
 		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
@@ -134,6 +150,9 @@ sandbox:
 	}
 	if !sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) {
 		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
+	}
+	if !sandbox.AutoloadProjectConfigEnabled() {
+		t.Fatalf("autoloadProjectConfig = %#v", sandbox.AutoloadProjectConfig)
 	}
 }
 

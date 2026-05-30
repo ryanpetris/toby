@@ -273,12 +273,22 @@ type CommandOptions struct {
 	DockerImage      string
 	DockerHome       string
 	DockerProjects   string
+	DockerBuild      DockerBuildConfig
 	BubblewrapRoot   string
 	ToolStates       ToolStateSettings
 	SuppressWarnings warning.Suppression
 	Install          bool
 	Upgrade          bool
 	lifecycle        map[string]bool
+}
+
+type DockerBuildConfig struct {
+	Context    string
+	Dockerfile string
+}
+
+func (c DockerBuildConfig) IsSet() bool {
+	return c.Context != ""
 }
 
 func (o *CommandOptions) ToolStateFor(name string) ToolState {

@@ -10,8 +10,10 @@ import (
 type ID string
 
 const (
-	ToolHostState          ID = "tool.host-state"
-	OpenCodeModelDiscovery ID = "opencode.model-discovery"
+	ToolHostState           ID = "tool.host-state"
+	OpenCodeModelDiscovery  ID = "opencode.model-discovery"
+	ProjectAutoloadDisabled ID = "project.autoload-disabled"
+	ProjectMissing          ID = "project.missing"
 )
 
 type Suppression struct {
@@ -88,9 +90,9 @@ func parseIDList(items []any, label string) (Suppression, error) {
 
 func ParseID(value string) (ID, error) {
 	switch id := ID(strings.TrimSpace(value)); id {
-	case ToolHostState, OpenCodeModelDiscovery:
+	case ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectMissing:
 		return id, nil
 	default:
-		return "", fmt.Errorf("warning id must be %q or %q", ToolHostState, OpenCodeModelDiscovery)
+		return "", fmt.Errorf("warning id must be one of %q, %q, %q, or %q", ToolHostState, OpenCodeModelDiscovery, ProjectAutoloadDisabled, ProjectMissing)
 	}
 }

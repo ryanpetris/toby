@@ -33,6 +33,7 @@ type DockerInstance struct {
 	runner        executil.Runner
 	docker        string
 	image         string
+	build         tool.DockerBuildConfig
 	containerName string
 	homeVolume    string
 }
@@ -61,7 +62,7 @@ func (e *DockerEnvironment) Available() error { return e.available }
 
 func (e *DockerEnvironment) NewInstance(spec Spec) (Instance, error) {
 	image := spec.DockerImage
-	if image == "" {
+	if image == "" && !spec.DockerBuild.IsSet() {
 		image = DefaultDockerImage
 	}
 	home := spec.DockerHome
@@ -106,12 +107,16 @@ func (e *DockerEnvironment) NewInstance(spec Spec) (Instance, error) {
 		runner:        e.runner,
 		docker:        e.docker,
 		image:         image,
+		build:         spec.DockerBuild,
 		containerName: fmt.Sprintf("toby-%d-%d", os.Getpid(), time.Now().UnixNano()),
 		homeVolume:    dockerHomeVolumeName(spec.Label),
 	}, nil
 }
 
 func (s *DockerInstance) Run(ctx context.Context, spec RunSpec) (int, error) {
+	if code, err := s.resolveImage(ctx, spec); err != nil || code != 0 {
+		return code, err
+	}
 	initCmd := s.BuildHomeVolumeInitCommand()
 	initCode, initErr := s.runner.Run(ctx, initCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 	if initErr != nil {
@@ -129,6 +134,73 @@ func (s *DockerInstance) Run(ctx context.Context, spec RunSpec) (int, error) {
 		_ = exec.Command(s.docker, "rm", "-f", s.containerName).Run()
 	}
 	return code, runErr
+}
+
+func (s *DockerInstance) resolveImage(ctx context.Context, spec RunSpec) (int, error) {
+	if !s.build.IsSet() {
+		if s.image == "" {
+			return 2, exitcode.New(2, "docker image is required")
+		}
+		return 0, nil
+	}
+	if s.image != "" {
+		inspectCode, inspectErr := s.runner.Run(ctx, s.BuildImageInspectCommand(), spec.Env, executil.Options{HideOutput: true})
+		if inspectErr != nil {
+			return inspectCode, inspectErr
+		}
+		if inspectCode == 0 {
+			return 0, nil
+		}
+		buildCmd := s.BuildTaggedImageBuildCommand()
+		buildCode, buildErr := s.runner.Run(ctx, buildCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
+		if buildErr != nil {
+			return buildCode, buildErr
+		}
+		if buildCode != 0 {
+			return buildCode, exitcode.New(buildCode, "docker image build failed")
+		}
+		return 0, nil
+	}
+	iidFile, err := os.CreateTemp("", "toby-docker-image-*.iid")
+	if err != nil {
+		return 1, err
+	}
+	iidPath := iidFile.Name()
+	if err := iidFile.Close(); err != nil {
+		return 1, err
+	}
+	_ = os.Remove(iidPath)
+	defer os.Remove(iidPath)
+	buildCmd := s.BuildUntaggedImageBuildCommand(iidPath)
+	buildCode, buildErr := s.runner.Run(ctx, buildCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
+	if buildErr != nil {
+		return buildCode, buildErr
+	}
+	if buildCode != 0 {
+		return buildCode, exitcode.New(buildCode, "docker image build failed")
+	}
+	data, err := os.ReadFile(iidPath)
+	if err != nil {
+		return 1, err
+	}
+	image := strings.TrimSpace(string(data))
+	if image == "" {
+		return 1, fmt.Errorf("docker build did not write an image id")
+	}
+	s.image = image
+	return 0, nil
+}
+
+func (s *DockerInstance) BuildImageInspectCommand() []string {
+	return []string{s.docker, "image", "inspect", s.image}
+}
+
+func (s *DockerInstance) BuildTaggedImageBuildCommand() []string {
+	return []string{s.docker, "build", "-t", s.image, "-f", s.build.Dockerfile, s.build.Context}
+}
+
+func (s *DockerInstance) BuildUntaggedImageBuildCommand(iidFile string) []string {
+	return []string{s.docker, "build", "--iidfile", iidFile, "-f", s.build.Dockerfile, s.build.Context}
 }
 
 func (s *DockerInstance) BuildHomeVolumeInitCommand() []string {

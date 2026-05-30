@@ -48,6 +48,7 @@ type Spec struct {
 	DockerImage    string
 	DockerHome     string
 	DockerProjects string
+	DockerBuild    tool.DockerBuildConfig
 	BubblewrapRoot string
 }
 
@@ -155,7 +156,7 @@ func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
 		}
 		env = selected
 	}
-	if runtime != RuntimeDocker && (opts.DockerImage != "" || opts.DockerHome != "" || opts.DockerProjects != "") {
+	if runtime != RuntimeDocker && (opts.DockerImage != "" || opts.DockerHome != "" || opts.DockerProjects != "" || opts.DockerBuild.IsSet()) {
 		return nil, exitcode.New(2, "docker sandbox settings require sandbox runtime %q", RuntimeDocker)
 	}
 
@@ -204,6 +205,7 @@ func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
 	spec.DockerImage = strings.TrimSpace(opts.DockerImage)
 	spec.DockerHome = strings.TrimSpace(opts.DockerHome)
 	spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
+	spec.DockerBuild = opts.DockerBuild
 	spec.BubblewrapRoot = strings.TrimSpace(opts.BubblewrapRoot)
 	return spec, nil
 }

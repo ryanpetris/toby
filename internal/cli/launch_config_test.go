@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +27,9 @@ sandbox:
       image: custom-node
       home: /home/custom
       projects: /workspace/custom
+      build:
+        context: docker/context
+        dockerfile: ../Dockerfile.toby
     bubblewrap:
       root: sandboxes/review
   tools:
@@ -55,7 +59,7 @@ tools:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sandbox.Name != "foo" || !cfg.Sandbox.AutoUpgrade {
+	if cfg.Sandbox.Name != "" || !cfg.Sandbox.AutoUpgrade {
 		t.Fatalf("sandbox = %#v", cfg.Sandbox)
 	}
 	wantWorkdir := "~/literal-workdir/../raw"
@@ -64,6 +68,9 @@ tools:
 	}
 	if cfg.Sandbox.Runtime.Default != "docker" || cfg.Sandbox.Runtime.Docker.Image != "custom-node" || cfg.Sandbox.Runtime.Docker.Home != "/home/custom" || cfg.Sandbox.Runtime.Docker.Projects != "/workspace/custom" {
 		t.Fatalf("sandbox docker config = %#v", cfg.Sandbox)
+	}
+	if cfg.Sandbox.Runtime.Docker.Build.Context != filepath.Join(dir, "docker", "context") || cfg.Sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
+		t.Fatalf("sandbox docker build config = %#v", cfg.Sandbox)
 	}
 	if cfg.Sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "review") {
 		t.Fatalf("sandbox bubblewrap config = %#v", cfg.Sandbox)
@@ -149,7 +156,7 @@ tools:
 	if !reflect.DeepEqual(launch.RequestedTools, wantTools) {
 		t.Fatalf("requested tools = %#v, want %#v", launch.RequestedTools, wantTools)
 	}
-	if launch.Options.Env != "foo" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
+	if launch.Options.Env != "" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
 		t.Fatalf("options = %#v", launch.Options)
 	}
 	if launch.Options.ToolStates.StateFor("claude") != tool.ToolStateHost {
@@ -195,6 +202,98 @@ tools:
 	wantExtra := []string{"npm", "test", "--", "--watch"}
 	if !reflect.DeepEqual(launch.Extra, wantExtra) {
 		t.Fatalf("extra = %#v, want %#v", launch.Extra, wantExtra)
+	}
+}
+
+func TestBuildOverlayConfiguredLaunchKeepsCLIPrimaryAndAddsConfigToolsProjects(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
+	project := filepath.Join(projectRoot, "app")
+	extraProject := filepath.Join(home, "extra")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(extraProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(home, "config.yaml")
+	writeTestFile(t, configPath, []byte(`
+sandbox:
+  name: custom-name
+projects:
+  - name: duplicate
+    path: Projects/app
+  - name: extra
+    path: extra
+tools:
+  - opencode
+  - npm
+`))
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch npm"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseSandboxArgs([]string{"app", "--", "--foreground"}, true, tool.OpenCodeToolName, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := config.Paths{Home: home, ProjectRoot: projectRoot}
+	primaryProject, err := resolveDirectLaunchProject(paths, parsed.Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, err := buildOverlayConfiguredLaunch(Params{Registry: registry, Paths: paths}, configPath, parsed, tool.OpenCodeToolName, primaryProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Primary != tool.OpenCodeToolName || !reflect.DeepEqual(launch.RequestedTools, []string{tool.OpenCodeToolName, tool.NpmToolName}) {
+		t.Fatalf("tools = primary %q requested %#v", launch.Primary, launch.RequestedTools)
+	}
+	if launch.Options.Env != "custom-name" || !reflect.DeepEqual(launch.Extra, []string{"--foreground"}) {
+		t.Fatalf("launch = %#v extra %#v", launch.Options, launch.Extra)
+	}
+	var stderr bytes.Buffer
+	if err := prepareConfiguredProjects(&stderr, home, &launch.Options); err != nil {
+		t.Fatal(err)
+	}
+	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "extra", Source: extraProject}}
+	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
+		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestPrepareConfiguredProjectsWarnsAndSkipsMissingProjects(t *testing.T) {
+	home := t.TempDir()
+	existing := filepath.Join(home, "existing")
+	missing := filepath.Join(home, "missing")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := &tool.CommandOptions{Projects: []tool.ProjectMount{{Name: "missing", Source: missing}, {Name: "existing", Source: existing}}}
+	var stderr bytes.Buffer
+	if err := prepareConfiguredProjects(&stderr, home, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "warning[project.missing]") || !strings.Contains(stderr.String(), missing) {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if opts.Env != "existing" || !reflect.DeepEqual(opts.Projects, []tool.ProjectMount{{Name: "existing", Source: existing}}) {
+		t.Fatalf("options = %#v", opts)
+	}
+
+	stderr.Reset()
+	opts = &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ProjectMissing: true}}, Projects: []tool.ProjectMount{{Name: "missing", Source: missing}}}
+	if err := prepareConfiguredProjects(&stderr, home, opts); err == nil || !strings.Contains(err.Error(), "at least one existing project") {
+		t.Fatalf("error = %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("suppressed stderr = %q", stderr.String())
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/version"
@@ -93,6 +94,9 @@ sandbox:
       image: node:host
       home: /home/host
       projects: /workspace/host
+      build:
+        context: docker
+        dockerfile: Dockerfile.toby
     bubblewrap:
       root: ./sandboxes
   tools:
@@ -108,6 +112,9 @@ sandbox:
 	got := applySandboxDefaults(&tool.CommandOptions{}, config)
 	if got.SandboxRuntime != "docker" || got.DockerImage != "node:host" || got.DockerHome != "/home/host" || got.DockerProjects != "/workspace/host" {
 		t.Fatalf("defaults = %#v", got)
+	}
+	if got.DockerBuild.Context != filepath.Join(dir, "docker") || got.DockerBuild.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
+		t.Fatalf("docker build = %#v", got.DockerBuild)
 	}
 	if got.BubblewrapRoot != filepath.Join(dir, "sandboxes") {
 		t.Fatalf("defaults = %#v", got)
@@ -128,6 +135,8 @@ sandbox:
       image: node:host
       home: /home/host
       projects: /workspace/host
+      build:
+        context: docker
 `))
 	config, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -238,9 +247,92 @@ sandbox:
 	}
 
 	got := applySandboxDefaults(&tool.CommandOptions{}, config)
-	if got.DockerImage != "" || got.DockerHome != "" || got.DockerProjects != "" {
+	if got.DockerImage != "" || got.DockerHome != "" || got.DockerProjects != "" || got.DockerBuild.IsSet() {
 		t.Fatalf("defaults = %#v", got)
 	}
+}
+
+func TestMaybeAutoloadProjectConfigWarnsWhenDisabled(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
+	project := filepath.Join(projectRoot, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, projectLaunchConfigName), []byte("projects: []\ntools: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := tobyconfig.Load(t.TempDir(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedCommand{Options: tool.CommandOptions{Env: "app"}, RequestedTools: []string{tool.OpenCodeToolName}}
+	var stderr bytes.Buffer
+	_, ok, err := maybeAutoloadProjectConfig(Params{Paths: configPaths(home, projectRoot), TobyConfig: config, Stderr: &stderr}, parsed, tool.OpenCodeToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("autoload should be disabled")
+	}
+	if got := stderr.String(); !bytes.Contains([]byte(got), []byte("warning[project.autoload-disabled]")) || !bytes.Contains([]byte(got), []byte(projectLaunchConfigName)) {
+		t.Fatalf("warning = %q", got)
+	}
+}
+
+func TestMaybeAutoloadProjectConfigLoadsWhenEnabled(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "Projects")
+	project := filepath.Join(projectRoot, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, projectLaunchConfigName), []byte(`
+sandbox:
+  name: review
+projects:
+  - app
+tools:
+  - opencode
+  - npm
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configDir := t.TempDir()
+	writeTobyConfig(t, configDir, []byte(`
+sandbox:
+  autoloadProjectConfig: true
+`))
+	config, err := tobyconfig.Load(configDir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		statefulTestTool{name: tool.OpenCodeToolName},
+		statefulTestTool{name: tool.NpmToolName},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedCommand{Options: tool.CommandOptions{Env: "app"}, RequestedTools: []string{tool.OpenCodeToolName}}
+	launch, ok, err := maybeAutoloadProjectConfig(Params{Registry: registry, Paths: configPaths(home, projectRoot), TobyConfig: config}, parsed, tool.OpenCodeToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected autoload")
+	}
+	if launch.Options.Env != "review" || launch.Primary != tool.OpenCodeToolName {
+		t.Fatalf("launch = %#v", launch)
+	}
+	wantTools := []string{tool.OpenCodeToolName, tool.NpmToolName}
+	if len(launch.RequestedTools) != len(wantTools) || launch.RequestedTools[0] != wantTools[0] || launch.RequestedTools[1] != wantTools[1] {
+		t.Fatalf("requested tools = %#v", launch.RequestedTools)
+	}
+}
+
+func configPaths(home, projectRoot string) config.Paths {
+	return config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: projectRoot, SandboxRoot: filepath.Join(home, ".cache", "toby", "sandboxes")}
 }
 
 func emptyRegistry(t *testing.T) *tool.Registry {

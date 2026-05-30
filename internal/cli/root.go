@@ -54,12 +54,13 @@ func NewRootCommand(params Params) *cobra.Command {
 	}
 	var configPath string
 	cmd := &cobra.Command{
-		Use:           "toby",
-		Short:         "Run Toby Sandbox development environments.",
-		Long:          "Toby Sandbox runs development tools inside private-home development sandboxes.",
-		Version:       version.String(),
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Use:              "toby",
+		Short:            "Run Toby Sandbox development environments.",
+		Long:             "Toby Sandbox runs development tools inside private-home development sandboxes.",
+		Version:          version.String(),
+		SilenceUsage:     true,
+		SilenceErrors:    true,
+		TraverseChildren: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
 				return cmd.Help()
@@ -75,17 +76,17 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.SetErr(stderr)
 	cmd.SetArgs(params.Args)
 	cmd.SetVersionTemplate("{{.Version}}\n")
-	cmd.Flags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
+	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
 
 	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {
-		cmd.AddCommand(newLaunchCommand(params, item))
+		cmd.AddCommand(newLaunchCommand(params, item, &configPath))
 	}
 	cmd.AddCommand(newCompletionCommand())
 	return cmd
 }
 
-func newLaunchCommand(params Params, primary tool.Tool) *cobra.Command {
+func newLaunchCommand(params Params, primary tool.Tool, rootConfigPath *string) *cobra.Command {
 	contextNames := tool.ExpandGroups(primary.ContextGroups())
 	contextTools := toolsFromNames(params.Registry, contextNames)
 	cmd := &cobra.Command{
@@ -93,12 +94,41 @@ func newLaunchCommand(params Params, primary tool.Tool) *cobra.Command {
 		Short:              primary.LaunchHelp(),
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			argConfigPath, args, err := extractConfigArg(args)
+			if err != nil {
+				return err
+			}
+			effectiveConfigPath := ""
+			if rootConfigPath != nil {
+				effectiveConfigPath = *rootConfigPath
+			}
+			if argConfigPath != "" {
+				effectiveConfigPath = argConfigPath
+			}
 			parsed, err := parseSandboxArgs(args, true, primary.Name(), contextTools, nil)
 			if err != nil {
 				return err
 			}
 			if parsed.Help {
 				return cmd.Help()
+			}
+			if effectiveConfigPath != "" {
+				project, err := resolveDirectLaunchProject(params.Paths, parsed.Options)
+				if err != nil {
+					return err
+				}
+				launch, err := buildOverlayConfiguredLaunch(params, effectiveConfigPath, parsed, primary.Name(), project)
+				if err != nil {
+					return err
+				}
+				return runSandboxCommand(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+			}
+			launch, ok, err := maybeAutoloadProjectConfig(params, parsed, primary.Name())
+			if err != nil {
+				return err
+			}
+			if ok {
+				return runSandboxCommand(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
 			}
 			return runSandboxCommand(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name())
 		},
@@ -117,6 +147,69 @@ func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
 	cmd.Flags().String("tool-state", "", "Tool state source to use by default: private or host.")
 	cmd.Flags().String("tool-state-root", "", "Host root to use as HOME for tool state when --tool-state=host.")
+}
+
+func extractConfigArg(args []string) (string, []string, error) {
+	var configPath string
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			result = append(result, args[i:]...)
+			break
+		}
+		if value, ok := strings.CutPrefix(arg, "--config="); ok {
+			if strings.TrimSpace(value) == "" {
+				return "", nil, exitcode.New(2, "--config requires a value")
+			}
+			configPath = value
+			continue
+		}
+		if arg == "--config" {
+			if i+1 >= len(args) {
+				return "", nil, exitcode.New(2, "--config requires a value")
+			}
+			i++
+			if strings.TrimSpace(args[i]) == "" {
+				return "", nil, exitcode.New(2, "--config requires a value")
+			}
+			configPath = args[i]
+			continue
+		}
+		result = append(result, arg)
+	}
+	return configPath, result, nil
+}
+
+func maybeAutoloadProjectConfig(params Params, parsed parsedCommand, primary string) (configuredLaunch, bool, error) {
+	if strings.TrimSpace(parsed.Options.Env) == "" {
+		return configuredLaunch{}, false, nil
+	}
+	project, err := resolveDirectLaunchProject(params.Paths, parsed.Options)
+	if err != nil {
+		return configuredLaunch{}, false, err
+	}
+	configPath := filepath.Join(project.Source, projectLaunchConfigName)
+	info, err := os.Stat(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return configuredLaunch{}, false, nil
+		}
+		return configuredLaunch{}, false, err
+	}
+	if info.IsDir() {
+		return configuredLaunch{}, false, fmt.Errorf("%s is a directory", configPath)
+	}
+	defaults := params.TobyConfig.Sandbox()
+	if !defaults.AutoloadProjectConfigEnabled() {
+		warning.Fprintf(params.Stderr, defaults.SuppressWarnings, warning.ProjectAutoloadDisabled, "found %s but sandbox.autoloadProjectConfig is not enabled; pass --config %s or enable sandbox.autoloadProjectConfig to load it automatically.", configPath, configPath)
+		return configuredLaunch{}, false, nil
+	}
+	launch, err := buildOverlayConfiguredLaunch(params, configPath, parsed, primary, project)
+	if err != nil {
+		return configuredLaunch{}, false, err
+	}
+	return launch, true, nil
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {
@@ -149,6 +242,9 @@ func toolsFromNames(registry *tool.Registry, names []string) []tool.Tool {
 func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
 	effectiveOpts := applySandboxDefaults(opts, params.TobyConfig)
 	opts = &effectiveOpts
+	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts); err != nil {
+		return err
+	}
 	sbx, err := params.SandboxFactory.FromOptions(opts)
 	if err != nil {
 		return err
@@ -270,7 +366,62 @@ func applySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 	if result.DockerProjects == "" {
 		result.DockerProjects = defaults.Runtime.Docker.Projects
 	}
+	if !result.DockerBuild.IsSet() {
+		result.DockerBuild = defaults.Runtime.Docker.Build
+	}
 	return result
+}
+
+func prepareConfiguredProjects(stderr io.Writer, home string, opts *tool.CommandOptions) error {
+	if opts == nil || len(opts.Projects) == 0 {
+		return nil
+	}
+	projects := make([]tool.ProjectMount, 0, len(opts.Projects))
+	seen := map[string]bool{}
+	seenMissing := map[string]bool{}
+	for _, project := range opts.Projects {
+		resolved, exists, err := resolveConfiguredProjectSource(project, home)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if !seenMissing[resolved.Source] {
+				seenMissing[resolved.Source] = true
+				warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectMissing, "configured project %q does not exist: %s; skipping it.", resolved.Name, resolved.Source)
+			}
+			continue
+		}
+		if seen[resolved.Source] {
+			continue
+		}
+		seen[resolved.Source] = true
+		projects = append(projects, resolved)
+	}
+	if len(projects) == 0 {
+		return exitcode.New(1, "launch config projects must include at least one existing project")
+	}
+	if opts.Env == "" {
+		opts.Env = projects[0].Name
+	}
+	opts.Projects = projects
+	return nil
+}
+
+func resolveConfiguredProjectSource(project tool.ProjectMount, home string) (tool.ProjectMount, bool, error) {
+	name := strings.TrimSpace(project.Name)
+	source := strings.TrimSpace(project.Source)
+	if source == "" {
+		return tool.ProjectMount{}, false, exitcode.New(2, "configured project %s source is required", name)
+	}
+	abs, err := filepath.Abs(config.ExpandHome(source, home))
+	if err != nil {
+		return tool.ProjectMount{}, false, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return tool.ProjectMount{Name: name, Source: abs}, false, nil
+	}
+	return tool.ProjectMount{Name: name, Source: abs}, true, nil
 }
 
 func warnHostToolState(stderr io.Writer, suppression warning.Suppression, toolset *tool.Toolset) {

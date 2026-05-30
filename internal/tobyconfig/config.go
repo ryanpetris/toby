@@ -34,9 +34,10 @@ type Config struct {
 }
 
 type SandboxConfig struct {
-	Runtime          RuntimeConfig
-	Tools            tool.ToolStateSettings
-	SuppressWarnings warning.Suppression
+	Runtime               RuntimeConfig
+	Tools                 tool.ToolStateSettings
+	SuppressWarnings      warning.Suppression
+	AutoloadProjectConfig *bool
 }
 
 type RuntimeConfig struct {
@@ -49,6 +50,7 @@ type DockerSandboxConfig struct {
 	Image    string
 	Home     string
 	Projects string
+	Build    tool.DockerBuildConfig
 }
 
 type BubblewrapSandboxConfig struct {
@@ -211,6 +213,14 @@ func (c *SandboxConfig) Merge(src SandboxConfig) {
 	c.Runtime.Merge(src.Runtime)
 	c.Tools.Merge(src.Tools)
 	c.SuppressWarnings.Merge(src.SuppressWarnings)
+	if src.AutoloadProjectConfig != nil {
+		autoload := *src.AutoloadProjectConfig
+		c.AutoloadProjectConfig = &autoload
+	}
+}
+
+func (c SandboxConfig) AutoloadProjectConfigEnabled() bool {
+	return c.AutoloadProjectConfig != nil && *c.AutoloadProjectConfig
 }
 
 func (c *RuntimeConfig) Merge(src RuntimeConfig) {
@@ -225,6 +235,9 @@ func (c *RuntimeConfig) Merge(src RuntimeConfig) {
 	}
 	if src.Docker.Projects != "" {
 		c.Docker.Projects = src.Docker.Projects
+	}
+	if src.Docker.Build.IsSet() {
+		c.Docker.Build = src.Docker.Build
 	}
 	if src.Bubblewrap.Root != "" {
 		c.Bubblewrap.Root = src.Bubblewrap.Root
@@ -414,6 +427,12 @@ func parseSandbox(raw any, dir, home string) (SandboxConfig, error) {
 				return SandboxConfig{}, err
 			}
 			cfg.SuppressWarnings = suppression
+		case "autoloadProjectConfig":
+			autoload, ok := value.(bool)
+			if !ok {
+				return SandboxConfig{}, fmt.Errorf("sandbox.autoloadProjectConfig must be a boolean")
+			}
+			cfg.AutoloadProjectConfig = &autoload
 		default:
 			return SandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
 		}
@@ -436,7 +455,7 @@ func parseRuntime(raw any, dir, home string) (RuntimeConfig, error) {
 				}
 				cfg.Default = strings.TrimSpace(name)
 			case "docker":
-				docker, err := parseDockerSandbox(item)
+				docker, err := parseDockerSandbox(item, dir, home)
 				if err != nil {
 					return RuntimeConfig{}, err
 				}
@@ -457,30 +476,79 @@ func parseRuntime(raw any, dir, home string) (RuntimeConfig, error) {
 	}
 }
 
-func parseDockerSandbox(raw any) (DockerSandboxConfig, error) {
+func parseDockerSandbox(raw any, dir, home string) (DockerSandboxConfig, error) {
 	items, ok := raw.(map[string]any)
 	if !ok {
 		return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker must be an object")
 	}
 	var cfg DockerSandboxConfig
 	for key, value := range items {
-		item, ok := value.(string)
-		if !ok {
-			return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.%s must be a string", key)
-		}
-		item = strings.TrimSpace(item)
 		switch key {
 		case "image":
-			cfg.Image = item
+			item, ok := value.(string)
+			if !ok {
+				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.image must be a string")
+			}
+			cfg.Image = strings.TrimSpace(item)
 		case "home":
-			cfg.Home = item
+			item, ok := value.(string)
+			if !ok {
+				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.home must be a string")
+			}
+			cfg.Home = strings.TrimSpace(item)
 		case "projects":
-			cfg.Projects = item
+			item, ok := value.(string)
+			if !ok {
+				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.projects must be a string")
+			}
+			cfg.Projects = strings.TrimSpace(item)
+		case "build":
+			build, err := parseDockerBuild(value, dir, home)
+			if err != nil {
+				return DockerSandboxConfig{}, err
+			}
+			cfg.Build = build
 		default:
 			return DockerSandboxConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker key %q", key)
 		}
 	}
 	return cfg, nil
+}
+
+func parseDockerBuild(raw any, dir, home string) (tool.DockerBuildConfig, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build must be an object")
+	}
+	contextValue := "."
+	dockerfileValue := "Dockerfile"
+	for key, value := range items {
+		item, ok := value.(string)
+		if !ok {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must be a string", key)
+		}
+		item = strings.TrimSpace(item)
+		if item == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must not be empty", key)
+		}
+		switch key {
+		case "context":
+			contextValue = item
+		case "dockerfile":
+			dockerfileValue = item
+		default:
+			return tool.DockerBuildConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker.build key %q", key)
+		}
+	}
+	contextDir, err := resolveConfigPath(contextValue, dir, home)
+	if err != nil {
+		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
+	}
+	dockerfile := config.ExpandHome(dockerfileValue, home)
+	if !filepath.IsAbs(dockerfile) {
+		dockerfile = filepath.Join(contextDir, dockerfile)
+	}
+	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
 }
 
 func parseBubblewrapSandbox(raw any, dir, home string) (BubblewrapSandboxConfig, error) {

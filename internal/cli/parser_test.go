@@ -67,3 +67,17 @@ func TestParseSandboxArgsRejectsInvalidToolState(t *testing.T) {
 		t.Fatal("expected invalid tool state to fail")
 	}
 }
+
+func TestExtractConfigArg(t *testing.T) {
+	configPath, args, err := extractConfigArg([]string{"env", "--config", "repo.yaml", "--", "--config", "tool.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configPath != "repo.yaml" {
+		t.Fatalf("configPath = %q", configPath)
+	}
+	want := []string{"env", "--", "--config", "tool.yaml"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}

@@ -13,6 +13,8 @@ import (
 	"petris.dev/toby/internal/warning"
 )
 
+const projectLaunchConfigName = ".toby.yaml"
+
 type launchConfig struct {
 	Sandbox  launchSandboxConfig
 	Projects []tool.ProjectMount
@@ -38,6 +40,7 @@ type launchDockerConfig struct {
 	Image    string
 	Home     string
 	Projects string
+	Build    tool.DockerBuildConfig
 }
 
 type launchBubblewrapConfig struct {
@@ -61,31 +64,90 @@ func buildConfiguredLaunch(params Params, configPath string, extra []string) (co
 	if err != nil {
 		return configuredLaunch{}, err
 	}
+	if len(cfg.Projects) == 0 {
+		return configuredLaunch{}, exitcode.New(2, "launch config projects must not be empty")
+	}
+	if len(cfg.Tools) == 0 {
+		return configuredLaunch{}, exitcode.New(2, "launch config tools must not be empty")
+	}
 	tools, err := resolveConfiguredTools(params.Registry, cfg.Tools)
 	if err != nil {
 		return configuredLaunch{}, err
 	}
-	if len(tools) == 0 {
-		return configuredLaunch{}, exitcode.New(2, "launch config tools must not be empty")
-	}
 	return configuredLaunch{
-		Options: tool.CommandOptions{
-			Env:              cfg.Sandbox.Name,
-			Upgrade:          cfg.Sandbox.AutoUpgrade,
-			Projects:         cfg.Projects,
-			Workdir:          cfg.Workdir,
-			SandboxRuntime:   cfg.Sandbox.Runtime.Default,
-			DockerImage:      cfg.Sandbox.Runtime.Docker.Image,
-			DockerHome:       cfg.Sandbox.Runtime.Docker.Home,
-			DockerProjects:   cfg.Sandbox.Runtime.Docker.Projects,
-			BubblewrapRoot:   cfg.Sandbox.Runtime.Bubblewrap.Root,
-			ToolStates:       cfg.Sandbox.Tools,
-			SuppressWarnings: cfg.Sandbox.SuppressWarnings,
-		},
+		Options:        commandOptionsFromLaunchConfig(cfg),
 		Extra:          configuredLaunchExtra(cfg.Tools[0].Params, extra),
 		RequestedTools: tools,
 		Primary:        tools[0],
 	}, nil
+}
+
+func buildOverlayConfiguredLaunch(params Params, configPath string, parsed parsedCommand, primary string, primaryProject tool.ProjectMount) (configuredLaunch, error) {
+	cfg, err := loadLaunchConfig(configPath, params.Paths.Home)
+	if err != nil {
+		return configuredLaunch{}, err
+	}
+	tools, err := resolveConfiguredTools(params.Registry, cfg.Tools)
+	if err != nil {
+		return configuredLaunch{}, err
+	}
+	options := commandOptionsFromLaunchConfig(cfg)
+	if options.Env == "" {
+		options.Env = parsed.Options.Env
+	}
+	options.Install = parsed.Options.Install
+	options.Upgrade = options.Upgrade || parsed.Options.Upgrade
+	options.Projects = append([]tool.ProjectMount{primaryProject}, options.Projects...)
+	mergeDirectLaunchOptions(&options, parsed.Options)
+	requestedTools := appendIfMissing(nil, primary)
+	for _, name := range parsed.RequestedTools {
+		requestedTools = appendIfMissing(requestedTools, name)
+	}
+	for _, name := range tools {
+		requestedTools = appendIfMissing(requestedTools, name)
+	}
+	return configuredLaunch{
+		Options:        options,
+		Extra:          parsed.Extra,
+		RequestedTools: requestedTools,
+		Primary:        primary,
+	}, nil
+}
+
+func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
+	return tool.CommandOptions{
+		Env:              cfg.Sandbox.Name,
+		Upgrade:          cfg.Sandbox.AutoUpgrade,
+		Projects:         cfg.Projects,
+		Workdir:          cfg.Workdir,
+		SandboxRuntime:   cfg.Sandbox.Runtime.Default,
+		DockerImage:      cfg.Sandbox.Runtime.Docker.Image,
+		DockerHome:       cfg.Sandbox.Runtime.Docker.Home,
+		DockerProjects:   cfg.Sandbox.Runtime.Docker.Projects,
+		DockerBuild:      cfg.Sandbox.Runtime.Docker.Build,
+		BubblewrapRoot:   cfg.Sandbox.Runtime.Bubblewrap.Root,
+		ToolStates:       cfg.Sandbox.Tools,
+		SuppressWarnings: cfg.Sandbox.SuppressWarnings,
+	}
+}
+
+func mergeDirectLaunchOptions(dst *tool.CommandOptions, src tool.CommandOptions) {
+	if src.SandboxRuntime != "" {
+		dst.SandboxRuntime = src.SandboxRuntime
+	}
+	if src.DockerImage != "" {
+		dst.DockerImage = src.DockerImage
+	}
+	if src.DockerHome != "" {
+		dst.DockerHome = src.DockerHome
+	}
+	if src.DockerProjects != "" {
+		dst.DockerProjects = src.DockerProjects
+	}
+	if src.DockerBuild.IsSet() {
+		dst.DockerBuild = src.DockerBuild
+	}
+	dst.ToolStates.Merge(src.ToolStates)
 }
 
 func configuredLaunchExtra(params, extra []string) []string {
@@ -153,15 +215,6 @@ func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, erro
 			return launchConfig{}, fmt.Errorf("unsupported top-level key %q", key)
 		}
 	}
-	if len(cfg.Projects) == 0 {
-		return launchConfig{}, fmt.Errorf("launch config projects must not be empty")
-	}
-	if len(cfg.Tools) == 0 {
-		return launchConfig{}, fmt.Errorf("launch config tools must not be empty")
-	}
-	if strings.TrimSpace(cfg.Sandbox.Name) == "" {
-		cfg.Sandbox.Name = cfg.Projects[0].Name
-	}
 	return cfg, nil
 }
 
@@ -228,7 +281,7 @@ func parseLaunchRuntime(raw any, dir, home string) (launchRuntimeConfig, error) 
 				}
 				cfg.Default = strings.TrimSpace(name)
 			case "docker":
-				docker, err := parseLaunchDocker(item)
+				docker, err := parseLaunchDocker(item, dir, home)
 				if err != nil {
 					return launchRuntimeConfig{}, err
 				}
@@ -249,30 +302,79 @@ func parseLaunchRuntime(raw any, dir, home string) (launchRuntimeConfig, error) 
 	}
 }
 
-func parseLaunchDocker(raw any) (launchDockerConfig, error) {
+func parseLaunchDocker(raw any, dir, home string) (launchDockerConfig, error) {
 	items, ok := raw.(map[string]any)
 	if !ok {
 		return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker must be an object")
 	}
 	var cfg launchDockerConfig
 	for key, value := range items {
-		s, ok := value.(string)
-		if !ok {
-			return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.%s must be a string", key)
-		}
-		s = strings.TrimSpace(s)
 		switch key {
 		case "image":
-			cfg.Image = s
+			s, ok := value.(string)
+			if !ok {
+				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.image must be a string")
+			}
+			cfg.Image = strings.TrimSpace(s)
 		case "home":
-			cfg.Home = s
+			s, ok := value.(string)
+			if !ok {
+				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.home must be a string")
+			}
+			cfg.Home = strings.TrimSpace(s)
 		case "projects":
-			cfg.Projects = s
+			s, ok := value.(string)
+			if !ok {
+				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.projects must be a string")
+			}
+			cfg.Projects = strings.TrimSpace(s)
+		case "build":
+			build, err := parseLaunchDockerBuild(value, dir, home)
+			if err != nil {
+				return launchDockerConfig{}, err
+			}
+			cfg.Build = build
 		default:
 			return launchDockerConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker key %q", key)
 		}
 	}
 	return cfg, nil
+}
+
+func parseLaunchDockerBuild(raw any, dir, home string) (tool.DockerBuildConfig, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build must be an object")
+	}
+	contextValue := "."
+	dockerfileValue := "Dockerfile"
+	for key, value := range items {
+		item, ok := value.(string)
+		if !ok {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must be a string", key)
+		}
+		item = strings.TrimSpace(item)
+		if item == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must not be empty", key)
+		}
+		switch key {
+		case "context":
+			contextValue = item
+		case "dockerfile":
+			dockerfileValue = item
+		default:
+			return tool.DockerBuildConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker.build key %q", key)
+		}
+	}
+	contextDir, err := resolveLaunchConfigPath(contextValue, dir, home)
+	if err != nil {
+		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
+	}
+	dockerfile := config.ExpandHome(dockerfileValue, home)
+	if !filepath.IsAbs(dockerfile) {
+		dockerfile = filepath.Join(contextDir, dockerfile)
+	}
+	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
 }
 
 func parseLaunchSandboxTools(raw any, dir, home string) (tool.ToolStateSettings, error) {
@@ -516,6 +618,53 @@ func resolveLaunchProjectPath(path, dir, home string) (string, error) {
 		return dir, nil
 	}
 	return joinConfigRelativePath(dir, path), nil
+}
+
+func resolveDirectLaunchProject(paths config.Paths, opts tool.CommandOptions) (tool.ProjectMount, error) {
+	if strings.TrimSpace(opts.Env) == "" {
+		return tool.ProjectMount{}, exitcode.New(2, "environment name is required")
+	}
+	raw := opts.Project
+	if strings.TrimSpace(raw) == "" {
+		raw = filepath.Join(paths.ProjectRoot, opts.Env)
+	} else {
+		raw = config.ExpandHome(raw, paths.Home)
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return tool.ProjectMount{}, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return tool.ProjectMount{}, exitcode.New(1, "failed to resolve project directory: %s does not exist", raw)
+	}
+	if _, err := relativeToProjectRoot(paths.ProjectRoot, abs); err != nil {
+		return tool.ProjectMount{}, exitcode.New(1, "project directory must be under %s: %s", paths.ProjectRoot, err)
+	}
+	name := strings.TrimSpace(filepath.Base(abs))
+	if name == "" || name == "." || name == ".." {
+		return tool.ProjectMount{}, exitcode.New(2, "invalid project name: %q", name)
+	}
+	return tool.ProjectMount{Name: name, Source: abs}, nil
+}
+
+func relativeToProjectRoot(base, path string) (string, error) {
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("%s must be equal to or inside %s", absPath, absBase)
+	}
+	return rel, nil
 }
 
 func joinConfigRelativePath(dir, path string) string {

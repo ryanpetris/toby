@@ -20,11 +20,25 @@ func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Opt
 }
 
 type recordingRunner struct {
-	commands [][]string
+	commands  [][]string
+	exitCodes []int
+	iidImage  string
 }
 
 func (r *recordingRunner) Run(_ context.Context, argv []string, _ map[string]string, _ executil.Options) (int, error) {
 	r.commands = append(r.commands, append([]string(nil), argv...))
+	if r.iidImage != "" {
+		for i, arg := range argv {
+			if arg == "--iidfile" && i+1 < len(argv) {
+				if err := os.WriteFile(argv[i+1], []byte(r.iidImage), 0o600); err != nil {
+					return 1, err
+				}
+			}
+		}
+	}
+	if index := len(r.commands) - 1; index < len(r.exitCodes) {
+		return r.exitCodes[index], nil
+	}
 	return 0, nil
 }
 
@@ -397,6 +411,20 @@ func TestBubblewrapRootOptionOverridesDefaultSandboxRoot(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(customRoot, "demo"), paths.Home})
 }
 
+func TestDockerBuildRequiresDockerRuntime(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	_, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeBubblewrap, DockerBuild: tool.DockerBuildConfig{Context: home, Dockerfile: filepath.Join(home, "Dockerfile")}})
+	if err == nil {
+		t.Fatal("expected docker build config with bubblewrap runtime to fail")
+	}
+}
+
 func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
@@ -421,6 +449,98 @@ func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 	assertContainsSequence(t, runner.commands[0], []string{"--entrypoint", "sh"})
 	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
 	assertContainsSequence(t, runner.commands[1], []string{"docker", "run", "--rm", "--init", "-i"})
+}
+
+func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contextDir := filepath.Join(home, "docker")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{exitCodes: []int{1, 0, 0, 0}}
+	factory := testFactory(paths, runner)
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker, DockerImage: "custom:dev", DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile.toby")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*DockerInstance)
+	code, err := docker.Run(context.Background(), RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("commands = %#v", runner.commands)
+	}
+	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
+	assertContainsSequence(t, runner.commands[1], []string{"docker", "build", "-t", "custom:dev", "-f", filepath.Join(contextDir, "Dockerfile.toby"), contextDir})
+	assertContainsSequence(t, runner.commands[2], []string{"custom:dev", "-c"})
+	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
+}
+
+func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contextDir := filepath.Join(home, "docker")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	factory := testFactory(paths, runner)
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker, DockerImage: "custom:dev", DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*DockerInstance)
+	code, err := docker.Run(context.Background(), RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %#v", runner.commands)
+	}
+	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
+	assertContainsSequence(t, runner.commands[1], []string{"custom:dev", "-c"})
+	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
+}
+
+func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contextDir := filepath.Join(home, "docker")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{iidImage: "sha256:built"}
+	factory := testFactory(paths, runner)
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker, DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*DockerInstance)
+	code, err := docker.Run(context.Background(), RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %#v", runner.commands)
+	}
+	assertContainsSequence(t, runner.commands[0], []string{"docker", "build", "--iidfile"})
+	assertContainsSequence(t, runner.commands[0], []string{"-f", filepath.Join(contextDir, "Dockerfile"), contextDir})
+	assertContainsSequence(t, runner.commands[1], []string{"sha256:built", "-c"})
+	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "sha256:built"})
 }
 
 func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
