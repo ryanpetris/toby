@@ -56,7 +56,7 @@ func (t *speckitTool) Binds() []tool.Bind {
 	return toolutil.Binds(t.deps(), nil)
 }
 
-func (t *speckitTool) PathEntries() []string {
+func (t *speckitTool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), nil)
 }
 

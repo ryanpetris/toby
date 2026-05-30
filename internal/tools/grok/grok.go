@@ -3,7 +3,6 @@ package grok
 import (
 	"context"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/config"
@@ -29,7 +28,6 @@ func Provide(paths config.Paths) Result {
 	svc := &grokTool{Simple: &tool.Simple{
 		Base:           toolutil.Base(tool.GrokToolName, "Launch Grok", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
 		RootDir:        paths.SandboxRoot,
-		Home:           paths.Home,
 		HostSubpath:    []string{".grok"},
 		SandboxSubpath: []string{".grok"},
 	}}
@@ -40,8 +38,8 @@ type grokTool struct {
 	*tool.Simple
 }
 
-func (t *grokTool) PathEntries() []string {
-	return []string{filepath.Join(t.Home, ".grok", "bin")}
+func (t *grokTool) PathEntries() []tool.PathTarget {
+	return []tool.PathTarget{tool.HomeTarget(".grok", "bin")}
 }
 
 func (t *grokTool) Install(ctx context.Context, run *tool.RunContext) error {

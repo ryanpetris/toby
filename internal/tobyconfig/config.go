@@ -28,6 +28,18 @@ type Config struct {
 	MCP          map[string]MCPServer
 	Permission   PermissionConfig
 	Provider     map[string]ProviderConfig
+	Sandbox      SandboxConfig
+}
+
+type SandboxConfig struct {
+	Runtime string
+	Docker  DockerSandboxConfig
+}
+
+type DockerSandboxConfig struct {
+	Image    string
+	Home     string
+	Projects string
 }
 
 type MCPServer struct {
@@ -134,6 +146,12 @@ func parseConfig(raw map[string]any) (Config, error) {
 			for name, provider := range providers {
 				result.Provider[name] = ProviderConfig{raw: provider}
 			}
+		case "sandbox":
+			sandbox, err := parseSandbox(value)
+			if err != nil {
+				return Config{}, err
+			}
+			result.Sandbox = sandbox
 		default:
 			return Config{}, fmt.Errorf("unsupported top-level key %q", key)
 		}
@@ -172,6 +190,22 @@ func (c *Config) Merge(src Config) {
 	}
 	for pattern, mode := range src.Permission.ExternalDirectory {
 		c.Permission.ExternalDirectory[pattern] = mode
+	}
+	c.Sandbox.Merge(src.Sandbox)
+}
+
+func (c *SandboxConfig) Merge(src SandboxConfig) {
+	if src.Runtime != "" {
+		c.Runtime = src.Runtime
+	}
+	if src.Docker.Image != "" {
+		c.Docker.Image = src.Docker.Image
+	}
+	if src.Docker.Home != "" {
+		c.Docker.Home = src.Docker.Home
+	}
+	if src.Docker.Projects != "" {
+		c.Docker.Projects = src.Docker.Projects
 	}
 }
 
@@ -213,6 +247,13 @@ func (s *Service) Permission() PermissionConfig {
 		permission.ExternalDirectory[pattern] = mode
 	}
 	return permission
+}
+
+func (s *Service) Sandbox() SandboxConfig {
+	if s == nil {
+		return SandboxConfig{}
+	}
+	return s.config.Sandbox
 }
 
 func (s *Service) RegisterContextFiles(session *contextfiles.Session) error {
@@ -320,6 +361,62 @@ func parsePermission(raw any) (PermissionConfig, error) {
 		}
 	}
 	return permission, nil
+}
+
+func parseSandbox(raw any) (SandboxConfig, error) {
+	if raw == nil {
+		return SandboxConfig{}, nil
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return SandboxConfig{}, fmt.Errorf("sandbox must be an object")
+	}
+	var cfg SandboxConfig
+	for key, value := range items {
+		switch key {
+		case "runtime":
+			runtime, ok := value.(string)
+			if !ok {
+				return SandboxConfig{}, fmt.Errorf("sandbox.runtime must be a string")
+			}
+			cfg.Runtime = strings.TrimSpace(runtime)
+		case "docker":
+			docker, err := parseDockerSandbox(value)
+			if err != nil {
+				return SandboxConfig{}, err
+			}
+			cfg.Docker = docker
+		default:
+			return SandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
+		}
+	}
+	return cfg, nil
+}
+
+func parseDockerSandbox(raw any) (DockerSandboxConfig, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return DockerSandboxConfig{}, fmt.Errorf("sandbox.docker must be an object")
+	}
+	var cfg DockerSandboxConfig
+	for key, value := range items {
+		item, ok := value.(string)
+		if !ok {
+			return DockerSandboxConfig{}, fmt.Errorf("sandbox.docker.%s must be a string", key)
+		}
+		item = strings.TrimSpace(item)
+		switch key {
+		case "image":
+			cfg.Image = item
+		case "home":
+			cfg.Home = item
+		case "projects":
+			cfg.Projects = item
+		default:
+			return DockerSandboxConfig{}, fmt.Errorf("unsupported sandbox.docker key %q", key)
+		}
+	}
+	return cfg, nil
 }
 
 func appendDedupeStrings(dst, src []string) []string {

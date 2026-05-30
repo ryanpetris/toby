@@ -52,7 +52,7 @@ func (t *copilotTool) Binds() []tool.Bind {
 	return toolutil.Binds(t.deps(), t.Simple.Binds())
 }
 
-func (t *copilotTool) PathEntries() []string {
+func (t *copilotTool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
 }
 

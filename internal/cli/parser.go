@@ -32,10 +32,6 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 			result.Help = true
 			return result, nil
 		}
-		if arg == "--tmp-env" {
-			result.Options.TmpEnv = true
-			continue
-		}
 		if launch && arg == "--install" {
 			result.Options.Install = true
 			continue
@@ -54,6 +50,30 @@ func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []
 			}
 			i++
 			result.Options.Project = scriptArgs[i]
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--sandbox-runtime="); ok {
+			result.Options.SandboxRuntime = value
+			continue
+		}
+		if arg == "--sandbox-runtime" {
+			if i+1 >= len(scriptArgs) {
+				return result, exitcode.New(2, "--sandbox-runtime requires a value")
+			}
+			i++
+			result.Options.SandboxRuntime = scriptArgs[i]
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--sandbox-image="); ok {
+			result.Options.DockerImage = value
+			continue
+		}
+		if arg == "--sandbox-image" {
+			if i+1 >= len(scriptArgs) {
+				return result, exitcode.New(2, "--sandbox-image requires a value")
+			}
+			i++
+			result.Options.DockerImage = scriptArgs[i]
 			continue
 		}
 		if toolName, ok := withFlags[arg]; ok {

@@ -35,16 +35,5 @@ func Provide() Result {
 type execTool struct{ tool.Base }
 
 func (t *execTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, commandOrShell(run.Extra, run.Env), tool.ExecOptions{})
-}
-
-func commandOrShell(extra []string, env tool.Environment) []string {
-	if len(extra) > 0 {
-		return extra
-	}
-	shell := env["SHELL"]
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	return []string{shell, "-i"}
+	return tool.RunCommand(ctx, run.Launch, run.Extra, tool.ExecOptions{})
 }

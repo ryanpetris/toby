@@ -25,7 +25,6 @@ func Simple(paths config.Paths, base tool.Base, hostSubpath, sandboxSubpath []st
 	return &tool.Simple{
 		Base:           base,
 		RootDir:        paths.SandboxRoot,
-		Home:           paths.Home,
 		HostSubpath:    hostSubpath,
 		SandboxSubpath: sandboxSubpath,
 		InstallCommand: install,
@@ -55,9 +54,9 @@ func Binds(deps []tool.Tool, own []tool.Bind) []tool.Bind {
 	return binds
 }
 
-func PathEntries(deps []tool.Tool, own []string) []string {
-	var entries []string
-	seen := map[string]bool{}
+func PathEntries(deps []tool.Tool, own []tool.PathTarget) []tool.PathTarget {
+	var entries []tool.PathTarget
+	seen := map[tool.PathTarget]bool{}
 	for _, dep := range deps {
 		for _, entry := range dep.PathEntries() {
 			if seen[entry] {

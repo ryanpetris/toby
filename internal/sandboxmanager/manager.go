@@ -103,8 +103,9 @@ func (r *Runtime) Handle(ctx context.Context, data []byte) ([]byte, error) {
 }
 
 func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParams) error {
+	argv := commandArgv(params)
 	commandCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(commandCtx, params.Argv[0], params.Argv[1:]...)
+	cmd := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
 	cmd.Env = os.Environ()
 	if params.Foreground {
 		cmd.Stdin = os.Stdin
@@ -151,6 +152,35 @@ func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParam
 		r.sendCommandExit(params.CommandID, exitCode, message)
 	}()
 	return nil
+}
+
+func commandArgv(params control.CommandRunParams) []string {
+	if len(params.Argv) > 0 {
+		return params.Argv
+	}
+	return defaultShellCommand()
+}
+
+func defaultShellCommand() []string {
+	if shell := executableShell(os.Getenv("SHELL")); shell != "" {
+		return []string{shell, "-i"}
+	}
+	return []string{"/bin/sh", "-i"}
+}
+
+func executableShell(shell string) string {
+	if shell == "" {
+		return ""
+	}
+	path, err := exec.LookPath(shell)
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return ""
+	}
+	return path
 }
 
 func (r *Runtime) addCommand(state *commandState) error {

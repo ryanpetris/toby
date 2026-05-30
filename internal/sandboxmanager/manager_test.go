@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"petris.dev/toby/internal/control"
@@ -41,6 +42,30 @@ func TestSandboxManagerHandlesFileCommands(t *testing.T) {
 	mustOK(t, response)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("file still exists: %v", err)
+	}
+}
+
+func TestCommandArgvUsesDefaultShellForForegroundEmptyArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable bit test is Unix-specific")
+	}
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "shell")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", shell)
+	argv := commandArgv(control.CommandRunParams{Foreground: true})
+	if len(argv) != 2 || argv[0] != shell || argv[1] != "-i" {
+		t.Fatalf("argv = %#v", argv)
+	}
+}
+
+func TestCommandArgvFallsBackToBinSh(t *testing.T) {
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing"))
+	argv := commandArgv(control.CommandRunParams{Foreground: true})
+	if len(argv) != 2 || argv[0] != "/bin/sh" || argv[1] != "-i" {
+		t.Fatalf("argv = %#v", argv)
 	}
 }
 

@@ -30,12 +30,12 @@ func Module() fx.Option {
 		hostmanager.Module(),
 		mcpserver.Module(),
 		tools.Module(),
+		sandbox.Module(),
 		sandboxmanager.Module(),
 		fx.Provide(
 			config.NewPaths,
 			executil.NewProcessRunner,
 			opencodeconfig.NewRenderer,
-			sandbox.NewFactory,
 			contextfiles.NewService,
 			tobyconfig.New,
 			contextinit.NewServices,

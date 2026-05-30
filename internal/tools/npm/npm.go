@@ -33,14 +33,14 @@ type npmTool struct {
 	paths config.Paths
 }
 
-func (t *npmTool) PathEntries() []string {
-	return []string{filepath.Join(t.paths.Home, ".local", "npm-global", "bin")}
+func (t *npmTool) PathEntries() []tool.PathTarget {
+	return []tool.PathTarget{tool.HomeTarget(".local", "npm-global", "bin")}
 }
 
 func (t *npmTool) SandboxContextSetup(ctx *tool.RunContext) error {
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		prefix := filepath.Join(t.paths.Home, ".local", "npm-global")
-		cache := filepath.Join(t.paths.Home, ".cache", "npm")
+		prefix := filepath.Join(ctx.Sandbox.HomeDir(), ".local", "npm-global")
+		cache := filepath.Join(ctx.Sandbox.HomeDir(), ".cache", "npm")
 		ctx.Env["NPM_CONFIG_PREFIX"] = prefix
 		ctx.Env["npm_config_prefix"] = prefix
 		ctx.Env["NPM_CONFIG_CACHE"] = cache

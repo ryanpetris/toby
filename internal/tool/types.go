@@ -53,21 +53,75 @@ const (
 )
 
 type Bind struct {
-	HostPath    string
-	SandboxPath string
-	Type        BindType
-	Optional    bool
+	HostPath string
+	Target   PathTarget
+	Type     BindType
+	Optional bool
+}
+
+type PathBase string
+
+const (
+	PathAbsolute PathBase = "absolute"
+	PathHome     PathBase = "home"
+	PathRuntime  PathBase = "runtime"
+	PathProjects PathBase = "projects"
+)
+
+type PathTarget struct {
+	Base PathBase
+	Path string
+}
+
+func AbsoluteTarget(path string) PathTarget { return PathTarget{Base: PathAbsolute, Path: path} }
+
+func HomeTarget(parts ...string) PathTarget { return pathTarget(PathHome, parts...) }
+
+func RuntimeTarget(parts ...string) PathTarget { return pathTarget(PathRuntime, parts...) }
+
+func ProjectsTarget(parts ...string) PathTarget { return pathTarget(PathProjects, parts...) }
+
+func pathTarget(base PathBase, parts ...string) PathTarget {
+	if len(parts) == 0 {
+		return PathTarget{Base: base}
+	}
+	return PathTarget{Base: base, Path: filepath.ToSlash(filepath.Join(parts...))}
+}
+
+func ResolvePath(target PathTarget, sandbox Sandbox) string {
+	switch target.Base {
+	case PathHome:
+		return joinSandboxPath(sandbox.HomeDir(), target.Path)
+	case PathRuntime:
+		return joinSandboxPath(sandbox.TobyRuntimeDir(), target.Path)
+	case PathProjects:
+		return joinSandboxPath(sandbox.Projects(), target.Path)
+	case PathAbsolute, "":
+		return target.Path
+	default:
+		return target.Path
+	}
+}
+
+func joinSandboxPath(base, rel string) string {
+	if rel == "" {
+		return base
+	}
+	return filepath.Join(base, filepath.FromSlash(rel))
 }
 
 type CommandOptions struct {
-	Env       string
-	TmpEnv    bool
-	Project   string
-	Projects  []ProjectMount
-	Workdir   string
-	Install   bool
-	Upgrade   bool
-	lifecycle map[string]bool
+	Env            string
+	Project        string
+	Projects       []ProjectMount
+	Workdir        string
+	SandboxRuntime string
+	DockerImage    string
+	DockerHome     string
+	DockerProjects string
+	Install        bool
+	Upgrade        bool
+	lifecycle      map[string]bool
 }
 
 type ProjectMount struct {
@@ -83,6 +137,10 @@ type Executor func(context.Context, []string, ExecOptions) (int, error)
 
 type Sandbox interface {
 	HomeDir() string
+	Projects() string
+	TobyRuntimeDir() string
+	TobyContextDir() string
+	TobyOpenCodeConfigDir() string
 }
 
 type RunContext struct {
@@ -104,7 +162,7 @@ type Tool interface {
 	LaunchHelp() string
 	ContextGroups() []string
 	Binds() []Bind
-	PathEntries() []string
+	PathEntries() []PathTarget
 	ConfigureCommand(*cobra.Command)
 	HostInit(context.Context, *CommandOptions) error
 	SandboxContextSetup(*RunContext) error
@@ -146,7 +204,7 @@ func (b Base) ContextGroups() []string { return append([]string(nil), b.Metadata
 
 func (b Base) Binds() []Bind { return nil }
 
-func (b Base) PathEntries() []string { return nil }
+func (b Base) PathEntries() []PathTarget { return nil }
 
 func (b Base) ConfigureCommand(*cobra.Command) {}
 

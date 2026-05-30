@@ -52,7 +52,7 @@ func (t *codexTool) Binds() []tool.Bind {
 	return toolutil.Binds(t.deps(), t.Simple.Binds())
 }
 
-func (t *codexTool) PathEntries() []string {
+func (t *codexTool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
 }
 

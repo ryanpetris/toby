@@ -35,8 +35,8 @@ type dockerTool struct {
 
 func (t *dockerTool) Binds() []tool.Bind {
 	return []tool.Bind{
-		{HostPath: filepath.Join(t.paths.Home, ".docker"), SandboxPath: filepath.Join(t.paths.Home, ".docker"), Type: tool.BindReadOnly, Optional: true},
-		{HostPath: "/var/run/docker.sock", SandboxPath: "/var/run/docker.sock", Type: tool.BindDev, Optional: true},
+		{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: tool.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true},
+		{HostPath: "/var/run/docker.sock", Target: tool.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true},
 	}
 }
 

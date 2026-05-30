@@ -22,6 +22,14 @@ type launchConfig struct {
 type launchSandboxConfig struct {
 	Name        string
 	AutoUpgrade bool
+	Runtime     string
+	Docker      launchDockerConfig
+}
+
+type launchDockerConfig struct {
+	Image    string
+	Home     string
+	Projects string
 }
 
 type launchToolConfig struct {
@@ -50,10 +58,14 @@ func buildConfiguredLaunch(params Params, configPath string, extra []string) (co
 	}
 	return configuredLaunch{
 		Options: tool.CommandOptions{
-			Env:      cfg.Sandbox.Name,
-			Upgrade:  cfg.Sandbox.AutoUpgrade,
-			Projects: cfg.Projects,
-			Workdir:  cfg.Workdir,
+			Env:            cfg.Sandbox.Name,
+			Upgrade:        cfg.Sandbox.AutoUpgrade,
+			Projects:       cfg.Projects,
+			Workdir:        cfg.Workdir,
+			SandboxRuntime: cfg.Sandbox.Runtime,
+			DockerImage:    cfg.Sandbox.Docker.Image,
+			DockerHome:     cfg.Sandbox.Docker.Home,
+			DockerProjects: cfg.Sandbox.Docker.Projects,
 		},
 		Extra:          configuredLaunchExtra(cfg.Tools[0].Params, extra),
 		RequestedTools: tools,
@@ -115,7 +127,7 @@ func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, erro
 			if !ok {
 				return launchConfig{}, fmt.Errorf("workdir must be a string")
 			}
-			cfg.Workdir = config.ExpandHome(workdir, home)
+			cfg.Workdir = workdir
 		case "tools":
 			tools, err := parseLaunchTools(value)
 			if err != nil {
@@ -161,8 +173,46 @@ func parseLaunchSandbox(raw any) (launchSandboxConfig, error) {
 				return launchSandboxConfig{}, fmt.Errorf("sandbox.autoUpgrade must be a boolean")
 			}
 			cfg.AutoUpgrade = autoUpgrade
+		case "runtime":
+			runtime, ok := value.(string)
+			if !ok {
+				return launchSandboxConfig{}, fmt.Errorf("sandbox.runtime must be a string")
+			}
+			cfg.Runtime = strings.TrimSpace(runtime)
+		case "docker":
+			docker, err := parseLaunchDocker(value)
+			if err != nil {
+				return launchSandboxConfig{}, err
+			}
+			cfg.Docker = docker
 		default:
 			return launchSandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
+		}
+	}
+	return cfg, nil
+}
+
+func parseLaunchDocker(raw any) (launchDockerConfig, error) {
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return launchDockerConfig{}, fmt.Errorf("sandbox.docker must be an object")
+	}
+	var cfg launchDockerConfig
+	for key, value := range items {
+		s, ok := value.(string)
+		if !ok {
+			return launchDockerConfig{}, fmt.Errorf("sandbox.docker.%s must be a string", key)
+		}
+		s = strings.TrimSpace(s)
+		switch key {
+		case "image":
+			cfg.Image = s
+		case "home":
+			cfg.Home = s
+		case "projects":
+			cfg.Projects = s
+		default:
+			return launchDockerConfig{}, fmt.Errorf("unsupported sandbox.docker key %q", key)
 		}
 	}
 	return cfg, nil

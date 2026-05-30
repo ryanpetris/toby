@@ -392,8 +392,8 @@ func DecodeCommandRunParams(raw json.RawMessage) (CommandRunParams, error) {
 	if params.CommandID == "" {
 		return CommandRunParams{}, errors.New("command_id is required")
 	}
-	if len(params.Argv) == 0 {
-		return CommandRunParams{}, errors.New("argv is required")
+	if len(params.Argv) == 0 && !params.Foreground {
+		return CommandRunParams{}, errors.New("argv is required for background commands")
 	}
 	return params, nil
 }

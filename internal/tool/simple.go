@@ -9,7 +9,6 @@ import (
 type Simple struct {
 	Base
 	RootDir             string
-	Home                string
 	HostSubpath         []string
 	SandboxSubpath      []string
 	BindType            BindType
@@ -41,9 +40,9 @@ func (t *Simple) Binds() []Bind {
 		bindType = BindRegular
 	}
 	return []Bind{{
-		HostPath:    filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...),
-		SandboxPath: filepath.Join(append([]string{t.Home}, sandboxParts...)...),
-		Type:        bindType,
+		HostPath: filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...),
+		Target:   HomeTarget(sandboxParts...),
+		Type:     bindType,
 	}}
 }
 

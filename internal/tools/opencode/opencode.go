@@ -54,7 +54,7 @@ type openCodeTool struct {
 
 func (t *openCodeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
 
-func (t *openCodeTool) PathEntries() []string {
+func (t *openCodeTool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), nil)
 }
 
@@ -75,8 +75,8 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 
 func (t *openCodeTool) Binds() []tool.Bind {
 	own := []tool.Bind{
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), SandboxPath: filepath.Join(t.paths.Home, ".config", "opencode"), Type: tool.BindRegular},
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode-share"), SandboxPath: filepath.Join(t.paths.Home, ".local", "share", "opencode"), Type: tool.BindRegular},
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), Target: tool.HomeTarget(".config", "opencode"), Type: tool.BindRegular},
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode-share"), Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular},
 	}
 	return toolutil.Binds(t.deps(), own)
 }
@@ -86,7 +86,7 @@ func (t *openCodeTool) SandboxContextSetup(ctx *tool.RunContext) error {
 		return err
 	}
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		ctx.Env["OPENCODE_CONFIG_DIR"] = filepath.Join(t.paths.XDGRuntimeDir, "toby", "context", "opencode")
+		ctx.Env["OPENCODE_CONFIG_DIR"] = ctx.Sandbox.TobyOpenCodeConfigDir()
 		return nil
 	})
 }
@@ -102,7 +102,7 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunCo
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
 	}
-	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, t.paths.ProjectRoot, run.ContextFiles.InstructionPaths(), t.config)
+	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionPaths(), t.config)
 	if err != nil {
 		return err
 	}

@@ -13,166 +13,206 @@ import (
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/tool"
+
+	"go.uber.org/fx"
 )
 
+const (
+	RuntimeBubblewrap = "bubblewrap"
+	RuntimeDocker     = "docker"
+
+	FxEnvironmentGroup = "toby.sandbox.environments"
+)
+
+type Environment interface {
+	Name() string
+	NewInstance(Spec) (Instance, error)
+}
+
+type EnvironmentResult struct {
+	fx.Out
+
+	Environment Environment `group:"toby.sandbox.environments"`
+}
+
+type Spec struct {
+	Label          string
+	HomeHostPath   string
+	Projects       []Project
+	Workdir        string
+	DockerImage    string
+	DockerHome     string
+	DockerProjects string
+}
+
+type Project struct {
+	Name     string
+	HostPath string
+}
+
+type RunSpec struct {
+	Argv        []string
+	Toolset     *tool.Toolset
+	Env         tool.Environment
+	ExecOptions tool.ExecOptions
+}
+
+type Instance interface {
+	tool.Sandbox
+
+	ProjectPath(string) (string, bool)
+	TobyBinDir() string
+	TobyBinaryPath() string
+	TobySandboxSocketPath() string
+	TobyGitAgentsPath() string
+	SetupContext(*tool.RunContext)
+	HostControlSocketPath() string
+	Run(context.Context, RunSpec) (int, error)
+	Cleanup() error
+	VisibleHostPath(string) (string, error)
+}
+
 type Factory struct {
-	paths  config.Paths
-	runner executil.Runner
+	paths        config.Paths
+	environments map[string]Environment
+}
+
+type FactoryParams struct {
+	fx.In
+
+	Paths        config.Paths
+	Environments []Environment `group:"toby.sandbox.environments"`
+}
+
+func ProvideFactory(params FactoryParams) (Factory, error) {
+	return newFactory(params.Paths, params.Environments)
 }
 
 func NewFactory(paths config.Paths, runner executil.Runner) Factory {
-	return Factory{paths: paths, runner: runner}
-}
-
-type Sandbox struct {
-	paths          config.Paths
-	runner         executil.Runner
-	label          string
-	homeDir        string
-	projectDir     string
-	sandboxProjDir string
-	workdir        string
-	projectMounts  []projectMount
-	tempHome       string
-}
-
-type projectMount struct {
-	name       string
-	sourceDir  string
-	sandboxDir string
-}
-
-type bwrapBind struct {
-	HostPath    string
-	SandboxPath string
-	Type        tool.BindType
-	Optional    bool
-}
-
-type CommandMounts struct {
-	Binds         []bwrapBind
-	ControlSocket string
-	TobyBinary    string
-}
-
-func (s *Sandbox) CommandMounts(toolset *tool.Toolset, controlSocket, tobyBinary string) CommandMounts {
-	return CommandMounts{Binds: bwrapBindsForToolset(toolset), ControlSocket: controlSocket, TobyBinary: tobyBinary}
-}
-
-func (f Factory) FromOptions(opts *tool.CommandOptions) (*Sandbox, error) {
-	if len(opts.Projects) > 0 {
-		return f.fromConfiguredEnvironment(opts)
+	factory, err := newFactory(paths, []Environment{
+		NewBubblewrapEnvironment(paths, runner),
+		NewDockerEnvironment(paths, runner),
+	})
+	if err != nil {
+		panic(err)
 	}
-	if opts.TmpEnv {
-		return f.fromTemporaryEnvironment(opts)
-	}
-	return f.fromPersistentEnvironment(opts)
+	return factory
 }
 
-func (f Factory) fromConfiguredEnvironment(opts *tool.CommandOptions) (*Sandbox, error) {
-	if opts.TmpEnv {
-		return nil, exitcode.New(2, "configured projects cannot be used with --tmp-env")
+func newFactory(paths config.Paths, environments []Environment) (Factory, error) {
+	items := make(map[string]Environment, len(environments))
+	for _, env := range environments {
+		if env == nil || strings.TrimSpace(env.Name()) == "" {
+			return Factory{}, fmt.Errorf("registered sandbox environment must define a non-empty name")
+		}
+		if _, exists := items[env.Name()]; exists {
+			return Factory{}, fmt.Errorf("duplicate sandbox environment: %s", env.Name())
+		}
+		items[env.Name()] = env
 	}
-	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
+	return Factory{paths: paths, environments: items}, nil
+}
+
+func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
+	if opts == nil {
+		opts = &tool.CommandOptions{}
+	}
+	runtime := strings.TrimSpace(opts.SandboxRuntime)
+	if runtime == "" {
+		runtime = RuntimeBubblewrap
+	}
+	env, ok := f.environments[runtime]
+	if !ok {
+		return nil, exitcode.New(2, "unknown sandbox runtime: %s", runtime)
+	}
+	if runtime != RuntimeDocker && (opts.DockerImage != "" || opts.DockerHome != "" || opts.DockerProjects != "") {
+		return nil, exitcode.New(2, "docker sandbox settings require sandbox runtime %q", RuntimeDocker)
+	}
+
+	spec, err := f.specFromOptions(opts)
+	if err != nil {
 		return nil, err
+	}
+	return env.NewInstance(spec)
+}
+
+func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
+	var spec Spec
+	var err error
+	if len(opts.Projects) > 0 {
+		spec, err = f.configuredSpec(opts)
+	} else {
+		spec, err = f.persistentSpec(opts)
+	}
+	if err != nil {
+		return Spec{}, err
+	}
+	spec.DockerImage = strings.TrimSpace(opts.DockerImage)
+	spec.DockerHome = strings.TrimSpace(opts.DockerHome)
+	spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
+	return spec, nil
+}
+
+func (f Factory) configuredSpec(opts *tool.CommandOptions) (Spec, error) {
+	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
+		return Spec{}, err
 	}
 	env := filepath.ToSlash(strings.TrimSpace(opts.Env))
 	if env == "" {
 		env = filepath.ToSlash(strings.TrimSpace(opts.Projects[0].Name))
 	}
 	if err := validateRelativeName("sandbox name", env); err != nil {
-		return nil, exitcode.New(2, "%s", err)
+		return Spec{}, exitcode.New(2, "%s", err)
 	}
-	mounts := make([]projectMount, 0, len(opts.Projects))
+	projects := make([]Project, 0, len(opts.Projects))
 	seen := map[string]bool{}
 	for _, configured := range opts.Projects {
-		mount, err := f.resolveConfiguredProjectMount(configured)
+		project, err := f.resolveConfiguredProject(configured)
 		if err != nil {
-			return nil, err
+			return Spec{}, err
 		}
-		if seen[mount.name] {
-			return nil, exitcode.New(2, "duplicate configured project name: %s", mount.name)
+		if seen[project.Name] {
+			return Spec{}, exitcode.New(2, "duplicate configured project name: %s", project.Name)
 		}
-		seen[mount.name] = true
-		mounts = append(mounts, mount)
+		seen[project.Name] = true
+		projects = append(projects, project)
 	}
-	primary := mounts[0]
-	return &Sandbox{
-		paths:          f.paths,
-		runner:         f.runner,
-		label:          env,
-		homeDir:        filepath.Join(f.paths.SandboxRoot, filepath.FromSlash(env)),
-		projectDir:     primary.sourceDir,
-		sandboxProjDir: primary.sandboxDir,
-		workdir:        opts.Workdir,
-		projectMounts:  mounts,
+	return Spec{
+		Label:        env,
+		HomeHostPath: filepath.Join(f.paths.SandboxRoot, filepath.FromSlash(env)),
+		Projects:     projects,
+		Workdir:      opts.Workdir,
 	}, nil
 }
 
-func (f Factory) fromTemporaryEnvironment(opts *tool.CommandOptions) (*Sandbox, error) {
-	if opts.Project != "" && opts.Env != "" {
-		return nil, exitcode.New(2, "tmp env project specified twice: use either positional PROJECT or --project DIR")
-	}
-	if opts.Env == "" && opts.Project == "" {
-		return nil, exitcode.New(2, "tmp env requires a project")
-	}
-
-	tempHome, err := os.MkdirTemp("", "toby-")
-	if err != nil {
-		return nil, err
-	}
-	projectName := opts.Project
-	if projectName == "" {
-		projectName = opts.Env
-	}
-	projectDir, err := f.resolveProjectDir("", projectName, true)
-	if err != nil {
-		_ = os.RemoveAll(tempHome)
-		return nil, err
-	}
-	sandboxProjDir := projectDir
-	if sandboxProjDir == "" {
-		sandboxProjDir = filepath.Join(f.paths.ProjectRoot, filepath.Base(tempHome))
-	}
-	return &Sandbox{
-		paths:          f.paths,
-		runner:         f.runner,
-		label:          "tmp",
-		homeDir:        tempHome,
-		projectDir:     projectDir,
-		sandboxProjDir: sandboxProjDir,
-		workdir:        opts.Workdir,
-		tempHome:       tempHome,
-	}, nil
-}
-
-func (f Factory) fromPersistentEnvironment(opts *tool.CommandOptions) (*Sandbox, error) {
+func (f Factory) persistentSpec(opts *tool.CommandOptions) (Spec, error) {
 	if opts.Env == "" {
-		return nil, exitcode.New(2, "environment name is required unless --tmp-env is used")
+		return Spec{}, exitcode.New(2, "environment name is required")
+	}
+	env := filepath.ToSlash(strings.TrimSpace(opts.Env))
+	if err := validateRelativeName("sandbox name", env); err != nil {
+		return Spec{}, exitcode.New(2, "%s", err)
 	}
 	if err := os.MkdirAll(f.paths.SandboxRoot, 0o755); err != nil {
-		return nil, err
+		return Spec{}, err
 	}
-	projectDir, err := f.resolveProjectDir(opts.Env, opts.Project, false)
+	projectDir, err := f.resolveProjectDir(env, opts.Project)
 	if err != nil {
-		return nil, err
+		return Spec{}, err
 	}
-	sandboxProjDir := projectDir
-	if sandboxProjDir == "" {
-		sandboxProjDir = filepath.Join(f.paths.ProjectRoot, opts.Env)
+	name, err := f.projectName(projectDir)
+	if err != nil {
+		return Spec{}, err
 	}
-	return &Sandbox{
-		paths:          f.paths,
-		runner:         f.runner,
-		label:          opts.Env,
-		homeDir:        filepath.Join(f.paths.SandboxRoot, opts.Env),
-		projectDir:     projectDir,
-		sandboxProjDir: sandboxProjDir,
-		workdir:        opts.Workdir,
+	return Spec{
+		Label:        env,
+		HomeHostPath: filepath.Join(f.paths.SandboxRoot, env),
+		Projects:     []Project{{Name: name, HostPath: projectDir}},
+		Workdir:      opts.Workdir,
 	}, nil
 }
 
-func (f Factory) resolveProjectDir(envName, project string, tmpEnv bool) (string, error) {
+func (f Factory) resolveProjectDir(envName, project string) (string, error) {
 	var raw string
 	switch {
 	case project == "":
@@ -180,8 +220,6 @@ func (f Factory) resolveProjectDir(envName, project string, tmpEnv bool) (string
 			return "", nil
 		}
 		raw = filepath.Join(f.paths.ProjectRoot, envName)
-	case tmpEnv && isProjectShorthand(project):
-		raw = filepath.Join(f.paths.ProjectRoot, project)
 	default:
 		raw = config.ExpandHome(project, f.paths.Home)
 	}
@@ -199,30 +237,34 @@ func (f Factory) resolveProjectDir(envName, project string, tmpEnv bool) (string
 	return abs, nil
 }
 
-func (f Factory) resolveConfiguredProjectMount(project tool.ProjectMount) (projectMount, error) {
+func (f Factory) resolveConfiguredProject(project tool.ProjectMount) (Project, error) {
 	name := filepath.ToSlash(strings.TrimSpace(project.Name))
 	if err := validateRelativeName("project name", name); err != nil {
-		return projectMount{}, exitcode.New(2, "%s", err)
+		return Project{}, exitcode.New(2, "%s", err)
 	}
 	source := strings.TrimSpace(project.Source)
 	if source == "" {
-		return projectMount{}, exitcode.New(2, "configured project %s source is required", name)
+		return Project{}, exitcode.New(2, "configured project %s source is required", name)
 	}
 	source = config.ExpandHome(source, f.paths.Home)
 	info, err := os.Stat(source)
 	if err != nil || !info.IsDir() {
-		return projectMount{}, exitcode.New(1, "failed to resolve project directory: %s does not exist", source)
+		return Project{}, exitcode.New(1, "failed to resolve project directory: %s does not exist", source)
 	}
-	return projectMount{
-		name:       name,
-		sourceDir:  source,
-		sandboxDir: filepath.Join(f.paths.ProjectRoot, filepath.FromSlash(name)),
-	}, nil
+	return Project{Name: name, HostPath: source}, nil
+}
+
+func (f Factory) projectName(hostPath string) (string, error) {
+	name := filepath.Base(hostPath)
+	if err := validateRelativeName("project name", name); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func validateRelativeName(label, value string) error {
 	value = filepath.ToSlash(strings.TrimSpace(value))
-	if value == "" || pathpkg.IsAbs(value) || strings.ContainsRune(value, 0) {
+	if value == "" || pathpkg.IsAbs(value) || strings.ContainsRune(value, 0) || strings.Contains(value, "/") {
 		return fmt.Errorf("invalid %s: %q", label, value)
 	}
 	for _, segment := range strings.Split(value, "/") {
@@ -231,84 +273,6 @@ func validateRelativeName(label, value string) error {
 		}
 	}
 	return nil
-}
-
-func isProjectShorthand(project string) bool {
-	if project == "." || project == ".." || filepath.IsAbs(project) {
-		return false
-	}
-	return !strings.ContainsRune(project, os.PathSeparator)
-}
-
-func (s *Sandbox) HomeDir() string { return s.homeDir }
-
-func (s *Sandbox) ProjectRoot() string { return s.paths.ProjectRoot }
-
-func (s *Sandbox) OpenCodeConfigDir() string {
-	return filepath.Join(s.paths.SandboxRoot, ".config", "opencode")
-}
-
-func (s *Sandbox) TobyRuntimeDir() string {
-	return filepath.Join(s.paths.XDGRuntimeDir, "toby")
-}
-
-func (s *Sandbox) TobyContextDir() string {
-	return filepath.Join(s.TobyRuntimeDir(), "context")
-}
-
-func (s *Sandbox) TobyBinDir() string {
-	return filepath.Join(s.TobyRuntimeDir(), "bin")
-}
-
-func (s *Sandbox) TobyBinaryPath() string {
-	return filepath.Join(s.TobyBinDir(), "toby")
-}
-
-func (s *Sandbox) TobySandboxSocketPath() string {
-	return filepath.Join(s.TobyRuntimeDir(), control.SandboxSocketName)
-}
-
-func (s *Sandbox) TobyGitAgentsPath() string {
-	return filepath.Join(s.TobyContextDir(), "GIT_AGENTS.md")
-}
-
-func (s *Sandbox) TobyOpenCodeConfigDir() string {
-	return filepath.Join(s.TobyContextDir(), "opencode")
-}
-
-func (s *Sandbox) Cleanup() error {
-	if s.tempHome == "" {
-		return nil
-	}
-	tempHome := s.tempHome
-	s.tempHome = ""
-	return os.RemoveAll(tempHome)
-}
-
-func (s *Sandbox) EnsureHome() error {
-	return os.MkdirAll(s.homeDir, 0o755)
-}
-
-func (s *Sandbox) EnsureSandboxProjectDir() error {
-	if len(s.projectMounts) > 0 {
-		return nil
-	}
-	if s.projectDir != "" {
-		return nil
-	}
-	source, err := s.sandboxProjectSourceDir()
-	if err != nil {
-		return exitcode.New(1, "failed to create sandbox project directory: %s; set XDG_PROJECTS_DIR inside %s or provide --project", err, s.paths.Home)
-	}
-	return os.MkdirAll(source, 0o755)
-}
-
-func (s *Sandbox) sandboxProjectSourceDir() (string, error) {
-	rel, err := relativeTo(s.paths.Home, s.sandboxProjDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(s.homeDir, rel), nil
 }
 
 func relativeTo(base, path string) (string, error) {
@@ -330,170 +294,176 @@ func relativeTo(base, path string) (string, error) {
 	return rel, nil
 }
 
-func (s *Sandbox) SetupContext(ctx *tool.RunContext) {
-	ctx.Env["XDG_RUNTIME_DIR"] = s.paths.XDGRuntimeDir
+type projectMount struct {
+	name        string
+	hostPath    string
+	sandboxPath string
+}
+
+type baseInstance struct {
+	paths                 config.Paths
+	label                 string
+	homeHostPath          string
+	homeDir               string
+	projectsDir           string
+	runtimeDir            string
+	hostRuntimeDir        string
+	hostControlSocketPath string
+	workdir               string
+	projects              []projectMount
+	tempRuntime           string
+}
+
+func newProjectMounts(projects []Project, projectsDir string) []projectMount {
+	mounts := make([]projectMount, 0, len(projects))
+	for _, project := range projects {
+		mounts = append(mounts, projectMount{
+			name:        project.Name,
+			hostPath:    project.HostPath,
+			sandboxPath: filepath.Join(projectsDir, filepath.FromSlash(project.Name)),
+		})
+	}
+	return mounts
+}
+
+func (s *baseInstance) HomeDir() string { return s.homeDir }
+
+func (s *baseInstance) Projects() string { return s.projectsDir }
+
+func (s *baseInstance) ProjectPath(name string) (string, bool) {
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	for _, project := range s.projects {
+		if project.name == name {
+			return project.sandboxPath, true
+		}
+	}
+	return "", false
+}
+
+func (s *baseInstance) TobyRuntimeDir() string {
+	return filepath.Join(s.runtimeDir, "toby")
+}
+
+func (s *baseInstance) TobyContextDir() string {
+	return filepath.Join(s.TobyRuntimeDir(), "context")
+}
+
+func (s *baseInstance) TobyBinDir() string {
+	return filepath.Join(s.TobyRuntimeDir(), "bin")
+}
+
+func (s *baseInstance) TobyBinaryPath() string {
+	return filepath.Join(s.TobyBinDir(), "toby")
+}
+
+func (s *baseInstance) TobySandboxSocketPath() string {
+	return filepath.Join(s.TobyRuntimeDir(), control.SandboxSocketName)
+}
+
+func (s *baseInstance) TobyGitAgentsPath() string {
+	return filepath.Join(s.TobyContextDir(), "GIT_AGENTS.md")
+}
+
+func (s *baseInstance) TobyOpenCodeConfigDir() string {
+	return filepath.Join(s.TobyContextDir(), "opencode")
+}
+
+func (s *baseInstance) HostControlSocketPath() string { return s.hostControlSocketPath }
+
+func (s *baseInstance) Cleanup() error {
+	var err error
+	if s.tempRuntime != "" {
+		tempRuntime := s.tempRuntime
+		s.tempRuntime = ""
+		if removeErr := os.RemoveAll(tempRuntime); err == nil {
+			err = removeErr
+		}
+	}
+	return err
+}
+
+func (s *baseInstance) prepareHostDirs() error {
+	if s.homeHostPath != "" {
+		if err := os.MkdirAll(s.homeHostPath, 0o755); err != nil {
+			return err
+		}
+	}
+	if s.hostRuntimeDir != "" {
+		if err := os.MkdirAll(filepath.Join(s.hostRuntimeDir, "toby", "bin"), 0o700); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(s.hostRuntimeDir, "toby", "context"), 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *baseInstance) SetupContext(ctx *tool.RunContext) {
+	ctx.Env["HOME"] = s.HomeDir()
+	ctx.Env["XDG_RUNTIME_DIR"] = s.runtimeDir
+	ctx.Env["XDG_PROJECTS_DIR"] = s.Projects()
 	ctx.Env["GRML_CHROOT"] = "1"
 	ctx.Env["CHROOT"] = "(" + s.label + ")"
 	ctx.Env["TOBY_SANDBOX"] = "1"
-	ctx.Env["BASH_ENV"] = filepath.Join(s.paths.Home, ".env")
+	ctx.Env["BASH_ENV"] = filepath.Join(s.HomeDir(), ".env")
 	delete(ctx.Env, "TOBY_MOUNTABLE_PROJECTS")
-	ctx.Env.Prepend("PATH", filepath.Join(s.paths.Home, ".local", "bin"))
-	entries := ctx.Toolset.PathEntries()
-	for i := len(entries) - 1; i >= 0; i-- {
-		ctx.Env.Prepend("PATH", entries[i])
+	ctx.Env.Prepend("PATH", filepath.Join(s.HomeDir(), ".local", "bin"))
+	if ctx.Toolset != nil {
+		entries := ctx.Toolset.PathEntries()
+		for i := len(entries) - 1; i >= 0; i-- {
+			ctx.Env.Prepend("PATH", tool.ResolvePath(entries[i], s))
+		}
 	}
 	ctx.Env.Prepend("PATH", s.TobyBinDir())
 }
 
-func (s *Sandbox) BuildCommand(argv []string, mounts CommandMounts) []string {
-	args := []string{
-		"/usr/bin/bwrap",
-		"--die-with-parent",
-		"--unshare-pid",
-		"--proc", "/proc",
-		"--dev-bind", "/dev", "/dev",
-		"--tmpfs", "/tmp",
-		"--ro-bind-try", "/etc", "/etc",
-		"--ro-bind-try", "/opt", "/opt",
-		"--bind-try", "/sys", "/sys",
-		"--ro-bind-try", "/usr", "/usr",
-		"--symlink", "usr/bin", "/bin",
-		"--symlink", "usr/bin", "/sbin",
-		"--symlink", "usr/lib", "/lib",
-		"--symlink", "usr/lib", "/lib64",
-		"--ro-bind-try", "/var/empty", "/var/empty",
-		"--tmpfs", s.paths.XDGRuntimeDir,
-		"--dir", s.TobyRuntimeDir(),
-		"--dir", s.TobyBinDir(),
-		"--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
-	}
-	args = append(args, s.runtimeBind(filepath.Join(s.paths.XDGRuntimeDir, "pulse"))...)
-	args = append(args, s.runtimeBind(filepath.Join(s.paths.XDGRuntimeDir, s.paths.PipewireCore))...)
-	args = append(args, "--ro-bind-try", "/run/udev", "/run/udev")
-	args = append(args, s.runtimeBind(filepath.Join(s.paths.XDGRuntimeDir, s.paths.WaylandDisplay))...)
-	args = append(args,
-		"--ro-bind-try", "/tmp/.ICE-unix", "/tmp/.ICE-unix",
-		"--ro-bind-try", "/tmp/.X11-unix", "/tmp/.X11-unix",
-	)
-	if s.paths.XAuthority != "" {
-		args = append(args, "--ro-bind-try", s.paths.XAuthority, s.paths.XAuthority)
-	}
-	args = append(args,
-		"--bind", s.homeDir, s.paths.Home,
-		"--bind", "/usr/bin/true", "/usr/bin/xdg-open",
-	)
-	if mounts.TobyBinary != "" {
-		args = append(args, "--ro-bind", mounts.TobyBinary, s.TobyBinaryPath())
-	}
-	if mounts.ControlSocket != "" {
-		args = append(args, "--bind", mounts.ControlSocket, s.TobySandboxSocketPath())
-	}
-	if len(s.projectMounts) > 0 {
-		for _, mount := range s.projectMounts {
-			args = append(args, "--bind", mount.sourceDir, mount.sandboxDir)
-		}
-	} else if s.projectDir != "" {
-		args = append(args, "--bind", s.projectDir, s.sandboxProjDir)
-	}
-	for _, bind := range mounts.Binds {
-		args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, bind.SandboxPath)
-	}
-	args = append(args, "--chdir", s.chdirDir())
-	args = append(args, argv...)
-	return args
-}
-
-func (s *Sandbox) chdirDir() string {
+func (s *baseInstance) chdirDir() string {
 	if s.workdir != "" {
-		return s.workdir
+		return expandSandboxHome(s.workdir, s.HomeDir())
 	}
-	return s.sandboxProjDir
+	if len(s.projects) > 0 {
+		return s.projects[0].sandboxPath
+	}
+	return s.Projects()
 }
 
-func bwrapBindsForToolset(toolset *tool.Toolset) []bwrapBind {
-	if toolset == nil {
-		return nil
+func expandSandboxHome(value, home string) string {
+	if value == "~" {
+		return home
 	}
-	binds := toolset.Binds()
-	result := make([]bwrapBind, 0, len(binds))
-	for _, bind := range binds {
-		result = append(result, bwrapBind(bind))
+	if strings.HasPrefix(value, "~/") {
+		return filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(value, "~/")))
 	}
-	return result
+	return value
 }
 
-func (s *Sandbox) VisibleHostPath(repository string) (string, error) {
-	if len(s.projectMounts) > 0 {
-		return s.visibleConfiguredHostPath(repository)
-	}
-	virtual, err := repositoryVirtualPath(repository)
-	if err != nil {
-		return "", err
-	}
-	base, err := projectVirtualPath(s.paths.ProjectRoot, s.sandboxProjDir)
-	if err != nil {
-		return "", err
-	}
-	if !virtualPathWithin(base, virtual) {
-		return "", fmt.Errorf("repository is outside visible project: %s", repository)
-	}
-	source := s.projectDir
-	if source == "" {
-		source, err = s.sandboxProjectSourceDir()
-		if err != nil {
-			return "", err
-		}
-	}
-	rel := strings.TrimPrefix(virtual, base)
-	rel = strings.TrimPrefix(rel, "/")
-	hostPath := source
-	if rel != "" {
-		hostPath = filepath.Join(hostPath, filepath.FromSlash(rel))
-	}
-	return validateVisibleHostPath(source, hostPath)
-}
-
-func (s *Sandbox) visibleConfiguredHostPath(repository string) (string, error) {
-	virtual, err := repositoryVirtualPath(repository)
+func (s *baseInstance) VisibleHostPath(repository string) (string, error) {
+	repository, err := repositoryName(repository)
 	if err != nil {
 		return "", err
 	}
 	var selected *projectMount
-	selectedBase := ""
-	for i := range s.projectMounts {
-		base, err := projectVirtualPath(s.paths.ProjectRoot, s.projectMounts[i].sandboxDir)
-		if err != nil {
-			return "", err
-		}
-		if virtualPathWithin(base, virtual) && len(base) > len(selectedBase) {
-			selected = &s.projectMounts[i]
-			selectedBase = base
+	selectedName := ""
+	for i := range s.projects {
+		if nameWithin(s.projects[i].name, repository) && len(s.projects[i].name) > len(selectedName) {
+			selected = &s.projects[i]
+			selectedName = s.projects[i].name
 		}
 	}
 	if selected == nil {
 		return "", fmt.Errorf("repository is outside visible project: %s", repository)
 	}
-	rel := strings.TrimPrefix(virtual, selectedBase)
+	rel := strings.TrimPrefix(repository, selected.name)
 	rel = strings.TrimPrefix(rel, "/")
-	hostPath := selected.sourceDir
+	hostPath := selected.hostPath
 	if rel != "" {
 		hostPath = filepath.Join(hostPath, filepath.FromSlash(rel))
 	}
-	return validateVisibleHostPath(selected.sourceDir, hostPath)
+	return validateVisibleHostPath(selected.hostPath, hostPath)
 }
 
-func projectVirtualPath(projectRoot, path string) (string, error) {
-	rel, err := relativeTo(projectRoot, path)
-	if err != nil {
-		return "", err
-	}
-	if rel == "." {
-		return "/projects", nil
-	}
-	return "/projects/" + filepath.ToSlash(rel), nil
-}
-
-func repositoryVirtualPath(repository string) (string, error) {
+func repositoryName(repository string) (string, error) {
 	repository = strings.TrimSpace(repository)
 	if repository == "" || pathpkg.IsAbs(repository) || strings.ContainsRune(repository, 0) {
 		return "", fmt.Errorf("invalid repository name")
@@ -504,11 +474,11 @@ func repositoryVirtualPath(repository string) (string, error) {
 			return "", fmt.Errorf("invalid repository name")
 		}
 	}
-	return "/projects/" + strings.Join(segments, "/"), nil
+	return strings.Join(segments, "/"), nil
 }
 
-func virtualPathWithin(base, path string) bool {
-	return path == base || strings.HasPrefix(path, base+"/")
+func nameWithin(base, name string) bool {
+	return name == base || strings.HasPrefix(name, base+"/")
 }
 
 func validateVisibleHostPath(source, hostPath string) (string, error) {
@@ -531,30 +501,4 @@ func validateVisibleHostPath(source, hostPath string) (string, error) {
 		return "", fmt.Errorf("repository path escapes visible project: %w", err)
 	}
 	return resolvedHostPath, nil
-}
-
-func (s *Sandbox) runtimeBind(path string) []string {
-	return []string{"--ro-bind-try", path, path}
-}
-
-func bindFlag(kind tool.BindType, optional bool) string {
-	suffix := ""
-	if optional {
-		suffix = "-try"
-	}
-	switch kind {
-	case tool.BindRegular, "":
-		return "--bind" + suffix
-	case tool.BindReadOnly:
-		return "--ro-bind" + suffix
-	case tool.BindDev:
-		return "--dev-bind" + suffix
-	default:
-		return "--bind" + suffix
-	}
-}
-
-func (s *Sandbox) Run(ctx context.Context, argv []string, mounts CommandMounts, env tool.Environment, opts tool.ExecOptions) (int, error) {
-	cmd := s.BuildCommand(argv, mounts)
-	return s.runner.Run(ctx, cmd, env, executil.Options{HideOutput: opts.HideOutput})
 }

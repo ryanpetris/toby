@@ -16,7 +16,7 @@ import (
 func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, XDGRuntimeDir: filepath.Join(home, "runtime"), SandboxRoot: filepath.Join(home, "sandboxes")}
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Env: tool.Environment{}}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
 	var claude tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
@@ -42,9 +42,9 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 }
 
 func TestContextFlags(t *testing.T) {
-	runtimeDir := "/run/user/1000"
-	base := filepath.Join(runtimeDir, "toby", "context", "claude")
-	flags := contextFlags(runtimeDir)
+	contextDir := "/run/user/1000/toby/context"
+	base := filepath.Join(contextDir, "claude")
+	flags := contextFlags(contextDir)
 
 	for _, want := range [][2]string{
 		{"--mcp-config", filepath.Join(base, "mcp.json")},
@@ -59,4 +59,22 @@ func TestContextFlags(t *testing.T) {
 	if slices.Contains(flags, "--plugin-dir") {
 		t.Fatalf("unexpected --plugin-dir: %v", flags)
 	}
+}
+
+type fakeSandbox struct {
+	home     string
+	runtime  string
+	projects string
+}
+
+func (s fakeSandbox) HomeDir() string { return s.home }
+
+func (s fakeSandbox) Projects() string { return s.projects }
+
+func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Join(s.runtime, "toby") }
+
+func (s fakeSandbox) TobyContextDir() string { return filepath.Join(s.TobyRuntimeDir(), "context") }
+
+func (s fakeSandbox) TobyOpenCodeConfigDir() string {
+	return filepath.Join(s.TobyContextDir(), "opencode")
 }

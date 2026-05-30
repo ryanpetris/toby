@@ -39,7 +39,7 @@ func Provide(params Params) Result {
 			[]string{".config", "claude"},
 			[]string{".config", "claude"},
 			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
-			map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(params.Paths.Home, ".config", "claude")},
+			nil,
 		),
 		paths:  params.Paths,
 		npm:    params.NPM,
@@ -61,7 +61,7 @@ func (t *claudeTool) Binds() []tool.Bind {
 	return toolutil.Binds(t.deps(), t.Simple.Binds())
 }
 
-func (t *claudeTool) PathEntries() []string {
+func (t *claudeTool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
 }
 
@@ -76,7 +76,11 @@ func (t *claudeTool) SandboxContextSetup(ctx *tool.RunContext) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.SandboxContextSetup(ctx)
+	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
+		return err
+	}
+	ctx.Env["CLAUDE_CONFIG_DIR"] = filepath.Join(ctx.Sandbox.HomeDir(), ".config", "claude")
+	return nil
 }
 
 func (t *claudeTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
@@ -90,7 +94,7 @@ func (t *claudeTool) RegisterContextFiles(_ context.Context, run *tool.RunContex
 	if run == nil || run.ContextFiles == nil {
 		return fmt.Errorf("context files session is not configured")
 	}
-	return claudeconfig.RegisterContextFiles(run.ContextFiles, t.paths.ProjectRoot, run.ContextFiles.InstructionContents(), t.config)
+	return claudeconfig.RegisterContextFiles(run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionContents(), t.config)
 }
 
 func (t *claudeTool) Install(ctx context.Context, run *tool.RunContext) error {
@@ -111,13 +115,13 @@ func (t *claudeTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
 // launch flags. CLAUDE_CONFIG_DIR stays the writable real config because Claude
 // persists credentials and session state there.
 func (t *claudeTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	argv := append([]string{"claude"}, contextFlags(t.paths.XDGRuntimeDir)...)
+	argv := append([]string{"claude"}, contextFlags(run.Sandbox.TobyContextDir())...)
 	argv = append(argv, run.Extra...)
 	return tool.RunCommand(ctx, run.Launch, argv, tool.ExecOptions{})
 }
 
-func contextFlags(runtimeDir string) []string {
-	base := filepath.Join(runtimeDir, "toby", "context", "claude")
+func contextFlags(contextDir string) []string {
+	base := filepath.Join(contextDir, "claude")
 	flags := []string{
 		"--mcp-config", filepath.Join(base, "mcp.json"),
 		"--settings", filepath.Join(base, "settings.json"),

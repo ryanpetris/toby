@@ -221,13 +221,18 @@ components:
       type: object
       required: [command_id, argv]
       additionalProperties: false
+      description: >
+        Runs a command inside the sandbox. `argv` may be empty only when
+        `foreground` is true; an empty foreground command asks the sandbox
+        manager to launch the sandbox user's default interactive shell.
       properties:
         command_id:
           type: string
           format: uuid
         argv:
           type: array
-          minItems: 1
+          minItems: 0
+          description: Command argv to run inside the sandbox.
           items:
             type: string
         foreground:

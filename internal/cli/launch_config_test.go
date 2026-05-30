@@ -19,6 +19,11 @@ func TestLoadLaunchConfigDefaultsSandboxNameAndResolvesProjectPaths(t *testing.T
 	writeTestFile(t, configPath, []byte(`
 sandbox:
   autoUpgrade: true
+  runtime: docker
+  docker:
+    image: custom-node
+    home: /home/custom
+    projects: /workspace/custom
 workdir: ~/literal-workdir/../raw
 projects:
   - foo
@@ -41,9 +46,12 @@ tools:
 	if cfg.Sandbox.Name != "foo" || !cfg.Sandbox.AutoUpgrade {
 		t.Fatalf("sandbox = %#v", cfg.Sandbox)
 	}
-	wantWorkdir := home + "/literal-workdir/../raw"
+	wantWorkdir := "~/literal-workdir/../raw"
 	if cfg.Workdir != wantWorkdir {
 		t.Fatalf("workdir = %q", cfg.Workdir)
+	}
+	if cfg.Sandbox.Runtime != "docker" || cfg.Sandbox.Docker.Image != "custom-node" || cfg.Sandbox.Docker.Home != "/home/custom" || cfg.Sandbox.Docker.Projects != "/workspace/custom" {
+		t.Fatalf("sandbox docker config = %#v", cfg.Sandbox)
 	}
 	wantProjects := []tool.ProjectMount{
 		{Name: "foo", Source: dir},

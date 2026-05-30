@@ -26,38 +26,29 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(paths config.Paths, client *http.Client) Result {
+func Provide(_ config.Paths, client *http.Client) Result {
 	svc := &uvTool{
-		Base:  toolutil.Base(tool.UvToolName, "Launch UV (Python Package Manager)", tool.GroupSystem, tool.GroupVCS),
-		paths: paths,
-		http:  client,
+		Base: toolutil.Base(tool.UvToolName, "Launch UV (Python Package Manager)", tool.GroupSystem, tool.GroupVCS),
+		http: client,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type uvTool struct {
 	tool.Base
-	paths config.Paths
-	http  *http.Client
+	http *http.Client
 }
 
-func (t *uvTool) sharedDir() string {
-	return filepath.Join(t.paths.Home, ".local", "share", "toby", "uv")
+func (t *uvTool) PathEntries() []tool.PathTarget {
+	return []tool.PathTarget{tool.HomeTarget(".local", "share", "toby", "uv", "bin")}
 }
-
-func (t *uvTool) toolDir() string { return filepath.Join(t.sharedDir(), "tools") }
-
-func (t *uvTool) binDir() string { return filepath.Join(t.sharedDir(), "bin") }
-
-func (t *uvTool) cacheDir() string { return filepath.Join(t.sharedDir(), "cache") }
-
-func (t *uvTool) PathEntries() []string { return []string{t.binDir()} }
 
 func (t *uvTool) SandboxContextSetup(ctx *tool.RunContext) error {
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		ctx.Env["UV_TOOL_DIR"] = t.toolDir()
-		ctx.Env["UV_TOOL_BIN_DIR"] = t.binDir()
-		ctx.Env["UV_CACHE_DIR"] = t.cacheDir()
+		shared := filepath.Join(ctx.Sandbox.HomeDir(), ".local", "share", "toby", "uv")
+		ctx.Env["UV_TOOL_DIR"] = filepath.Join(shared, "tools")
+		ctx.Env["UV_TOOL_BIN_DIR"] = filepath.Join(shared, "bin")
+		ctx.Env["UV_CACHE_DIR"] = filepath.Join(shared, "cache")
 		return nil
 	})
 }
@@ -67,7 +58,7 @@ func (t *uvTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
 		if err := t.Install(ctx, run); err != nil {
 			return err
 		}
-		return tool.RunCommand(ctx, run.Exec, []string{"mkdir", "-p", t.toolDir(), t.binDir(), t.cacheDir()}, tool.ExecOptions{})
+		return tool.RunCommand(ctx, run.Exec, []string{"mkdir", "-p", run.Env["UV_TOOL_DIR"], run.Env["UV_TOOL_BIN_DIR"], run.Env["UV_CACHE_DIR"]}, tool.ExecOptions{})
 	})
 }
 

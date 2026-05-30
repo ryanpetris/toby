@@ -52,7 +52,7 @@ func (t *t3Tool) Binds() []tool.Bind {
 	return toolutil.Binds(t.deps(), t.Simple.Binds())
 }
 
-func (t *t3Tool) PathEntries() []string {
+func (t *t3Tool) PathEntries() []tool.PathTarget {
 	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
 }
 

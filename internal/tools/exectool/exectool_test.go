@@ -27,7 +27,7 @@ func TestExecLaunchRunsExtraCommand(t *testing.T) {
 	}
 }
 
-func TestExecLaunchDefaultsToInteractiveShell(t *testing.T) {
+func TestExecLaunchPassesEmptyCommandThrough(t *testing.T) {
 	var got []string
 	svc := Provide().Service
 	run := &tool.RunContext{
@@ -40,7 +40,7 @@ func TestExecLaunchDefaultsToInteractiveShell(t *testing.T) {
 	if err := svc.Launch(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"/bin/zsh", "-i"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("argv = %#v, want %#v", got, want)
+	if len(got) != 0 {
+		t.Fatalf("argv = %#v, want empty", got)
 	}
 }

@@ -54,7 +54,7 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "toby",
 		Short:         "Run Toby Sandbox development environments.",
-		Long:          "Toby Sandbox runs development tools inside private-home bubblewrap sandboxes.",
+		Long:          "Toby Sandbox runs development tools inside private-home development sandboxes.",
 		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -110,8 +110,9 @@ func newLaunchCommand(params Params, primary tool.Tool) *cobra.Command {
 }
 
 func addSandboxFlags(cmd *cobra.Command) {
-	cmd.Flags().Bool("tmp-env", false, "Use a temporary sandbox home directory that is removed on exit.")
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
+	cmd.Flags().String("sandbox-runtime", "", "Sandbox runtime to use: bubblewrap or docker.")
+	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {
@@ -142,6 +143,8 @@ func toolsFromNames(registry *tool.Registry, names []string) []tool.Tool {
 }
 
 func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
+	effectiveOpts := applySandboxDefaults(opts, params.TobyConfig)
+	opts = &effectiveOpts
 	sbx, err := params.SandboxFactory.FromOptions(opts)
 	if err != nil {
 		return err
@@ -155,13 +158,6 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	if err := toolset.HostInit(ctx, opts); err != nil {
 		return err
 	}
-	if err := sbx.EnsureHome(); err != nil {
-		return err
-	}
-	if err := sbx.EnsureSandboxProjectDir(); err != nil {
-		return err
-	}
-
 	env := tool.EnvironmentFromList(os.Environ())
 	run := &tool.RunContext{
 		Sandbox: sbx,
@@ -190,21 +186,16 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
 		ready <- sandboxManagerReady{client: client, err: err}
 	}
-	socketPath := control.HostSocketPath(env["XDG_RUNTIME_DIR"], os.Getpid())
+	socketPath := sbx.HostControlSocketPath()
 	server, err := control.ListenConnections(ctx, socketPath, manager.HandleConnection)
 	if err != nil {
 		return err
 	}
 	defer server.Close()
 
-	tobyBinary, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	commandMounts := sbx.CommandMounts(toolset, socketPath, tobyBinary)
 	sandboxManagerExit := newSandboxManagerExit()
 	go func() {
-		code, err := sbx.Run(ctx, []string{sbx.TobyBinaryPath(), "sandbox", "manager"}, commandMounts, env, tool.ExecOptions{})
+		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: []string{sbx.TobyBinaryPath(), "sandbox", "manager"}, Toolset: toolset, Env: env})
 		sandboxManagerExit.set(sandboxManagerProcessResult{exitCode: code, err: err})
 	}()
 
@@ -241,6 +232,30 @@ func runSandboxCommand(ctx context.Context, params Params, opts *tool.CommandOpt
 		return termErr
 	}
 	return runErr
+}
+
+func applySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) tool.CommandOptions {
+	if opts == nil {
+		opts = &tool.CommandOptions{}
+	}
+	result := *opts
+	defaults := config.Sandbox()
+	if result.SandboxRuntime == "" {
+		result.SandboxRuntime = defaults.Runtime
+	}
+	if result.SandboxRuntime != "docker" {
+		return result
+	}
+	if result.DockerImage == "" {
+		result.DockerImage = defaults.Docker.Image
+	}
+	if result.DockerHome == "" {
+		result.DockerHome = defaults.Docker.Home
+	}
+	if result.DockerProjects == "" {
+		result.DockerProjects = defaults.Docker.Projects
+	}
+	return result
 }
 
 type sandboxManagerReady struct {
@@ -355,7 +370,7 @@ func (s *sandboxManagerContextSink) AddFile(path string, data []byte, mode uint3
 	return s.client.FileCreate(s.ctx, target, data, mode)
 }
 
-func initSandboxContext(ctx context.Context, params Params, sbx *sandbox.Sandbox, run *tool.RunContext, client *hostmanager.SandboxClient) error {
+func initSandboxContext(ctx context.Context, params Params, sbx sandbox.Instance, run *tool.RunContext, client *hostmanager.SandboxClient) error {
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}

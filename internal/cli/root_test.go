@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/version"
 
@@ -77,6 +80,71 @@ func TestVersionFlagDefaultsToDev(t *testing.T) {
 	}
 }
 
+func TestApplySandboxDefaultsUsesHostDockerDefaults(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+sandbox:
+  runtime: docker
+  docker:
+    image: node:host
+    home: /home/host
+    projects: /workspace/host
+`))
+	config, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := applySandboxDefaults(&tool.CommandOptions{}, config)
+	if got.SandboxRuntime != "docker" || got.DockerImage != "node:host" || got.DockerHome != "/home/host" || got.DockerProjects != "/workspace/host" {
+		t.Fatalf("defaults = %#v", got)
+	}
+}
+
+func TestApplySandboxDefaultsPreservesExplicitLaunchValues(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+sandbox:
+  runtime: docker
+  docker:
+    image: node:host
+    home: /home/host
+    projects: /workspace/host
+`))
+	config, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := applySandboxDefaults(&tool.CommandOptions{SandboxRuntime: "docker", DockerImage: "node:launch", DockerHome: "/home/launch", DockerProjects: "/workspace/launch"}, config)
+	if got.DockerImage != "node:launch" || got.DockerHome != "/home/launch" || got.DockerProjects != "/workspace/launch" {
+		t.Fatalf("defaults = %#v", got)
+	}
+}
+
+func TestApplySandboxDefaultsDoesNotApplyDormantDockerDefaults(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+sandbox:
+  docker:
+    image: node:host
+    home: /home/host
+    projects: /workspace/host
+`))
+	config, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := applySandboxDefaults(&tool.CommandOptions{}, config)
+	if got.DockerImage != "" || got.DockerHome != "" || got.DockerProjects != "" {
+		t.Fatalf("defaults = %#v", got)
+	}
+}
+
 func emptyRegistry(t *testing.T) *tool.Registry {
 	t.Helper()
 	registry, err := tool.NewRegistry(tool.RegistryParams{})
@@ -84,6 +152,16 @@ func emptyRegistry(t *testing.T) *tool.Registry {
 		t.Fatal(err)
 	}
 	return registry
+}
+
+func writeTobyConfig(t *testing.T, dir string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func findCommand(cmd *cobra.Command, name string) *cobra.Command {

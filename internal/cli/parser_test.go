@@ -15,7 +15,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
 	parsed, err := parseSandboxArgs(
-		[]string{"--tmp-env", "proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
+		[]string{"proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
 		true,
 		tool.OpenCodeToolName,
 		ctxTools,
@@ -24,7 +24,7 @@ func TestParseSandboxArgsLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsed.Options.TmpEnv || parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
+	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
 		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
@@ -45,5 +45,15 @@ func TestParseSandboxArgsDoesNotHandlePrintFlag(t *testing.T) {
 	}
 	if len(parsed.RequestedTools) != 0 {
 		t.Fatalf("requested tools = %#v, want none", parsed.RequestedTools)
+	}
+}
+
+func TestParseSandboxArgsSandboxRuntimeAndImage(t *testing.T) {
+	parsed, err := parseSandboxArgs([]string{"env", "--sandbox-runtime", "docker", "--sandbox-image=node:test"}, false, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
+		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 }

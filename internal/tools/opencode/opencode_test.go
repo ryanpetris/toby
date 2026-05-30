@@ -17,7 +17,9 @@ import (
 
 type fakeNPM struct{ tool.Base }
 
-func (fakeNPM) PathEntries() []string { return []string{"/npm/bin"} }
+func (fakeNPM) PathEntries() []tool.PathTarget {
+	return []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}
+}
 
 func (fakeNPM) SandboxContextSetup(ctx *tool.RunContext) error {
 	ctx.Env["NPM_CALLED"] = "1"
@@ -43,7 +45,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Env: tool.Environment{}}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
 	if err := oc.SandboxContextSetup(run); err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +63,10 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
 	}).Service
 
-	if got, want := oc.PathEntries(), []string{"/npm/bin"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := oc.PathEntries(), []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("PathEntries = %#v, want %#v", got, want)
 	}
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Env: tool.Environment{}}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
 	if err := oc.SandboxContextSetup(run); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +109,24 @@ type hostInitNPM struct {
 	tool.Base
 	called      *bool
 	sandboxRoot string
+}
+
+type fakeSandbox struct {
+	home     string
+	runtime  string
+	projects string
+}
+
+func (s fakeSandbox) HomeDir() string { return s.home }
+
+func (s fakeSandbox) Projects() string { return s.projects }
+
+func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Join(s.runtime, "toby") }
+
+func (s fakeSandbox) TobyContextDir() string { return filepath.Join(s.TobyRuntimeDir(), "context") }
+
+func (s fakeSandbox) TobyOpenCodeConfigDir() string {
+	return filepath.Join(s.TobyContextDir(), "opencode")
 }
 
 func (t hostInitNPM) HostInit(context.Context, *tool.CommandOptions) error {

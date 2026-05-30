@@ -166,9 +166,9 @@ func (t *Toolset) Binds() []Bind {
 	return binds
 }
 
-func (t *Toolset) PathEntries() []string {
-	var entries []string
-	seen := map[string]bool{}
+func (t *Toolset) PathEntries() []PathTarget {
+	var entries []PathTarget
+	seen := map[PathTarget]bool{}
 	for _, item := range t.ordered {
 		for _, entry := range item.PathEntries() {
 			if seen[entry] {

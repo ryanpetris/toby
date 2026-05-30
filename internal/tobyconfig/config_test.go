@@ -21,6 +21,10 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
   "provider": {
     "local": { "npm": "@ai-sdk/openai-compatible", "options": { "apiKey": "base" } }
   },
+  "sandbox": {
+    "runtime": "bubblewrap",
+    "docker": { "image": "node:base", "home": "/home/base" }
+  },
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
 mcp:
@@ -32,6 +36,11 @@ provider:
   local:
     options:
       baseURL: https://models.example.com
+sandbox:
+  runtime: docker
+  docker:
+    image: node:custom
+    projects: /workspace/custom
 `))
 
 	cfg, err := Load(dir, home)
@@ -49,6 +58,32 @@ provider:
 	options := cfg.Providers()["local"].Raw()["options"].(map[string]any)
 	if options["apiKey"] != "base" || options["baseURL"] != "https://models.example.com" {
 		t.Fatalf("provider options = %#v", options)
+	}
+	sandbox := cfg.Sandbox()
+	if sandbox.Runtime != "docker" || sandbox.Docker.Image != "node:custom" || sandbox.Docker.Home != "/home/base" || sandbox.Docker.Projects != "/workspace/custom" {
+		t.Fatalf("sandbox = %#v", sandbox)
+	}
+}
+
+func TestLoadParsesSandboxDefaults(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+sandbox:
+  runtime: docker
+  docker:
+    image: node:lts-bookworm
+    home: /home/toby
+    projects: /workspace
+`))
+
+	cfg, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := cfg.Sandbox()
+	if sandbox.Runtime != "docker" || sandbox.Docker.Image != "node:lts-bookworm" || sandbox.Docker.Home != "/home/toby" || sandbox.Docker.Projects != "/workspace" {
+		t.Fatalf("sandbox = %#v", sandbox)
 	}
 }
 
