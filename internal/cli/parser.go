@@ -5,153 +5,123 @@ import (
 
 	"petris.dev/toby/internal/exitcode"
 	"petris.dev/toby/internal/tool"
+
+	"github.com/spf13/cobra"
 )
 
 type parsedCommand struct {
 	Options        tool.CommandOptions
 	Extra          []string
 	RequestedTools []string
-	Help           bool
 }
 
-func parseSandboxArgs(raw []string, launch bool, primary string, contextTools []tool.Tool, toolArgParser func(string, string) (bool, string, error)) (parsedCommand, error) {
+func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, contextTools []tool.Tool) (parsedCommand, error) {
 	var result parsedCommand
-	scriptArgs, passthrough := splitPassthrough(raw)
-	withFlags := map[string]string{}
+	env, extra, err := launchCommandArgs(args, cmd.Flags().ArgsLenAtDash())
+	if err != nil {
+		return result, err
+	}
+	result.Options.Env = env
+	result.Extra = extra
+
+	flags := cmd.Flags()
+	install, err := flags.GetBool("install")
+	if err != nil {
+		return result, err
+	}
+	upgrade, err := flags.GetBool("upgrade")
+	if err != nil {
+		return result, err
+	}
+	if install && upgrade {
+		return result, exitcode.New(2, "--install and --upgrade are mutually exclusive")
+	}
+	result.Options.Install = install
+	result.Options.Upgrade = upgrade
+
+	project, err := flags.GetString("project")
+	if err != nil {
+		return result, err
+	}
+	result.Options.Project = project
+	sandboxRuntime, err := flags.GetString("sandbox-runtime")
+	if err != nil {
+		return result, err
+	}
+	result.Options.SandboxRuntime = sandboxRuntime
+	dockerImage, err := flags.GetString("sandbox-image")
+	if err != nil {
+		return result, err
+	}
+	result.Options.DockerImage = dockerImage
+	if flagChanged(cmd, "tool-state") {
+		value, err := flags.GetString("tool-state")
+		if err != nil {
+			return result, err
+		}
+		state, err := parseToolStateFlag(value)
+		if err != nil {
+			return result, err
+		}
+		result.Options.ToolStates.Default.State = state
+	}
+	if flagChanged(cmd, "tool-state-root") {
+		value, err := flags.GetString("tool-state-root")
+		if err != nil {
+			return result, err
+		}
+		root, err := parseToolStateRootFlag(value)
+		if err != nil {
+			return result, err
+		}
+		result.Options.ToolStates.Default.StateRoot = root
+	}
 	for _, item := range contextTools {
 		if item.Name() == primary {
 			continue
 		}
-		withFlags["--with-"+item.CommandName()] = item.Name()
-	}
-
-	seenEnv := false
-	for i := 0; i < len(scriptArgs); i++ {
-		arg := scriptArgs[i]
-		if arg == "--help" || arg == "-h" {
-			result.Help = true
-			return result, nil
+		selected, err := flags.GetBool("with-" + item.CommandName())
+		if err != nil {
+			return result, err
 		}
-		if launch && arg == "--install" {
-			result.Options.Install = true
-			continue
+		if selected {
+			result.RequestedTools = appendIfMissing(result.RequestedTools, item.Name())
 		}
-		if launch && arg == "--upgrade" {
-			result.Options.Upgrade = true
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--project="); ok {
-			result.Options.Project = value
-			continue
-		}
-		if arg == "--project" {
-			if i+1 >= len(scriptArgs) {
-				return result, exitcode.New(2, "--project requires a value")
-			}
-			i++
-			result.Options.Project = scriptArgs[i]
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--sandbox-runtime="); ok {
-			result.Options.SandboxRuntime = value
-			continue
-		}
-		if arg == "--sandbox-runtime" {
-			if i+1 >= len(scriptArgs) {
-				return result, exitcode.New(2, "--sandbox-runtime requires a value")
-			}
-			i++
-			result.Options.SandboxRuntime = scriptArgs[i]
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--sandbox-image="); ok {
-			result.Options.DockerImage = value
-			continue
-		}
-		if arg == "--sandbox-image" {
-			if i+1 >= len(scriptArgs) {
-				return result, exitcode.New(2, "--sandbox-image requires a value")
-			}
-			i++
-			result.Options.DockerImage = scriptArgs[i]
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--tool-state="); ok {
-			state, err := parseToolStateFlag(value)
-			if err != nil {
-				return result, err
-			}
-			result.Options.ToolStates.Default.State = state
-			continue
-		}
-		if arg == "--tool-state" {
-			if i+1 >= len(scriptArgs) {
-				return result, exitcode.New(2, "--tool-state requires a value")
-			}
-			i++
-			state, err := parseToolStateFlag(scriptArgs[i])
-			if err != nil {
-				return result, err
-			}
-			result.Options.ToolStates.Default.State = state
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--tool-state-root="); ok {
-			root, err := parseToolStateRootFlag(value)
-			if err != nil {
-				return result, err
-			}
-			result.Options.ToolStates.Default.StateRoot = root
-			continue
-		}
-		if arg == "--tool-state-root" {
-			if i+1 >= len(scriptArgs) {
-				return result, exitcode.New(2, "--tool-state-root requires a value")
-			}
-			i++
-			root, err := parseToolStateRootFlag(scriptArgs[i])
-			if err != nil {
-				return result, err
-			}
-			result.Options.ToolStates.Default.StateRoot = root
-			continue
-		}
-		if toolName, ok := withFlags[arg]; ok {
-			result.RequestedTools = appendIfMissing(result.RequestedTools, toolName)
-			continue
-		}
-		if toolArgParser != nil {
-			handled, replacement, err := toolArgParser(arg, nextArg(scriptArgs, i))
-			if err != nil {
-				return result, err
-			}
-			if handled {
-				if replacement != "" {
-					i++
-				}
-				continue
-			}
-		}
-		if strings.HasPrefix(arg, "-") {
-			result.Extra = append(result.Extra, scriptArgs[i:]...)
-			break
-		}
-		if !seenEnv {
-			result.Options.Env = arg
-			seenEnv = true
-			continue
-		}
-		result.Extra = append(result.Extra, scriptArgs[i:]...)
-		break
-	}
-	if result.Options.Install && result.Options.Upgrade {
-		return result, exitcode.New(2, "--install and --upgrade are mutually exclusive")
 	}
 	if primary != "" {
 		result.RequestedTools = appendIfMissing(result.RequestedTools, primary)
 	}
-	result.Extra = append(result.Extra, passthrough...)
 	return result, nil
+}
+
+func launchCommandArgs(args []string, argsLenAtDash int) (string, []string, error) {
+	preLen := len(args)
+	if argsLenAtDash >= 0 {
+		preLen = argsLenAtDash
+	}
+	if preLen > 1 {
+		return "", nil, unexpectedLaunchArgument(args[1])
+	}
+	var env string
+	if preLen == 1 {
+		env = args[0]
+	}
+	if argsLenAtDash < 0 {
+		return env, nil, nil
+	}
+	return env, append([]string(nil), args[preLen:]...), nil
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flags().Lookup(name)
+	return flag != nil && flag.Changed
+}
+
+func unexpectedLaunchArgument(arg string) error {
+	if strings.HasPrefix(arg, "-") {
+		return exitcode.New(2, "unknown argument %q; command arguments must follow --", arg)
+	}
+	return exitcode.New(2, "unexpected argument %q; command arguments must follow --", arg)
 }
 
 func parseToolStateFlag(value string) (tool.ToolState, error) {
@@ -168,22 +138,6 @@ func parseToolStateRootFlag(value string) (string, error) {
 		return "", exitcode.New(2, "--tool-state-root requires a value")
 	}
 	return value, nil
-}
-
-func splitPassthrough(raw []string) ([]string, []string) {
-	for i, arg := range raw {
-		if arg == "--" {
-			return raw[:i], raw[i+1:]
-		}
-	}
-	return raw, nil
-}
-
-func nextArg(args []string, i int) string {
-	if i+1 >= len(args) {
-		return ""
-	}
-	return args[i+1]
 }
 
 func appendIfMissing(values []string, value string) []string {

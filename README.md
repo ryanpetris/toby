@@ -162,7 +162,7 @@ Path values in launch config expand a leading `~` to the user's home directory. 
 
 `workdir` is passed to the selected sandbox runtime after leading `~` expansion to the sandbox home and is not otherwise resolved or validated by Toby. If omitted, Toby uses the first configured project's sandbox path.
 
-Command arguments are still passed after `--` and are appended to the first tool's configured `params`:
+Toby parses all arguments before the first `--`; command arguments must come after it. Everything after that first `--`, including later `--` values, is appended to the first tool's configured `params`:
 
 ```sh
 toby --config myconfig.yaml -- --additional-param value

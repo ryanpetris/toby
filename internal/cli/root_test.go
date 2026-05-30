@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/config"
@@ -50,6 +51,28 @@ func TestExecCommandGeneratedFromRegisteredTool(t *testing.T) {
 	cmd := NewRootCommand(Params{Registry: registry})
 	if findCommand(cmd, "exec") == nil {
 		t.Fatal("exec command missing")
+	}
+}
+
+func TestRootConfigFlagRejectsEmptyValue(t *testing.T) {
+	cmd := NewRootCommand(Params{Registry: emptyRegistry(t), Args: []string{"--config", ""}})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config requires a value") {
+		t.Fatalf("err = %v, want config value error", err)
+	}
+}
+
+func TestLaunchConfigFlagRejectsEmptyValue(t *testing.T) {
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCommand(Params{Registry: registry, Args: []string{"opencode", "env", "--config", ""}})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config requires a value") {
+		t.Fatalf("err = %v, want config value error", err)
 	}
 }
 

@@ -62,10 +62,17 @@ func NewRootCommand(params Params) *cobra.Command {
 		SilenceErrors:    true,
 		TraverseChildren: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagChanged(cmd, "config") && strings.TrimSpace(configPath) == "" {
+				return exitcode.New(2, "--config requires a value")
+			}
 			if configPath == "" {
 				return cmd.Help()
 			}
-			launch, err := buildConfiguredLaunch(params, configPath, args)
+			extra, err := configuredLaunchExtraArgs(args, cmd.Flags().ArgsLenAtDash())
+			if err != nil {
+				return err
+			}
+			launch, err := buildConfiguredLaunch(params, configPath, extra)
 			if err != nil {
 				return err
 			}
@@ -86,31 +93,36 @@ func NewRootCommand(params Params) *cobra.Command {
 	return cmd
 }
 
+func configuredLaunchExtraArgs(args []string, argsLenAtDash int) ([]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if argsLenAtDash < 0 {
+		return nil, unexpectedLaunchArgument(args[0])
+	}
+	if argsLenAtDash > 0 {
+		return nil, unexpectedLaunchArgument(args[0])
+	}
+	return args, nil
+}
+
 func newLaunchCommand(params Params, primary tool.Tool, rootConfigPath *string) *cobra.Command {
 	contextNames := tool.ExpandGroups(primary.ContextGroups())
 	contextTools := toolsFromNames(params.Registry, contextNames)
 	cmd := &cobra.Command{
-		Use:                primary.CommandName() + " [env] [-- command arguments...]",
-		Short:              primary.LaunchHelp(),
-		DisableFlagParsing: true,
+		Use:   primary.CommandName() + " [env] [-- command arguments...]",
+		Short: primary.LaunchHelp(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			argConfigPath, args, err := extractConfigArg(args)
-			if err != nil {
-				return err
-			}
 			effectiveConfigPath := ""
 			if rootConfigPath != nil {
 				effectiveConfigPath = *rootConfigPath
 			}
-			if argConfigPath != "" {
-				effectiveConfigPath = argConfigPath
+			if flagChanged(cmd, "config") && strings.TrimSpace(effectiveConfigPath) == "" {
+				return exitcode.New(2, "--config requires a value")
 			}
-			parsed, err := parseSandboxArgs(args, true, primary.Name(), contextTools, nil)
+			parsed, err := parseLaunchCommand(cmd, args, primary.Name(), contextTools)
 			if err != nil {
 				return err
-			}
-			if parsed.Help {
-				return cmd.Help()
 			}
 			if effectiveConfigPath != "" {
 				project, err := resolveDirectLaunchProject(params.Paths, parsed.Options)
@@ -147,38 +159,6 @@ func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
 	cmd.Flags().String("tool-state", "", "Tool state source to use by default: private or host.")
 	cmd.Flags().String("tool-state-root", "", "Host root to use as HOME for tool state when --tool-state=host.")
-}
-
-func extractConfigArg(args []string) (string, []string, error) {
-	var configPath string
-	result := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			result = append(result, args[i:]...)
-			break
-		}
-		if value, ok := strings.CutPrefix(arg, "--config="); ok {
-			if strings.TrimSpace(value) == "" {
-				return "", nil, exitcode.New(2, "--config requires a value")
-			}
-			configPath = value
-			continue
-		}
-		if arg == "--config" {
-			if i+1 >= len(args) {
-				return "", nil, exitcode.New(2, "--config requires a value")
-			}
-			i++
-			if strings.TrimSpace(args[i]) == "" {
-				return "", nil, exitcode.New(2, "--config requires a value")
-			}
-			configPath = args[i]
-			continue
-		}
-		result = append(result, arg)
-	}
-	return configPath, result, nil
 }
 
 func maybeAutoloadProjectConfig(params Params, parsed parsedCommand, primary string) (configuredLaunch, bool, error) {

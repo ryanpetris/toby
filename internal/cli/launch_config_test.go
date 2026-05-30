@@ -236,10 +236,7 @@ tools:
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseSandboxArgs([]string{"app", "--", "--foreground"}, true, tool.OpenCodeToolName, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parsed := parsedCommand{Options: tool.CommandOptions{Env: "app"}, Extra: []string{"--foreground"}, RequestedTools: []string{tool.OpenCodeToolName}}
 	paths := config.Paths{Home: home, ProjectRoot: projectRoot}
 	primaryProject, err := resolveDirectLaunchProject(paths, parsed.Options)
 	if err != nil {

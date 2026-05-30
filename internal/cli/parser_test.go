@@ -2,82 +2,134 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/tool"
+
+	"github.com/spf13/cobra"
 )
 
 type contextTool struct{ tool.Base }
 
-func TestParseSandboxArgsLaunch(t *testing.T) {
+func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 	ctxTools := []tool.Tool{
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch Node Package Manager"}}},
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
-	parsed, err := parseSandboxArgs(
-		[]string{"proj", "--with-gh", "--upgrade", "--", "--repo", "x"},
-		true,
-		tool.OpenCodeToolName,
-		ctxTools,
-		nil,
-	)
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--tool-state", "host", "--tool-state-root=state/root", "--", "foo", "--", "bar"}, ctxTools)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade {
-		t.Fatalf("parsed options = %#v", parsed.Options)
-	}
-	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("requested = %#v, want %#v", got, want)
-	}
-	if got, want := parsed.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("extra = %#v, want %#v", got, want)
-	}
-}
-
-func TestParseSandboxArgsDoesNotHandlePrintFlag(t *testing.T) {
-	parsed, err := parseSandboxArgs([]string{"env", "--print"}, false, "", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := parsed.Extra, []string{"--print"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("extra = %#v, want %#v", got, want)
-	}
-	if len(parsed.RequestedTools) != 0 {
-		t.Fatalf("requested tools = %#v, want none", parsed.RequestedTools)
-	}
-}
-
-func TestParseSandboxArgsSandboxRuntimeImageAndToolState(t *testing.T) {
-	parsed, err := parseSandboxArgs([]string{"env", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--tool-state", "host", "--tool-state-root=state/root"}, false, "", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
+	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
 		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 	if parsed.Options.ToolStates.Default.State != tool.ToolStateHost || parsed.Options.ToolStates.Default.StateRoot != "state/root" {
 		t.Fatalf("tool state = %#v", parsed.Options.ToolStates)
 	}
+	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requested = %#v, want %#v", got, want)
+	}
+	if got, want := parsed.Extra, []string{"foo", "--", "bar"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("extra = %#v, want %#v", got, want)
+	}
 }
 
-func TestParseSandboxArgsRejectsInvalidToolState(t *testing.T) {
-	_, err := parseSandboxArgs([]string{"env", "--tool-state=shared"}, false, "", nil, nil)
+func TestParseLaunchCommandPreservesDashAfterFirstDash(t *testing.T) {
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--", "--", "foo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Extra, []string{"--", "foo"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("extra = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseLaunchCommandPassesFlagsAfterDash(t *testing.T) {
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--", "--project", "tool-project"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Options.Project != "" {
+		t.Fatalf("project = %q, want empty", parsed.Options.Project)
+	}
+	if got, want := parsed.Extra, []string{"--project", "tool-project"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("extra = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseLaunchCommandRejectsExtraPositionalBeforeDash(t *testing.T) {
+	_, err := executeTestLaunchParser(t, []string{"env", "npm", "test"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "command arguments must follow --") {
+		t.Fatalf("err = %v, want command-arguments delimiter error", err)
+	}
+}
+
+func TestParseLaunchCommandLetsCobraRejectUnknownFlag(t *testing.T) {
+	_, err := executeTestLaunchParser(t, []string{"env", "--print"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --print") {
+		t.Fatalf("err = %v, want unknown flag error", err)
+	}
+}
+
+func TestParseLaunchCommandRejectsInvalidToolState(t *testing.T) {
+	_, err := executeTestLaunchParser(t, []string{"env", "--tool-state=shared"}, nil)
 	if err == nil {
 		t.Fatal("expected invalid tool state to fail")
 	}
 }
 
-func TestExtractConfigArg(t *testing.T) {
-	configPath, args, err := extractConfigArg([]string{"env", "--config", "repo.yaml", "--", "--config", "tool.yaml"})
-	if err != nil {
-		t.Fatal(err)
+func TestConfiguredLaunchExtraArgs(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		argsLenAtDash int
+		want          []string
+		wantErr       bool
+	}{
+		{name: "none", argsLenAtDash: -1},
+		{name: "after dash", args: []string{"--watch"}, argsLenAtDash: 0, want: []string{"--watch"}},
+		{name: "keeps later dash", args: []string{"--", "--watch"}, argsLenAtDash: 0, want: []string{"--", "--watch"}},
+		{name: "requires dash", args: []string{"--watch"}, argsLenAtDash: -1, wantErr: true},
+		{name: "rejects before dash", args: []string{"env", "--watch"}, argsLenAtDash: 1, wantErr: true},
 	}
-	if configPath != "repo.yaml" {
-		t.Fatalf("configPath = %q", configPath)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := configuredLaunchExtraArgs(tt.args, tt.argsLenAtDash)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("args = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
-	want := []string{"env", "--", "--config", "tool.yaml"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("args = %#v, want %#v", args, want)
+}
+
+func executeTestLaunchParser(t *testing.T, args []string, contextTools []tool.Tool) (parsedCommand, error) {
+	t.Helper()
+	primary := contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}}
+	var parsed parsedCommand
+	cmd := &cobra.Command{
+		Use:           primary.CommandName(),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
+			parsed, err = parseLaunchCommand(cmd, args, primary.Name(), contextTools)
+			return err
+		},
 	}
+	addSandboxFlags(cmd)
+	cmd.Flags().Bool("install", false, "")
+	cmd.Flags().Bool("upgrade", false, "")
+	addContextFlags(cmd, primary, contextTools)
+	cmd.SetArgs(args)
+	return parsed, cmd.Execute()
 }
