@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -78,5 +79,95 @@ func TestProxyDispatchesInternalHandlerTarget(t *testing.T) {
 
 	if w.Code != http.StatusOK || w.Body.String() != "ok" {
 		t.Fatalf("response = %d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestParseProxyPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantID     string
+		wantSuffix string
+		wantErr    bool
+	}{
+		{name: "id only", path: "/proxy/id", wantID: "id"},
+		{name: "escaped id and suffix", path: "/proxy/local%2Fdocs/v1%2Fmodels", wantID: "local/docs", wantSuffix: "/v1/models"},
+		{name: "wrong prefix", path: "/other/id", wantErr: true},
+		{name: "blank id", path: "/proxy/%20", wantErr: true},
+		{name: "bad id escape", path: "/proxy/%ZZ", wantErr: true},
+		{name: "bad suffix escape", path: "/proxy/id/%ZZ", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, suffix, err := parseProxyPath(tt.path)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id != tt.wantID || suffix != tt.wantSuffix {
+				t.Fatalf("parseProxyPath = %q, %q; want %q, %q", id, suffix, tt.wantID, tt.wantSuffix)
+			}
+		})
+	}
+}
+
+func TestTargetURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		suffix  string
+		query   string
+		want    string
+		wantErr bool
+	}{
+		{name: "joins suffix", baseURL: " https://example.com/api/ ", suffix: "/v1/models", query: "debug=1", want: "https://example.com/api/v1/models?debug=1"},
+		{name: "replaces query", baseURL: "https://example.com/path?old=1", query: "new=1", want: "https://example.com/path?new=1"},
+		{name: "keeps base path", baseURL: "https://example.com/path", want: "https://example.com/path"},
+		{name: "relative rejected", baseURL: "/path", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := targetURL(tt.baseURL, tt.suffix, tt.query)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("targetURL = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHeaderHelpersReplaceAndCloneValues(t *testing.T) {
+	dst := http.Header{"X-Test": []string{"old"}, "X-Keep": []string{"keep"}}
+	src := http.Header{"X-Test": []string{"new", "second"}}
+	copyHeaders(dst, src)
+	if got, want := dst.Values("X-Test"), []string{"new", "second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("X-Test = %#v, want %#v", got, want)
+	}
+	if dst.Get("X-Keep") != "keep" {
+		t.Fatalf("X-Keep = %q", dst.Get("X-Keep"))
+	}
+
+	applyHeaders(dst, http.Header{"X-Keep": []string{"override"}})
+	if dst.Get("X-Keep") != "override" {
+		t.Fatalf("X-Keep after apply = %q", dst.Get("X-Keep"))
+	}
+
+	clone := cloneHeader(dst)
+	dst.Add("X-Test", "mutated")
+	if got, want := clone.Values("X-Test"), []string{"new", "second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cloned X-Test = %#v, want %#v", got, want)
 	}
 }

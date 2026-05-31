@@ -1,9 +1,12 @@
 package tobyconfig
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/context/files"
@@ -272,6 +275,135 @@ instructions:
 	}
 	if filepath.Base(instructions[1]) == "foobar.md" {
 		t.Fatalf("collision context path was not randomized: %#v", instructions[1])
+	}
+}
+
+func TestMCPServerHelpersCloneAndResolveHTTPHeaders(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "env-token")
+	t.Setenv("BEARER_TOKEN", "bearer-token")
+	server := MCPServer{raw: map[string]any{
+		"enabled": false,
+		"type":    "remote",
+		"url":     " https://example.com/mcp ",
+		"headers": map[string]any{
+			"X-List": []any{"a", "b"},
+			"X-Keep": "base",
+		},
+		"http_headers": map[string]any{
+			"X-Keep":        "override",
+			"Authorization": "Bearer configured",
+		},
+		"env_http_headers": map[string]any{
+			"X-Env": "MCP_TOKEN",
+		},
+		"bearer_token_env_var": "BEARER_TOKEN",
+	}}
+
+	raw := server.Raw()
+	raw["url"] = "mutated"
+	if server.URL() != "https://example.com/mcp" {
+		t.Fatalf("server URL mutated through Raw clone: %q", server.URL())
+	}
+	if server.Enabled() {
+		t.Fatal("server should be disabled")
+	}
+	if !server.HTTPProxyable() {
+		t.Fatal("remote server should be HTTP proxyable")
+	}
+	headers, err := server.Headers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := headers.Values("X-List"), []string{"a", "b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("X-List = %#v, want %#v", got, want)
+	}
+	if headers.Get("X-Keep") != "override" || headers.Get("X-Env") != "env-token" || headers.Get("Authorization") != "Bearer configured" {
+		t.Fatalf("headers = %#v", headers)
+	}
+
+	bearer, err := (MCPServer{raw: map[string]any{"bearer_token_env_var": "BEARER_TOKEN"}}).Headers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearer.Get("Authorization") != "Bearer bearer-token" {
+		t.Fatalf("bearer headers = %#v", bearer)
+	}
+}
+
+func TestMCPServerHTTPProxyableCases(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]any
+		want bool
+	}{
+		{name: "remote", raw: map[string]any{"type": "remote", "command": "ignored"}, want: true},
+		{name: "implicit url", raw: map[string]any{"url": " https://example.com/mcp "}, want: true},
+		{name: "implicit command", raw: map[string]any{"command": "mcp"}, want: false},
+		{name: "local", raw: map[string]any{"type": "local", "url": "https://example.com/mcp"}, want: false},
+		{name: "blank", raw: map[string]any{"url": " "}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MCPServerHTTPProxyable(tt.raw); got != tt.want {
+				t.Fatalf("MCPServerHTTPProxyable = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if (MCPServer{}).Enabled() != true {
+		t.Fatal("missing enabled should default true")
+	}
+}
+
+func TestMCPServerHeadersRejectInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{name: "headers not object", raw: map[string]any{"headers": []any{"bad"}}, want: "headers: must be an object"},
+		{name: "header item not string", raw: map[string]any{"headers": map[string]any{"X": []any{"ok", 1}}}, want: `headers: header "X" entries must be strings`},
+		{name: "header value invalid", raw: map[string]any{"headers": map[string]any{"X": 1}}, want: `headers: header "X" value must be a string or string array`},
+		{name: "env header invalid", raw: map[string]any{"env_http_headers": map[string]any{"X": ""}}, want: `env_http_headers: header "X" env var name must be a string`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := MCPServerHeaders(tt.raw)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveStringSubstitutions(t *testing.T) {
+	home := t.TempDir()
+	firstDir := filepath.Join(home, "first")
+	secondDir := filepath.Join(home, "second")
+	writeFile(t, filepath.Join(secondDir, "secret.txt"), []byte(" relative-secret\n"))
+	writeFile(t, filepath.Join(home, "home-secret.txt"), []byte("home-secret\n"))
+	absPath := filepath.Join(home, "absolute.txt")
+	writeFile(t, absPath, []byte(" absolute-secret\n"))
+	t.Setenv("API_TOKEN", "env-secret")
+
+	resolved, err := resolveString("env={env:API_TOKEN}; rel={file:secret.txt}; home={file:~/home-secret.txt}; abs={file:"+absPath+"}", []string{firstDir, secondDir}, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "env=env-secret; rel=relative-secret; home=home-secret; abs=absolute-secret"
+	if resolved != want {
+		t.Fatalf("resolved = %q, want %q", resolved, want)
+	}
+
+	_, err = resolveString("missing={file:missing.txt}", []string{firstDir}, home)
+	if err == nil || !strings.Contains(err.Error(), `unable to read file substitution "missing.txt"`) {
+		t.Fatalf("err = %v", err)
+	}
+
+	if _, err := readSubstitutionFile("secret.txt", []string{"", secondDir}); err != nil {
+		t.Fatalf("readSubstitutionFile skipped empty dirs: %v", err)
+	}
+	if _, err := MCPServerHeaders(map[string]any{"headers": http.Header{"X": []string{"bad"}}}); err == nil {
+		t.Fatal("expected http.Header input to be rejected because config values must be plain objects")
 	}
 }
 

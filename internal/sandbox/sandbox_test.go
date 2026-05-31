@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -623,6 +624,124 @@ func TestSandboxAndProjectNamesRejectSlashes(t *testing.T) {
 func TestDockerHomeVolumeNameSanitizesLabel(t *testing.T) {
 	if got, want := dockerHomeVolumeName("review env"), "toby-home-review-env"; got != want {
 		t.Fatalf("volume name = %q, want %q", got, want)
+	}
+}
+
+func TestDockerHelpersFormatAndSortValues(t *testing.T) {
+	if got, want := dockerBind("/host", "/target", false), "type=bind,source=/host,target=/target"; got != want {
+		t.Fatalf("dockerBind = %q, want %q", got, want)
+	}
+	if got, want := dockerBind("/host", "/target", true), "type=bind,source=/host,target=/target,readonly"; got != want {
+		t.Fatalf("readonly dockerBind = %q, want %q", got, want)
+	}
+	if got, want := dockerVolume("home", "/home/demo"), "type=volume,source=home,target=/home/demo"; got != want {
+		t.Fatalf("dockerVolume = %q, want %q", got, want)
+	}
+	if got, want := dockerHomeVolumeName("!!!"), "toby-home-sandbox"; got != want {
+		t.Fatalf("fallback volume name = %q, want %q", got, want)
+	}
+	for _, r := range []rune{'a', 'Z', '0', '_', '.', '-'} {
+		if !isDockerVolumeNameChar(r) {
+			t.Fatalf("%q should be a docker volume name char", r)
+		}
+	}
+	if isDockerVolumeNameChar(' ') {
+		t.Fatal("space should not be a docker volume name char")
+	}
+	if got, want := dockerEnv(tool.Environment{"B": "2", "A": "1"}), []string{"A=1", "B=2"}; !slices.Equal(got, want) {
+		t.Fatalf("dockerEnv = %#v, want %#v", got, want)
+	}
+}
+
+func TestBubblewrapHelpers(t *testing.T) {
+	t.Setenv("TOBY_TEST_ENV", "configured")
+	if got := envString("TOBY_TEST_ENV", "fallback"); got != "configured" {
+		t.Fatalf("envString configured = %q", got)
+	}
+	if got := envString("TOBY_TEST_MISSING", "fallback"); got != "fallback" {
+		t.Fatalf("envString fallback = %q", got)
+	}
+	instance := &BubblewrapInstance{runtime: "/run/user/1000"}
+	if got, want := instance.runtimeBind("wayland-0"), []string{"--ro-bind-try", filepath.Join("/run/user/1000", "wayland-0"), filepath.Join("/run/user/1000", "wayland-0")}; !slices.Equal(got, want) {
+		t.Fatalf("runtimeBind = %#v, want %#v", got, want)
+	}
+	if got := (&BubblewrapInstance{}).runtimeBind("wayland-0"); got != nil {
+		t.Fatalf("empty runtimeBind = %#v", got)
+	}
+	if bindFlag(tool.BindRegular, false) != "--bind" || bindFlag(tool.BindReadOnly, true) != "--ro-bind-try" || bindFlag(tool.BindDev, true) != "--dev-bind-try" || bindFlag("unknown", false) != "--bind" {
+		t.Fatal("unexpected bind flags")
+	}
+}
+
+func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
+	paths := testPaths(t.TempDir())
+	instance := &baseInstance{
+		paths:              paths,
+		label:              "demo",
+		homeDir:            paths.Home,
+		projectsDir:        paths.ProjectRoot,
+		runtimeDir:         RuntimeDir,
+		controlToken:       "host-token",
+		sandboxControlHost: "host.docker.internal",
+		projects:           newProjectMounts([]Project{{Name: "app", HostPath: "/host/app"}}, paths.ProjectRoot),
+	}
+	if path, ok := instance.ProjectPath(" app "); !ok || path != filepath.Join(paths.ProjectRoot, "app") {
+		t.Fatalf("ProjectPath = %q, %v", path, ok)
+	}
+	if instance.TobyBinaryPath() != filepath.Join(RuntimeDir, "bin", "toby") || instance.TobyGitAgentsPath() != filepath.Join(RuntimeDir, "context", "GIT_AGENTS.md") {
+		t.Fatalf("runtime paths: bin=%q git=%q", instance.TobyBinaryPath(), instance.TobyGitAgentsPath())
+	}
+	if got := instance.sandboxHost("127.0.0.1:1234"); got != "host.docker.internal:1234" {
+		t.Fatalf("sandboxHost ipv4 = %q", got)
+	}
+	if got := instance.sandboxHost("[::1]:1234"); got != "host.docker.internal:1234" {
+		t.Fatalf("sandboxHost ipv6 = %q", got)
+	}
+	if got := instance.sandboxHost("10.0.0.1:1234"); got != "10.0.0.1:1234" {
+		t.Fatalf("sandboxHost external = %q", got)
+	}
+	env := tool.Environment{}
+	instance.SetupControlEndpoint(env, control.Endpoint{Host: "127.0.0.1:1234", Token: "token"})
+	if env[control.EnvControlHost] != "host.docker.internal:1234" || env[control.EnvControlToken] != "token" {
+		t.Fatalf("control env = %#v", env)
+	}
+	instance.workdir = "~/work"
+	if got := instance.chdirDir(); got != filepath.Join(paths.Home, "work") {
+		t.Fatalf("chdir workdir = %q", got)
+	}
+	instance.workdir = ""
+	if got := instance.chdirDir(); got != filepath.Join(paths.ProjectRoot, "app") {
+		t.Fatalf("chdir project = %q", got)
+	}
+}
+
+func TestSandboxNameAndRepositoryValidationHelpers(t *testing.T) {
+	if err := validateRelativeName("sandbox", " demo "); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", ".", "..", "team/demo", "/demo", "demo\x00"} {
+		if err := validateRelativeName("sandbox", value); err == nil {
+			t.Fatalf("expected relative name %q to fail", value)
+		}
+	}
+	if got, err := repositoryName(" foo/bar "); err != nil || got != "foo/bar" {
+		t.Fatalf("repositoryName = %q, %v", got, err)
+	}
+	for _, value := range []string{"", "foo//bar", "foo/../bar", "/foo", "foo\x00"} {
+		if _, err := repositoryName(value); err == nil {
+			t.Fatalf("expected repository %q to fail", value)
+		}
+	}
+	if !nameWithin("foo", "foo/bar") || nameWithin("foo", "foobar") {
+		t.Fatal("unexpected nameWithin result")
+	}
+	base := t.TempDir()
+	child := filepath.Join(base, "child")
+	if rel, err := relativeTo(base, child); err != nil || rel != "child" {
+		t.Fatalf("relativeTo child = %q, %v", rel, err)
+	}
+	if _, err := relativeTo(base, filepath.Join(filepath.Dir(base), "outside")); err == nil {
+		t.Fatal("expected outside path to fail")
 	}
 }
 
