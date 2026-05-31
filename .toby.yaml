@@ -4,5 +4,3 @@ sandbox:
     docker:
       build:
         context: support/toby
-tools:
-  - docker
