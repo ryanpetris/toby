@@ -117,6 +117,14 @@ func (s *DockerInstance) Run(ctx context.Context, spec RunSpec) (int, error) {
 	if code, err := s.resolveImage(ctx, spec); err != nil || code != 0 {
 		return code, err
 	}
+	primeCmd := s.BuildHomeVolumePrimeCommand(spec)
+	primeCode, primeErr := s.runner.Run(ctx, primeCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
+	if primeErr != nil {
+		return primeCode, primeErr
+	}
+	if primeCode != 0 {
+		return primeCode, exitcode.New(primeCode, "docker home volume preparation failed")
+	}
 	initCmd := s.BuildHomeVolumeInitCommand()
 	initCode, initErr := s.runner.Run(ctx, initCmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 	if initErr != nil {
@@ -201,6 +209,19 @@ func (s *DockerInstance) BuildTaggedImageBuildCommand() []string {
 
 func (s *DockerInstance) BuildUntaggedImageBuildCommand(iidFile string) []string {
 	return []string{s.docker, "build", "--iidfile", iidFile, "-f", s.build.Dockerfile, s.build.Context}
+}
+
+func (s *DockerInstance) BuildHomeVolumePrimeCommand(spec RunSpec) []string {
+	args := []string{
+		s.docker, "run", "--rm",
+		"--user", "0:0",
+		"--entrypoint", "/bin/sh",
+	}
+	for _, mount := range s.mounts(spec.Toolset) {
+		args = append(args, "--mount", mount)
+	}
+	args = append(args, "--workdir", s.chdirDir(), s.image, "-c", "exit")
+	return args
 }
 
 func (s *DockerInstance) BuildHomeVolumeInitCommand() []string {

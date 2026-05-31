@@ -389,6 +389,11 @@ func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--env", "XDG_PROJECTS_DIR=" + paths.ProjectRoot})
 	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), DefaultDockerImage})
 	assertContainsSequence(t, cmd, []string{docker.TobyBinaryPath(), "sandbox", "manager"})
+	primeCmd := docker.BuildHomeVolumePrimeCommand(RunSpec{})
+	assertContainsSequence(t, primeCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
+	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
+	assertContainsSequence(t, primeCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(paths.ProjectRoot, "demo"), false)})
+	assertContainsSequence(t, primeCmd, []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), DefaultDockerImage, "-c", "exit"})
 	initCmd := docker.BuildHomeVolumeInitCommand()
 	assertContainsSequence(t, initCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown"})
 	assertContainsSequence(t, initCmd, []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
@@ -472,12 +477,15 @@ func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 2 {
+	if len(runner.commands) != 3 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
-	assertContainsSequence(t, runner.commands[0], []string{"--entrypoint", "chown"})
+	assertContainsSequence(t, runner.commands[0], []string{"--entrypoint", "/bin/sh"})
 	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
-	assertContainsSequence(t, runner.commands[1], []string{"docker", "run", "--rm", "--init", "-i"})
+	assertContainsSequence(t, runner.commands[0], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), DefaultDockerImage, "-c", "exit"})
+	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "chown"})
+	assertContainsSequence(t, runner.commands[1], []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
+	assertContainsSequence(t, runner.commands[2], []string{"docker", "run", "--rm", "--init", "-i"})
 }
 
 func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
@@ -502,13 +510,14 @@ func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 4 {
+	if len(runner.commands) != 5 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
 	assertContainsSequence(t, runner.commands[1], []string{"docker", "build", "-t", "custom:dev", "-f", filepath.Join(contextDir, "Dockerfile.toby"), contextDir})
-	assertContainsSequence(t, runner.commands[2], []string{"custom:dev", "-R"})
-	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
+	assertContainsSequence(t, runner.commands[2], []string{"--entrypoint", "/bin/sh"})
+	assertContainsSequence(t, runner.commands[3], []string{"custom:dev", "-R"})
+	assertContainsSequence(t, runner.commands[4], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
 }
 
 func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
@@ -533,12 +542,13 @@ func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 3 {
+	if len(runner.commands) != 4 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
-	assertContainsSequence(t, runner.commands[1], []string{"custom:dev", "-R"})
-	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
+	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
+	assertContainsSequence(t, runner.commands[2], []string{"custom:dev", "-R"})
+	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "custom:dev"})
 }
 
 func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
@@ -563,13 +573,46 @@ func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 3 {
+	if len(runner.commands) != 4 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "build", "--iidfile"})
 	assertContainsSequence(t, runner.commands[0], []string{"-f", filepath.Join(contextDir, "Dockerfile"), contextDir})
-	assertContainsSequence(t, runner.commands[1], []string{"sha256:built", "-R"})
-	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "sha256:built"})
+	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
+	assertContainsSequence(t, runner.commands[2], []string{"sha256:built", "-R"})
+	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), "sha256:built"})
+}
+
+func TestDockerPrimeCommandUsesFinalMountsAndWorkdir(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: RuntimeDocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*DockerInstance)
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{bindTool{
+		Base:  tool.Base{Metadata: tool.Metadata{Name: "bind"}},
+		binds: []tool.Bind{{HostPath: "/host/opencode", Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset, err := registry.Build([]string{"bind"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := docker.BuildHomeVolumePrimeCommand(RunSpec{Toolset: toolset})
+	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", paths.Home)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(paths.ProjectRoot, "demo"), false)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerBind("/host/opencode", filepath.Join(paths.Home, ".local", "share", "opencode"), false)})
+	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(paths.ProjectRoot, "demo"), DefaultDockerImage, "-c", "exit"})
 }
 
 func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
