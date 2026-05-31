@@ -3,7 +3,7 @@ package exectool
 import (
 	"context"
 
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

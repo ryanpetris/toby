@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"petris.dev/toby/internal/openai"
+	"petris.dev/toby/internal/providers/openai"
 )
 
 func GetJSON(ctx context.Context, client *http.Client, url, accept string, target any) error {

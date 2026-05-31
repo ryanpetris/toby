@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/diagnostic/warning"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
-	"petris.dev/toby/internal/warning"
 
 	"go.uber.org/fx"
 )

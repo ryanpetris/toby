@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/version"
 
 	"github.com/spf13/cobra"

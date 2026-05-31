@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/sandboxmanager"
+	"petris.dev/toby/internal/control/sandboxmanager"
+	"petris.dev/toby/internal/diagnostic/exitcode"
 
 	"github.com/spf13/cobra"
 )

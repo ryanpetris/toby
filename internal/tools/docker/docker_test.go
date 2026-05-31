@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 func TestProvideMetadataAndBinds(t *testing.T) {

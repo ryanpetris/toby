@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/context/files"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 type fakeNPM struct{ tool.Base }

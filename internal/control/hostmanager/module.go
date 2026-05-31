@@ -1,7 +1,7 @@
 package hostmanager
 
 import (
-	"petris.dev/toby/internal/httpproxy"
+	"petris.dev/toby/internal/control/httpproxy"
 
 	"go.uber.org/fx"
 )

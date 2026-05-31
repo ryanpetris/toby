@@ -4,14 +4,14 @@ import (
 	"io"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/contextinit"
-	"petris.dev/toby/internal/hostmanager"
-	"petris.dev/toby/internal/mcpserver"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/context/setup"
+	"petris.dev/toby/internal/control/hostmanager"
+	"petris.dev/toby/internal/control/mcpserver"
+	"petris.dev/toby/internal/control/sandboxmanager"
 	"petris.dev/toby/internal/sandbox"
-	"petris.dev/toby/internal/sandboxmanager"
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 type Params struct {

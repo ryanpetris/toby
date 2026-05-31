@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
 )

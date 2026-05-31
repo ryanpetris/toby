@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/hostmanager"
+	"petris.dev/toby/internal/control/hostmanager"
 )
 
 func NewHostManagerGitClient(manager *hostmanager.HostManager) GitClient {

@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/control/httpproxy"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

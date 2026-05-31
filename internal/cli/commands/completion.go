@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/diagnostic/exitcode"
 
 	"github.com/spf13/cobra"
 )

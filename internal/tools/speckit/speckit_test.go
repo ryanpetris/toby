@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 type fakeUV struct {

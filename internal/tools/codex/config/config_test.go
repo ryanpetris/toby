@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/control/httpproxy"
 )
 
 const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"

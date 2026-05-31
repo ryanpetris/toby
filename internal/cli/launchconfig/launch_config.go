@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/configfile"
-	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
-	"petris.dev/toby/internal/warning"
+	"petris.dev/toby/internal/config/file"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 const projectLaunchConfigName = ".toby.yaml"

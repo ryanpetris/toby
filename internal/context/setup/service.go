@@ -4,9 +4,9 @@ import (
 	"context"
 	"sort"
 
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
 )

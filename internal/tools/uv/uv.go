@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

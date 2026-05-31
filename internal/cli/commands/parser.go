@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/cli/launchconfig"
-	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
 )

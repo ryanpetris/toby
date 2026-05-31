@@ -6,9 +6,9 @@ import (
 	"regexp"
 	"testing"
 
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/tool"
-	"petris.dev/toby/internal/warning"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 func TestLoadDeepMergesConfigFiles(t *testing.T) {

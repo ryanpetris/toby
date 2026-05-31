@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"strings"
 
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/proxyconfig"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/tools/toolconfig"
+	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
 
 const (

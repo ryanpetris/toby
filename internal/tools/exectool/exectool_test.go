@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 func TestExecLaunchRunsExtraCommand(t *testing.T) {

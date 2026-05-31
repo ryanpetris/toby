@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/tobyconfig"
-	"petris.dev/toby/internal/tool"
-	"petris.dev/toby/internal/warning"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
 )

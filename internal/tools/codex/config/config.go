@@ -7,11 +7,11 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"petris.dev/toby/internal/configfile"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/proxyconfig"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/config/file"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/tools/toolconfig"
+	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
 
 const TobyServerName = "toby"

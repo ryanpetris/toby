@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/cli/launchconfig"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
 )

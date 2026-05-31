@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"petris.dev/toby/internal/configfile"
+	"petris.dev/toby/internal/config/file"
 )
 
 func CommandParts(name string, raw any) (string, []string, error) {

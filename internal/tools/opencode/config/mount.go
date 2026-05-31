@@ -10,13 +10,13 @@ import (
 	"net/url"
 	"strings"
 
-	"petris.dev/toby/internal/configfile"
-	"petris.dev/toby/internal/contextfiles"
+	"petris.dev/toby/internal/config/file"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/openai"
-	"petris.dev/toby/internal/proxyconfig"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/providers/openai"
+	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
 
 const (

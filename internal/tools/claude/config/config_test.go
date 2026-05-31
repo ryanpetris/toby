@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/config/toby"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/control/httpproxy"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"

@@ -7,7 +7,7 @@ import (
 
 	"petris.dev/toby/internal/cli/launchconfig"
 	"petris.dev/toby/internal/cli/session"
-	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/version"
 
 	"github.com/spf13/cobra"

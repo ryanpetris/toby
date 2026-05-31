@@ -3,9 +3,9 @@ package proxyconfig
 import (
 	"fmt"
 
+	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/control/httpproxy"
 )
 
 func MCPURL(controlHost string, proxy *httpproxy.Service, server tobyconfig.MCPServer) (string, error) {

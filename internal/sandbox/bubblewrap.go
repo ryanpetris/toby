@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/executil"
-	"petris.dev/toby/internal/tool"
+	"petris.dev/toby/internal/platform/executil"
+	"petris.dev/toby/internal/tools/tool"
 )
 
 type BubblewrapEnvironment struct {

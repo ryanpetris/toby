@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/exitcode"
+	"petris.dev/toby/internal/diagnostic/exitcode"
 
 	"github.com/spf13/cobra"
 )

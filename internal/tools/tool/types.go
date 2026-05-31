@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/warning"
+	"petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/diagnostic/warning"
 
 	"github.com/spf13/cobra"
 )

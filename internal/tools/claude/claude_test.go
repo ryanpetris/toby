@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/npm"
+	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
