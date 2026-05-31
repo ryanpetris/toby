@@ -8,9 +8,11 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/tools/helpers"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -23,11 +25,13 @@ var Module = fx.Module("tools.opencode", fx.Provide(opencodeconfig.NewRenderer, 
 type Params struct {
 	fx.In
 
-	Paths    config.Paths
-	NPM      tool.Tool                `name:"npm"`
-	Renderer *opencodeconfig.Renderer `optional:"true"`
-	Config   *tobyconfig.Service      `optional:"true"`
-	Proxy    *httpproxy.Service       `optional:"true"`
+	Paths        config.Paths
+	NPM          tool.Tool                `name:"npm"`
+	Renderer     *opencodeconfig.Renderer `optional:"true"`
+	Config       *tobyconfig.Service      `optional:"true"`
+	Proxy        *httpproxy.Service       `optional:"true"`
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
 }
 
 type Result struct {
@@ -39,23 +43,27 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &openCodeTool{
-		Base:     toolutil.Base(tool.OpenCodeToolName, "Launch OpenCode", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
-		paths:    params.Paths,
-		npm:      params.NPM,
-		renderer: params.Renderer,
-		config:   params.Config,
-		proxy:    params.Proxy,
+		Base:         toolutil.Base(tool.OpenCodeToolName, "Launch OpenCode", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
+		paths:        params.Paths,
+		npm:          params.NPM,
+		renderer:     params.Renderer,
+		config:       params.Config,
+		proxy:        params.Proxy,
+		sandbox:      params.Sandbox,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type openCodeTool struct {
 	tool.Base
-	paths    config.Paths
-	npm      tool.Tool
-	renderer *opencodeconfig.Renderer
-	config   *tobyconfig.Service
-	proxy    *httpproxy.Service
+	paths        config.Paths
+	npm          tool.Tool
+	renderer     *opencodeconfig.Renderer
+	config       *tobyconfig.Service
+	proxy        *httpproxy.Service
+	sandbox      tool.SandboxService
+	contextFiles *contextfiles.Service
 }
 
 func (t *openCodeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -96,78 +104,73 @@ func (t *openCodeTool) stateDirs(root string) []string {
 	}
 }
 
-func (t *openCodeTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *openCodeTool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		ctx.Env["OPENCODE_CONFIG_DIR"] = ctx.Sandbox.TobyOpenCodeConfigDir()
-		return nil
+		return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", filepath.Join(t.sandbox.Paths().Context, "opencode"))
 	})
 }
 
-func (t *openCodeTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	return toolutil.SandboxInitDependencies(ctx, run, t.npm)
+func (t *openCodeTool) SandboxInit(ctx context.Context) error {
+	return toolutil.SandboxInitDependencies(ctx, t.npm)
 }
 
-func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+func (t *openCodeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if t.renderer == nil {
 			return fmt.Errorf("opencode renderer is not configured")
 		}
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err
 			}
 		}
-		warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.Env[control.EnvControlHost], run.TobyMCPURL, run.ContextFiles.InstructionPaths(), t.config, t.proxy)
+		controlHost, _ := t.sandbox.GetEnvironment(control.EnvControlHost)
+		warnings, err := t.renderer.RegisterContextFiles(ctx, t.contextFiles.Registrar(ctx), t.sandbox.Paths().Workspace, controlHost, t.sandbox.TobyMCPURL(), t.contextFiles.InstructionPaths(), t.config, t.proxy)
 		if err != nil {
 			return err
 		}
-		var suppression warning.Suppression
-		if run.Options != nil {
-			suppression = run.Options.SuppressWarnings
-		}
 		for _, item := range warnings {
-			warning.Fprintf(run.Stderr, suppression, warning.OpenCodeModelDiscovery, "failed to fetch OpenCode models: %v", item)
+			warning.Fprintf(opts.Stderr, opts.SuppressWarnings, warning.OpenCodeModelDiscovery, "failed to fetch OpenCode models: %v", item)
 		}
 		return nil
 	})
 }
 
-func (t *openCodeTool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
+func (t *openCodeTool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.install(ctx, run, false)
+	return t.install(ctx, false)
 }
 
-func (t *openCodeTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.npm); err != nil {
+func (t *openCodeTool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.install(ctx, run, true)
+	return t.install(ctx, true)
 }
 
-func (t *openCodeTool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *openCodeTool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "opencode")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "opencode")
 			if err != nil || exists {
 				return err
 			}
 		}
-		return tool.RunCommand(ctx, run.Exec, []string{"npm", "install", "-g", "opencode-ai"}, tool.ExecOptions{})
+		_, err := t.sandbox.Exec(ctx, []string{"npm", "install", "-g", "opencode-ai"}, tool.ExecOptions{})
+		return err
 	})
 }
 
-func (t *openCodeTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"opencode"}, run.Extra...), tool.ExecOptions{})
+func (t *openCodeTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"opencode"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }

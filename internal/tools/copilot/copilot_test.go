@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 type fakeNPM struct{ tool.Base }
@@ -21,38 +22,31 @@ func (fakeNPM) PathEntries() []tool.PathTarget {
 
 func TestSandboxContextSetupAddsCustomInstructionsDir(t *testing.T) {
 	home := t.TempDir()
-	cp := Provide(Params{
-		Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")},
-		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
-	}).Service
-	sandbox := fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}
-	run := &tool.RunContext{Sandbox: sandbox, Env: tool.Environment{"COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/existing"}}
+	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"))
+	sandbox.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] = "/existing"
 
-	if err := cp.SandboxContextSetup(run); err != nil {
+	if err := cp.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := copilotconfig.InstructionsDir(sandbox.TobyContextDir()) + ","
-	if !strings.HasPrefix(run.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"], wantPrefix) || !strings.Contains(run.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"], "/existing") {
-		t.Fatalf("COPILOT_CUSTOM_INSTRUCTIONS_DIRS = %q", run.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"])
+	wantPrefix := copilotconfig.InstructionsDir(sandbox.Paths().Context) + ","
+	got := sandbox.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]
+	if !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "/existing") {
+		t.Fatalf("COPILOT_CUSTOM_INSTRUCTIONS_DIRS = %q", got)
 	}
 }
 
 func TestRegisterContextFilesWritesCopilotFiles(t *testing.T) {
 	home := t.TempDir()
-	cp := Provide(Params{
-		Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")},
-		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
-	}).Service.(tool.ContextFileTool)
-	service := contextfiles.NewService()
-	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby"}
-	if err := run.ContextFiles.AddInstructionBytes("GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	cp, sandbox, service := newTestCopilot(t, filepath.Join(home, "context"))
+	registrar := cp.(tool.ContextFileTool)
+	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := cp.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := registrar.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	if !hasFile(files, copilotconfig.StaticMCPPath) || !hasFile(files, copilotconfig.StaticInstructionsPath) {
 		t.Fatalf("copilot context files not registered: %#v", files)
 	}
@@ -60,28 +54,30 @@ func TestRegisterContextFilesWritesCopilotFiles(t *testing.T) {
 
 func TestLaunchAddsAdditionalMCPConfig(t *testing.T) {
 	home := t.TempDir()
-	cp := Provide(Params{
-		Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")},
-		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
-	}).Service
-	sandbox := fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}
+	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"))
 	var got []string
-	run := &tool.RunContext{
-		Sandbox: sandbox,
-		Extra:   []string{"--allow-all-tools"},
-		Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			got = append([]string(nil), argv...)
-			return 0, nil
-		},
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
 	}
 
-	if err := cp.Launch(context.Background(), run); err != nil {
+	if err := cp.Launch(context.Background(), []string{"--allow-all-tools"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.TobyContextDir()), "--allow-all-tools"}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.Paths().Context), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
+}
+
+func newTestCopilot(t *testing.T, contextDir string) (tool.Tool, *tooltest.Sandbox, *contextfiles.Service) {
+	t.Helper()
+	home := t.TempDir()
+	sandbox := tooltest.NewSandbox(contextDir)
+	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox, ContextFiles: contextFiles}).Service, sandbox, contextFiles
 }
 
 func hasFile(files []contextfiles.File, path string) bool {
@@ -91,22 +87,4 @@ func hasFile(files []contextfiles.File, path string) bool {
 		}
 	}
 	return false
-}
-
-type fakeSandbox struct {
-	home     string
-	runtime  string
-	projects string
-}
-
-func (s fakeSandbox) HomeDir() string { return s.home }
-
-func (s fakeSandbox) Projects() string { return s.projects }
-
-func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Join(s.runtime, "toby") }
-
-func (s fakeSandbox) TobyContextDir() string { return filepath.Join(s.TobyRuntimeDir(), "context") }
-
-func (s fakeSandbox) TobyOpenCodeConfigDir() string {
-	return filepath.Join(s.TobyContextDir(), "opencode")
 }

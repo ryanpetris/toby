@@ -18,7 +18,7 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide() Result {
+func Provide(sandbox tool.SandboxService) Result {
 	svc := &execTool{
 		Base: toolutil.Base(
 			tool.ExecToolName,
@@ -28,12 +28,17 @@ func Provide() Result {
 			tool.GroupSystem,
 			tool.GroupVCS,
 		),
+		sandbox: sandbox,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
-type execTool struct{ tool.Base }
+type execTool struct {
+	tool.Base
+	sandbox tool.SandboxService
+}
 
-func (t *execTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, run.Extra, tool.ExecOptions{})
+func (t *execTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, extra, tool.ExecOptions{Foreground: true})
+	return err
 }

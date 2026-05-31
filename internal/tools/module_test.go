@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -15,9 +17,12 @@ import (
 
 func TestModuleRegistersEveryConfiguredTool(t *testing.T) {
 	home := t.TempDir()
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "context"))
 	var registered []string
 	app := fxtest.New(t,
 		fx.Supply(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}),
+		fx.Supply(fx.Annotate(sandbox, fx.As(new(tool.SandboxService)))),
+		fx.Provide(contextfiles.NewService),
 		Module(),
 		fx.Invoke(func(params struct {
 			fx.In

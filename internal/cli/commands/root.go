@@ -84,6 +84,7 @@ func sessionParams(params Params) session.Params {
 	return session.Params{
 		Registry:       params.Registry,
 		SandboxFactory: params.SandboxFactory,
+		SandboxService: params.SandboxService,
 		Paths:          params.Paths,
 		ContextFiles:   params.ContextFiles,
 		ContextInit:    params.ContextInit,

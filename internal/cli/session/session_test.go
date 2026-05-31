@@ -286,15 +286,15 @@ func (t statefulTestTool) ConfigureCommand(*cobra.Command) {}
 
 func (t statefulTestTool) HostInit(context.Context, *tool.CommandOptions) error { return nil }
 
-func (t statefulTestTool) SandboxContextSetup(*tool.RunContext) error { return nil }
+func (t statefulTestTool) SandboxContextSetup(context.Context) error { return nil }
 
-func (t statefulTestTool) SandboxInit(context.Context, *tool.RunContext) error { return nil }
+func (t statefulTestTool) SandboxInit(context.Context) error { return nil }
 
-func (t statefulTestTool) Install(context.Context, *tool.RunContext) error { return nil }
+func (t statefulTestTool) Install(context.Context) error { return nil }
 
-func (t statefulTestTool) Upgrade(context.Context, *tool.RunContext) error { return nil }
+func (t statefulTestTool) Upgrade(context.Context) error { return nil }
 
-func (t statefulTestTool) Launch(context.Context, *tool.RunContext) error { return nil }
+func (t statefulTestTool) Launch(context.Context, []string) error { return nil }
 
 func writeTobyConfig(t *testing.T, dir string, data []byte) {
 	t.Helper()

@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/config"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -19,9 +21,9 @@ import (
 
 var Module = fx.Module("tools.uv", fx.Provide(Provide))
 
-const uvInstallPath = "uv/install"
+const uvInstallPath = "uv/install.sh"
 
-//go:embed install
+//go:embed install.sh
 var uvFiles embed.FS
 
 type Result struct {
@@ -31,71 +33,94 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(_ config.Paths, client *http.Client) Result {
+type Params struct {
+	fx.In
+
+	Paths        config.Paths
+	HTTP         *http.Client
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
+}
+
+func Provide(params Params) Result {
 	svc := &uvTool{
-		Base: toolutil.Base(tool.UvToolName, "Launch UV (Python Package Manager)", tool.GroupSystem, tool.GroupVCS),
-		http: client,
+		Base:         toolutil.Base(tool.UvToolName, "Launch UV (Python Package Manager)", tool.GroupSystem, tool.GroupVCS),
+		http:         params.HTTP,
+		sandbox:      params.Sandbox,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type uvTool struct {
 	tool.Base
-	http *http.Client
+	http         *http.Client
+	sandbox      tool.SandboxService
+	contextFiles *contextfiles.Service
 }
 
 func (t *uvTool) PathEntries() []tool.PathTarget {
 	return []tool.PathTarget{tool.HomeTarget(".local", "share", "toby", "uv", "bin")}
 }
 
-func (t *uvTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *uvTool) SandboxContextSetup(ctx context.Context) error {
 	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		shared := filepath.Join(ctx.Sandbox.HomeDir(), ".local", "share", "toby", "uv")
-		ctx.Env["UV_TOOL_DIR"] = filepath.Join(shared, "tools")
-		ctx.Env["UV_TOOL_BIN_DIR"] = filepath.Join(shared, "bin")
-		ctx.Env["UV_CACHE_DIR"] = filepath.Join(shared, "cache")
+		shared := filepath.Join(t.sandbox.Paths().Home, ".local", "share", "toby", "uv")
+		for key, value := range map[string]string{
+			"UV_TOOL_DIR":     filepath.Join(shared, "tools"),
+			"UV_TOOL_BIN_DIR": filepath.Join(shared, "bin"),
+			"UV_CACHE_DIR":    filepath.Join(shared, "cache"),
+		} {
+			if err := t.sandbox.SetEnvironment(ctx, key, value); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
 
-func (t *uvTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	return tool.SandboxInitOnce(run, t.Name(), func() error {
-		if err := t.Install(ctx, run); err != nil {
+func (t *uvTool) SandboxInit(ctx context.Context) error {
+	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+		if err := t.Install(ctx); err != nil {
 			return err
 		}
-		return tool.RunCommand(ctx, run.Exec, []string{"mkdir", "-p", run.Env["UV_TOOL_DIR"], run.Env["UV_TOOL_BIN_DIR"], run.Env["UV_CACHE_DIR"]}, tool.ExecOptions{})
+		for _, key := range []string{"UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR"} {
+			dir, _ := t.sandbox.GetEnvironment(key)
+			if err := t.sandbox.Mkdir(ctx, dir, 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-func (t *uvTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
-		data, err := uvFiles.ReadFile("install")
+func (t *uvTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+		data, err := uvFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
 		}
-		return run.ContextFiles.AddBytes(uvInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, uvInstallPath, data, 0o500)
+		return err
 	})
 }
 
-func (t *uvTool) Install(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, false)
+func (t *uvTool) Install(ctx context.Context) error {
+	return t.install(ctx, false)
 }
 
-func (t *uvTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, true)
+func (t *uvTool) Upgrade(ctx context.Context) error {
+	return t.install(ctx, true)
 }
 
-func (t *uvTool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *uvTool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "uv")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "uv")
 			if err != nil || exists {
 				return err
 			}
@@ -105,32 +130,18 @@ func (t *uvTool) install(ctx context.Context, run *tool.RunContext, force bool) 
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		path, err := uvInstallLaunchPath(run)
-		if err != nil {
-			return err
-		}
-		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
+		_, err = t.sandbox.Exec(ctx, []string{t.contextPath(uvInstallPath), archiveURL}, tool.ExecOptions{})
+		return err
 	})
 }
 
-func uvInstallLaunchPath(run *tool.RunContext) (string, error) {
-	contextDir := ""
-	if run != nil {
-		if run.ContextFiles != nil {
-			contextDir = run.ContextFiles.ContextDir()
-		}
-		if contextDir == "" && run.Sandbox != nil {
-			contextDir = run.Sandbox.TobyContextDir()
-		}
-	}
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	return filepath.Join(contextDir, filepath.FromSlash(uvInstallPath)), nil
+func (t *uvTool) contextPath(path string) string {
+	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
 }
 
-func (t *uvTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"uv"}, run.Extra...), tool.ExecOptions{})
+func (t *uvTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"uv"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func (t *uvTool) latestRelease(ctx context.Context) (string, string, error) {

@@ -7,6 +7,7 @@ func Module() fx.Option {
 		"sandboxmanager",
 		fx.Provide(
 			NewFileService,
+			NewEnvironmentService,
 			NewCommandService,
 			NewSandboxService,
 			NewRegistry,

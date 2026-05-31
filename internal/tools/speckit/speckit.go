@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -24,8 +25,9 @@ var Module = fx.Module("tools.speckit", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	HTTP *http.Client
-	UV   tool.Tool `name:"uv"`
+	HTTP    *http.Client
+	UV      tool.Tool `name:"uv"`
+	Sandbox tool.SandboxService
 }
 
 type Result struct {
@@ -37,17 +39,19 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &speckitTool{
-		Base: toolutil.Base(tool.SpeckitToolName, "Launch Spec Kit", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
-		http: params.HTTP,
-		uv:   params.UV,
+		Base:    toolutil.Base(tool.SpeckitToolName, "Launch Spec Kit", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
+		http:    params.HTTP,
+		uv:      params.UV,
+		sandbox: params.Sandbox,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type speckitTool struct {
 	tool.Base
-	http *http.Client
-	uv   tool.Tool
+	http    *http.Client
+	uv      tool.Tool
+	sandbox tool.SandboxService
 }
 
 func (t *speckitTool) deps() []tool.Tool { return []tool.Tool{t.uv} }
@@ -64,41 +68,41 @@ func (t *speckitTool) HostInit(ctx context.Context, opts *tool.CommandOptions) e
 	return toolutil.HostInitDependencies(ctx, opts, t.uv)
 }
 
-func (t *speckitTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *speckitTool) SandboxContextSetup(ctx context.Context) error {
 	return toolutil.SandboxContextSetupDependencies(ctx, t.uv)
 }
 
-func (t *speckitTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	return tool.SandboxInitOnce(run, t.Name(), func() error {
-		if err := toolutil.SandboxInitDependencies(ctx, run, t.uv); err != nil {
+func (t *speckitTool) SandboxInit(ctx context.Context) error {
+	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+		if err := toolutil.SandboxInitDependencies(ctx, t.uv); err != nil {
 			return err
 		}
-		return t.Install(ctx, run)
+		return t.Install(ctx)
 	})
 }
 
-func (t *speckitTool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.uv); err != nil {
+func (t *speckitTool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.uv); err != nil {
 		return err
 	}
-	return t.install(ctx, run, false)
+	return t.install(ctx, false)
 }
 
-func (t *speckitTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.uv); err != nil {
+func (t *speckitTool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.uv); err != nil {
 		return err
 	}
-	return t.install(ctx, run, true)
+	return t.install(ctx, true)
 }
 
-func (t *speckitTool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *speckitTool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "specify")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "specify")
 			if err != nil || exists {
 				return err
 			}
@@ -113,12 +117,14 @@ func (t *speckitTool) install(ctx context.Context, run *tool.RunContext, force b
 			command = append(command, "--force")
 		}
 		command = append(command, "--from", "git+"+repositoryURL+"@"+tag)
-		return tool.RunCommand(ctx, run.Exec, command, tool.ExecOptions{})
+		_, err = t.sandbox.Exec(ctx, command, tool.ExecOptions{})
+		return err
 	})
 }
 
-func (t *speckitTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"specify"}, run.Extra...), tool.ExecOptions{})
+func (t *speckitTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"specify"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func (t *speckitTool) latestReleaseTag(ctx context.Context) (string, error) {

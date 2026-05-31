@@ -1,6 +1,7 @@
 package tobyconfig
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -372,7 +373,7 @@ func (s *Service) Sandbox() SandboxConfig {
 	return s.config.Sandbox
 }
 
-func (s *Service) RegisterContextFiles(session *contextfiles.Session) error {
+func (s *Service) RegisterContextFiles(ctx context.Context, service *contextfiles.Service) error {
 	if s == nil {
 		return nil
 	}
@@ -391,7 +392,7 @@ func (s *Service) RegisterContextFiles(session *contextfiles.Session) error {
 			return err
 		}
 		rel := filepath.ToSlash(filepath.Join(InstructionsDir, name))
-		if err := session.AddInstructionBytes(rel, data, 0o400); err != nil {
+		if _, err := service.AddInstruction(ctx, rel, data, 0o400); err != nil {
 			return err
 		}
 	}

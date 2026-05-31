@@ -17,6 +17,8 @@ import (
 	"petris.dev/toby/internal/control/sandboxmanager"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxbubblewrap "petris.dev/toby/internal/sandbox/bubblewrap"
+	sandboxdocker "petris.dev/toby/internal/sandbox/docker"
 	"petris.dev/toby/internal/tools"
 	"petris.dev/toby/internal/tools/tool"
 
@@ -74,6 +76,8 @@ func Module() fx.Option {
 		mcpserver.Module(),
 		tools.Module(),
 		sandbox.Module(),
+		sandboxbubblewrap.Module(),
+		sandboxdocker.Module(),
 		sandboxmanager.Module(),
 		fx.Provide(
 			config.NewPaths,
@@ -101,6 +105,7 @@ type rootCommandParams struct {
 
 	Registry       *tool.Registry
 	Factory        sandbox.Factory
+	SandboxService *sandbox.SandboxService
 	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	ContextInit    []contextinit.Registration `group:"toby.context.init"`
@@ -115,6 +120,7 @@ func newRootCommand(params rootCommandParams) *cobra.Command {
 	cliParams := cli.Params{
 		Registry:       params.Registry,
 		SandboxFactory: params.Factory,
+		SandboxService: params.SandboxService,
 		Paths:          params.Paths,
 		ContextFiles:   params.ContextFiles,
 		ContextInit:    params.ContextInit,

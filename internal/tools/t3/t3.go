@@ -3,10 +3,10 @@ package t3
 import (
 	"context"
 	"embed"
-	"fmt"
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -15,16 +15,18 @@ import (
 
 var Module = fx.Module("tools.t3", fx.Provide(Provide))
 
-const t3WrapperPath = "t3/t3-wrapper"
+const t3WrapperPath = "t3/t3-wrapper.sh"
 
-//go:embed t3-wrapper
+//go:embed t3-wrapper.sh
 var t3Files embed.FS
 
 type Params struct {
 	fx.In
 
-	Paths config.Paths
-	NPM   tool.Tool `name:"npm"`
+	Paths        config.Paths
+	NPM          tool.Tool `name:"npm"`
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
 }
 
 type Result struct {
@@ -37,6 +39,7 @@ type Result struct {
 func Provide(params Params) Result {
 	simple := toolutil.Simple(
 		params.Paths,
+		params.Sandbox,
 		toolutil.Base(tool.T3ToolName, "Launch T3 Code", tool.GroupUI, tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
 		nil,
 		nil,
@@ -45,15 +48,17 @@ func Provide(params Params) Result {
 	)
 	simple.InstallCheckCommand = "t3"
 	svc := &t3Tool{
-		Simple: simple,
-		npm:    params.NPM,
+		Simple:       simple,
+		npm:          params.NPM,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type t3Tool struct {
 	*tool.Simple
-	npm tool.Tool
+	npm          tool.Tool
+	contextFiles *contextfiles.Service
 }
 
 func (t *t3Tool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -73,72 +78,52 @@ func (t *t3Tool) HostInit(ctx context.Context, opts *tool.CommandOptions) error 
 	return t.Simple.HostInit(ctx, opts)
 }
 
-func (t *t3Tool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *t3Tool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
 	return t.Simple.SandboxContextSetup(ctx)
 }
 
-func (t *t3Tool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
+func (t *t3Tool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err
 			}
 		}
-		data, err := t3Files.ReadFile("t3-wrapper")
+		data, err := t3Files.ReadFile("t3-wrapper.sh")
 		if err != nil {
 			return err
 		}
-		return run.ContextFiles.AddBytes(t3WrapperPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, t3WrapperPath, data, 0o500)
+		return err
 	})
 }
 
-func (t *t3Tool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.SandboxInitDependencies(ctx, run, t.npm); err != nil {
+func (t *t3Tool) SandboxInit(ctx context.Context) error {
+	if err := toolutil.SandboxInitDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.SandboxInit(ctx, run)
+	return t.Simple.SandboxInit(ctx)
 }
 
-func (t *t3Tool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
+func (t *t3Tool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Install(ctx, run)
+	return t.Simple.Install(ctx)
 }
 
-func (t *t3Tool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.npm); err != nil {
+func (t *t3Tool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Upgrade(ctx, run)
+	return t.Simple.Upgrade(ctx)
 }
 
-func (t *t3Tool) Launch(ctx context.Context, run *tool.RunContext) error {
-	path, err := t3WrapperLaunchPath(run)
-	if err != nil {
-		return err
-	}
-	return tool.RunCommand(ctx, run.Launch, append([]string{path}, run.Extra...), tool.ExecOptions{})
-}
-
-func t3WrapperLaunchPath(run *tool.RunContext) (string, error) {
-	contextDir := ""
-	if run != nil {
-		if run.ContextFiles != nil {
-			contextDir = run.ContextFiles.ContextDir()
-		}
-		if contextDir == "" && run.Sandbox != nil {
-			contextDir = run.Sandbox.TobyContextDir()
-		}
-	}
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	return filepath.Join(contextDir, filepath.FromSlash(t3WrapperPath)), nil
+func (t *t3Tool) Launch(ctx context.Context, extra []string) error {
+	path := filepath.Join(t.Sandbox.Paths().Context, filepath.FromSlash(t3WrapperPath))
+	_, err := t.Sandbox.Exec(ctx, append([]string{path}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }

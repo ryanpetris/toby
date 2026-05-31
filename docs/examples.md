@@ -4,9 +4,10 @@ Worked recipes for common Toby tasks. For the field-level reference see
 [configuration.md](configuration.md); for tool specifics see
 [tools.md](tools.md).
 
-Throughout, `<env>` is an environment name that maps to the project
-`$XDG_PROJECTS_DIR/<env>` and to a persistent private sandbox home of the same
-name.
+Throughout, `<env>` is an environment name that maps to a host project and to a
+persistent private sandbox home of the same name. By default, host projects are
+resolved under the host `XDG_PROJECTS_DIR`. Docker sandboxes show projects under
+`/toby/workspace`; Bubblewrap sandboxes keep them under `XDG_PROJECTS_DIR`.
 
 ## Launch a coding tool in a project
 
@@ -20,8 +21,7 @@ toby copilot my-app       # Copilot
 toby grok my-app          # Grok
 ```
 
-Point an environment at a different project directory (still under
-`$XDG_PROJECTS_DIR`):
+Point an environment at a different project directory:
 
 ```sh
 toby claude review-env --project ~/Projects/customer-api
@@ -107,7 +107,8 @@ toby --config review.yaml
 
 The first tool (`opencode`) launches in the foreground; `uv` and `npm` are
 installed and available. The first existing project (`app`) is the working
-directory. Both projects appear inside the sandbox under `$XDG_PROJECTS_DIR/`.
+directory. In this Docker example, both projects appear inside the sandbox under
+`/toby/workspace/`.
 
 ### Overlay a config onto a direct launch
 
@@ -197,7 +198,7 @@ toby sandbox git fetch my-app
 toby sandbox git rebase my-app origin/main
 ```
 
-Repository names are relative to `$XDG_PROJECTS_DIR` and must already be visible
+Repository names are relative to the sandbox project root and must already be visible
 in the sandbox. `git.commit` commits only already-staged files; it does not add
 files. See [sandbox.md](sandbox.md#mcp) for the full tool reference.
 

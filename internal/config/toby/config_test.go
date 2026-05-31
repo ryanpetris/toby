@@ -1,6 +1,7 @@
 package tobyconfig
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -250,16 +251,17 @@ instructions:
 		t.Fatal(err)
 	}
 	service := contextfiles.NewService()
-	session := service.NewSession("/run/user/1000/toby/context")
+	sandbox := &configFakeSandbox{contextDir: "/run/user/1000/toby/context"}
+	service.SetSandbox(sandbox)
 
-	if err := cfg.RegisterContextFiles(session); err != nil {
+	if err := cfg.RegisterContextFiles(context.Background(), service); err != nil {
 		t.Fatal(err)
 	}
-	instructions := session.InstructionPaths()
+	instructions := service.InstructionPaths()
 	if len(instructions) != 2 {
 		t.Fatalf("instructions = %#v", instructions)
 	}
-	files := session.Files()
+	files := sandbox.files
 	if len(files) != 2 {
 		t.Fatalf("files = %#v", files)
 	}
@@ -399,3 +401,34 @@ func writeFile(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 }
+
+type configFakeSandbox struct {
+	contextDir string
+	files      []contextfiles.File
+}
+
+func (s *configFakeSandbox) Paths() tool.SandboxPaths {
+	return tool.SandboxPaths{Context: s.contextDir}
+}
+func (s *configFakeSandbox) ProjectPath(string) (string, bool)                    { return "", false }
+func (s *configFakeSandbox) VisibleHostPath(string) (string, error)               { return "", nil }
+func (s *configFakeSandbox) GetEnvironment(string) (string, bool)                 { return "", false }
+func (s *configFakeSandbox) SetEnvironment(context.Context, string, string) error { return nil }
+func (s *configFakeSandbox) PrependEnvironment(context.Context, string, string, string) error {
+	return nil
+}
+func (s *configFakeSandbox) AppendEnvironment(context.Context, string, string, string) error {
+	return nil
+}
+func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
+	rel := strings.TrimPrefix(path, s.contextDir+string(os.PathSeparator))
+	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
+	return nil
+}
+func (s *configFakeSandbox) DeletePath(context.Context, string, bool) error { return nil }
+func (s *configFakeSandbox) Mkdir(context.Context, string, uint32) error    { return nil }
+func (s *configFakeSandbox) Symlink(context.Context, string, string) error  { return nil }
+func (s *configFakeSandbox) Exec(context.Context, []string, tool.ExecOptions) (int, error) {
+	return 0, nil
+}
+func (s *configFakeSandbox) TobyMCPURL() string { return "" }

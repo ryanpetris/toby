@@ -24,13 +24,19 @@ Toby follows XDG conventions (`internal/config/paths.go`):
 
 | Variable | Default | Used for |
 | --- | --- | --- |
-| `XDG_PROJECTS_DIR` | `~/Projects` | Project root; sandbox projects mount here. |
+| `XDG_PROJECTS_DIR` | `~/Projects` | Host project root used to resolve default project sources. |
 | `XDG_CONFIG_HOME` | `~/.config` | Host config dir is `$XDG_CONFIG_HOME/toby`. |
 | `XDG_CACHE_HOME` | `~/.cache` | Bubblewrap homes under `$XDG_CACHE_HOME/toby/sandboxes`. |
 
-Inside the sandbox, Toby uses `/tmp/toby` for runtime files: `/tmp/toby/bin`
-for the helper binary (prepended to `PATH`) and `/tmp/toby/context` for
-generated configuration and instructions.
+Sandbox paths are runtime-specific. Docker uses `/toby`: `/toby/home` is
+`$HOME`, `/toby/workspace` contains mounted projects, `/toby/bin` contains the
+helper binary, and `/toby/context` contains generated configuration and
+instructions. Bubblewrap keeps `$HOME` and `$XDG_PROJECTS_DIR` at their normal
+paths and stores Toby internals under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
+These paths are also available as `TOBY_ROOT`, `TOBY_HOME`,
+`TOBY_WORKSPACE_DIR`, `TOBY_BIN_DIR`, and `TOBY_CONTEXT_DIR`. Toby also sets
+`SHELL=/bin/bash` and sets `XDG_PROJECTS_DIR` to the selected runtime's project
+root.
 
 Sandbox-facing commands receive `TOBY_CONTROL_HOST=host:port` and
 `TOBY_CONTROL_TOKEN` to reach the host control server.
@@ -66,7 +72,7 @@ top-level keys are `instructions`, `mcp`, `permission`, `provider`, and
 An array of host instruction file paths or glob patterns. Relative paths
 resolve from `$XDG_CONFIG_HOME/toby`; a leading `~` expands to the host home.
 During context init, matching files are copied into
-`/tmp/toby/context/instructions/` using the source basename. If two included
+`$TOBY_CONTEXT_DIR/instructions/` using the source basename. If two included
 files share a basename, later files get a short random suffix before the
 extension (e.g. `foobar.1a2b3c.md`). Instruction contents are combined and
 delivered to each tool through that tool's native instruction mechanism (see
@@ -82,7 +88,7 @@ instructions:
 ### `mcp`
 
 A map of MCP server name to definition. Entries are rendered into supported
-synthetic tool configs under `/tmp/toby/context`; Toby's own MCP server is
+synthetic tool configs under `$TOBY_CONTEXT_DIR`; Toby's own MCP server is
 always injected as `toby` after host config is merged.
 
 | Field | Type | Notes |
@@ -185,6 +191,8 @@ sandbox:
 
 - `sandbox.runtime` may be a string shorthand (`runtime: docker`) when no
   runtime-specific options are needed.
+- `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects` are
+  sandbox-visible paths; if set, they must stay under `/toby`.
 - `sandbox.runtime.bubblewrap.root` and relative `stateRoot` values in host
   config resolve from the Toby config file directory.
 - `sandbox.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
@@ -240,8 +248,8 @@ sandbox:
     default: docker      # optional; defaults to highest-priority available runtime
     docker:
       image: node:lts-bookworm  # optional; defaults to node:lts-bookworm
-      home: /home/toby          # optional; defaults to host $HOME path
-      projects: /workspace      # optional; defaults to host XDG_PROJECTS_DIR path
+      home: /toby/home          # optional; defaults to /toby/home
+      projects: /toby/workspace # optional; defaults to /toby/workspace
       build:                    # optional; build an image before launch
         context: .              # defaults to this config file's directory
         dockerfile: Dockerfile.toby  # optional; relative to context, defaults to Dockerfile
@@ -271,8 +279,9 @@ tools:
 
 Each entry is a string or `{name, path?}` object.
 
-- The project always appears inside the sandbox at `$XDG_PROJECTS_DIR/<name>`,
-  regardless of where its host source lives.
+- The project appears inside the sandbox under the selected runtime's project
+  root: `/toby/workspace/<name>` for Docker and `$XDG_PROJECTS_DIR/<name>` for
+  Bubblewrap, regardless of where its host source lives.
 - `path` is the host **source**. If omitted, it defaults to
   `$XDG_PROJECTS_DIR/<name>`. Explicit relative paths resolve from the config
   file directory; absolute paths are used as-is; leading `~` expands to the host
@@ -331,7 +340,8 @@ tools:
 toby --config foo.yaml -- -- --watch
 ```
 
-runs `npm test -- --watch` in `$XDG_PROJECTS_DIR/foo`.
+runs `npm test -- --watch` in `/toby/workspace/foo` with Docker, or
+`$XDG_PROJECTS_DIR/foo` with Bubblewrap.
 
 ## Autoload
 

@@ -33,6 +33,8 @@ paths:
                 - $ref: '#/components/schemas/FileDeleteRequest'
                 - $ref: '#/components/schemas/FileMkdirRequest'
                 - $ref: '#/components/schemas/FileSymlinkRequest'
+                - $ref: '#/components/schemas/EnvironmentGetRequest'
+                - $ref: '#/components/schemas/EnvironmentSetRequest'
                 - $ref: '#/components/schemas/CommandRunRequest'
                 - $ref: '#/components/schemas/CommandExitRequest'
                 - $ref: '#/components/schemas/SandboxTerminateRequest'
@@ -49,6 +51,7 @@ paths:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/EmptyResponse'
+                  - $ref: '#/components/schemas/EnvironmentGetResponse'
                   - $ref: '#/components/schemas/GitResponse'
                   - $ref: '#/components/schemas/ErrorResponse'
 components:
@@ -131,6 +134,33 @@ components:
           const: file.symlink
         params:
           $ref: '#/components/schemas/FileSymlinkParams'
+    EnvironmentGetRequest:
+      type: object
+      required: [jsonrpc, id, method]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: environment.get
+      description: Sent by the host manager to fetch the sandbox manager's authoritative environment map.
+    EnvironmentSetRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        method:
+          type: string
+          const: environment.set
+        params:
+          $ref: '#/components/schemas/EnvironmentSetParams'
     CommandRunRequest:
       type: object
       required: [jsonrpc, id, method, params]
@@ -220,10 +250,11 @@ components:
           type: string
     CommandRunParams:
       type: object
-      required: [command_id, argv]
+      required: [command_id]
       additionalProperties: false
       description: >
-        Runs a command inside the sandbox. `argv` may be empty only when
+        Runs a command inside the sandbox. Background commands require a
+        non-empty `argv`. `argv` may be empty or omitted only when
         `foreground` is true; an empty foreground command asks the sandbox
         manager to launch the sandbox user's default interactive shell.
       properties:
@@ -243,6 +274,17 @@ components:
         hide_output:
           type: boolean
           default: false
+    EnvironmentSetParams:
+      type: object
+      required: [name, value]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Environment variable name. Names containing '=' or NUL are rejected.
+        value:
+          type: string
+          description: Environment variable value. Empty string unsets the variable; values containing NUL are rejected.
     CommandExitParams:
       type: object
       required: [command_id, exit_code]
@@ -332,7 +374,7 @@ components:
       properties:
         repository:
           type: string
-          description: Repository name visible in the sandbox, relative to XDG_PROJECTS_DIR. Empty, '.', and '..' path segments are rejected.
+          description: Repository name visible in the sandbox, relative to the sandbox project root. Empty, '.', and '..' path segments are rejected.
           examples: [example, foo/bar/baz]
     GitCommitParams:
       type: object
@@ -424,6 +466,27 @@ components:
           $ref: '#/components/schemas/JSONRPCID'
         result:
           $ref: '#/components/schemas/GitResult'
+    EnvironmentGetResponse:
+      type: object
+      required: [jsonrpc, id, result]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          $ref: '#/components/schemas/JSONRPCVersion'
+        id:
+          $ref: '#/components/schemas/JSONRPCID'
+        result:
+          $ref: '#/components/schemas/EnvironmentGetResult'
+    EnvironmentGetResult:
+      type: object
+      required: [environment]
+      additionalProperties: false
+      properties:
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+          description: Snapshot of the sandbox manager environment map.
     GitResult:
       type: object
       required: [repository, exit_code, stdout, stderr]

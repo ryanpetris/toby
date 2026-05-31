@@ -21,9 +21,10 @@ func Base(name, help string, groups ...string) tool.Base {
 	return tool.Base{Metadata: tool.Metadata{Name: name, LaunchHelp: help, ContextGroups: groups}}
 }
 
-func Simple(paths config.Paths, base tool.Base, hostSubpath, sandboxSubpath []string, install []string, sandboxEnv map[string]string) *tool.Simple {
+func Simple(paths config.Paths, sandbox tool.SandboxService, base tool.Base, hostSubpath, sandboxSubpath []string, install []string, sandboxEnv map[string]string) *tool.Simple {
 	return &tool.Simple{
 		Base:           base,
+		Sandbox:        sandbox,
 		RootDir:        paths.SandboxRoot,
 		HostSubpath:    hostSubpath,
 		SandboxSubpath: sandboxSubpath,
@@ -85,7 +86,7 @@ func HostInitDependencies(ctx context.Context, opts *tool.CommandOptions, deps .
 	return nil
 }
 
-func SandboxContextSetupDependencies(ctx *tool.RunContext, deps ...tool.Tool) error {
+func SandboxContextSetupDependencies(ctx context.Context, deps ...tool.Tool) error {
 	for _, dep := range deps {
 		if err := dep.SandboxContextSetup(ctx); err != nil {
 			return err
@@ -94,27 +95,27 @@ func SandboxContextSetupDependencies(ctx *tool.RunContext, deps ...tool.Tool) er
 	return nil
 }
 
-func SandboxInitDependencies(ctx context.Context, run *tool.RunContext, deps ...tool.Tool) error {
+func SandboxInitDependencies(ctx context.Context, deps ...tool.Tool) error {
 	for _, dep := range deps {
-		if err := dep.SandboxInit(ctx, run); err != nil {
+		if err := dep.SandboxInit(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func InstallDependencies(ctx context.Context, run *tool.RunContext, deps ...tool.Tool) error {
+func InstallDependencies(ctx context.Context, deps ...tool.Tool) error {
 	for _, dep := range deps {
-		if err := dep.Install(ctx, run); err != nil {
+		if err := dep.Install(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func UpgradeDependencies(ctx context.Context, run *tool.RunContext, deps ...tool.Tool) error {
+func UpgradeDependencies(ctx context.Context, deps ...tool.Tool) error {
 	for _, dep := range deps {
-		if err := dep.Upgrade(ctx, run); err != nil {
+		if err := dep.Upgrade(ctx); err != nil {
 			return err
 		}
 	}

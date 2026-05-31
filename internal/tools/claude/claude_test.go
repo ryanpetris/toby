@@ -1,13 +1,16 @@
 package claude
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/npm"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -17,10 +20,13 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
 	sandboxHome := filepath.Join(home, "sandbox-home")
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: sandboxHome, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	sandbox.PathsValue.Home = sandboxHome
 	var claude tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
+		fx.Supply(fx.Annotate(sandbox, fx.As(new(tool.SandboxService)))),
+		fx.Provide(contextfiles.NewService),
 		npm.Module,
 		Module,
 		fx.Invoke(func(params struct {
@@ -33,12 +39,12 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
-	if err := claude.SandboxContextSetup(run); err != nil {
+	if err := claude.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(sandboxHome, ".config", "claude")
-	if run.Env["CLAUDE_CONFIG_DIR"] != want {
-		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", run.Env["CLAUDE_CONFIG_DIR"], want)
+	if sandbox.Env["CLAUDE_CONFIG_DIR"] != want {
+		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", sandbox.Env["CLAUDE_CONFIG_DIR"], want)
 	}
 }
 
@@ -60,22 +66,4 @@ func TestContextFlags(t *testing.T) {
 	if slices.Contains(flags, "--plugin-dir") {
 		t.Fatalf("unexpected --plugin-dir: %v", flags)
 	}
-}
-
-type fakeSandbox struct {
-	home     string
-	runtime  string
-	projects string
-}
-
-func (s fakeSandbox) HomeDir() string { return s.home }
-
-func (s fakeSandbox) Projects() string { return s.projects }
-
-func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Join(s.runtime, "toby") }
-
-func (s fakeSandbox) TobyContextDir() string { return filepath.Join(s.TobyRuntimeDir(), "context") }
-
-func (s fakeSandbox) TobyOpenCodeConfigDir() string {
-	return filepath.Join(s.TobyContextDir(), "opencode")
 }

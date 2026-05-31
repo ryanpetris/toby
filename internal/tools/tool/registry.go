@@ -130,6 +130,7 @@ type Toolset struct {
 	primary    Tool
 	ordered    []Tool
 	toolStates ToolStateSettings
+	lifecycle  *Lifecycle
 }
 
 func (t *Toolset) SetToolStates(settings ToolStateSettings) {
@@ -241,7 +242,15 @@ func (t *Toolset) HostInit(ctx context.Context, opts *CommandOptions) error {
 	return nil
 }
 
-func (t *Toolset) SandboxContextSetup(ctx *RunContext) error {
+func (t *Toolset) lifecycleContext(ctx context.Context) context.Context {
+	if t.lifecycle == nil {
+		t.lifecycle = NewLifecycle()
+	}
+	return WithLifecycle(ctx, t.lifecycle)
+}
+
+func (t *Toolset) SandboxContextSetup(ctx context.Context) error {
+	ctx = t.lifecycleContext(ctx)
 	for _, item := range t.ordered {
 		if err := item.SandboxContextSetup(ctx); err != nil {
 			return err
@@ -250,23 +259,25 @@ func (t *Toolset) SandboxContextSetup(ctx *RunContext) error {
 	return nil
 }
 
-func (t *Toolset) SandboxInit(ctx context.Context, run *RunContext) error {
+func (t *Toolset) SandboxInit(ctx context.Context) error {
+	ctx = t.lifecycleContext(ctx)
 	for _, item := range t.ordered {
-		if err := item.SandboxInit(ctx, run); err != nil {
+		if err := item.SandboxInit(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (t *Toolset) RegisterContextFiles(ctx context.Context, run *RunContext) error {
+func (t *Toolset) RegisterContextFiles(ctx context.Context, opts ContextOptions) error {
+	ctx = t.lifecycleContext(ctx)
 	for _, item := range t.ordered {
 		registrar, ok := item.(ContextFileTool)
 		if !ok {
 			continue
 		}
-		if err := RegisterContextFilesOnce(run, item.Name(), func() error {
-			return registrar.RegisterContextFiles(ctx, run)
+		if err := RegisterContextFilesOnce(ctx, item.Name(), func() error {
+			return registrar.RegisterContextFiles(ctx, opts)
 		}); err != nil {
 			return err
 		}
@@ -274,39 +285,42 @@ func (t *Toolset) RegisterContextFiles(ctx context.Context, run *RunContext) err
 	return nil
 }
 
-func (t *Toolset) Install(ctx context.Context, run *RunContext) error {
+func (t *Toolset) Install(ctx context.Context) error {
+	ctx = t.lifecycleContext(ctx)
 	for _, item := range t.ordered {
-		if err := item.Install(ctx, run); err != nil {
+		if err := item.Install(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (t *Toolset) Upgrade(ctx context.Context, run *RunContext) error {
+func (t *Toolset) Upgrade(ctx context.Context) error {
+	ctx = t.lifecycleContext(ctx)
 	for _, item := range t.ordered {
-		if err := item.Upgrade(ctx, run); err != nil {
+		if err := item.Upgrade(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (t *Toolset) Launch(ctx context.Context, run *RunContext) error {
+func (t *Toolset) Launch(ctx context.Context, opts *CommandOptions, extra []string) error {
+	ctx = t.lifecycleContext(ctx)
 	if t.primary == nil {
 		return fmt.Errorf("toolset cannot launch without a primary tool")
 	}
-	if run.Options.Install {
-		return t.Install(ctx, run)
+	if opts != nil && opts.Install {
+		return t.Install(ctx)
 	}
-	if run.Options.Upgrade {
-		if err := t.Upgrade(ctx, run); err != nil {
+	if opts != nil && opts.Upgrade {
+		if err := t.Upgrade(ctx); err != nil {
 			return err
 		}
-		return t.primary.Launch(ctx, run)
+		return t.primary.Launch(ctx, extra)
 	}
-	if err := t.Install(ctx, run); err != nil {
+	if err := t.Install(ctx); err != nil {
 		return err
 	}
-	return t.primary.Launch(ctx, run)
+	return t.primary.Launch(ctx, extra)
 }

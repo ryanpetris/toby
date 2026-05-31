@@ -13,36 +13,49 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/tools/npm"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
 
-type fakeNPM struct{ tool.Base }
+type fakeNPM struct {
+	tool.Base
+	sandbox tool.SandboxService
+}
 
 func (fakeNPM) PathEntries() []tool.PathTarget {
 	return []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}
 }
 
-func (fakeNPM) SandboxContextSetup(ctx *tool.RunContext) error {
-	ctx.Env["NPM_CALLED"] = "1"
-	ctx.Env["OPENCODE_CONFIG_DIR"] = "dependency"
-	return nil
+func (t fakeNPM) SandboxContextSetup(ctx context.Context) error {
+	if t.sandbox == nil {
+		return nil
+	}
+	if err := t.sandbox.SetEnvironment(ctx, "NPM_CALLED", "1"); err != nil {
+		return err
+	}
+	return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", "dependency")
 }
 
 func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
 	var oc tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
+		fx.Supply(fx.Annotate(sandbox, fx.As(new(tool.SandboxService)))),
+		fx.Supply(contextFiles),
 		fx.Provide(func() *http.Client { return &http.Client{} }),
 		npm.Module,
 		Module,
@@ -56,37 +69,40 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
-	if err := oc.SandboxContextSetup(run); err != nil {
+	if err := oc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
-	if run.Env["OPENCODE_CONFIG_DIR"] != want {
-		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", run.Env["OPENCODE_CONFIG_DIR"], want)
+	if sandbox.Env["OPENCODE_CONFIG_DIR"] != want {
+		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", sandbox.Env["OPENCODE_CONFIG_DIR"], want)
 	}
 }
 
 func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
 	oc := Provide(Params{
-		Paths: paths,
-		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
+		Paths:        paths,
+		NPM:          fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}, sandbox: sandbox},
+		Sandbox:      sandbox,
+		ContextFiles: contextFiles,
 	}).Service
 
 	if got, want := oc.PathEntries(), []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("PathEntries = %#v, want %#v", got, want)
 	}
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
-	if err := oc.SandboxContextSetup(run); err != nil {
+	if err := oc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if run.Env["NPM_CALLED"] != "1" {
+	if sandbox.Env["NPM_CALLED"] != "1" {
 		t.Fatalf("dependency SandboxContextSetup was not called")
 	}
 	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
-	if run.Env["OPENCODE_CONFIG_DIR"] != want {
-		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", run.Env["OPENCODE_CONFIG_DIR"], want)
+	if sandbox.Env["OPENCODE_CONFIG_DIR"] != want {
+		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", sandbox.Env["OPENCODE_CONFIG_DIR"], want)
 	}
 }
 
@@ -189,13 +205,15 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
-	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Renderer: renderer, Config: cfg, Proxy: httpproxy.NewService(httpproxy.ServiceParams{})}).Service.(tool.ContextFileTool)
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
+	sandbox.Env[control.EnvControlHost] = "127.0.0.1:12345"
 	service := contextfiles.NewService()
-	sandbox := fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}
+	service.SetSandbox(sandbox)
+	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Renderer: renderer, Config: cfg, Proxy: httpproxy.NewService(httpproxy.ServiceParams{}), Sandbox: sandbox, ContextFiles: service}).Service.(tool.ContextFileTool)
 
 	var stderr bytes.Buffer
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby", Env: tool.Environment{control.EnvControlHost: "127.0.0.1:12345"}, Stderr: &stderr}
-	if err := oc.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := oc.RegisterContextFiles(context.Background(), tool.ContextOptions{Stderr: &stderr}); err != nil {
 		t.Fatal(err)
 	}
 	if got := stderr.String(); !strings.Contains(got, "warning[opencode.model-discovery]") {
@@ -203,8 +221,7 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 	}
 
 	stderr.Reset()
-	run = &tool.RunContext{Options: &tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.OpenCodeModelDiscovery: true}}}, Sandbox: sandbox, ContextFiles: service.NewSession(filepath.Join(home, "context-suppressed")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby", Env: tool.Environment{control.EnvControlHost: "127.0.0.1:12345"}, Stderr: &stderr}
-	if err := oc.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := oc.RegisterContextFiles(context.Background(), tool.ContextOptions{Stderr: &stderr, SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.OpenCodeModelDiscovery: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	if stderr.Len() != 0 {
@@ -216,24 +233,6 @@ type hostInitNPM struct {
 	tool.Base
 	called      *bool
 	sandboxRoot string
-}
-
-type fakeSandbox struct {
-	home     string
-	runtime  string
-	projects string
-}
-
-func (s fakeSandbox) HomeDir() string { return s.home }
-
-func (s fakeSandbox) Projects() string { return s.projects }
-
-func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Join(s.runtime, "toby") }
-
-func (s fakeSandbox) TobyContextDir() string { return filepath.Join(s.TobyRuntimeDir(), "context") }
-
-func (s fakeSandbox) TobyOpenCodeConfigDir() string {
-	return filepath.Join(s.TobyContextDir(), "opencode")
 }
 
 func (t hostInitNPM) HostInit(context.Context, *tool.CommandOptions) error {

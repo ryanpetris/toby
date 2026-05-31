@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -18,9 +20,9 @@ import (
 
 var Module = fx.Module("tools.gitlabcli", fx.Provide(Provide))
 
-const gitlabCLIInstallPath = "gitlab_cli/install"
+const gitlabCLIInstallPath = "gitlab_cli/install.sh"
 
-//go:embed install
+//go:embed install.sh
 var gitlabCLIFiles embed.FS
 
 type Result struct {
@@ -30,54 +32,64 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(client *http.Client) Result {
+type Params struct {
+	fx.In
+
+	HTTP         *http.Client
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
+}
+
+func Provide(params Params) Result {
 	svc := &gitlabCLITool{
-		Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitLabCliToolName, CLIName: "glab", LaunchHelp: "Launch GitLab CLI", ContextGroups: []string{tool.GroupSystem, tool.GroupVCS}}},
-		http: client,
+		Base:         tool.Base{Metadata: tool.Metadata{Name: tool.GitLabCliToolName, CLIName: "glab", LaunchHelp: "Launch GitLab CLI", ContextGroups: []string{tool.GroupSystem, tool.GroupVCS}}},
+		http:         params.HTTP,
+		sandbox:      params.Sandbox,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type gitlabCLITool struct {
 	tool.Base
-	http *http.Client
+	http         *http.Client
+	sandbox      tool.SandboxService
+	contextFiles *contextfiles.Service
 }
 
-func (t *gitlabCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	return tool.SandboxInitOnce(run, t.Name(), func() error {
-		return t.Install(ctx, run)
+func (t *gitlabCLITool) SandboxInit(ctx context.Context) error {
+	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+		return t.Install(ctx)
 	})
 }
 
-func (t *gitlabCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
-		data, err := gitlabCLIFiles.ReadFile("install")
+func (t *gitlabCLITool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+		data, err := gitlabCLIFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
 		}
-		return run.ContextFiles.AddBytes(gitlabCLIInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, gitlabCLIInstallPath, data, 0o500)
+		return err
 	})
 }
 
-func (t *gitlabCLITool) Install(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, false)
+func (t *gitlabCLITool) Install(ctx context.Context) error {
+	return t.install(ctx, false)
 }
 
-func (t *gitlabCLITool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, true)
+func (t *gitlabCLITool) Upgrade(ctx context.Context) error {
+	return t.install(ctx, true)
 }
 
-func (t *gitlabCLITool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *gitlabCLITool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "glab")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "glab")
 			if err != nil || exists {
 				return err
 			}
@@ -87,32 +99,18 @@ func (t *gitlabCLITool) install(ctx context.Context, run *tool.RunContext, force
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		path, err := gitlabCLIInstallLaunchPath(run)
-		if err != nil {
-			return err
-		}
-		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
+		_, err = t.sandbox.Exec(ctx, []string{t.contextPath(gitlabCLIInstallPath), archiveURL}, tool.ExecOptions{})
+		return err
 	})
 }
 
-func gitlabCLIInstallLaunchPath(run *tool.RunContext) (string, error) {
-	contextDir := ""
-	if run != nil {
-		if run.ContextFiles != nil {
-			contextDir = run.ContextFiles.ContextDir()
-		}
-		if contextDir == "" && run.Sandbox != nil {
-			contextDir = run.Sandbox.TobyContextDir()
-		}
-	}
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	return filepath.Join(contextDir, filepath.FromSlash(gitlabCLIInstallPath)), nil
+func (t *gitlabCLITool) contextPath(path string) string {
+	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
 }
 
-func (t *gitlabCLITool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"glab"}, run.Extra...), tool.ExecOptions{})
+func (t *gitlabCLITool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"glab"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func (t *gitlabCLITool) archiveURL(ctx context.Context) (string, error) {

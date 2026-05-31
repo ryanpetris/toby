@@ -24,7 +24,7 @@ func (t recordingTool) PathEntries() []tool.PathTarget {
 	return append([]tool.PathTarget(nil), t.entries...)
 }
 
-func (t recordingTool) Install(context.Context, *tool.RunContext) error {
+func (t recordingTool) Install(context.Context) error {
 	*t.calls = append(*t.calls, "install:"+t.Name())
 	return t.err
 }
@@ -64,7 +64,7 @@ func TestInstallDependenciesStopsOnFirstError(t *testing.T) {
 		recordingTool{Base: tool.Base{Metadata: tool.Metadata{Name: "c"}}, calls: &calls},
 	}
 
-	err := InstallDependencies(context.Background(), &tool.RunContext{}, deps...)
+	err := InstallDependencies(context.Background(), deps...)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
@@ -75,12 +75,12 @@ func TestInstallDependenciesStopsOnFirstError(t *testing.T) {
 }
 
 func TestSimpleMapsPathsAndConfiguration(t *testing.T) {
-	paths := config.Paths{SandboxRoot: "/tmp/toby/sandboxes"}
+	paths := config.Paths{SandboxRoot: "/cache/toby/sandboxes"}
 	base := Base("example", "Launch Example", tool.GroupSystem)
 	install := []string{"npm", "install", "-g", "example"}
 	env := map[string]string{"EXAMPLE": "1"}
 
-	simple := Simple(paths, base, []string{".example"}, []string{".config", "example"}, install, env)
+	simple := Simple(paths, nil, base, []string{".example"}, []string{".config", "example"}, install, env)
 
 	if simple.RootDir != paths.SandboxRoot || simple.Name() != "example" || simple.LaunchHelp() != "Launch Example" {
 		t.Fatalf("simple metadata = %#v", simple)

@@ -8,25 +8,21 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 type fakeNPM struct{ tool.Base }
 
 func TestRegisterContextFilesWritesWrapper(t *testing.T) {
-	svc := newTestT3(t)
-	registrar, ok := svc.(tool.ContextFileTool)
-	if !ok {
-		t.Fatal("t3 tool should register context files")
-	}
-	run := &tool.RunContext{ContextFiles: contextfiles.NewService().NewSession("/tmp/toby/context")}
+	svc, sandbox := newTestT3(t, "/toby/context")
 
-	if err := registrar.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := svc.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	if len(files) != 1 {
 		t.Fatalf("files = %#v", files)
 	}
@@ -47,19 +43,15 @@ func TestRegisterContextFilesWritesWrapper(t *testing.T) {
 }
 
 func TestLaunchRunsContextWrapper(t *testing.T) {
-	svc := newTestT3(t)
 	contextDir := filepath.Join(t.TempDir(), "context")
 	var got []string
-	run := &tool.RunContext{
-		Sandbox: fakeSandbox{contextDir: contextDir},
-		Extra:   []string{"--foo", "bar"},
-		Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			got = append([]string(nil), argv...)
-			return 0, nil
-		},
+	svc, sandbox := newTestT3(t, contextDir)
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
 	}
 
-	if err := svc.Launch(context.Background(), run); err != nil {
+	if err := svc.Launch(context.Background(), []string{"--foo", "bar"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,29 +62,17 @@ func TestLaunchRunsContextWrapper(t *testing.T) {
 }
 
 func TestProvideChecksInstalledT3Binary(t *testing.T) {
-	svc := newTestT3(t).(*t3Tool)
+	svc, _ := newTestT3(t, "/toby/context")
 	if svc.InstallCheckCommand != "t3" {
 		t.Fatalf("InstallCheckCommand = %q, want t3", svc.InstallCheckCommand)
 	}
 }
 
-func newTestT3(t *testing.T) tool.Tool {
+func newTestT3(t *testing.T, contextDir string) (*t3Tool, *tooltest.Sandbox) {
 	t.Helper()
 	home := t.TempDir()
-	return Provide(Params{
-		Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")},
-		NPM:   fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}},
-	}).Service
+	sandbox := tooltest.NewSandbox(contextDir)
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox, ContextFiles: contextFiles}).Service.(*t3Tool), sandbox
 }
-
-type fakeSandbox struct{ contextDir string }
-
-func (s fakeSandbox) HomeDir() string { return filepath.Dir(s.contextDir) }
-
-func (s fakeSandbox) Projects() string { return filepath.Join(filepath.Dir(s.contextDir), "Projects") }
-
-func (s fakeSandbox) TobyRuntimeDir() string { return filepath.Dir(s.contextDir) }
-
-func (s fakeSandbox) TobyContextDir() string { return s.contextDir }
-
-func (s fakeSandbox) TobyOpenCodeConfigDir() string { return filepath.Join(s.contextDir, "opencode") }

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
 
 	"github.com/spf13/cobra"
@@ -217,10 +216,43 @@ type PathBase string
 
 const (
 	PathAbsolute PathBase = "absolute"
+	PathRoot     PathBase = "root"
 	PathHome     PathBase = "home"
 	PathRuntime  PathBase = "runtime"
+	PathContext  PathBase = "context"
+	PathBin      PathBase = "bin"
 	PathProjects PathBase = "projects"
+
+	DefaultSandboxRoot      = "/toby"
+	DefaultSandboxHome      = "/toby/home"
+	DefaultSandboxContext   = "/toby/context"
+	DefaultSandboxBin       = "/toby/bin"
+	DefaultSandboxWorkspace = "/toby/workspace"
+
+	EnvTobyRoot      = "TOBY_ROOT"
+	EnvTobyHome      = "TOBY_HOME"
+	EnvTobyContext   = "TOBY_CONTEXT_DIR"
+	EnvTobyBin       = "TOBY_BIN_DIR"
+	EnvTobyWorkspace = "TOBY_WORKSPACE_DIR"
 )
+
+type SandboxPaths struct {
+	Root      string
+	Home      string
+	Context   string
+	Bin       string
+	Workspace string
+}
+
+func DefaultSandboxPaths() SandboxPaths {
+	return SandboxPaths{
+		Root:      DefaultSandboxRoot,
+		Home:      DefaultSandboxHome,
+		Context:   DefaultSandboxContext,
+		Bin:       DefaultSandboxBin,
+		Workspace: DefaultSandboxWorkspace,
+	}
+}
 
 type PathTarget struct {
 	Base PathBase
@@ -229,9 +261,15 @@ type PathTarget struct {
 
 func AbsoluteTarget(path string) PathTarget { return PathTarget{Base: PathAbsolute, Path: path} }
 
+func RootTarget(parts ...string) PathTarget { return pathTarget(PathRoot, parts...) }
+
 func HomeTarget(parts ...string) PathTarget { return pathTarget(PathHome, parts...) }
 
 func RuntimeTarget(parts ...string) PathTarget { return pathTarget(PathRuntime, parts...) }
+
+func ContextTarget(parts ...string) PathTarget { return pathTarget(PathContext, parts...) }
+
+func BinTarget(parts ...string) PathTarget { return pathTarget(PathBin, parts...) }
 
 func ProjectsTarget(parts ...string) PathTarget { return pathTarget(PathProjects, parts...) }
 
@@ -244,12 +282,18 @@ func pathTarget(base PathBase, parts ...string) PathTarget {
 
 func ResolvePath(target PathTarget, sandbox Sandbox) string {
 	switch target.Base {
+	case PathRoot:
+		return joinSandboxPath(sandbox.Paths().Root, target.Path)
 	case PathHome:
-		return joinSandboxPath(sandbox.HomeDir(), target.Path)
+		return joinSandboxPath(sandbox.Paths().Home, target.Path)
 	case PathRuntime:
-		return joinSandboxPath(sandbox.TobyRuntimeDir(), target.Path)
+		return joinSandboxPath(sandbox.Paths().Root, target.Path)
+	case PathContext:
+		return joinSandboxPath(sandbox.Paths().Context, target.Path)
+	case PathBin:
+		return joinSandboxPath(sandbox.Paths().Bin, target.Path)
 	case PathProjects:
-		return joinSandboxPath(sandbox.Projects(), target.Path)
+		return joinSandboxPath(sandbox.Paths().Workspace, target.Path)
 	case PathAbsolute, "":
 		return target.Path
 	default:
@@ -312,30 +356,32 @@ type ProjectMount struct {
 
 type ExecOptions struct {
 	HideOutput bool
+	Foreground bool
 }
 
-type Executor func(context.Context, []string, ExecOptions) (int, error)
+type SandboxService interface {
+	Paths() SandboxPaths
+	ProjectPath(string) (string, bool)
+	VisibleHostPath(string) (string, error)
+	GetEnvironment(string) (string, bool)
+	SetEnvironment(context.Context, string, string) error
+	PrependEnvironment(context.Context, string, string, string) error
+	AppendEnvironment(context.Context, string, string, string) error
+	AddFile(context.Context, string, []byte, uint32) error
+	DeletePath(context.Context, string, bool) error
+	Mkdir(context.Context, string, uint32) error
+	Symlink(context.Context, string, string) error
+	Exec(context.Context, []string, ExecOptions) (int, error)
+	TobyMCPURL() string
+}
 
 type Sandbox interface {
+	Paths() SandboxPaths
 	HomeDir() string
 	Projects() string
 	TobyRuntimeDir() string
 	TobyContextDir() string
 	TobyOpenCodeConfigDir() string
-}
-
-type RunContext struct {
-	Sandbox      Sandbox
-	Options      *CommandOptions
-	Extra        []string
-	Toolset      *Toolset
-	Env          Environment
-	Stderr       io.Writer
-	ContextFiles *contextfiles.Session
-	TobyMCPURL   string
-	Exec         Executor
-	Launch       Executor
-	lifecycle    map[string]bool
 }
 
 type Tool interface {
@@ -347,15 +393,20 @@ type Tool interface {
 	PathEntries() []PathTarget
 	ConfigureCommand(*cobra.Command)
 	HostInit(context.Context, *CommandOptions) error
-	SandboxContextSetup(*RunContext) error
-	SandboxInit(context.Context, *RunContext) error
-	Install(context.Context, *RunContext) error
-	Upgrade(context.Context, *RunContext) error
-	Launch(context.Context, *RunContext) error
+	SandboxContextSetup(context.Context) error
+	SandboxInit(context.Context) error
+	Install(context.Context) error
+	Upgrade(context.Context) error
+	Launch(context.Context, []string) error
+}
+
+type ContextOptions struct {
+	SuppressWarnings warning.Suppression
+	Stderr           io.Writer
 }
 
 type ContextFileTool interface {
-	RegisterContextFiles(context.Context, *RunContext) error
+	RegisterContextFiles(context.Context, ContextOptions) error
 }
 
 type Metadata struct {
@@ -392,15 +443,15 @@ func (b Base) ConfigureCommand(*cobra.Command) {}
 
 func (b Base) HostInit(context.Context, *CommandOptions) error { return nil }
 
-func (b Base) SandboxContextSetup(*RunContext) error { return nil }
+func (b Base) SandboxContextSetup(context.Context) error { return nil }
 
-func (b Base) SandboxInit(context.Context, *RunContext) error { return nil }
+func (b Base) SandboxInit(context.Context) error { return nil }
 
-func (b Base) Install(context.Context, *RunContext) error { return nil }
+func (b Base) Install(context.Context) error { return nil }
 
-func (b Base) Upgrade(context.Context, *RunContext) error { return nil }
+func (b Base) Upgrade(context.Context) error { return nil }
 
-func (b Base) Launch(context.Context, *RunContext) error {
+func (b Base) Launch(context.Context, []string) error {
 	return ErrNotLaunchable(b.Name())
 }
 

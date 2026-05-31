@@ -17,6 +17,7 @@ import (
 type Params struct {
 	Registry       *tool.Registry
 	SandboxFactory sandbox.Factory
+	SandboxService *sandbox.SandboxService
 	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	ContextInit    []contextinit.Registration

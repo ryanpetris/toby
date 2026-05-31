@@ -2,11 +2,11 @@ package claude
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	claudeconfig "petris.dev/toby/internal/tools/claude/config"
@@ -21,10 +21,12 @@ var Module = fx.Module("tools.claude", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	Paths  config.Paths
-	NPM    tool.Tool           `name:"npm"`
-	Config *tobyconfig.Service `optional:"true"`
-	Proxy  *httpproxy.Service  `optional:"true"`
+	Paths        config.Paths
+	NPM          tool.Tool           `name:"npm"`
+	Config       *tobyconfig.Service `optional:"true"`
+	Proxy        *httpproxy.Service  `optional:"true"`
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
 }
 
 type Result struct {
@@ -38,26 +40,29 @@ func Provide(params Params) Result {
 	svc := &claudeTool{
 		Simple: toolutil.Simple(
 			params.Paths,
+			params.Sandbox,
 			toolutil.Base(tool.ClaudeToolName, "Launch Claude", tool.GroupSystem, tool.GroupVCS),
 			[]string{".config", "claude"},
 			[]string{".config", "claude"},
 			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
 			nil,
 		),
-		paths:  params.Paths,
-		npm:    params.NPM,
-		config: params.Config,
-		proxy:  params.Proxy,
+		paths:        params.Paths,
+		npm:          params.NPM,
+		config:       params.Config,
+		proxy:        params.Proxy,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type claudeTool struct {
 	*tool.Simple
-	paths  config.Paths
-	npm    tool.Tool
-	config *tobyconfig.Service
-	proxy  *httpproxy.Service
+	paths        config.Paths
+	npm          tool.Tool
+	config       *tobyconfig.Service
+	proxy        *httpproxy.Service
+	contextFiles *contextfiles.Service
 }
 
 func (t *claudeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -77,58 +82,56 @@ func (t *claudeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) er
 	return t.Simple.HostInit(ctx, opts)
 }
 
-func (t *claudeTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *claudeTool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
 	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
 		return err
 	}
-	ctx.Env["CLAUDE_CONFIG_DIR"] = filepath.Join(ctx.Sandbox.HomeDir(), ".config", "claude")
-	return nil
+	return t.Sandbox.SetEnvironment(ctx, "CLAUDE_CONFIG_DIR", filepath.Join(t.Sandbox.Paths().Home, ".config", "claude"))
 }
 
-func (t *claudeTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.SandboxInitDependencies(ctx, run, t.npm); err != nil {
+func (t *claudeTool) SandboxInit(ctx context.Context) error {
+	if err := toolutil.SandboxInitDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.SandboxInit(ctx, run)
+	return t.Simple.SandboxInit(ctx)
 }
 
-func (t *claudeTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
+func (t *claudeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err
 			}
 		}
-		return claudeconfig.RegisterContextFiles(run.ContextFiles, run.Sandbox.Projects(), run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
+		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
+		return claudeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.Sandbox.Paths().Workspace, t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy)
 	})
 }
 
-func (t *claudeTool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
+func (t *claudeTool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Install(ctx, run)
+	return t.Simple.Install(ctx)
 }
 
-func (t *claudeTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.npm); err != nil {
+func (t *claudeTool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Upgrade(ctx, run)
+	return t.Simple.Upgrade(ctx)
 }
 
 // Launch starts Claude Code, injecting Toby's generated context files through
 // launch flags while Claude keeps its normal writable config directory.
-func (t *claudeTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	argv := append([]string{"claude"}, contextFlags(run.Sandbox.TobyContextDir())...)
-	argv = append(argv, run.Extra...)
-	return tool.RunCommand(ctx, run.Launch, argv, tool.ExecOptions{})
+func (t *claudeTool) Launch(ctx context.Context, extra []string) error {
+	argv := append([]string{"claude"}, contextFlags(t.Sandbox.Paths().Context)...)
+	argv = append(argv, extra...)
+	_, err := t.Sandbox.Exec(ctx, argv, tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func contextFlags(contextDir string) []string {

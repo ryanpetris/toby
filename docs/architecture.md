@@ -83,7 +83,9 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `internal/control/sandboxmanager` | Sandbox-side RPC handlers, command execution. |
 | `internal/control/httpproxy` | `/proxy/<uuid>` reverse proxy for MCP and providers. |
 | `internal/control/mcpserver` | Built-in Toby MCP server exposing host Git tools. |
-| `internal/sandbox` | Runtime selection; Docker and Bubblewrap instances; helper binary delivery. |
+| `internal/sandbox` | Runtime selection, shared sandbox service/types, helper binary delivery. |
+| `internal/sandbox/docker` | Docker sandbox runtime implementation and Fx module. |
+| `internal/sandbox/bubblewrap` | Bubblewrap sandbox runtime implementation and Fx module. |
 | `internal/tools/tool` | Tool interface, lifecycle, registry, toolset, state settings. |
 | `internal/tools/<name>` | One package per tool (claude, codex, t3, …). |
 | `internal/tools/toolconfig` | Helpers for generating synthetic tool config. |
@@ -153,18 +155,26 @@ credential headers when forwarding, so secrets never enter the sandbox. The
 built-in Toby MCP target dispatches to the in-process MCP handler instead of an
 upstream URL.
 
-## Sandbox runtimes (`internal/sandbox`)
+## Sandbox runtimes
 
 Toby selects the available runtime with the lowest priority number: Docker has
 priority 0 and Bubblewrap priority 1, so Docker is preferred when present. The
 runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
 
-- **Docker** (`docker.go`): `docker run --rm --init` with the configured image
-  (default `node:lts-bookworm`). `$HOME` is backed by a named Docker volume
-  (e.g. `toby-home-<env>`) so it persists across runs; projects bind-mount from
-  the host. The image can be built from `sandbox.runtime.docker.build`.
-- **Bubblewrap** (`bubblewrap.go`): a `bwrap` sandbox whose private home lives
-  under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes/<env>` by default.
+- **Docker** (`internal/sandbox/docker`): `docker run --rm --init` with the configured image
+  (default `node:lts-bookworm`). `/toby` is backed by a named Docker volume
+  (e.g. `toby-home-<env>`) so `/toby/home` persists across runs; projects
+  bind-mount from the host under `/toby/workspace`. The image can be built from
+  `sandbox.runtime.docker.build`.
+- **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts a private
+  host directory at the normal `$HOME` path, keeps projects under
+  `$XDG_PROJECTS_DIR`, and stores Toby internals under
+  `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
+
+The selected runtime provides a `tool.SandboxPaths` value. The host-side
+`sandbox.SandboxService` exposes those paths and centralizes sandbox file and
+command operations for tool setup; it does not decide Docker or Bubblewrap path
+policy.
 
 In both runtimes, host secrets such as `~/.ssh` and `~/.gnupg` are not mounted.
 
@@ -187,14 +197,15 @@ A direct launch such as `toby claude my-app` proceeds through
    `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
    set `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the sandbox environment.
 3. **Launch the sandbox.** The runtime runs a `/bin/sh` bootstrap that creates
-   `/tmp/toby/bin`, downloads the helper from `/binary` with the bearer token,
+   `$TOBY_BIN_DIR`, downloads the helper from `/binary` with the bearer token,
    marks it executable, and `exec`s `toby sandbox manager`.
 4. **Bootstrap the manager.** Inside the sandbox the manager connects back over
    the control WebSocket and sends `context.init`.
 5. **Inject context.** The host runs the ordered context-init services
    (`internal/context/setup`): agent instructions (order 10), host-config
    instructions/MCP/providers (order 20), and tool-specific config (order 30).
-   Each writes files under `/tmp/toby/context` via `file.create`.
+   Each writes files under `$TOBY_CONTEXT_DIR` via the sandbox service and
+   sandbox manager `file.create` calls.
 6. **Install and launch.** The toolset installs any missing tools, then the
    primary tool's `Launch` runs the foreground command via `command.run`.
 7. **Tear down.** When the foreground command exits, the host sends

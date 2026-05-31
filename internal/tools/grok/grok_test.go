@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	grokconfig "petris.dev/toby/internal/tools/grok/config"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {
@@ -42,17 +43,16 @@ func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {
 
 func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 	home := t.TempDir()
-	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}}).Service.(tool.ContextFileTool)
-	service := contextfiles.NewService()
-	run := &tool.RunContext{ContextFiles: service.NewSession(filepath.Join(home, "context")), TobyMCPURL: "http://127.0.0.1:12345/proxy/toby"}
-	if err := run.ContextFiles.AddInstructionBytes("GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	gr, sandbox, service := newTestGrok(t, filepath.Join(home, "context"))
+	registrar := gr.(tool.ContextFileTool)
+	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := gr.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := registrar.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	for _, file := range files {
 		if file.Path != grokconfig.StaticConfigPath {
 			continue
@@ -70,49 +70,35 @@ func TestSandboxInitLinksManagedConfig(t *testing.T) {
 	home := t.TempDir()
 	sandboxHome := filepath.Join(home, "sandbox-home")
 	contextDir := filepath.Join(home, "context")
-	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}}).Service
-	service := contextfiles.NewService()
-	var got [][]string
-	run := &tool.RunContext{
-		Sandbox:      grokFakeSandbox{home: sandboxHome, contextDir: contextDir},
-		ContextFiles: service.NewSession(contextDir),
-		Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			got = append(got, append([]string(nil), argv...))
-			return 0, nil
-		},
-	}
+	gr, sandbox, _ := newTestGrok(t, contextDir)
+	sandbox.PathsValue.Home = sandboxHome
 
-	if err := gr.SandboxInit(context.Background(), run); err != nil {
+	if err := gr.SandboxInit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"mkdir", "-p", filepath.Join(sandboxHome, ".grok")},
-		{"ln", "-sfn", grokconfig.ConfigPath(contextDir), filepath.Join(sandboxHome, ".grok", "managed_config.toml")},
+	wantDir := filepath.Join(sandboxHome, ".grok")
+	if !reflect.DeepEqual(sandbox.Dirs, []string{wantDir}) {
+		t.Fatalf("dirs = %#v, want %#v", sandbox.Dirs, []string{wantDir})
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("argv = %#v, want %#v", got, want)
+	wantLink := filepath.Join(sandboxHome, ".grok", "managed_config.toml")
+	if sandbox.Symlinks[wantLink] != grokconfig.ConfigPath(contextDir) {
+		t.Fatalf("symlinks = %#v", sandbox.Symlinks)
 	}
 }
 
 func TestLaunchAddsRules(t *testing.T) {
 	home := t.TempDir()
-	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}}).Service
-	service := contextfiles.NewService()
-	contextSession := service.NewSession(filepath.Join(home, "context"))
-	if err := contextSession.AddInstructionBytes("GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	gr, sandbox, service := newTestGrok(t, filepath.Join(home, "context"))
+	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
-	run := &tool.RunContext{
-		ContextFiles: contextSession,
-		Extra:        []string{"--model", "grok-code-fast-1"},
-		Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			got = append([]string(nil), argv...)
-			return 0, nil
-		},
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
 	}
 
-	if err := gr.Launch(context.Background(), run); err != nil {
+	if err := gr.Launch(context.Background(), []string{"--model", "grok-code-fast-1"}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"grok", "--rules", "# git\n", "--model", "grok-code-fast-1"}
@@ -121,13 +107,12 @@ func TestLaunchAddsRules(t *testing.T) {
 	}
 }
 
-type grokFakeSandbox struct {
-	home       string
-	contextDir string
+func newTestGrok(t *testing.T, contextDir string) (tool.Tool, *tooltest.Sandbox, *contextfiles.Service) {
+	t.Helper()
+	home := t.TempDir()
+	sandbox := tooltest.NewSandbox(contextDir)
+	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox, ContextFiles: contextFiles}).Service, sandbox, contextFiles
 }
-
-func (s grokFakeSandbox) HomeDir() string               { return s.home }
-func (s grokFakeSandbox) Projects() string              { return "" }
-func (s grokFakeSandbox) TobyRuntimeDir() string        { return filepath.Dir(s.contextDir) }
-func (s grokFakeSandbox) TobyContextDir() string        { return s.contextDir }
-func (s grokFakeSandbox) TobyOpenCodeConfigDir() string { return "" }

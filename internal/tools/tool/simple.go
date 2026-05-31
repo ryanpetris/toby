@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+
+	"petris.dev/toby/internal/tools/helpers"
 )
 
 type Simple struct {
 	Base
+	Sandbox             SandboxService
 	RootDir             string
 	HostSubpath         []string
 	SandboxSubpath      []string
@@ -51,34 +54,36 @@ func (t *Simple) Binds() []Bind {
 	}}
 }
 
-func (t *Simple) SandboxContextSetup(ctx *RunContext) error {
+func (t *Simple) SandboxContextSetup(ctx context.Context) error {
 	return SandboxContextSetupOnce(ctx, t.Name(), func() error {
 		for key, value := range t.SandboxEnv {
-			ctx.Env[key] = value
+			if err := t.Sandbox.SetEnvironment(ctx, key, value); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 }
 
-func (t *Simple) Install(ctx context.Context, run *RunContext) error {
-	return t.install(ctx, run, false)
+func (t *Simple) Install(ctx context.Context) error {
+	return t.install(ctx, false)
 }
 
-func (t *Simple) Upgrade(ctx context.Context, run *RunContext) error {
-	return t.install(ctx, run, true)
+func (t *Simple) Upgrade(ctx context.Context) error {
+	return t.install(ctx, true)
 }
 
-func (t *Simple) install(ctx context.Context, run *RunContext, force bool) error {
+func (t *Simple) install(ctx context.Context, force bool) error {
 	once := InstallOnce
 	if force {
 		once = UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
-		return t.runInstall(ctx, run, force)
+	return once(ctx, t.Name(), func() error {
+		return t.runInstall(ctx, force)
 	})
 }
 
-func (t *Simple) runInstall(ctx context.Context, run *RunContext, force bool) error {
+func (t *Simple) runInstall(ctx context.Context, force bool) error {
 	if len(t.InstallCommand) == 0 {
 		return nil
 	}
@@ -87,7 +92,7 @@ func (t *Simple) runInstall(ctx context.Context, run *RunContext, force bool) er
 		check = t.Name()
 	}
 	if !force {
-		exists, err := CommandExists(ctx, run, check)
+		exists, err := helpers.CommandExists(ctx, t.Sandbox.Exec, ExecOptions{HideOutput: true}, check)
 		if err != nil {
 			return err
 		}
@@ -95,39 +100,16 @@ func (t *Simple) runInstall(ctx context.Context, run *RunContext, force bool) er
 			return nil
 		}
 	}
-	return RunCommand(ctx, run.Exec, t.InstallCommand, ExecOptions{})
+	_, err := t.Sandbox.Exec(ctx, t.InstallCommand, ExecOptions{})
+	return err
 }
 
-func (t *Simple) Launch(ctx context.Context, run *RunContext) error {
+func (t *Simple) Launch(ctx context.Context, extra []string) error {
 	command := t.LaunchCommand
 	if command == "" {
 		command = t.Name()
 	}
-	argv := append([]string{command}, run.Extra...)
-	return RunCommand(ctx, run.Launch, argv, ExecOptions{})
+	argv := append([]string{command}, extra...)
+	_, err := t.Sandbox.Exec(ctx, argv, ExecOptions{Foreground: true})
+	return err
 }
-
-func CommandExists(ctx context.Context, run *RunContext, command string) (bool, error) {
-	rc, err := run.Exec(ctx, []string{"which", command}, ExecOptions{HideOutput: true})
-	if err != nil {
-		return false, err
-	}
-	return rc == 0, nil
-}
-
-func RunCommand(ctx context.Context, exec Executor, argv []string, opts ExecOptions) error {
-	rc, err := exec(ctx, argv, opts)
-	if err != nil {
-		return err
-	}
-	if rc != 0 {
-		return exitCode(rc)
-	}
-	return nil
-}
-
-type exitCode int
-
-func (e exitCode) Error() string { return "" }
-
-func (e exitCode) ExitCode() int { return int(e) }

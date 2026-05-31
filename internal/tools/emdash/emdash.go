@@ -3,9 +3,10 @@ package emdash
 import (
 	"context"
 	"embed"
-	"fmt"
 	"path/filepath"
 
+	contextfiles "petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -16,9 +17,9 @@ const appImageURL = "https://github.com/generalaction/emdash/releases/latest/dow
 
 var Module = fx.Module("tools.emdash", fx.Provide(Provide))
 
-const emdashInstallPath = "emdash/install"
+const emdashInstallPath = "emdash/install.sh"
 
-//go:embed install
+//go:embed install.sh
 var emdashFiles embed.FS
 
 type Result struct {
@@ -28,70 +29,65 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide() Result {
-	svc := &emdashTool{Base: toolutil.Base(tool.EmdashToolName, "Launch Emdash", tool.GroupUI, tool.GroupAI, tool.GroupSystem, tool.GroupVCS)}
+type Params struct {
+	fx.In
+
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
+}
+
+func Provide(params Params) Result {
+	svc := &emdashTool{Base: toolutil.Base(tool.EmdashToolName, "Launch Emdash", tool.GroupUI, tool.GroupAI, tool.GroupSystem, tool.GroupVCS), sandbox: params.Sandbox, contextFiles: params.ContextFiles}
 	return Result{Service: svc, Registry: svc}
 }
 
-type emdashTool struct{ tool.Base }
+type emdashTool struct {
+	tool.Base
+	sandbox      tool.SandboxService
+	contextFiles *contextfiles.Service
+}
 
-func (t *emdashTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
-		data, err := emdashFiles.ReadFile("install")
+func (t *emdashTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+		data, err := emdashFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
 		}
-		return run.ContextFiles.AddBytes(emdashInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, emdashInstallPath, data, 0o500)
+		return err
 	})
 }
 
-func (t *emdashTool) Install(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, false)
+func (t *emdashTool) Install(ctx context.Context) error {
+	return t.install(ctx, false)
 }
 
-func (t *emdashTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, true)
+func (t *emdashTool) Upgrade(ctx context.Context) error {
+	return t.install(ctx, true)
 }
 
-func (t *emdashTool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *emdashTool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "emdash")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "emdash")
 			if err != nil || exists {
 				return err
 			}
 		}
-		path, err := emdashInstallLaunchPath(run)
-		if err != nil {
-			return err
-		}
-		return tool.RunCommand(ctx, run.Exec, []string{path, appImageURL}, tool.ExecOptions{})
+		_, err := t.sandbox.Exec(ctx, []string{t.contextPath(emdashInstallPath), appImageURL}, tool.ExecOptions{})
+		return err
 	})
 }
 
-func emdashInstallLaunchPath(run *tool.RunContext) (string, error) {
-	contextDir := ""
-	if run != nil {
-		if run.ContextFiles != nil {
-			contextDir = run.ContextFiles.ContextDir()
-		}
-		if contextDir == "" && run.Sandbox != nil {
-			contextDir = run.Sandbox.TobyContextDir()
-		}
-	}
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	return filepath.Join(contextDir, filepath.FromSlash(emdashInstallPath)), nil
+func (t *emdashTool) contextPath(path string) string {
+	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
 }
 
-func (t *emdashTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"emdash"}, run.Extra...), tool.ExecOptions{})
+func (t *emdashTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"emdash"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }

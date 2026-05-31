@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const JSONRPCVersion = "2.0"
@@ -14,6 +15,8 @@ const (
 	MethodFileDelete       = "file.delete"
 	MethodFileMkdir        = "file.mkdir"
 	MethodFileSymlink      = "file.symlink"
+	MethodEnvironmentGet   = "environment.get"
+	MethodEnvironmentSet   = "environment.set"
 	MethodCommandRun       = "command.run"
 	MethodCommandExit      = "command.exit"
 	MethodSandboxTerminate = "sandbox.terminate"
@@ -76,6 +79,15 @@ type FileSymlinkParams struct {
 	Target string `json:"target" jsonschema:"symlink target"`
 }
 
+type EnvironmentGetResult struct {
+	Environment map[string]string `json:"environment" jsonschema:"sandbox manager environment variables"`
+}
+
+type EnvironmentSetParams struct {
+	Name  string `json:"name" jsonschema:"environment variable name"`
+	Value string `json:"value" jsonschema:"environment variable value; empty unsets the variable"`
+}
+
 type CommandRunParams struct {
 	CommandID  string   `json:"command_id" jsonschema:"UUID identifying this command execution"`
 	Argv       []string `json:"argv" jsonschema:"command argv to run inside the sandbox"`
@@ -90,31 +102,31 @@ type CommandExitParams struct {
 }
 
 type GitRepositoryParams struct {
-	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to XDG_PROJECTS_DIR"`
+	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to the sandbox project root"`
 }
 
 type GitCommitParams struct {
-	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to XDG_PROJECTS_DIR"`
+	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to the sandbox project root"`
 	Message    string `json:"message" jsonschema:"commit message passed to git commit -m"`
 	Amend      bool   `json:"amend,omitempty" jsonschema:"amend the previous commit when true"`
 }
 
 type GitPushParams struct {
-	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to XDG_PROJECTS_DIR"`
+	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to the sandbox project root"`
 	Branch     string `json:"branch" jsonschema:"single branch to push"`
 	Origin     string `json:"origin,omitempty" jsonschema:"remote name to push to, defaults to origin"`
 	Tags       bool   `json:"tags,omitempty" jsonschema:"push all tags with --tags when true"`
 }
 
 type GitRebaseParams struct {
-	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to XDG_PROJECTS_DIR"`
+	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to the sandbox project root"`
 	Base       string `json:"base,omitempty" jsonschema:"base ref to rebase onto"`
 	Continue   bool   `json:"continue,omitempty" jsonschema:"continue an in-progress rebase when true"`
 	Abort      bool   `json:"abort,omitempty" jsonschema:"abort an in-progress rebase when true"`
 }
 
 type GitTagParams struct {
-	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to XDG_PROJECTS_DIR"`
+	Repository string `json:"repository" jsonschema:"repository name visible in the sandbox, relative to the sandbox project root"`
 	Tag        string `json:"tag" jsonschema:"annotated tag name to create"`
 	Message    string `json:"message" jsonschema:"tag message passed to git tag -m"`
 	Target     string `json:"target,omitempty" jsonschema:"optional object to tag, defaults to HEAD"`
@@ -161,6 +173,18 @@ func NewFileSymlinkRequest(id int64, params FileSymlinkParams) ([]byte, error) {
 		return nil, err
 	}
 	return newRequest(id, MethodFileSymlink, data)
+}
+
+func NewEnvironmentGetRequest(id int64) ([]byte, error) {
+	return newRequest(id, MethodEnvironmentGet, nil)
+}
+
+func NewEnvironmentSetRequest(id int64, params EnvironmentSetParams) ([]byte, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return newRequest(id, MethodEnvironmentSet, data)
 }
 
 func NewCommandRunRequest(id int64, params CommandRunParams) ([]byte, error) {
@@ -384,6 +408,23 @@ func DecodeFileSymlinkParams(raw json.RawMessage) (FileSymlinkParams, error) {
 	return params, nil
 }
 
+func DecodeEnvironmentSetParams(raw json.RawMessage) (EnvironmentSetParams, error) {
+	var params EnvironmentSetParams
+	if err := decodeRequiredParams(raw, &params); err != nil {
+		return EnvironmentSetParams{}, err
+	}
+	if params.Name == "" {
+		return EnvironmentSetParams{}, errors.New("name is required")
+	}
+	if strings.ContainsAny(params.Name, "=\x00") {
+		return EnvironmentSetParams{}, errors.New("invalid environment variable name")
+	}
+	if strings.ContainsRune(params.Value, 0) {
+		return EnvironmentSetParams{}, errors.New("invalid environment variable value")
+	}
+	return params, nil
+}
+
 func DecodeCommandRunParams(raw json.RawMessage) (CommandRunParams, error) {
 	var params CommandRunParams
 	if err := decodeRequiredParams(raw, &params); err != nil {
@@ -455,6 +496,17 @@ func DecodeEmptyResult(result any) (EmptyResult, error) {
 		return EmptyResult{}, err
 	}
 	return empty, nil
+}
+
+func DecodeEnvironmentGetResult(result any) (EnvironmentGetResult, error) {
+	var env EnvironmentGetResult
+	if err := decodeResult(result, &env); err != nil {
+		return EnvironmentGetResult{}, err
+	}
+	if env.Environment == nil {
+		env.Environment = map[string]string{}
+	}
+	return env, nil
 }
 
 func decodeResult(result any, dest any) error {

@@ -4,14 +4,12 @@ import (
 	"context"
 	"reflect"
 	"testing"
-
-	"petris.dev/toby/internal/tools/tool"
 )
 
 func TestOrderedSortsByOrderThenNameAndSkipsNilServices(t *testing.T) {
 	var calls []string
 	service := func(name string) Service {
-		return ServiceFunc(func(context.Context, *tool.RunContext) error {
+		return ServiceFunc(func(context.Context, Params) error {
 			calls = append(calls, name)
 			return nil
 		})
@@ -29,7 +27,7 @@ func TestOrderedSortsByOrderThenNameAndSkipsNilServices(t *testing.T) {
 		t.Fatalf("services = %#v", services)
 	}
 	for _, svc := range services {
-		if err := svc.InitContext(context.Background(), nil); err != nil {
+		if err := svc.InitContext(context.Background(), Params{}); err != nil {
 			t.Fatal(err)
 		}
 	}

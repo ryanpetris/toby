@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -39,6 +40,7 @@ type Runtime struct {
 	foreground string
 	terminate  chan struct{}
 	once       sync.Once
+	env        map[string]string
 }
 
 type commandState struct {
@@ -50,7 +52,7 @@ type commandState struct {
 }
 
 func NewRuntime(registry *Registry) *Runtime {
-	return &Runtime{registry: registry, commands: map[string]*commandState{}, terminate: make(chan struct{})}
+	return &Runtime{registry: registry, commands: map[string]*commandState{}, terminate: make(chan struct{}), env: environmentFromList(os.Environ())}
 }
 
 func (r *Runtime) Run(ctx context.Context, controlPath string) error {
@@ -96,10 +98,10 @@ func (r *Runtime) Handle(ctx context.Context, data []byte) ([]byte, error) {
 }
 
 func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParams) error {
-	argv := commandArgv(params)
+	argv := r.commandArgv(params)
 	commandCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = r.environmentList()
 	if params.Foreground {
 		cmd.Stdin = os.Stdin
 	}
@@ -147,18 +149,75 @@ func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParam
 	return nil
 }
 
-func commandArgv(params control.CommandRunParams) []string {
+func (r *Runtime) commandArgv(params control.CommandRunParams) []string {
 	if len(params.Argv) > 0 {
 		return params.Argv
 	}
-	return defaultShellCommand()
+	return r.defaultShellCommand()
 }
 
-func defaultShellCommand() []string {
-	if shell := executableShell(os.Getenv("SHELL")); shell != "" {
+func (r *Runtime) defaultShellCommand() []string {
+	shell, _ := r.getEnvironment("SHELL")
+	if shell := executableShell(shell); shell != "" {
 		return []string{shell, "-i"}
 	}
 	return []string{"/bin/sh", "-i"}
+}
+
+func (r *Runtime) environmentSnapshot() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneEnvironment(r.env)
+}
+
+func (r *Runtime) getEnvironment(name string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, ok := r.env[name]
+	return value, ok
+}
+
+func (r *Runtime) setEnvironment(name, value string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.env == nil {
+		r.env = map[string]string{}
+	}
+	if value == "" {
+		delete(r.env, name)
+		return
+	}
+	r.env[name] = value
+}
+
+func (r *Runtime) environmentList() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	values := make([]string, 0, len(r.env))
+	for name, value := range r.env {
+		values = append(values, name+"="+value)
+	}
+	return values
+}
+
+func environmentFromList(values []string) map[string]string {
+	env := make(map[string]string, len(values))
+	for _, item := range values {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		env[name] = value
+	}
+	return env
+}
+
+func cloneEnvironment(env map[string]string) map[string]string {
+	clone := make(map[string]string, len(env))
+	for name, value := range env {
+		clone[name] = value
+	}
+	return clone
 }
 
 func executableShell(shell string) string {

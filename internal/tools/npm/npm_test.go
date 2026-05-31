@@ -8,19 +8,22 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 func TestRegisterContextFilesWritesSandboxInit(t *testing.T) {
-	svc := newTestNPM(t).(tool.ContextFileTool)
-	run := &tool.RunContext{ContextFiles: contextfiles.NewService().NewSession(filepath.Join(t.TempDir(), "context"))}
+	sandbox := tooltest.NewSandbox(filepath.Join(t.TempDir(), "context"))
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	svc := newTestNPM(t, sandbox, contextFiles).(tool.ContextFileTool)
 
-	if err := svc.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := svc.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	if len(files) != 1 {
 		t.Fatalf("files = %#v", files)
 	}
@@ -36,18 +39,16 @@ func TestRegisterContextFilesWritesSandboxInit(t *testing.T) {
 }
 
 func TestSandboxInitRunsContextScript(t *testing.T) {
-	svc := newTestNPM(t)
 	contextDir := filepath.Join(t.TempDir(), "context")
 	var got []string
-	run := &tool.RunContext{
-		ContextFiles: contextfiles.NewService().NewSession(contextDir),
-		Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			got = append([]string(nil), argv...)
-			return 0, nil
-		},
+	sandbox := tooltest.NewSandbox(contextDir)
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
 	}
+	svc := newTestNPM(t, sandbox, contextfiles.NewService())
 
-	if err := svc.SandboxInit(context.Background(), run); err != nil {
+	if err := svc.SandboxInit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,8 +58,8 @@ func TestSandboxInitRunsContextScript(t *testing.T) {
 	}
 }
 
-func newTestNPM(t *testing.T) tool.Tool {
+func newTestNPM(t *testing.T, sandbox tool.SandboxService, contextFiles *contextfiles.Service) tool.Tool {
 	t.Helper()
 	home := t.TempDir()
-	return Provide(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}).Service
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox, ContextFiles: contextFiles}).Service
 }

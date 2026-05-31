@@ -1,16 +1,18 @@
-//go:build !darwin
-
 package sandbox
 
-import "go.uber.org/fx"
+import (
+	"petris.dev/toby/internal/tools/tool"
+
+	"go.uber.org/fx"
+)
 
 func Module() fx.Option {
 	return fx.Module(
 		"sandbox",
 		fx.Provide(
-			ProvideBubblewrapEnvironment,
-			ProvideDockerEnvironment,
-			ProvideFactory,
+			newService,
+			func(s *Service) tool.SandboxService { return s },
+			provideFactory,
 		),
 	)
 }

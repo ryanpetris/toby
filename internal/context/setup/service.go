@@ -2,6 +2,7 @@ package contextinit
 
 import (
 	"context"
+	"io"
 	"sort"
 
 	"petris.dev/toby/internal/config/toby"
@@ -14,13 +15,19 @@ import (
 const FxGroup = "toby.context.init"
 
 type Service interface {
-	InitContext(context.Context, *tool.RunContext) error
+	InitContext(context.Context, Params) error
 }
 
-type ServiceFunc func(context.Context, *tool.RunContext) error
+type Params struct {
+	Toolset *tool.Toolset
+	Options *tool.CommandOptions
+	Stderr  io.Writer
+}
 
-func (f ServiceFunc) InitContext(ctx context.Context, run *tool.RunContext) error {
-	return f(ctx, run)
+type ServiceFunc func(context.Context, Params) error
+
+func (f ServiceFunc) InitContext(ctx context.Context, params Params) error {
+	return f(ctx, params)
 }
 
 type Registration struct {
@@ -37,19 +44,25 @@ type Result struct {
 	Tools             Registration `group:"toby.context.init"`
 }
 
-func NewServices(cfg *tobyconfig.Service) Result {
+func NewServices(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) Result {
 	return Result{
-		AgentInstructions: Registration{Name: "agent-instructions", Order: 10, Service: ServiceFunc(func(_ context.Context, run *tool.RunContext) error {
-			return contextfiles.RegisterAgentInstructions(run.ContextFiles)
+		AgentInstructions: Registration{Name: "agent-instructions", Order: 10, Service: ServiceFunc(func(ctx context.Context, _ Params) error {
+			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o400)
+			return err
 		})},
-		TobyConfig: Registration{Name: "toby-config", Order: 20, Service: ServiceFunc(func(_ context.Context, run *tool.RunContext) error {
+		TobyConfig: Registration{Name: "toby-config", Order: 20, Service: ServiceFunc(func(ctx context.Context, _ Params) error {
 			if cfg == nil {
 				return nil
 			}
-			return cfg.RegisterContextFiles(run.ContextFiles)
+			return cfg.RegisterContextFiles(ctx, contextFiles)
 		})},
-		Tools: Registration{Name: "tools", Order: 30, Service: ServiceFunc(func(ctx context.Context, run *tool.RunContext) error {
-			return run.Toolset.RegisterContextFiles(ctx, run)
+		Tools: Registration{Name: "tools", Order: 30, Service: ServiceFunc(func(ctx context.Context, params Params) error {
+			var opts tool.ContextOptions
+			if params.Options != nil {
+				opts.SuppressWarnings = params.Options.SuppressWarnings
+			}
+			opts.Stderr = params.Stderr
+			return params.Toolset.RegisterContextFiles(ctx, opts)
 		})},
 	}
 }

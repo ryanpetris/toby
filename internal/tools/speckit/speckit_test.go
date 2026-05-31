@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 type fakeUV struct {
@@ -26,12 +27,12 @@ func (t fakeUV) PathEntries() []tool.PathTarget {
 	return append([]tool.PathTarget(nil), t.entries...)
 }
 
-func (t fakeUV) Install(context.Context, *tool.RunContext) error {
+func (t fakeUV) Install(context.Context) error {
 	*t.calls = append(*t.calls, "install:"+t.Name())
 	return t.err
 }
 
-func (t fakeUV) Upgrade(context.Context, *tool.RunContext) error {
+func (t fakeUV) Upgrade(context.Context) error {
 	*t.calls = append(*t.calls, "upgrade:"+t.Name())
 	return t.err
 }
@@ -73,14 +74,15 @@ func TestLatestReleaseTagRejectsMissingTag(t *testing.T) {
 
 func TestInstallRunsUVDependencyAndSkipsWhenSpecifyExists(t *testing.T) {
 	var depCalls []string
-	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls}}
+	sandbox := tooltest.NewSandbox("/toby/context")
+	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls}, sandbox: sandbox}
 	var execCalls [][]string
-	run := &tool.RunContext{Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		execCalls = append(execCalls, append([]string(nil), argv...))
 		return 0, nil
-	}}
+	}
 
-	if err := svc.Install(context.Background(), run); err != nil {
+	if err := svc.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"install:uv"}; !reflect.DeepEqual(depCalls, want) {
@@ -93,18 +95,20 @@ func TestInstallRunsUVDependencyAndSkipsWhenSpecifyExists(t *testing.T) {
 
 func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
 	var depCalls []string
+	sandbox := tooltest.NewSandbox("/toby/context")
 	svc := &speckitTool{
-		Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}},
-		http: speckitHTTPClient(http.StatusOK, `{"tag_name":"v0.5.0"}`),
-		uv:   fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls},
+		Base:    tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}},
+		http:    speckitHTTPClient(http.StatusOK, `{"tag_name":"v0.5.0"}`),
+		uv:      fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls},
+		sandbox: sandbox,
 	}
 	var execCalls [][]string
-	run := &tool.RunContext{Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		execCalls = append(execCalls, append([]string(nil), argv...))
 		return 0, nil
-	}}
+	}
 
-	if err := svc.Upgrade(context.Background(), run); err != nil {
+	if err := svc.Upgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"upgrade:uv"}; !reflect.DeepEqual(depCalls, want) {
@@ -119,26 +123,28 @@ func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
 func TestInstallStopsWhenUVDependencyFails(t *testing.T) {
 	boom := errors.New("boom")
 	var depCalls []string
-	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls, err: boom}}
-	run := &tool.RunContext{Exec: func(context.Context, []string, tool.ExecOptions) (int, error) {
+	sandbox := tooltest.NewSandbox("/toby/context")
+	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls, err: boom}, sandbox: sandbox}
+	sandbox.ExecFunc = func(context.Context, []string, tool.ExecOptions) (int, error) {
 		t.Fatal("executor should not run")
 		return 0, nil
-	}}
+	}
 
-	if err := svc.Install(context.Background(), run); !errors.Is(err, boom) {
+	if err := svc.Install(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
 }
 
 func TestLaunchRunsSpecifyWithExtras(t *testing.T) {
-	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}}
+	sandbox := tooltest.NewSandbox("/toby/context")
+	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, sandbox: sandbox}
 	var got []string
-	run := &tool.RunContext{Extra: []string{"init", "feature"}, Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)
 		return 0, nil
-	}}
+	}
 
-	if err := svc.Launch(context.Background(), run); err != nil {
+	if err := svc.Launch(context.Background(), []string{"init", "feature"}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"specify", "init", "feature"}

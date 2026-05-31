@@ -116,6 +116,23 @@ func (c *SandboxClient) FileSymlink(ctx context.Context, path, target string) er
 	return err
 }
 
+func (c *SandboxClient) EnvironmentGet(ctx context.Context) (map[string]string, error) {
+	resp, err := c.peer.Call(ctx, control.MethodEnvironmentGet, nil)
+	if err != nil {
+		return nil, err
+	}
+	result, err := control.DecodeEnvironmentGetResult(resp.Result)
+	if err != nil {
+		return nil, err
+	}
+	return result.Environment, nil
+}
+
+func (c *SandboxClient) EnvironmentSet(ctx context.Context, name, value string) error {
+	_, err := c.peer.Call(ctx, control.MethodEnvironmentSet, control.EnvironmentSetParams{Name: name, Value: value})
+	return err
+}
+
 func (c *SandboxClient) CommandRun(ctx context.Context, params control.CommandRunParams) error {
 	_, err := c.peer.Call(ctx, control.MethodCommandRun, params)
 	return err

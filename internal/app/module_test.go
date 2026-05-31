@@ -17,6 +17,8 @@ import (
 	"petris.dev/toby/internal/control/sandboxmanager"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxbubblewrap "petris.dev/toby/internal/sandbox/bubblewrap"
+	sandboxdocker "petris.dev/toby/internal/sandbox/docker"
 	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
@@ -38,6 +40,8 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 		hostmanager.Module(),
 		mcpserver.Module(),
 		sandbox.Module(),
+		sandboxbubblewrap.Module(),
+		sandboxdocker.Module(),
 		sandboxmanager.Module(),
 		fx.Supply(paths, args(nil)),
 		fx.Provide(
@@ -74,6 +78,8 @@ func TestRunAppReportsInvalidConfig(t *testing.T) {
 		hostmanager.Module(),
 		mcpserver.Module(),
 		sandbox.Module(),
+		sandboxbubblewrap.Module(),
+		sandboxdocker.Module(),
 		sandboxmanager.Module(),
 		fx.Supply(paths, args([]string{"--help"})),
 		fx.Provide(

@@ -5,6 +5,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	codexconfig "petris.dev/toby/internal/tools/codex/config"
@@ -19,10 +20,12 @@ var Module = fx.Module("tools.codex", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	Paths  config.Paths
-	NPM    tool.Tool           `name:"npm"`
-	Config *tobyconfig.Service `optional:"true"`
-	Proxy  *httpproxy.Service  `optional:"true"`
+	Paths        config.Paths
+	NPM          tool.Tool           `name:"npm"`
+	Config       *tobyconfig.Service `optional:"true"`
+	Proxy        *httpproxy.Service  `optional:"true"`
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
 }
 
 type Result struct {
@@ -36,24 +39,27 @@ func Provide(params Params) Result {
 	svc := &codexTool{
 		Simple: toolutil.Simple(
 			params.Paths,
+			params.Sandbox,
 			toolutil.Base(tool.CodexToolName, "Launch Codex", tool.GroupSystem, tool.GroupVCS),
 			[]string{".codex"},
 			[]string{".codex"},
 			[]string{"npm", "install", "-g", "@openai/codex"},
 			nil,
 		),
-		npm:    params.NPM,
-		config: params.Config,
-		proxy:  params.Proxy,
+		npm:          params.NPM,
+		config:       params.Config,
+		proxy:        params.Proxy,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type codexTool struct {
 	*tool.Simple
-	npm    tool.Tool
-	config *tobyconfig.Service
-	proxy  *httpproxy.Service
+	npm          tool.Tool
+	config       *tobyconfig.Service
+	proxy        *httpproxy.Service
+	contextFiles *contextfiles.Service
 }
 
 func (t *codexTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -73,65 +79,55 @@ func (t *codexTool) HostInit(ctx context.Context, opts *tool.CommandOptions) err
 	return t.Simple.HostInit(ctx, opts)
 }
 
-func (t *codexTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *codexTool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
 	return t.Simple.SandboxContextSetup(ctx)
 }
 
-func (t *codexTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.SandboxInitDependencies(ctx, run, t.npm); err != nil {
+func (t *codexTool) SandboxInit(ctx context.Context) error {
+	if err := toolutil.SandboxInitDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.SandboxInit(ctx, run)
+	return t.Simple.SandboxInit(ctx)
 }
 
-func (t *codexTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+func (t *codexTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-			return registrar.RegisterContextFiles(ctx, run)
+			return registrar.RegisterContextFiles(ctx, opts)
 		}
 		return nil
 	})
 }
 
-func (t *codexTool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
+func (t *codexTool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Install(ctx, run)
+	return t.Simple.Install(ctx)
 }
 
-func (t *codexTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.npm); err != nil {
+func (t *codexTool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Upgrade(ctx, run)
+	return t.Simple.Upgrade(ctx)
 }
 
-func (t *codexTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	args, err := launchArgs(run, t.config, t.proxy)
+func (t *codexTool) Launch(ctx context.Context, extra []string) error {
+	args, err := t.launchArgs(extra)
 	if err != nil {
 		return err
 	}
-	return tool.RunCommand(ctx, run.Launch, append([]string{"codex"}, args...), tool.ExecOptions{})
+	_, err = t.Sandbox.Exec(ctx, append([]string{"codex"}, args...), tool.ExecOptions{Foreground: true})
+	return err
 }
 
-func launchArgs(run *tool.RunContext, cfg *tobyconfig.Service, proxy *httpproxy.Service) ([]string, error) {
-	extra := []string(nil)
-	var instructions [][]byte
-	controlHost := ""
-	tobyMCPURL := ""
-	if run != nil {
-		extra = run.Extra
-		controlHost = run.Env[control.EnvControlHost]
-		tobyMCPURL = run.TobyMCPURL
-		if run.ContextFiles != nil {
-			instructions = run.ContextFiles.InstructionContents()
-		}
-	}
-	args, err := codexconfig.ConfigArgs(instructions, cfg, controlHost, tobyMCPURL, proxy)
+func (t *codexTool) launchArgs(extra []string) ([]string, error) {
+	controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
+	args, err := codexconfig.ConfigArgs(t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy)
 	if err != nil {
 		return nil, err
 	}

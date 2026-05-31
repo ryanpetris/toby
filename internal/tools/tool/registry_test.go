@@ -27,25 +27,25 @@ func newLifecycleTool(name string, calls *[]string, dep Tool) *lifecycleTool {
 	return &lifecycleTool{Base: Base{Metadata: Metadata{Name: name}}, calls: calls, dep: dep}
 }
 
-func (t *lifecycleTool) Install(ctx context.Context, run *RunContext) error {
+func (t *lifecycleTool) Install(ctx context.Context) error {
 	if t.dep != nil {
-		if err := t.dep.Install(ctx, run); err != nil {
+		if err := t.dep.Install(ctx); err != nil {
 			return err
 		}
 	}
-	return InstallOnce(run, t.Name(), func() error {
+	return InstallOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "install:"+t.Name())
 		return nil
 	})
 }
 
-func (t *lifecycleTool) Upgrade(ctx context.Context, run *RunContext) error {
+func (t *lifecycleTool) Upgrade(ctx context.Context) error {
 	if t.dep != nil {
-		if err := t.dep.Upgrade(ctx, run); err != nil {
+		if err := t.dep.Upgrade(ctx); err != nil {
 			return err
 		}
 	}
-	return UpgradeOnce(run, t.Name(), func() error {
+	return UpgradeOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "upgrade:"+t.Name())
 		return nil
 	})
@@ -61,13 +61,13 @@ func newContextLifecycleTool(name string, calls *[]string, dep ContextFileTool) 
 	return &contextLifecycleTool{Base: Base{Metadata: Metadata{Name: name}}, calls: calls, dep: dep}
 }
 
-func (t *contextLifecycleTool) RegisterContextFiles(ctx context.Context, run *RunContext) error {
+func (t *contextLifecycleTool) RegisterContextFiles(ctx context.Context, opts ContextOptions) error {
 	if t.dep != nil {
-		if err := t.dep.RegisterContextFiles(ctx, run); err != nil {
+		if err := t.dep.RegisterContextFiles(ctx, opts); err != nil {
 			return err
 		}
 	}
-	return RegisterContextFilesOnce(run, t.Name(), func() error {
+	return RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "context:"+t.Name())
 		return nil
 	})
@@ -185,7 +185,7 @@ func TestToolsetInstallDeduplicatesSharedServiceDependency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := toolset.Install(ctx, &RunContext{Options: &CommandOptions{}}); err != nil {
+	if err := toolset.Install(ctx); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"install:dep", "install:a", "install:b"}
@@ -207,7 +207,7 @@ func TestToolsetUpgradeUsesDependencyUpgradeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := toolset.Upgrade(ctx, &RunContext{Options: &CommandOptions{}}); err != nil {
+	if err := toolset.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"upgrade:dep", "upgrade:a"}
@@ -230,7 +230,7 @@ func TestToolsetRegisterContextFilesDeduplicatesSharedDependency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := toolset.RegisterContextFiles(ctx, &RunContext{Options: &CommandOptions{}}); err != nil {
+	if err := toolset.RegisterContextFiles(ctx, ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"context:dep", "context:a", "context:b"}

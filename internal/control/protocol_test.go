@@ -70,6 +70,57 @@ func TestNewGitRequestsEncodeJSONRPCEnvelope(t *testing.T) {
 	}
 }
 
+func TestNewEnvironmentRequestsEncodeJSONRPCEnvelope(t *testing.T) {
+	tests := []struct {
+		name       string
+		build      func() ([]byte, error)
+		wantMethod string
+		wantParams map[string]any
+	}{
+		{
+			name:       "get",
+			build:      func() ([]byte, error) { return NewEnvironmentGetRequest(42) },
+			wantMethod: MethodEnvironmentGet,
+		},
+		{
+			name: "set",
+			build: func() ([]byte, error) {
+				return NewEnvironmentSetRequest(42, EnvironmentSetParams{Name: "FOO", Value: "bar"})
+			},
+			wantMethod: MethodEnvironmentSet,
+			wantParams: map[string]any{"name": "FOO", "value": "bar"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := DecodeRequest(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.JSONRPC != JSONRPCVersion || string(req.ID) != "42" || req.Method != tt.wantMethod {
+				t.Fatalf("request = %#v", req)
+			}
+			if tt.wantParams == nil {
+				if len(req.Params) != 0 {
+					t.Fatalf("params = %s, want none", req.Params)
+				}
+				return
+			}
+			var params map[string]any
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(params, tt.wantParams) {
+				t.Fatalf("params = %#v, want %#v", params, tt.wantParams)
+			}
+		})
+	}
+}
+
 func TestDecodeRequestValidatesEnvelope(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -159,6 +210,7 @@ func TestDecodeFileAndCommandParamsValidation(t *testing.T) {
 		{name: "file delete path", decode: func(raw json.RawMessage) error { _, err := DecodeFileDeleteParams(raw); return err }, raw: json.RawMessage(`{}`), wantErr: "path is required"},
 		{name: "file mkdir path", decode: func(raw json.RawMessage) error { _, err := DecodeFileMkdirParams(raw); return err }, raw: json.RawMessage(`{}`), wantErr: "path is required"},
 		{name: "file symlink target", decode: func(raw json.RawMessage) error { _, err := DecodeFileSymlinkParams(raw); return err }, raw: json.RawMessage(`{"path":"link"}`), wantErr: "target is required"},
+		{name: "environment set name", decode: func(raw json.RawMessage) error { _, err := DecodeEnvironmentSetParams(raw); return err }, raw: json.RawMessage(`{}`), wantErr: "name is required"},
 		{name: "command run id", decode: func(raw json.RawMessage) error { _, err := DecodeCommandRunParams(raw); return err }, raw: json.RawMessage(`{"argv":["true"]}`), wantErr: "command_id is required"},
 		{name: "command exit id", decode: func(raw json.RawMessage) error { _, err := DecodeCommandExitParams(raw); return err }, raw: json.RawMessage(`{}`), wantErr: "command_id is required"},
 	}
@@ -169,6 +221,25 @@ func TestDecodeFileAndCommandParamsValidation(t *testing.T) {
 				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestDecodeEnvironmentSetParamsValidation(t *testing.T) {
+	if params, err := DecodeEnvironmentSetParams(json.RawMessage(`{"name":"FOO","value":""}`)); err != nil || params.Name != "FOO" || params.Value != "" {
+		t.Fatalf("unset params = %#v, err = %v", params, err)
+	}
+	for _, tt := range []struct {
+		raw     string
+		wantErr string
+	}{
+		{raw: `{"name":"BAD=NAME","value":"x"}`, wantErr: "invalid environment variable name"},
+		{raw: `{"name":"BAD\u0000NAME","value":"x"}`, wantErr: "invalid environment variable name"},
+		{raw: `{"name":"FOO","value":"BAD\u0000VALUE"}`, wantErr: "invalid environment variable value"},
+	} {
+		_, err := DecodeEnvironmentSetParams(json.RawMessage(tt.raw))
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+		}
 	}
 }
 
@@ -204,6 +275,28 @@ func TestResponsesEncodeDecodeAndCloneID(t *testing.T) {
 	}
 	if string(decoded.ID) != "null" || decoded.Error == nil || decoded.Error.Code != CodeInvalidParams || decoded.Error.Message != "bad" {
 		t.Fatalf("error response = %#v", decoded)
+	}
+}
+
+func TestDecodeEnvironmentGetResult(t *testing.T) {
+	response := ResponseOK(json.RawMessage(`1`), EnvironmentGetResult{Environment: map[string]string{"FOO": "bar"}})
+	decoded, err := DecodeResponse(bytes.TrimSpace(response))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := DecodeEnvironmentGetResult(decoded.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Environment["FOO"] != "bar" {
+		t.Fatalf("environment = %#v", result.Environment)
+	}
+	result, err = DecodeEnvironmentGetResult(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Environment == nil || len(result.Environment) != 0 {
+		t.Fatalf("empty environment = %#v", result.Environment)
 	}
 }
 

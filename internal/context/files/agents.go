@@ -12,6 +12,8 @@ const (
 //go:embed GIT_AGENTS.md
 var agentFiles embed.FS
 
+func AgentFiles() fs.FS { return agentFiles }
+
 func RegisterAgentFiles(registrar Registrar) error {
 	return registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400)
 }

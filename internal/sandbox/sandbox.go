@@ -14,7 +14,6 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
@@ -33,12 +32,6 @@ type Environment interface {
 	Priority() int
 	Available() error
 	NewInstance(Spec) (Instance, error)
-}
-
-type EnvironmentResult struct {
-	fx.Out
-
-	Environment Environment `group:"toby.sandbox.environments"`
 }
 
 type Spec struct {
@@ -71,7 +64,7 @@ type Instance interface {
 	TobyBinDir() string
 	TobyBinaryPath() string
 	TobyGitAgentsPath() string
-	SetupContext(*tool.RunContext)
+	SetupEnvironment(tool.Environment, *tool.Toolset)
 	HostControlEndpoint() control.Endpoint
 	SetupControlEndpoint(tool.Environment, control.Endpoint)
 	Run(context.Context, RunSpec) (int, error)
@@ -85,26 +78,19 @@ type Factory struct {
 	ordered      []Environment
 }
 
-type FactoryParams struct {
+type factoryParams struct {
 	fx.In
 
 	Paths        config.Paths
 	Environments []Environment `group:"toby.sandbox.environments"`
 }
 
-func ProvideFactory(params FactoryParams) (Factory, error) {
+func provideFactory(params factoryParams) (Factory, error) {
 	return newFactory(params.Paths, params.Environments)
 }
 
-func NewFactory(paths config.Paths, runner executil.Runner) Factory {
-	factory, err := newFactory(paths, []Environment{
-		NewBubblewrapEnvironment(paths, runner),
-		NewDockerEnvironment(paths, runner),
-	})
-	if err != nil {
-		panic(err)
-	}
-	return factory
+func NewFactory(paths config.Paths, environments []Environment) (Factory, error) {
+	return newFactory(paths, environments)
 }
 
 func newFactory(paths config.Paths, environments []Environment) (Factory, error) {
@@ -351,84 +337,145 @@ func relativeTo(base, path string) (string, error) {
 	return rel, nil
 }
 
-type projectMount struct {
-	name        string
-	hostPath    string
-	sandboxPath string
+type ProjectMount struct {
+	Name        string
+	HostPath    string
+	SandboxPath string
 }
 
-type baseInstance struct {
+type BaseInstance struct {
 	paths              config.Paths
 	label              string
+	sandboxPaths       tool.SandboxPaths
 	homeDir            string
 	projectsDir        string
 	runtimeDir         string
 	controlToken       string
 	sandboxControlHost string
 	workdir            string
-	projects           []projectMount
+	projects           []ProjectMount
 }
 
-func newProjectMounts(projects []Project, projectsDir string) []projectMount {
-	mounts := make([]projectMount, 0, len(projects))
+type BaseInstanceParams struct {
+	Paths              config.Paths
+	Label              string
+	SandboxPaths       tool.SandboxPaths
+	HomeDir            string
+	ProjectsDir        string
+	RuntimeDir         string
+	ControlToken       string
+	SandboxControlHost string
+	Workdir            string
+	Projects           []Project
+}
+
+func NewBaseInstance(params BaseInstanceParams) (BaseInstance, error) {
+	controlToken := params.ControlToken
+	if controlToken == "" {
+		var err error
+		controlToken, err = newControlToken()
+		if err != nil {
+			return BaseInstance{}, err
+		}
+	}
+	return BaseInstance{
+		paths:              params.Paths,
+		label:              params.Label,
+		sandboxPaths:       params.SandboxPaths,
+		homeDir:            params.HomeDir,
+		projectsDir:        params.ProjectsDir,
+		runtimeDir:         params.RuntimeDir,
+		controlToken:       controlToken,
+		sandboxControlHost: params.SandboxControlHost,
+		workdir:            params.Workdir,
+		projects:           newProjectMounts(params.Projects, params.ProjectsDir),
+	}, nil
+}
+
+func newProjectMounts(projects []Project, projectsDir string) []ProjectMount {
+	mounts := make([]ProjectMount, 0, len(projects))
 	for _, project := range projects {
-		mounts = append(mounts, projectMount{
-			name:        project.Name,
-			hostPath:    project.HostPath,
-			sandboxPath: filepath.Join(projectsDir, filepath.FromSlash(project.Name)),
+		mounts = append(mounts, ProjectMount{
+			Name:        project.Name,
+			HostPath:    project.HostPath,
+			SandboxPath: filepath.Join(projectsDir, filepath.FromSlash(project.Name)),
 		})
 	}
 	return mounts
 }
 
-func (s *baseInstance) HomeDir() string { return s.homeDir }
+func (s *BaseInstance) ProjectMounts() []ProjectMount {
+	return append([]ProjectMount(nil), s.projects...)
+}
 
-func (s *baseInstance) Projects() string { return s.projectsDir }
+func (s *BaseInstance) Paths() tool.SandboxPaths {
+	paths := s.sandboxPaths
+	if paths.Root == "" {
+		paths.Root = s.runtimeDir
+	}
+	if paths.Home == "" {
+		paths.Home = s.homeDir
+	}
+	if paths.Context == "" && paths.Root != "" {
+		paths.Context = filepath.Join(paths.Root, "context")
+	}
+	if paths.Bin == "" && paths.Root != "" {
+		paths.Bin = filepath.Join(paths.Root, "bin")
+	}
+	if paths.Workspace == "" {
+		paths.Workspace = s.projectsDir
+	}
+	return paths
+}
 
-func (s *baseInstance) ProjectPath(name string) (string, bool) {
+func (s *BaseInstance) HomeDir() string { return s.Paths().Home }
+
+func (s *BaseInstance) Projects() string { return s.Paths().Workspace }
+
+func (s *BaseInstance) ProjectPath(name string) (string, bool) {
 	name = filepath.ToSlash(strings.TrimSpace(name))
 	for _, project := range s.projects {
-		if project.name == name {
-			return project.sandboxPath, true
+		if project.Name == name {
+			return project.SandboxPath, true
 		}
 	}
 	return "", false
 }
 
-func (s *baseInstance) TobyRuntimeDir() string {
-	return s.runtimeDir
+func (s *BaseInstance) TobyRuntimeDir() string {
+	return s.Paths().Root
 }
 
-func (s *baseInstance) TobyContextDir() string {
-	return filepath.Join(s.TobyRuntimeDir(), "context")
+func (s *BaseInstance) TobyContextDir() string {
+	return s.Paths().Context
 }
 
-func (s *baseInstance) TobyBinDir() string {
-	return filepath.Join(s.TobyRuntimeDir(), "bin")
+func (s *BaseInstance) TobyBinDir() string {
+	return s.Paths().Bin
 }
 
-func (s *baseInstance) TobyBinaryPath() string {
+func (s *BaseInstance) TobyBinaryPath() string {
 	return filepath.Join(s.TobyBinDir(), "toby")
 }
 
-func (s *baseInstance) TobyGitAgentsPath() string {
+func (s *BaseInstance) TobyGitAgentsPath() string {
 	return filepath.Join(s.TobyContextDir(), "GIT_AGENTS.md")
 }
 
-func (s *baseInstance) TobyOpenCodeConfigDir() string {
+func (s *BaseInstance) TobyOpenCodeConfigDir() string {
 	return filepath.Join(s.TobyContextDir(), "opencode")
 }
 
-func (s *baseInstance) HostControlEndpoint() control.Endpoint {
+func (s *BaseInstance) HostControlEndpoint() control.Endpoint {
 	return control.WebSocketEndpoint("127.0.0.1:0", s.controlToken)
 }
 
-func (s *baseInstance) SetupControlEndpoint(env tool.Environment, endpoint control.Endpoint) {
+func (s *BaseInstance) SetupControlEndpoint(env tool.Environment, endpoint control.Endpoint) {
 	env[control.EnvControlHost] = s.sandboxHost(endpoint.Host)
 	env[control.EnvControlToken] = endpoint.Token
 }
 
-func (s *baseInstance) sandboxHost(host string) string {
+func (s *BaseInstance) sandboxHost(host string) string {
 	if s.sandboxControlHost == "" {
 		return host
 	}
@@ -443,34 +490,40 @@ func (s *baseInstance) sandboxHost(host string) string {
 	return host
 }
 
-func (s *baseInstance) Cleanup() error {
+func (s *BaseInstance) Cleanup() error {
 	return nil
 }
 
-func (s *baseInstance) SetupContext(ctx *tool.RunContext) {
-	ctx.Env["HOME"] = s.HomeDir()
-	ctx.Env["XDG_PROJECTS_DIR"] = s.Projects()
-	ctx.Env["GRML_CHROOT"] = "1"
-	ctx.Env["CHROOT"] = "(" + s.label + ")"
-	ctx.Env["TOBY_SANDBOX"] = "1"
-	ctx.Env["BASH_ENV"] = filepath.Join(s.HomeDir(), ".env")
-	delete(ctx.Env, "TOBY_MOUNTABLE_PROJECTS")
-	ctx.Env.Prepend("PATH", filepath.Join(s.HomeDir(), ".local", "bin"))
-	if ctx.Toolset != nil {
-		entries := ctx.Toolset.PathEntries()
+func (s *BaseInstance) SetupEnvironment(env tool.Environment, toolset *tool.Toolset) {
+	env["HOME"] = s.HomeDir()
+	env["XDG_PROJECTS_DIR"] = s.Projects()
+	env["GRML_CHROOT"] = "1"
+	env["CHROOT"] = "(" + s.label + ")"
+	env["TOBY_SANDBOX"] = "1"
+	env[tool.EnvTobyRoot] = s.TobyRuntimeDir()
+	env[tool.EnvTobyHome] = s.HomeDir()
+	env[tool.EnvTobyContext] = s.TobyContextDir()
+	env[tool.EnvTobyBin] = s.TobyBinDir()
+	env[tool.EnvTobyWorkspace] = s.Projects()
+	env["SHELL"] = "/bin/bash"
+	env["BASH_ENV"] = filepath.Join(s.HomeDir(), ".env")
+	delete(env, "TOBY_MOUNTABLE_PROJECTS")
+	env.Prepend("PATH", filepath.Join(s.HomeDir(), ".local", "bin"))
+	if toolset != nil {
+		entries := toolset.PathEntries()
 		for i := len(entries) - 1; i >= 0; i-- {
-			ctx.Env.Prepend("PATH", tool.ResolvePath(entries[i], s))
+			env.Prepend("PATH", tool.ResolvePath(entries[i], s))
 		}
 	}
-	ctx.Env.Prepend("PATH", s.TobyBinDir())
+	env.Prepend("PATH", s.TobyBinDir())
 }
 
-func (s *baseInstance) chdirDir() string {
+func (s *BaseInstance) ChdirDir() string {
 	if s.workdir != "" {
 		return expandSandboxHome(s.workdir, s.HomeDir())
 	}
 	if len(s.projects) > 0 {
-		return s.projects[0].sandboxPath
+		return s.projects[0].SandboxPath
 	}
 	return s.Projects()
 }
@@ -485,29 +538,29 @@ func expandSandboxHome(value, home string) string {
 	return value
 }
 
-func (s *baseInstance) VisibleHostPath(repository string) (string, error) {
+func (s *BaseInstance) VisibleHostPath(repository string) (string, error) {
 	repository, err := repositoryName(repository)
 	if err != nil {
 		return "", err
 	}
-	var selected *projectMount
+	var selected *ProjectMount
 	selectedName := ""
 	for i := range s.projects {
-		if nameWithin(s.projects[i].name, repository) && len(s.projects[i].name) > len(selectedName) {
+		if nameWithin(s.projects[i].Name, repository) && len(s.projects[i].Name) > len(selectedName) {
 			selected = &s.projects[i]
-			selectedName = s.projects[i].name
+			selectedName = s.projects[i].Name
 		}
 	}
 	if selected == nil {
 		return "", fmt.Errorf("repository is outside visible project: %s", repository)
 	}
-	rel := strings.TrimPrefix(repository, selected.name)
+	rel := strings.TrimPrefix(repository, selected.Name)
 	rel = strings.TrimPrefix(rel, "/")
-	hostPath := selected.hostPath
+	hostPath := selected.HostPath
 	if rel != "" {
 		hostPath = filepath.Join(hostPath, filepath.FromSlash(rel))
 	}
-	return validateVisibleHostPath(selected.hostPath, hostPath)
+	return validateVisibleHostPath(selected.HostPath, hostPath)
 }
 
 func repositoryName(repository string) (string, error) {

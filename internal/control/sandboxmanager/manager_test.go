@@ -54,24 +54,98 @@ func TestCommandArgvUsesDefaultShellForForegroundEmptyArgv(t *testing.T) {
 	if err := os.WriteFile(shell, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SHELL", shell)
-	argv := commandArgv(control.CommandRunParams{Foreground: true})
+	runtime := NewRuntime(nil)
+	runtime.setEnvironment("SHELL", shell)
+	argv := runtime.commandArgv(control.CommandRunParams{Foreground: true})
 	if len(argv) != 2 || argv[0] != shell || argv[1] != "-i" {
 		t.Fatalf("argv = %#v", argv)
 	}
 }
 
 func TestCommandArgvFallsBackToBinSh(t *testing.T) {
-	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing"))
-	argv := commandArgv(control.CommandRunParams{Foreground: true})
+	runtime := NewRuntime(nil)
+	runtime.setEnvironment("SHELL", filepath.Join(t.TempDir(), "missing"))
+	argv := runtime.commandArgv(control.CommandRunParams{Foreground: true})
 	if len(argv) != 2 || argv[0] != "/bin/sh" || argv[1] != "-i" {
 		t.Fatalf("argv = %#v", argv)
+	}
+}
+
+func TestRuntimeEnvironmentInitializesFromProcessEnv(t *testing.T) {
+	t.Setenv("TOBY_TEST_STARTUP_ENV", "startup")
+	runtime := NewRuntime(nil)
+	if got, ok := runtime.getEnvironment("TOBY_TEST_STARTUP_ENV"); !ok || got != "startup" {
+		t.Fatalf("startup env = %q, %v", got, ok)
+	}
+
+	runtime.setEnvironment("TOBY_TEST_STARTUP_ENV", "updated")
+	if got, ok := runtime.getEnvironment("TOBY_TEST_STARTUP_ENV"); !ok || got != "updated" {
+		t.Fatalf("updated env = %q, %v", got, ok)
+	}
+	runtime.setEnvironment("TOBY_TEST_STARTUP_ENV", "")
+	if got, ok := runtime.getEnvironment("TOBY_TEST_STARTUP_ENV"); ok {
+		t.Fatalf("unset env = %q, %v", got, ok)
+	}
+}
+
+func TestEnvironmentServiceGetSetAndUnset(t *testing.T) {
+	runtime := NewRuntime(envRegistry(t))
+	request, err := control.NewEnvironmentSetRequest(1, control.EnvironmentSetParams{Name: "TOBY_TEST_SERVICE_ENV", Value: "value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := runtime.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, response)
+
+	request, err = control.NewEnvironmentGetRequest(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = runtime.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := control.DecodeResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := control.DecodeEnvironmentGetResult(decoded.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Environment["TOBY_TEST_SERVICE_ENV"] != "value" {
+		t.Fatalf("environment = %#v", result.Environment)
+	}
+
+	request, err = control.NewEnvironmentSetRequest(3, control.EnvironmentSetParams{Name: "TOBY_TEST_SERVICE_ENV", Value: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = runtime.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustOK(t, response)
+	if got, ok := runtime.getEnvironment("TOBY_TEST_SERVICE_ENV"); ok {
+		t.Fatalf("unset env = %q, %v", got, ok)
 	}
 }
 
 func fileRegistry(t *testing.T) *Registry {
 	t.Helper()
 	registry, err := NewRegistry(RegistryParams{Services: []Service{FileService{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func envRegistry(t *testing.T) *Registry {
+	t.Helper()
+	registry, err := NewRegistry(RegistryParams{Services: []Service{EnvironmentService{}}})
 	if err != nil {
 		t.Fatal(err)
 	}

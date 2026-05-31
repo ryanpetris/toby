@@ -11,20 +11,20 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 )
 
 func TestPathEntriesAndSandboxContextSetup(t *testing.T) {
 	home := t.TempDir()
-	svc := Provide(config.Paths{}, nil).Service
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "context"))
+	sandbox.PathsValue.Home = home
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 	if got, want := svc.PathEntries(), []tool.PathTarget{tool.HomeTarget(".local", "share", "toby", "uv", "bin")}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("PathEntries = %#v, want %#v", got, want)
 	}
-	run := &tool.RunContext{Sandbox: fakeSandbox{home: home}, Env: tool.Environment{}}
-
-	if err := svc.SandboxContextSetup(run); err != nil {
+	if err := svc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	shared := filepath.Join(home, ".local", "share", "toby", "uv")
@@ -34,20 +34,22 @@ func TestPathEntriesAndSandboxContextSetup(t *testing.T) {
 		"UV_CACHE_DIR":    filepath.Join(shared, "cache"),
 	}
 	for key, want := range wantEnv {
-		if run.Env[key] != want {
-			t.Fatalf("%s = %q, want %q", key, run.Env[key], want)
+		if sandbox.Env[key] != want {
+			t.Fatalf("%s = %q, want %q", key, sandbox.Env[key], want)
 		}
 	}
 }
 
 func TestRegisterContextFilesWritesInstaller(t *testing.T) {
-	svc := Provide(config.Paths{}, nil).Service.(tool.ContextFileTool)
-	run := &tool.RunContext{ContextFiles: contextfiles.NewService().NewSession(filepath.Join(t.TempDir(), "context"))}
+	sandbox := tooltest.NewSandbox(filepath.Join(t.TempDir(), "context"))
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextFiles}).Service.(tool.ContextFileTool)
 
-	if err := svc.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := svc.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	if len(files) != 1 || files[0].Path != uvInstallPath || files[0].Mode != 0o500 {
 		t.Fatalf("files = %#v", files)
 	}
@@ -89,14 +91,15 @@ func TestLatestReleaseRejectsMissingTag(t *testing.T) {
 }
 
 func TestInstallSkipsWhenBinaryExists(t *testing.T) {
-	svc := Provide(config.Paths{}, nil).Service
 	var calls [][]string
-	run := &tool.RunContext{Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox := tooltest.NewSandbox(filepath.Join(t.TempDir(), "context"))
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		calls = append(calls, append([]string(nil), argv...))
 		return 0, nil
-	}}
+	}
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 
-	if err := svc.Install(context.Background(), run); err != nil {
+	if err := svc.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{"which", "uv"}}
@@ -115,15 +118,14 @@ func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
 	svc.http = uvHTTPClient(http.StatusOK, fmt.Sprintf(`{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q}]}`, assetName, archiveURL))
 	contextDir := filepath.Join(t.TempDir(), "context")
 	var calls [][]string
-	run := &tool.RunContext{
-		ContextFiles: contextfiles.NewService().NewSession(contextDir),
-		Exec: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
-			calls = append(calls, append([]string(nil), argv...))
-			return 0, nil
-		},
+	sandbox := tooltest.NewSandbox(contextDir)
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		calls = append(calls, append([]string(nil), argv...))
+		return 0, nil
 	}
+	svc.sandbox = sandbox
 
-	if err := svc.Upgrade(context.Background(), run); err != nil {
+	if err := svc.Upgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{filepath.Join(contextDir, filepath.FromSlash(uvInstallPath)), archiveURL}}
@@ -133,14 +135,15 @@ func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
 }
 
 func TestLaunchRunsUVWithExtras(t *testing.T) {
-	svc := Provide(config.Paths{}, nil).Service
 	var got []string
-	run := &tool.RunContext{Extra: []string{"tool", "list"}, Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox := tooltest.NewSandbox("/toby/context")
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)
 		return 0, nil
-	}}
+	}
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 
-	if err := svc.Launch(context.Background(), run); err != nil {
+	if err := svc.Launch(context.Background(), []string{"tool", "list"}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"uv", "tool", "list"}
@@ -158,20 +161,3 @@ func uvHTTPClient(status int, body string) *http.Client {
 		return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 }
-
-type fakeSandbox struct {
-	home       string
-	contextDir string
-}
-
-func (s fakeSandbox) HomeDir() string {
-	if s.home != "" {
-		return s.home
-	}
-	return filepath.Dir(s.contextDir)
-}
-
-func (s fakeSandbox) Projects() string              { return filepath.Join(s.HomeDir(), "Projects") }
-func (s fakeSandbox) TobyRuntimeDir() string        { return filepath.Dir(s.contextDir) }
-func (s fakeSandbox) TobyContextDir() string        { return s.contextDir }
-func (s fakeSandbox) TobyOpenCodeConfigDir() string { return filepath.Join(s.contextDir, "opencode") }

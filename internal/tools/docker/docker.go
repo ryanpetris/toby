@@ -20,17 +20,19 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(paths config.Paths) Result {
+func Provide(paths config.Paths, sandbox tool.SandboxService) Result {
 	svc := &dockerTool{
-		Base:  toolutil.Base(tool.DockerToolName, "Launch Docker", tool.GroupSystem, tool.GroupVCS),
-		paths: paths,
+		Base:    toolutil.Base(tool.DockerToolName, "Launch Docker", tool.GroupSystem, tool.GroupVCS),
+		paths:   paths,
+		sandbox: sandbox,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type dockerTool struct {
 	tool.Base
-	paths config.Paths
+	paths   config.Paths
+	sandbox tool.SandboxService
 }
 
 func (t *dockerTool) Binds() []tool.Bind {
@@ -40,6 +42,7 @@ func (t *dockerTool) Binds() []tool.Bind {
 	}
 }
 
-func (t *dockerTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"docker"}, run.Extra...), tool.ExecOptions{})
+func (t *dockerTool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"docker"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }

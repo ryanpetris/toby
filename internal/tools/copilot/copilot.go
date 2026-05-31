@@ -2,11 +2,10 @@ package copilot
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
@@ -21,10 +20,12 @@ var Module = fx.Module("tools.copilot", fx.Provide(Provide))
 type Params struct {
 	fx.In
 
-	Paths  config.Paths
-	NPM    tool.Tool           `name:"npm"`
-	Config *tobyconfig.Service `optional:"true"`
-	Proxy  *httpproxy.Service  `optional:"true"`
+	Paths        config.Paths
+	NPM          tool.Tool           `name:"npm"`
+	Config       *tobyconfig.Service `optional:"true"`
+	Proxy        *httpproxy.Service  `optional:"true"`
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
 }
 
 type Result struct {
@@ -38,24 +39,27 @@ func Provide(params Params) Result {
 	svc := &copilotTool{
 		Simple: toolutil.Simple(
 			params.Paths,
+			params.Sandbox,
 			toolutil.Base(tool.CopilotToolName, "Launch Copilot", tool.GroupSystem, tool.GroupVCS),
 			[]string{".copilot"},
 			[]string{".copilot"},
 			[]string{"npm", "install", "-g", "@github/copilot"},
 			nil,
 		),
-		npm:    params.NPM,
-		config: params.Config,
-		proxy:  params.Proxy,
+		npm:          params.NPM,
+		config:       params.Config,
+		proxy:        params.Proxy,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type copilotTool struct {
 	*tool.Simple
-	npm    tool.Tool
-	config *tobyconfig.Service
-	proxy  *httpproxy.Service
+	npm          tool.Tool
+	config       *tobyconfig.Service
+	proxy        *httpproxy.Service
+	contextFiles *contextfiles.Service
 }
 
 func (t *copilotTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
@@ -75,7 +79,7 @@ func (t *copilotTool) HostInit(ctx context.Context, opts *tool.CommandOptions) e
 	return t.Simple.HostInit(ctx, opts)
 }
 
-func (t *copilotTool) SandboxContextSetup(ctx *tool.RunContext) error {
+func (t *copilotTool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
@@ -83,55 +87,49 @@ func (t *copilotTool) SandboxContextSetup(ctx *tool.RunContext) error {
 		return err
 	}
 	return tool.SandboxContextSetupOnce(ctx, t.Name()+".context", func() error {
-		contextDir := copilotconfig.InstructionsDir(ctx.Sandbox.TobyContextDir())
-		if existing := strings.TrimSpace(ctx.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]); existing != "" {
-			ctx.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] = contextDir + "," + existing
-		} else {
-			ctx.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] = contextDir
-		}
-		return nil
+		contextDir := copilotconfig.InstructionsDir(t.Sandbox.Paths().Context)
+		return t.Sandbox.PrependEnvironment(ctx, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", contextDir, ",")
 	})
 }
 
-func (t *copilotTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.SandboxInitDependencies(ctx, run, t.npm); err != nil {
+func (t *copilotTool) SandboxInit(ctx context.Context) error {
+	if err := toolutil.SandboxInitDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.SandboxInit(ctx, run)
+	return t.Simple.SandboxInit(ctx)
 }
 
-func (t *copilotTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
+func (t *copilotTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err
 			}
 		}
-		return copilotconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
+		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
+		return copilotconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy)
 	})
 }
 
-func (t *copilotTool) Install(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.InstallDependencies(ctx, run, t.npm); err != nil {
+func (t *copilotTool) Install(ctx context.Context) error {
+	if err := toolutil.InstallDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Install(ctx, run)
+	return t.Simple.Install(ctx)
 }
 
-func (t *copilotTool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	if err := toolutil.UpgradeDependencies(ctx, run, t.npm); err != nil {
+func (t *copilotTool) Upgrade(ctx context.Context) error {
+	if err := toolutil.UpgradeDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return t.Simple.Upgrade(ctx, run)
+	return t.Simple.Upgrade(ctx)
 }
 
-func (t *copilotTool) Launch(ctx context.Context, run *tool.RunContext) error {
-	argv := append([]string{"copilot"}, contextFlags(run.Sandbox.TobyContextDir())...)
-	argv = append(argv, run.Extra...)
-	return tool.RunCommand(ctx, run.Launch, argv, tool.ExecOptions{})
+func (t *copilotTool) Launch(ctx context.Context, extra []string) error {
+	argv := append([]string{"copilot"}, contextFlags(t.Sandbox.Paths().Context)...)
+	argv = append(argv, extra...)
+	_, err := t.Sandbox.Exec(ctx, argv, tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func contextFlags(contextDir string) []string {

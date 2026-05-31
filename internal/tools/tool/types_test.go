@@ -92,6 +92,15 @@ func TestPathTargetsAndResolvePath(t *testing.T) {
 	if target := RuntimeTarget("bin"); ResolvePath(target, sandbox) != filepath.Join(sandbox.runtime, "bin") {
 		t.Fatalf("runtime target = %#v", target)
 	}
+	if target := RootTarget("tmp"); ResolvePath(target, sandbox) != filepath.Join(sandbox.runtime, "tmp") {
+		t.Fatalf("root target = %#v", target)
+	}
+	if target := ContextTarget("npm", "sandbox-init"); ResolvePath(target, sandbox) != filepath.Join(sandbox.runtime, "context", "npm", "sandbox-init") {
+		t.Fatalf("context target = %#v", target)
+	}
+	if target := BinTarget("toby"); ResolvePath(target, sandbox) != filepath.Join(sandbox.runtime, "bin", "toby") {
+		t.Fatalf("bin target = %#v", target)
+	}
 	if target := ProjectsTarget("app"); ResolvePath(target, sandbox) != filepath.Join(sandbox.projects, "app") {
 		t.Fatalf("projects target = %#v", target)
 	}
@@ -104,6 +113,10 @@ type pathSandbox struct {
 	home     string
 	runtime  string
 	projects string
+}
+
+func (s pathSandbox) Paths() SandboxPaths {
+	return SandboxPaths{Root: s.runtime, Home: s.home, Context: filepath.Join(s.runtime, "context"), Bin: filepath.Join(s.runtime, "bin"), Workspace: s.projects}
 }
 
 func (s pathSandbox) HomeDir() string        { return s.home }

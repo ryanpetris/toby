@@ -24,6 +24,14 @@ func (e Environment) List() []string {
 	return values
 }
 
+func (e Environment) Clone() Environment {
+	clone := make(Environment, len(e))
+	for name, value := range e {
+		clone[name] = value
+	}
+	return clone
+}
+
 func (e Environment) Prepend(name, value string) {
 	e.setPathEntry(name, value, true, ":")
 }

@@ -34,15 +34,15 @@ func TestSimpleBindsDefaultsAndSandboxSubpathFallback(t *testing.T) {
 
 func TestSimpleLaunchUsesDefaultAndOverrideCommands(t *testing.T) {
 	var calls [][]string
-	exec := func(_ context.Context, argv []string, _ ExecOptions) (int, error) {
+	sandbox := fakeSandboxService{exec: func(_ context.Context, argv []string, _ ExecOptions) (int, error) {
 		calls = append(calls, append([]string(nil), argv...))
 		return 0, nil
-	}
-	run := &RunContext{Extra: []string{"--help"}, Launch: exec}
-	if err := (&Simple{Base: Base{Metadata: Metadata{Name: "tool"}}}).Launch(context.Background(), run); err != nil {
+	}}
+	extra := []string{"--help"}
+	if err := (&Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox}).Launch(context.Background(), extra); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, LaunchCommand: "custom"}).Launch(context.Background(), run); err != nil {
+	if err := (&Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, LaunchCommand: "custom"}).Launch(context.Background(), extra); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{{"tool", "--help"}, {"custom", "--help"}}
@@ -51,17 +51,34 @@ func TestSimpleLaunchUsesDefaultAndOverrideCommands(t *testing.T) {
 	}
 }
 
-func TestRunCommandReturnsExecutorErrorsAndExitCodes(t *testing.T) {
-	if err := RunCommand(context.Background(), func(context.Context, []string, ExecOptions) (int, error) { return 0, nil }, []string{"true"}, ExecOptions{}); err != nil {
-		t.Fatal(err)
-	}
+func TestSimpleLaunchReturnsExecError(t *testing.T) {
 	sentinel := errors.New("boom")
-	if err := RunCommand(context.Background(), func(context.Context, []string, ExecOptions) (int, error) { return 0, sentinel }, []string{"bad"}, ExecOptions{}); !errors.Is(err, sentinel) {
+	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: fakeSandboxService{exec: func(context.Context, []string, ExecOptions) (int, error) { return 0, sentinel }}}
+	if err := simple.Launch(context.Background(), nil); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}
-	err := RunCommand(context.Background(), func(context.Context, []string, ExecOptions) (int, error) { return 7, nil }, []string{"false"}, ExecOptions{})
-	var coded interface{ ExitCode() int }
-	if !errors.As(err, &coded) || coded.ExitCode() != 7 {
-		t.Fatalf("err = %#v, coded = %#v", err, coded)
-	}
 }
+
+type fakeSandboxService struct {
+	exec func(context.Context, []string, ExecOptions) (int, error)
+}
+
+func (s fakeSandboxService) Paths() SandboxPaths                                  { return SandboxPaths{} }
+func (s fakeSandboxService) ProjectPath(string) (string, bool)                    { return "", false }
+func (s fakeSandboxService) VisibleHostPath(string) (string, error)               { return "", nil }
+func (s fakeSandboxService) GetEnvironment(string) (string, bool)                 { return "", false }
+func (s fakeSandboxService) SetEnvironment(context.Context, string, string) error { return nil }
+func (s fakeSandboxService) PrependEnvironment(context.Context, string, string, string) error {
+	return nil
+}
+func (s fakeSandboxService) AppendEnvironment(context.Context, string, string, string) error {
+	return nil
+}
+func (s fakeSandboxService) AddFile(context.Context, string, []byte, uint32) error { return nil }
+func (s fakeSandboxService) DeletePath(context.Context, string, bool) error        { return nil }
+func (s fakeSandboxService) Mkdir(context.Context, string, uint32) error           { return nil }
+func (s fakeSandboxService) Symlink(context.Context, string, string) error         { return nil }
+func (s fakeSandboxService) Exec(ctx context.Context, argv []string, opts ExecOptions) (int, error) {
+	return s.exec(ctx, argv, opts)
+}
+func (s fakeSandboxService) TobyMCPURL() string { return "" }

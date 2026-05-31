@@ -8,7 +8,7 @@ This page covers Toby's environment layout, project access rules, runtime contex
 - `XDG_CONFIG_HOME` defaults to `~/.config`; Toby host configuration is loaded from `$XDG_CONFIG_HOME/toby`.
 - `XDG_CACHE_HOME` defaults to `~/.cache`; Bubblewrap sandbox homes are stored under `$XDG_CACHE_HOME/toby/sandboxes` unless configured with `sandbox.runtime.bubblewrap.root`.
 - Toby selects the available sandbox runtime with the lowest priority number. Docker has priority 0 and Bubblewrap has priority 1, making Docker the default when available.
-- Toby uses `/tmp/toby` inside the sandbox for its runtime files, generated context, and sandbox-facing `toby` binary.
+- Runtime layout is runtime-specific. Docker uses `/toby`: `/toby/home` is `$HOME`, `/toby/workspace` contains mounted projects, `/toby/context` contains generated context, and `/toby/bin` contains the sandbox-facing `toby` binary. Bubblewrap keeps normal `$HOME` and `$XDG_PROJECTS_DIR` paths, and stores Toby internals under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
 
 Persistent CLI project directories must resolve to `$XDG_PROJECTS_DIR` or a path below `$XDG_PROJECTS_DIR`. Launch configuration can add named projects from other host paths.
 
@@ -18,7 +18,7 @@ For persistent environments, Toby requires an environment name. By default, that
 
 Use `--project` to point an environment at a different project directory. The value can be an absolute path or a `~`-relative path, but the resolved directory must be `$XDG_PROJECTS_DIR` or below it.
 
-Launch configuration files passed with `toby --config <file>` can define one or more named projects. A configured project's `path` is the host source directory and may be absolute or relative to the config file; if omitted, it defaults to the config file directory. Each configured project is mounted inside the sandbox at `$XDG_PROJECTS_DIR/<name>` regardless of where the source lives on the host. In config-owned launches, the first existing configured project is the working directory. In overlay launches such as `toby --config <file> opencode my-app`, the CLI project remains primary and configured projects are additional.
+Launch configuration files passed with `toby --config <file>` can define one or more named projects. A configured project's `path` is the host source directory and may be absolute or relative to the config file; if omitted, it defaults to the host `$XDG_PROJECTS_DIR/<name>`. Each configured project is mounted inside the sandbox under the selected runtime's project root: `/toby/workspace/<name>` for Docker and `$XDG_PROJECTS_DIR/<name>` for Bubblewrap. In config-owned launches, the first existing configured project is the working directory. In overlay launches such as `toby --config <file> opencode my-app`, the CLI project remains primary and configured projects are additional.
 
 Example:
 
@@ -56,7 +56,7 @@ tools:
   - uv
 ```
 
-Inside both Bubblewrap and Docker sandboxes, those projects appear under the sandbox-visible projects directory, `$XDG_PROJECTS_DIR/app`, `$XDG_PROJECTS_DIR/foo`, `$XDG_PROJECTS_DIR/qux`, and `$XDG_PROJECTS_DIR/baz` by default. Toby Git and MCP repository names use those configured project names, not the host source paths.
+Inside Docker sandboxes, those projects appear under `/toby/workspace/app`, `/toby/workspace/foo`, `/toby/workspace/qux`, and `/toby/workspace/baz`. Inside Bubblewrap sandboxes, they appear under `$XDG_PROJECTS_DIR/app`, `$XDG_PROJECTS_DIR/foo`, `$XDG_PROJECTS_DIR/qux`, and `$XDG_PROJECTS_DIR/baz`. Toby Git and MCP repository names use those configured project names, not the host source paths.
 
 If a configured project is a string or an object with only `name`, the host source defaults to the host `$XDG_PROJECTS_DIR/<name>`. Explicit relative project `path` values resolve from the launch config file directory, absolute paths are used as-is, and leading `~` expands to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
 
@@ -81,23 +81,23 @@ tools:
   - npm
 ```
 
-`toby --config toby.yaml -- -- --watch` runs `npm test -- --watch` in `$XDG_PROJECTS_DIR/foo`.
+With Docker, `toby --config toby.yaml -- -- --watch` runs `npm test -- --watch` in `/toby/workspace/foo`; with Bubblewrap, it runs under `$XDG_PROJECTS_DIR/foo`.
 
 ## Sandbox Runtime
 
-Toby bind mounts the private sandbox `$HOME` directly and bind mounts the selected project directory. Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox. Operations that need host credentials should go through Toby's control bridge instead of copying keys into the environment.
+Toby mounts only the paths required by the selected runtime. Docker mounts a private `/toby` root and selected projects under `/toby/workspace`. Bubblewrap bind mounts a private host directory at `$HOME`, keeps projects under `$XDG_PROJECTS_DIR`, and bind mounts Toby internals at `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`. Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox. Operations that need host credentials should go through Toby's control bridge instead of copying keys into the environment.
 
-For each sandbox session, the selected runtime starts a small shell bootstrap that downloads the sandbox-facing Toby binary from the host control server to `/tmp/toby/bin/toby`, marks it executable, and launches `/tmp/toby/bin/toby sandbox manager`. The sandbox manager connects to the authenticated WebSocket control endpoint, sends `context.init`, handles generic file commands such as `file.create` and `file.mkdir`, and then runs host-requested `command.run` requests inside the sandbox.
+For each sandbox session, the selected runtime starts a small shell bootstrap that downloads the sandbox-facing Toby binary from the host control server to `$TOBY_BIN_DIR/toby`, marks it executable, and launches it as `toby sandbox manager`. The sandbox manager connects to the authenticated WebSocket control endpoint, sends `context.init`, handles generic file commands such as `file.create` and `file.mkdir`, and then runs host-requested `command.run` requests inside the sandbox.
 
-The host control server listens on `127.0.0.1` with a random per-run bearer token. Docker on macOS connects through `host.docker.internal`. The same listener serves `/control` for WebSocket JSON-RPC, `/binary` for the sandbox helper download, and `/proxy/<uuid>` for per-run HTTP proxy targets. Sandboxes receive `TOBY_CONTROL_HOST=host:port` and infer the protocol-specific URLs from it. `/tmp/toby/bin` is prepended to `PATH`.
+The host control server listens on `127.0.0.1` with a random per-run bearer token. Docker on macOS connects through `host.docker.internal`. The same listener serves `/control` for WebSocket JSON-RPC, `/binary` for the sandbox helper download, and `/proxy/<uuid>` for per-run HTTP proxy targets. Sandboxes receive `TOBY_CONTROL_HOST=host:port` and infer the protocol-specific URLs from it. `$TOBY_BIN_DIR` is prepended to `PATH`. Toby also sets `TOBY_ROOT`, `TOBY_HOME`, `TOBY_WORKSPACE_DIR`, `TOBY_CONTEXT_DIR`, `TOBY_BIN_DIR`, `XDG_PROJECTS_DIR`, and `SHELL=/bin/bash` from the selected runtime's paths.
 
 The host manager runs registered context init services after `context.init`. Services add context through the context service, which translates those requests into sandbox manager file commands. When the foreground command exits, the sandbox manager sends `command.exit` with the command UUID and exit code. The host manager then sends `sandbox.terminate`; the sandbox manager exits with code 0, while the host exits with the foreground command's exit code.
 
 ### Docker Runtime
 
-Docker-backed sandboxes use `docker run --rm --init` with the selected image. The default image is `node:lts-bookworm`. Docker uses the same `$HOME` path and projects path as the host by default. These paths can be overridden in launch config with `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects`.
+Docker-backed sandboxes use `docker run --rm --init` with the selected image. The default image is `node:lts-bookworm`. Docker mounts a named volume at `/toby`; `$HOME` defaults to `/toby/home` and projects default to `/toby/workspace`. These paths can be overridden in launch config with `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects`, but they must stay under `/toby`.
 
-Docker `$HOME` is backed by a named Docker volume such as `toby-home-my-app`, based on the sandbox name, so it persists across runs without bind mounting the host home contents.
+Docker `/toby` is backed by a named Docker volume such as `toby-home-my-app`, based on the sandbox name, so private home state persists across runs without bind mounting the host home contents.
 
 Docker `sandbox.runtime.docker.home`, `sandbox.runtime.docker.projects`, and `workdir` values are sandbox-visible paths. A leading `~` expands to the Docker sandbox home.
 
@@ -111,7 +111,7 @@ Docker bind mounts require a local Docker daemon that can access the same host p
 
 ### Bubblewrap Runtime
 
-Bubblewrap-backed sandboxes store private homes under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default. Set `sandbox.runtime.bubblewrap.root` in host or launch config to use another host directory. Absolute paths are used as-is, `~` expands to the host home, and relative paths resolve from the config file directory.
+Bubblewrap-backed sandboxes store private homes under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default and bind that private directory at the normal host `$HOME` path inside the sandbox. Projects stay under `$XDG_PROJECTS_DIR`. Toby's generated context and helper binary live under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`. Set `sandbox.runtime.bubblewrap.root` in host or launch config to use another host directory. Absolute paths are used as-is, `~` expands to the host home, and relative paths resolve from the config file directory.
 
 If no runtime-specific settings are needed, `sandbox.runtime` can be a string such as `runtime: bubblewrap`. Use the object form with `default` when setting runtime-specific options.
 
@@ -121,8 +121,8 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` config is rendered into supported synthetic tool config files under `/tmp/toby/context`. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url` and are rendered as remote MCP URLs through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby keeps the upstream URL and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `/tmp/toby/context/grok/config.toml`.
-- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `/tmp/toby/context/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
+- `mcp` config is rendered into supported synthetic tool config files under `$TOBY_CONTEXT_DIR`. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url` and are rendered as remote MCP URLs through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby keeps the upstream URL and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to `$TOBY_CONTEXT_DIR/grok/config.toml`.
+- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under `$TOBY_CONTEXT_DIR/instructions/` using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
 - `permission.paths` entries are host path patterns and permission modes rendered into supported tool configs. Leading `~` expands to the host home directory.
 - `provider` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps upstream `baseURL` and credential `headers` on the host and exposes each provider to tools through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `opencode.model-discovery` and excludes only that provider from generated OpenCode config.
 - `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
@@ -170,13 +170,13 @@ Available tools:
 - `git.rebase`: run `git rebase BASE`, `git rebase --continue`, or `git rebase --abort` on the host for a visible repository.
 - `git.tag`: run `git tag -a TAG -m MESSAGE [TARGET]` on the host for a visible repository. `target` defaults to `HEAD`.
 
-The Git MCP tools accept repository names relative to `XDG_PROJECTS_DIR`, including nested repositories such as `foo/bar/baz`. The requested repository must already be visible in the sandbox through the initial project bind mount. Repository names with empty, `.`, or `..` path segments are rejected. Use these tools instead of running `git commit`, `git fetch`, `git push`, `git rebase`, or `git tag` directly in the sandbox when host Git config, GPG keys, or SSH keys are required.
+The Git MCP tools accept repository names relative to the sandbox project root (`$XDG_PROJECTS_DIR`, `/toby/workspace` in Docker), including nested repositories such as `foo/bar/baz`. The requested repository must already be visible in the sandbox through the initial project bind mount. Repository names with empty, `.`, or `..` path segments are rejected. Use these tools instead of running `git commit`, `git fetch`, `git push`, `git rebase`, or `git tag` directly in the sandbox when host Git config, GPG keys, or SSH keys are required.
 
 The same control calls are available inside a sandbox as CLI commands: `toby sandbox git commit REPOSITORY -m MESSAGE [--amend]`, `toby sandbox git fetch REPOSITORY`, `toby sandbox git push REPOSITORY BRANCH [ORIGIN] [--tags]`, `toby sandbox git rebase REPOSITORY BASE|--continue|--abort`, and `toby sandbox git tag REPOSITORY TAG -m MESSAGE [TARGET]`.
 
 ## OpenCode
 
-For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config translated for OpenCode, the Toby MCP server, `/tmp/toby/context/GIT_AGENTS.md` and configured instructions, and provider entries pointed at Toby's `/proxy/<uuid>` proxy. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
+For OpenCode sandboxes, Toby sets `OPENCODE_CONFIG_DIR=$TOBY_CONTEXT_DIR/opencode`. That generated directory contains a `.gitignore` and `opencode.json` with host Toby config translated for OpenCode, the Toby MCP server, `$TOBY_CONTEXT_DIR/GIT_AGENTS.md` and configured instructions, and provider entries pointed at Toby's `/proxy/<uuid>` proxy. Model discovery failures emit `opencode.model-discovery` to stderr and omit only the provider that failed discovery.
 
 Equivalent generated OpenCode `opencode.json` entry:
 
@@ -195,7 +195,7 @@ Equivalent generated OpenCode `opencode.json` entry:
 
 ## Claude Code
 
-For Claude Code sandboxes, Toby sets `CLAUDE_CONFIG_DIR` to `$HOME/.config/claude` so Claude writes credentials, history, and session state into its normal config directory, which uses private sandbox state unless host tool state is enabled. Toby injects generated context through launch flags instead of pointing Claude's config directory at the generated files under `/tmp/toby/context/claude/`, and launches `claude` with:
+For Claude Code sandboxes, Toby sets `CLAUDE_CONFIG_DIR` to `$HOME/.config/claude` so Claude writes credentials, history, and session state into its normal config directory, which uses private sandbox state unless host tool state is enabled. Toby injects generated context through launch flags instead of pointing Claude's config directory at the generated files under `$TOBY_CONTEXT_DIR/claude/`, and launches `claude` with:
 
 - `--mcp-config .../claude/mcp.json` adds the Toby MCP server.
 - `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` and configured Toby instruction files.
@@ -229,10 +229,10 @@ Codex has no session config-file flag for arbitrary MCP config, so Toby uses lau
 
 ## Copilot
 
-For Copilot sandboxes, Toby generates `copilot/mcp-config.json` and `copilot/AGENTS.md` under `/tmp/toby/context`, sets `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` to include the generated Copilot context directory, and launches Copilot with:
+For Copilot sandboxes, Toby generates `copilot/mcp-config.json` and `copilot/AGENTS.md` under `$TOBY_CONTEXT_DIR`, sets `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` to include the generated Copilot context directory, and launches Copilot with:
 
 ```sh
-copilot --additional-mcp-config @/tmp/toby/context/copilot/mcp-config.json
+copilot --additional-mcp-config @$TOBY_CONTEXT_DIR/copilot/mcp-config.json
 ```
 
 Generated `copilot/mcp-config.json`:
@@ -251,6 +251,6 @@ Generated `copilot/mcp-config.json`:
 
 ## Grok
 
-For Grok sandboxes, Toby keeps Grok state in the normal `.grok` state bind so `sandbox.tools.grok.stateRoot` works like other tools. Toby generates `grok/config.toml` under `/tmp/toby/context`, then links `~/.grok/managed_config.toml` to that generated file during sandbox startup so Grok discovers Toby MCP through its native config loader. Combined instructions are passed with `--rules`.
+For Grok sandboxes, Toby keeps Grok state in the normal `.grok` state bind so `sandbox.tools.grok.stateRoot` works like other tools. Toby generates `grok/config.toml` under `$TOBY_CONTEXT_DIR`, then links `~/.grok/managed_config.toml` to that generated file during sandbox startup so Grok discovers Toby MCP through its native config loader. Combined instructions are passed with `--rules`.
 
 The generated Grok config contains Toby's MCP server and does not write to `~/.grok/config.toml`.

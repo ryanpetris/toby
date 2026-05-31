@@ -10,23 +10,25 @@ import (
 	"reflect"
 	"testing"
 
-	"petris.dev/toby/internal/context/files"
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
+	"petris.dev/toby/internal/tools/tooltest"
 	"petris.dev/toby/internal/tools/toolutil"
 )
 
 func TestProvideMetadataAndLaunch(t *testing.T) {
-	svc := Provide(nil).Service
+	sandbox := tooltest.NewSandbox("/toby/context")
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 	if svc.Name() != tool.ForgejoCliToolName || svc.CommandName() != "fj" || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
 	var got []string
-	run := &tool.RunContext{Extra: []string{"repo", "list"}, Launch: func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)
 		return 0, nil
-	}}
+	}
 
-	if err := svc.Launch(context.Background(), run); err != nil {
+	if err := svc.Launch(context.Background(), []string{"repo", "list"}); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"fj", "repo", "list"}; !reflect.DeepEqual(got, want) {
@@ -35,13 +37,15 @@ func TestProvideMetadataAndLaunch(t *testing.T) {
 }
 
 func TestRegisterContextFilesWritesInstaller(t *testing.T) {
-	svc := Provide(nil).Service.(tool.ContextFileTool)
-	run := &tool.RunContext{ContextFiles: contextfiles.NewService().NewSession(filepath.Join(t.TempDir(), "context"))}
+	sandbox := tooltest.NewSandbox(filepath.Join(t.TempDir(), "context"))
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextFiles}).Service.(tool.ContextFileTool)
 
-	if err := svc.RegisterContextFiles(context.Background(), run); err != nil {
+	if err := svc.RegisterContextFiles(context.Background(), tool.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	files := run.ContextFiles.Files()
+	files := sandbox.Files
 	if len(files) != 1 || files[0].Path != forgejoCLIInstallPath || files[0].Mode != 0o500 {
 		t.Fatalf("files = %#v", files)
 	}

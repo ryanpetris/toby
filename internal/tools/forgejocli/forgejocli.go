@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -18,9 +20,9 @@ import (
 
 var Module = fx.Module("tools.forgejocli", fx.Provide(Provide))
 
-const forgejoCLIInstallPath = "fj/install"
+const forgejoCLIInstallPath = "fj/install.sh"
 
-//go:embed install
+//go:embed install.sh
 var forgejoCLIFiles embed.FS
 
 type Result struct {
@@ -30,54 +32,64 @@ type Result struct {
 	Registry tool.Tool `group:"toby.tools"`
 }
 
-func Provide(client *http.Client) Result {
+type Params struct {
+	fx.In
+
+	HTTP         *http.Client
+	Sandbox      tool.SandboxService
+	ContextFiles *contextfiles.Service
+}
+
+func Provide(params Params) Result {
 	svc := &forgejoCLITool{
-		Base: toolutil.Base(tool.ForgejoCliToolName, "Launch Forgejo CLI", tool.GroupSystem, tool.GroupVCS),
-		http: client,
+		Base:         toolutil.Base(tool.ForgejoCliToolName, "Launch Forgejo CLI", tool.GroupSystem, tool.GroupVCS),
+		http:         params.HTTP,
+		sandbox:      params.Sandbox,
+		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc, Registry: svc}
 }
 
 type forgejoCLITool struct {
 	tool.Base
-	http *http.Client
+	http         *http.Client
+	sandbox      tool.SandboxService
+	contextFiles *contextfiles.Service
 }
 
-func (t *forgejoCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
-	return tool.SandboxInitOnce(run, t.Name(), func() error {
-		return t.Install(ctx, run)
+func (t *forgejoCLITool) SandboxInit(ctx context.Context) error {
+	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+		return t.Install(ctx)
 	})
 }
 
-func (t *forgejoCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
-		if run == nil || run.ContextFiles == nil {
-			return fmt.Errorf("context files session is not configured")
-		}
-		data, err := forgejoCLIFiles.ReadFile("install")
+func (t *forgejoCLITool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
+	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+		data, err := forgejoCLIFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
 		}
-		return run.ContextFiles.AddBytes(forgejoCLIInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, forgejoCLIInstallPath, data, 0o500)
+		return err
 	})
 }
 
-func (t *forgejoCLITool) Install(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, false)
+func (t *forgejoCLITool) Install(ctx context.Context) error {
+	return t.install(ctx, false)
 }
 
-func (t *forgejoCLITool) Upgrade(ctx context.Context, run *tool.RunContext) error {
-	return t.install(ctx, run, true)
+func (t *forgejoCLITool) Upgrade(ctx context.Context) error {
+	return t.install(ctx, true)
 }
 
-func (t *forgejoCLITool) install(ctx context.Context, run *tool.RunContext, force bool) error {
+func (t *forgejoCLITool) install(ctx context.Context, force bool) error {
 	once := tool.InstallOnce
 	if force {
 		once = tool.UpgradeOnce
 	}
-	return once(run, t.Name(), func() error {
+	return once(ctx, t.Name(), func() error {
 		if !force {
-			exists, err := tool.CommandExists(ctx, run, "fj")
+			exists, err := helpers.CommandExists(ctx, t.sandbox.Exec, tool.ExecOptions{HideOutput: true}, "fj")
 			if err != nil || exists {
 				return err
 			}
@@ -87,32 +99,18 @@ func (t *forgejoCLITool) install(ctx context.Context, run *tool.RunContext, forc
 			log.Printf("%s", err)
 			return exitcode.Code(1)
 		}
-		path, err := forgejoCLIInstallLaunchPath(run)
-		if err != nil {
-			return err
-		}
-		return tool.RunCommand(ctx, run.Exec, []string{path, archiveURL}, tool.ExecOptions{})
+		_, err = t.sandbox.Exec(ctx, []string{t.contextPath(forgejoCLIInstallPath), archiveURL}, tool.ExecOptions{})
+		return err
 	})
 }
 
-func forgejoCLIInstallLaunchPath(run *tool.RunContext) (string, error) {
-	contextDir := ""
-	if run != nil {
-		if run.ContextFiles != nil {
-			contextDir = run.ContextFiles.ContextDir()
-		}
-		if contextDir == "" && run.Sandbox != nil {
-			contextDir = run.Sandbox.TobyContextDir()
-		}
-	}
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	return filepath.Join(contextDir, filepath.FromSlash(forgejoCLIInstallPath)), nil
+func (t *forgejoCLITool) contextPath(path string) string {
+	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
 }
 
-func (t *forgejoCLITool) Launch(ctx context.Context, run *tool.RunContext) error {
-	return tool.RunCommand(ctx, run.Launch, append([]string{"fj"}, run.Extra...), tool.ExecOptions{})
+func (t *forgejoCLITool) Launch(ctx context.Context, extra []string) error {
+	_, err := t.sandbox.Exec(ctx, append([]string{"fj"}, extra...), tool.ExecOptions{Foreground: true})
+	return err
 }
 
 func (t *forgejoCLITool) archiveURL(ctx context.Context) (string, error) {

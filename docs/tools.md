@@ -31,7 +31,7 @@ through launch config `tools:` entries.
 
 All tools receive the built-in **Toby MCP server** (the `git.*` tools) when the
 tool supports MCP. "Synthetic config" means Toby generates configuration under
-`/tmp/toby/context` (or injects it via launch flags) without touching the tool's
+`$TOBY_CONTEXT_DIR` (or injects it via launch flags) without touching the tool's
 normal config files. See [configuration.md](configuration.md) for the host
 config that feeds this generation, and [sandbox.md](sandbox.md) for the exact
 generated files per tool.
@@ -64,7 +64,7 @@ instructions. The full generated artifacts are documented in
 
 ### OpenCode
 
-Toby sets `OPENCODE_CONFIG_DIR=/tmp/toby/context/opencode`. The generated
+Toby sets `OPENCODE_CONFIG_DIR=$TOBY_CONTEXT_DIR/opencode`. The generated
 `opencode.json` carries the Toby MCP server (as a remote `/proxy/<uuid>` URL),
 configured remote/local MCP entries, providers translated to
 `@ai-sdk/openai-compatible` / `@ai-sdk/anthropic`, and the combined
@@ -126,7 +126,7 @@ toby t3 my-app --with-claude
 toby t3 my-app --with-claude --with-codex --with-opencode
 ```
 
-`my-app` is the environment/project name (mounted at `$XDG_PROJECTS_DIR/my-app`).
+`my-app` is the environment/project name (mounted at `/toby/workspace/my-app` in Docker and `$XDG_PROJECTS_DIR/my-app` in Bubblewrap).
 Each `--with-<tool>` flag installs that tool into the sandbox home and generates
 its Toby integration config. Inside t3 you then select whichever tool you want;
 its MCP (`git.*`), any configured providers, and your instruction files are

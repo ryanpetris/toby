@@ -1,10 +1,14 @@
 package contextfiles
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"petris.dev/toby/internal/tools/tool"
 )
 
 type Registrar interface {
@@ -16,7 +20,12 @@ type FileSink interface {
 	AddFile(path string, data []byte, mode uint32) error
 }
 
-type Service struct{}
+type Service struct {
+	mu                  sync.Mutex
+	sandbox             tool.SandboxService
+	instructionPaths    []string
+	instructionContents [][]byte
+}
 
 type File struct {
 	Path string
@@ -38,6 +47,109 @@ type Session struct {
 
 func NewService() *Service {
 	return &Service{}
+}
+
+func (s *Service) SetSandbox(sandbox tool.SandboxService) {
+	s.mu.Lock()
+	s.sandbox = sandbox
+	s.mu.Unlock()
+}
+
+func (s *Service) Reset() {
+	s.mu.Lock()
+	s.instructionPaths = nil
+	s.instructionContents = nil
+	s.mu.Unlock()
+}
+
+func (s *Service) Registrar(ctx context.Context) Registrar {
+	return contextRegistrar{ctx: ctx, service: s}
+}
+
+func (s *Service) AddFile(ctx context.Context, path string, data []byte, mode uint32) (string, error) {
+	return s.addFile(ctx, path, data, mode, false)
+}
+
+func (s *Service) AddFS(ctx context.Context, path string, fsys fs.FS, name string, mode uint32) (string, error) {
+	data, err := readFSFile(fsys, name)
+	if err != nil {
+		return "", err
+	}
+	return s.AddFile(ctx, path, data, mode)
+}
+
+func (s *Service) AddInstruction(ctx context.Context, path string, data []byte, mode uint32) (string, error) {
+	return s.addFile(ctx, path, data, mode, true)
+}
+
+func (s *Service) AddInstructionFS(ctx context.Context, path string, fsys fs.FS, name string, mode uint32) (string, error) {
+	data, err := readFSFile(fsys, name)
+	if err != nil {
+		return "", err
+	}
+	return s.AddInstruction(ctx, path, data, mode)
+}
+
+type contextRegistrar struct {
+	ctx     context.Context
+	service *Service
+}
+
+func (r contextRegistrar) AddBytes(path string, data []byte, mode uint32) error {
+	_, err := r.service.AddFile(r.ctx, path, data, mode)
+	return err
+}
+
+func (r contextRegistrar) AddFS(path string, fsys fs.FS, name string, mode uint32) error {
+	_, err := r.service.AddFS(r.ctx, path, fsys, name, mode)
+	return err
+}
+
+func (s *Service) InstructionPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.instructionPaths...)
+}
+
+func (s *Service) InstructionContents() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	contents := make([][]byte, 0, len(s.instructionContents))
+	for _, item := range s.instructionContents {
+		contents = append(contents, append([]byte(nil), item...))
+	}
+	return contents
+}
+
+func (s *Service) addFile(ctx context.Context, path string, data []byte, mode uint32, instruction bool) (string, error) {
+	path, err := cleanPath(path)
+	if err != nil {
+		return "", err
+	}
+	if mode == 0 {
+		mode = 0o400
+	}
+	s.mu.Lock()
+	sandbox := s.sandbox
+	s.mu.Unlock()
+	if sandbox == nil {
+		return "", fmt.Errorf("sandbox service is not configured")
+	}
+	contextDir := sandbox.Paths().Context
+	if contextDir == "" {
+		return "", fmt.Errorf("sandbox context directory is not configured")
+	}
+	target := filepath.Join(contextDir, filepath.FromSlash(path))
+	if err := sandbox.AddFile(ctx, target, data, mode); err != nil {
+		return "", err
+	}
+	if instruction {
+		s.mu.Lock()
+		s.instructionPaths = append(s.instructionPaths, target)
+		s.instructionContents = append(s.instructionContents, append([]byte(nil), data...))
+		s.mu.Unlock()
+	}
+	return target, nil
 }
 
 func (s *Service) NewBuilder() *Builder {
@@ -233,4 +345,22 @@ func cleanPath(path string) (string, error) {
 		return "", fmt.Errorf("invalid context file path: %q", path)
 	}
 	return path, nil
+}
+
+func readFSFile(fsys fs.FS, name string) ([]byte, error) {
+	if fsys == nil {
+		return nil, fmt.Errorf("fs is required")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || !fs.ValidPath(name) {
+		return nil, fmt.Errorf("invalid fs path")
+	}
+	info, err := fs.Stat(fsys, name)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("fs path is a directory: %s", name)
+	}
+	return fs.ReadFile(fsys, name)
 }
