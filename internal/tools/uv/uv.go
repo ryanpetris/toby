@@ -68,14 +68,16 @@ func (t *uvTool) SandboxInit(ctx context.Context, run *tool.RunContext) error {
 }
 
 func (t *uvTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	if run == nil || run.ContextFiles == nil {
-		return fmt.Errorf("context files session is not configured")
-	}
-	data, err := uvFiles.ReadFile("install")
-	if err != nil {
-		return err
-	}
-	return run.ContextFiles.AddBytes(uvInstallPath, data, 0o500)
+	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+		if run == nil || run.ContextFiles == nil {
+			return fmt.Errorf("context files session is not configured")
+		}
+		data, err := uvFiles.ReadFile("install")
+		if err != nil {
+			return err
+		}
+		return run.ContextFiles.AddBytes(uvInstallPath, data, 0o500)
+	})
 }
 
 func (t *uvTool) Install(ctx context.Context, run *tool.RunContext) error {

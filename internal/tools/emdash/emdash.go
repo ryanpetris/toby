@@ -36,14 +36,16 @@ func Provide() Result {
 type emdashTool struct{ tool.Base }
 
 func (t *emdashTool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	if run == nil || run.ContextFiles == nil {
-		return fmt.Errorf("context files session is not configured")
-	}
-	data, err := emdashFiles.ReadFile("install")
-	if err != nil {
-		return err
-	}
-	return run.ContextFiles.AddBytes(emdashInstallPath, data, 0o500)
+	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+		if run == nil || run.ContextFiles == nil {
+			return fmt.Errorf("context files session is not configured")
+		}
+		data, err := emdashFiles.ReadFile("install")
+		if err != nil {
+			return err
+		}
+		return run.ContextFiles.AddBytes(emdashInstallPath, data, 0o500)
+	})
 }
 
 func (t *emdashTool) Install(ctx context.Context, run *tool.RunContext) error {

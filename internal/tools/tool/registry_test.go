@@ -51,6 +51,28 @@ func (t *lifecycleTool) Upgrade(ctx context.Context, run *RunContext) error {
 	})
 }
 
+type contextLifecycleTool struct {
+	Base
+	dep   ContextFileTool
+	calls *[]string
+}
+
+func newContextLifecycleTool(name string, calls *[]string, dep ContextFileTool) *contextLifecycleTool {
+	return &contextLifecycleTool{Base: Base{Metadata: Metadata{Name: name}}, calls: calls, dep: dep}
+}
+
+func (t *contextLifecycleTool) RegisterContextFiles(ctx context.Context, run *RunContext) error {
+	if t.dep != nil {
+		if err := t.dep.RegisterContextFiles(ctx, run); err != nil {
+			return err
+		}
+	}
+	return RegisterContextFilesOnce(run, t.Name(), func() error {
+		*t.calls = append(*t.calls, "context:"+t.Name())
+		return nil
+	})
+}
+
 func TestRegistryBuildPreservesExplicitSelectionOrder(t *testing.T) {
 	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
 		newFakeTool("npm"),
@@ -189,6 +211,29 @@ func TestToolsetUpgradeUsesDependencyUpgradeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"upgrade:dep", "upgrade:a"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestToolsetRegisterContextFilesDeduplicatesSharedDependency(t *testing.T) {
+	ctx := context.Background()
+	var calls []string
+	dep := newContextLifecycleTool("dep", &calls, nil)
+	a := newContextLifecycleTool("a", &calls, dep)
+	b := newContextLifecycleTool("b", &calls, dep)
+	registry, err := NewRegistry(RegistryParams{Tools: []Tool{a, b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolset, err := registry.Build([]string{"a", "b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := toolset.RegisterContextFiles(ctx, &RunContext{Options: &CommandOptions{}}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"context:dep", "context:a", "context:b"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}

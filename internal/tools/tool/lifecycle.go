@@ -1,11 +1,12 @@
 package tool
 
 const (
-	lifecycleHostInit            = "host-init"
-	lifecycleSandboxContextSetup = "sandbox-context-setup"
-	lifecycleSandboxInit         = "sandbox-init"
-	lifecycleInstall             = "install"
-	lifecycleUpgrade             = "upgrade"
+	lifecycleHostInit             = "host-init"
+	lifecycleSandboxContextSetup  = "sandbox-context-setup"
+	lifecycleRegisterContextFiles = "register-context-files"
+	lifecycleSandboxInit          = "sandbox-init"
+	lifecycleInstall              = "install"
+	lifecycleUpgrade              = "upgrade"
 )
 
 func HostInitOnce(opts *CommandOptions, name string, fn func() error) error {
@@ -14,6 +15,10 @@ func HostInitOnce(opts *CommandOptions, name string, fn func() error) error {
 
 func SandboxContextSetupOnce(ctx *RunContext, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleSandboxContextSetup, name, fn)
+}
+
+func RegisterContextFilesOnce(ctx *RunContext, name string, fn func() error) error {
+	return runOnce(ctx, lifecycleRegisterContextFiles, name, fn)
 }
 
 func SandboxInitOnce(ctx *RunContext, name string, fn func() error) error {

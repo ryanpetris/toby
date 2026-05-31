@@ -50,14 +50,16 @@ func (t *forgejoCLITool) SandboxInit(ctx context.Context, run *tool.RunContext) 
 }
 
 func (t *forgejoCLITool) RegisterContextFiles(_ context.Context, run *tool.RunContext) error {
-	if run == nil || run.ContextFiles == nil {
-		return fmt.Errorf("context files session is not configured")
-	}
-	data, err := forgejoCLIFiles.ReadFile("install")
-	if err != nil {
-		return err
-	}
-	return run.ContextFiles.AddBytes(forgejoCLIInstallPath, data, 0o500)
+	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+		if run == nil || run.ContextFiles == nil {
+			return fmt.Errorf("context files session is not configured")
+		}
+		data, err := forgejoCLIFiles.ReadFile("install")
+		if err != nil {
+			return err
+		}
+		return run.ContextFiles.AddBytes(forgejoCLIInstallPath, data, 0o500)
+	})
 }
 
 func (t *forgejoCLITool) Install(ctx context.Context, run *tool.RunContext) error {

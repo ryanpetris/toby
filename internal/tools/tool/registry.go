@@ -265,7 +265,9 @@ func (t *Toolset) RegisterContextFiles(ctx context.Context, run *RunContext) err
 		if !ok {
 			continue
 		}
-		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+		if err := RegisterContextFilesOnce(run, item.Name(), func() error {
+			return registrar.RegisterContextFiles(ctx, run)
+		}); err != nil {
 			return err
 		}
 	}

@@ -101,15 +101,17 @@ func (t *copilotTool) SandboxInit(ctx context.Context, run *tool.RunContext) err
 }
 
 func (t *copilotTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	if run == nil || run.ContextFiles == nil {
-		return fmt.Errorf("context files session is not configured")
-	}
-	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
-			return err
+	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+		if run == nil || run.ContextFiles == nil {
+			return fmt.Errorf("context files session is not configured")
 		}
-	}
-	return copilotconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
+		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+				return err
+			}
+		}
+		return copilotconfig.RegisterContextFiles(run.ContextFiles, run.ContextFiles.InstructionContents(), t.config, run.Env[control.EnvControlHost], run.TobyMCPURL, t.proxy)
+	})
 }
 
 func (t *copilotTool) Install(ctx context.Context, run *tool.RunContext) error {

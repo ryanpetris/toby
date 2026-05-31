@@ -111,29 +111,31 @@ func (t *openCodeTool) SandboxInit(ctx context.Context, run *tool.RunContext) er
 }
 
 func (t *openCodeTool) RegisterContextFiles(ctx context.Context, run *tool.RunContext) error {
-	if t.renderer == nil {
-		return fmt.Errorf("opencode renderer is not configured")
-	}
-	if run == nil || run.ContextFiles == nil {
-		return fmt.Errorf("context files session is not configured")
-	}
-	if registrar, ok := t.npm.(tool.ContextFileTool); ok {
-		if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+	return tool.RegisterContextFilesOnce(run, t.Name(), func() error {
+		if t.renderer == nil {
+			return fmt.Errorf("opencode renderer is not configured")
+		}
+		if run == nil || run.ContextFiles == nil {
+			return fmt.Errorf("context files session is not configured")
+		}
+		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
+			if err := registrar.RegisterContextFiles(ctx, run); err != nil {
+				return err
+			}
+		}
+		warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.Env[control.EnvControlHost], run.TobyMCPURL, run.ContextFiles.InstructionPaths(), t.config, t.proxy)
+		if err != nil {
 			return err
 		}
-	}
-	warnings, err := t.renderer.RegisterContextFiles(ctx, run.ContextFiles, run.Sandbox.Projects(), run.Env[control.EnvControlHost], run.TobyMCPURL, run.ContextFiles.InstructionPaths(), t.config, t.proxy)
-	if err != nil {
-		return err
-	}
-	var suppression warning.Suppression
-	if run.Options != nil {
-		suppression = run.Options.SuppressWarnings
-	}
-	for _, item := range warnings {
-		warning.Fprintf(run.Stderr, suppression, warning.OpenCodeModelDiscovery, "failed to fetch OpenCode models: %v", item)
-	}
-	return nil
+		var suppression warning.Suppression
+		if run.Options != nil {
+			suppression = run.Options.SuppressWarnings
+		}
+		for _, item := range warnings {
+			warning.Fprintf(run.Stderr, suppression, warning.OpenCodeModelDiscovery, "failed to fetch OpenCode models: %v", item)
+		}
+		return nil
+	})
 }
 
 func (t *openCodeTool) Install(ctx context.Context, run *tool.RunContext) error {
