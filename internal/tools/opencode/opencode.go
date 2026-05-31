@@ -9,16 +9,16 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/toolutil"
 	"petris.dev/toby/internal/warning"
 
 	"go.uber.org/fx"
 )
 
-var Module = fx.Module("tools.opencode", fx.Provide(Provide))
+var Module = fx.Module("tools.opencode", fx.Provide(opencodeconfig.NewRenderer, Provide))
 
 type Params struct {
 	fx.In

@@ -14,7 +14,6 @@ import (
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/hostmanager"
 	"petris.dev/toby/internal/mcpserver"
-	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
@@ -79,7 +78,6 @@ func Module() fx.Option {
 		fx.Provide(
 			config.NewPaths,
 			executil.NewProcessRunner,
-			opencodeconfig.NewRenderer,
 			contextfiles.NewService,
 			tobyconfig.New,
 			contextinit.NewServices,

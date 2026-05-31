@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"petris.dev/toby/internal/executil"
 	"petris.dev/toby/internal/hostmanager"
 	"petris.dev/toby/internal/mcpserver"
-	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandboxmanager"
 	"petris.dev/toby/internal/tobyconfig"
@@ -43,9 +41,7 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 		sandboxmanager.Module(),
 		fx.Supply(paths, args(nil)),
 		fx.Provide(
-			func() *http.Client { return &http.Client{} },
 			func() executil.Runner { return fakeRunner{} },
-			opencodeconfig.NewRenderer,
 			contextfiles.NewService,
 			tobyconfig.New,
 			contextinit.NewServices,
@@ -81,9 +77,7 @@ func TestRunAppReportsInvalidConfig(t *testing.T) {
 		sandboxmanager.Module(),
 		fx.Supply(paths, args([]string{"--help"})),
 		fx.Provide(
-			func() *http.Client { return &http.Client{} },
 			func() executil.Runner { return fakeRunner{} },
-			opencodeconfig.NewRenderer,
 			contextfiles.NewService,
 			tobyconfig.New,
 			contextinit.NewServices,

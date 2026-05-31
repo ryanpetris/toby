@@ -1,4 +1,4 @@
-package claudeconfig
+package config
 
 import (
 	"encoding/json"

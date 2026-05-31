@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"petris.dev/toby/internal/claudeconfig"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	claudeconfig "petris.dev/toby/internal/tools/claude/config"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

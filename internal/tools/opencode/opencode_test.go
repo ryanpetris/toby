@@ -15,10 +15,10 @@ import (
 	"petris.dev/toby/internal/contextfiles"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/httpproxy"
-	"petris.dev/toby/internal/opencodeconfig"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
 	"petris.dev/toby/internal/tools/npm"
+	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/warning"
 
 	"go.uber.org/fx"
@@ -43,6 +43,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	var oc tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
+		fx.Provide(func() *http.Client { return &http.Client{} }),
 		npm.Module,
 		Module,
 		fx.Invoke(func(params struct {

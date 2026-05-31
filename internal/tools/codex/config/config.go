@@ -1,7 +1,6 @@
-package codexconfig
+package config
 
 import (
-	"bytes"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/proxyconfig"
 	"petris.dev/toby/internal/tobyconfig"
+	"petris.dev/toby/internal/tools/toolconfig"
 )
 
 const TobyServerName = "toby"
@@ -40,7 +40,7 @@ func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service, controlHost, tob
 		}
 		overrides = append(overrides, override)
 	}
-	if joined := joinInstructions(instructions); joined != "" {
+	if joined := toolconfig.JoinInstructionsString(instructions); joined != "" {
 		override, err := configOverride("developer_instructions", joined)
 		if err != nil {
 			return nil, err
@@ -99,7 +99,7 @@ func mcpServerItems(name string, server tobyconfig.MCPServer, controlHost string
 }
 
 func localMCPItems(name string, server map[string]any) ([]configItem, error) {
-	command, args, err := commandParts(name, server["command"])
+	command, args, err := toolconfig.CommandParts(name, server["command"])
 	if err != nil {
 		return nil, err
 	}
@@ -123,55 +123,12 @@ func localMCPItems(name string, server map[string]any) ([]configItem, error) {
 	return items, nil
 }
 
-func commandParts(name string, raw any) (string, []string, error) {
-	switch command := raw.(type) {
-	case string:
-		if command == "" {
-			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
-		}
-		return command, nil, nil
-	case []any:
-		if len(command) == 0 {
-			return "", nil, fmt.Errorf("mcp server %q command is empty", name)
-		}
-		first, ok := command[0].(string)
-		if !ok || first == "" {
-			return "", nil, fmt.Errorf("mcp server %q command must start with a string", name)
-		}
-		args := make([]string, 0, len(command)-1)
-		for _, item := range command[1:] {
-			arg, ok := item.(string)
-			if !ok {
-				return "", nil, fmt.Errorf("mcp server %q command arguments must be strings", name)
-			}
-			args = append(args, arg)
-		}
-		return first, args, nil
-	default:
-		return "", nil, fmt.Errorf("mcp server %q command is required", name)
-	}
-}
-
 func configOverride(key string, value any) (string, error) {
 	encoded, err := tomlValue(value)
 	if err != nil {
 		return "", err
 	}
 	return key + "=" + encoded, nil
-}
-
-func joinInstructions(instructions [][]byte) string {
-	parts := make([][]byte, 0, len(instructions))
-	for _, item := range instructions {
-		if len(bytes.TrimSpace(item)) == 0 {
-			continue
-		}
-		parts = append(parts, bytes.TrimRight(item, "\n"))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return string(append(bytes.Join(parts, []byte("\n\n")), '\n'))
 }
 
 func tomlValue(value any) (string, error) {

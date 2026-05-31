@@ -1,4 +1,4 @@
-package opencodeconfig
+package config
 
 import (
 	"context"

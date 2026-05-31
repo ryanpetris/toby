@@ -10,8 +10,8 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/contextfiles"
-	"petris.dev/toby/internal/grokconfig"
 	"petris.dev/toby/internal/tool"
+	grokconfig "petris.dev/toby/internal/tools/grok/config"
 )
 
 func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {

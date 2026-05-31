@@ -3,12 +3,12 @@ package codex
 import (
 	"context"
 
-	"petris.dev/toby/internal/codexconfig"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	codexconfig "petris.dev/toby/internal/tools/codex/config"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

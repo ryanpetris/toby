@@ -1,4 +1,4 @@
-package grokconfig
+package config
 
 import (
 	"os"

@@ -10,10 +10,10 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/exitcode"
-	"petris.dev/toby/internal/grokconfig"
 	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	grokconfig "petris.dev/toby/internal/tools/grok/config"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"

@@ -7,10 +7,10 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
-	"petris.dev/toby/internal/copilotconfig"
 	"petris.dev/toby/internal/httpproxy"
 	"petris.dev/toby/internal/tobyconfig"
 	"petris.dev/toby/internal/tool"
+	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
 	"petris.dev/toby/internal/tools/toolutil"
 
 	"go.uber.org/fx"
