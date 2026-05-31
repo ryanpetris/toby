@@ -84,6 +84,7 @@ func (t *claudeTool) SandboxContextSetup(ctx *tool.RunContext) error {
 	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
 		return err
 	}
+	ctx.Env["CLAUDE_CONFIG_DIR"] = filepath.Join(ctx.Sandbox.HomeDir(), ".config", "claude")
 	return nil
 }
 

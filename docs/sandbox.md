@@ -195,7 +195,7 @@ Equivalent generated OpenCode `opencode.json` entry:
 
 ## Claude Code
 
-For Claude Code sandboxes, Toby injects its generated context through launch flags rather than by redirecting the config directory. Claude Code writes credentials, history, and session state into its normal config directory, which uses private sandbox state unless host tool state is enabled. Toby generates files under `/tmp/toby/context/claude/` and launches `claude` with:
+For Claude Code sandboxes, Toby sets `CLAUDE_CONFIG_DIR` to `$HOME/.config/claude` so Claude writes credentials, history, and session state into its normal config directory, which uses private sandbox state unless host tool state is enabled. Toby injects generated context through launch flags instead of pointing Claude's config directory at the generated files under `/tmp/toby/context/claude/`, and launches `claude` with:
 
 - `--mcp-config .../claude/mcp.json` adds the Toby MCP server.
 - `--append-system-prompt-file .../claude/instructions.md` appends `GIT_AGENTS.md` and configured Toby instruction files.

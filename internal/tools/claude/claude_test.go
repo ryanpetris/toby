@@ -13,10 +13,11 @@ import (
 	"go.uber.org/fx/fxtest"
 )
 
-func TestClaudeDoesNotSetConfigDir(t *testing.T) {
+func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
+	sandboxHome := filepath.Join(home, "sandbox-home")
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
-	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: home, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
+	run := &tool.RunContext{Options: &tool.CommandOptions{}, Sandbox: fakeSandbox{home: sandboxHome, runtime: filepath.Join(home, "runtime"), projects: filepath.Join(home, "Projects")}, Env: tool.Environment{}}
 	var claude tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
@@ -35,8 +36,9 @@ func TestClaudeDoesNotSetConfigDir(t *testing.T) {
 	if err := claude.SandboxContextSetup(run); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := run.Env["CLAUDE_CONFIG_DIR"]; ok {
-		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want unset", run.Env["CLAUDE_CONFIG_DIR"])
+	want := filepath.Join(sandboxHome, ".config", "claude")
+	if run.Env["CLAUDE_CONFIG_DIR"] != want {
+		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", run.Env["CLAUDE_CONFIG_DIR"], want)
 	}
 }
 
