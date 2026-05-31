@@ -40,33 +40,6 @@ func TestCommandParts(t *testing.T) {
 	}
 }
 
-func TestCopyEnvVarsAndHeaders(t *testing.T) {
-	dst := map[string]any{
-		"env":     map[string]any{"EXISTING": "keep"},
-		"headers": map[string]any{"Authorization": "Bearer literal"},
-	}
-	src := map[string]any{
-		"env_vars":             []any{"EXISTING", "TOKEN", ""},
-		"env_http_headers":     map[string]any{"X-Token": "TOKEN", "X-Blank": ""},
-		"bearer_token_env_var": "BEARER_TOKEN",
-	}
-	CopyEnvVars(dst, src)
-	CopyEnvHeaders(dst, src)
-	CopyBearerTokenEnv(dst, src)
-
-	env := dst["env"].(map[string]any)
-	if env["EXISTING"] != "keep" || env["TOKEN"] != "${TOKEN}" {
-		t.Fatalf("env = %#v", env)
-	}
-	headers := dst["headers"].(map[string]any)
-	if headers["Authorization"] != "Bearer literal" || headers["X-Token"] != "${TOKEN}" {
-		t.Fatalf("headers = %#v", headers)
-	}
-	if _, ok := headers["X-Blank"]; ok {
-		t.Fatalf("blank header copied: %#v", headers)
-	}
-}
-
 func TestJoinInstructions(t *testing.T) {
 	instructions := [][]byte{[]byte("\n"), []byte("# one\n"), []byte("# two\n\n")}
 	if got := string(JoinInstructions(instructions)); got != "# one\n\n# two\n" {

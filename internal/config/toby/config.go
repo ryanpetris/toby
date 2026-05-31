@@ -67,7 +67,9 @@ type BubblewrapSandboxConfig struct {
 }
 
 type MCPServer struct {
-	raw map[string]any
+	raw        map[string]any
+	configDirs []string
+	home       string
 }
 
 type ProviderConfig struct {
@@ -292,8 +294,9 @@ func (s *Service) MCPServers() map[string]MCPServer {
 	if s == nil {
 		return servers
 	}
+	configDirs, home := s.resolutionContext()
 	for name, server := range s.config.MCP {
-		servers[name] = MCPServer{raw: server.Raw()}
+		servers[name] = MCPServer{raw: server.Raw(), configDirs: configDirs, home: home}
 	}
 	return servers
 }
@@ -320,8 +323,7 @@ func (s *Service) Provider(name string) (ProviderConfig, bool) {
 	return provider.Clone(), true
 }
 
-func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (http.Header, error) {
-	provider = provider.Clone()
+func (s *Service) resolutionContext() ([]string, string) {
 	configDirs := []string{}
 	if s != nil && s.Dir != "" {
 		configDirs = append(configDirs, s.Dir)
@@ -335,6 +337,12 @@ func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (
 			home = detected
 		}
 	}
+	return configDirs, home
+}
+
+func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (http.Header, error) {
+	provider = provider.Clone()
+	configDirs, home := s.resolutionContext()
 	headers := http.Header{}
 	for key, value := range provider.Headers {
 		resolved, err := resolveString(value, configDirs, home)
@@ -410,7 +418,20 @@ func (s MCPServer) URL() string {
 }
 
 func (s MCPServer) Headers() (http.Header, error) {
-	return MCPServerHeaders(s.raw)
+	headers := http.Header{}
+	if err := mergeHeaderMap(headers, s.raw["headers"]); err != nil {
+		return nil, fmt.Errorf("headers: %w", err)
+	}
+	for key, values := range headers {
+		for i, value := range values {
+			resolved, err := resolveString(value, s.configDirs, s.home)
+			if err != nil {
+				return nil, fmt.Errorf("headers %q: %w", key, err)
+			}
+			values[i] = resolved
+		}
+	}
+	return headers, nil
 }
 
 func MCPServerHTTPProxyable(server map[string]any) bool {
@@ -433,24 +454,6 @@ func MCPServerHTTPProxyable(server map[string]any) bool {
 func MCPServerURL(server map[string]any) string {
 	url, _ := server["url"].(string)
 	return strings.TrimSpace(url)
-}
-
-func MCPServerHeaders(raw map[string]any) (http.Header, error) {
-	headers := http.Header{}
-	for _, key := range []string{"headers", "http_headers"} {
-		if err := mergeHeaderMap(headers, raw[key]); err != nil {
-			return nil, fmt.Errorf("%s: %w", key, err)
-		}
-	}
-	if err := mergeEnvHeaderMap(headers, raw["env_http_headers"]); err != nil {
-		return nil, fmt.Errorf("env_http_headers: %w", err)
-	}
-	if name, _ := raw["bearer_token_env_var"].(string); strings.TrimSpace(name) != "" && headers.Get("Authorization") == "" {
-		if token := os.Getenv(strings.TrimSpace(name)); token != "" {
-			headers.Set("Authorization", "Bearer "+token)
-		}
-	}
-	return headers, nil
 }
 
 func mergeHeaderMap(headers http.Header, raw any) error {
@@ -476,26 +479,6 @@ func mergeHeaderMap(headers http.Header, raw any) error {
 			}
 		default:
 			return fmt.Errorf("header %q value must be a string or string array", name)
-		}
-	}
-	return nil
-}
-
-func mergeEnvHeaderMap(headers http.Header, raw any) error {
-	if raw == nil {
-		return nil
-	}
-	values, ok := raw.(map[string]any)
-	if !ok {
-		return fmt.Errorf("must be an object")
-	}
-	for headerName, rawEnvName := range values {
-		envName, ok := rawEnvName.(string)
-		if !ok || strings.TrimSpace(envName) == "" {
-			return fmt.Errorf("header %q env var name must be a string", headerName)
-		}
-		if value := os.Getenv(strings.TrimSpace(envName)); value != "" {
-			headers.Set(headerName, value)
 		}
 	}
 	return nil

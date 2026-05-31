@@ -115,7 +115,7 @@ func localMCPItems(name string, server map[string]any) ([]configItem, error) {
 	} else if value, ok := server["environment"]; ok {
 		items = append(items, configItem{key: "mcp_servers." + name + ".env", value: configfile.Clone(value)})
 	}
-	for _, key := range []string{"env_vars", "cwd", "startup_timeout_sec", "tool_timeout_sec"} {
+	for _, key := range []string{"cwd", "startup_timeout_sec", "tool_timeout_sec"} {
 		if value, ok := server[key]; ok {
 			items = append(items, configItem{key: "mcp_servers." + name + "." + key, value: configfile.Clone(value)})
 		}

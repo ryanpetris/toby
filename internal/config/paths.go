@@ -34,9 +34,6 @@ func configHome(home string) string {
 	if value := os.Getenv("XDG_CONFIG_HOME"); value != "" {
 		return ExpandHome(value, home)
 	}
-	if value := os.Getenv("XDG_CONFIG_DIR"); value != "" {
-		return ExpandHome(value, home)
-	}
 	return filepath.Join(home, ".config")
 }
 

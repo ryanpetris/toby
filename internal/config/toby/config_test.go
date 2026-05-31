@@ -278,25 +278,17 @@ instructions:
 	}
 }
 
-func TestMCPServerHelpersCloneAndResolveHTTPHeaders(t *testing.T) {
+func TestMCPServerHeadersCloneAndResolve(t *testing.T) {
 	t.Setenv("MCP_TOKEN", "env-token")
-	t.Setenv("BEARER_TOKEN", "bearer-token")
 	server := MCPServer{raw: map[string]any{
 		"enabled": false,
 		"type":    "remote",
 		"url":     " https://example.com/mcp ",
 		"headers": map[string]any{
-			"X-List": []any{"a", "b"},
-			"X-Keep": "base",
+			"X-List":        []any{"a", "b"},
+			"X-Keep":        "base",
+			"Authorization": "Bearer {env:MCP_TOKEN}",
 		},
-		"http_headers": map[string]any{
-			"X-Keep":        "override",
-			"Authorization": "Bearer configured",
-		},
-		"env_http_headers": map[string]any{
-			"X-Env": "MCP_TOKEN",
-		},
-		"bearer_token_env_var": "BEARER_TOKEN",
 	}}
 
 	raw := server.Raw()
@@ -317,16 +309,8 @@ func TestMCPServerHelpersCloneAndResolveHTTPHeaders(t *testing.T) {
 	if got, want := headers.Values("X-List"), []string{"a", "b"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("X-List = %#v, want %#v", got, want)
 	}
-	if headers.Get("X-Keep") != "override" || headers.Get("X-Env") != "env-token" || headers.Get("Authorization") != "Bearer configured" {
+	if headers.Get("X-Keep") != "base" || headers.Get("Authorization") != "Bearer env-token" {
 		t.Fatalf("headers = %#v", headers)
-	}
-
-	bearer, err := (MCPServer{raw: map[string]any{"bearer_token_env_var": "BEARER_TOKEN"}}).Headers()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bearer.Get("Authorization") != "Bearer bearer-token" {
-		t.Fatalf("bearer headers = %#v", bearer)
 	}
 }
 
@@ -363,11 +347,10 @@ func TestMCPServerHeadersRejectInvalidValues(t *testing.T) {
 		{name: "headers not object", raw: map[string]any{"headers": []any{"bad"}}, want: "headers: must be an object"},
 		{name: "header item not string", raw: map[string]any{"headers": map[string]any{"X": []any{"ok", 1}}}, want: `headers: header "X" entries must be strings`},
 		{name: "header value invalid", raw: map[string]any{"headers": map[string]any{"X": 1}}, want: `headers: header "X" value must be a string or string array`},
-		{name: "env header invalid", raw: map[string]any{"env_http_headers": map[string]any{"X": ""}}, want: `env_http_headers: header "X" env var name must be a string`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := MCPServerHeaders(tt.raw)
+			_, err := (MCPServer{raw: tt.raw}).Headers()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v, want containing %q", err, tt.want)
 			}
@@ -402,7 +385,7 @@ func TestResolveStringSubstitutions(t *testing.T) {
 	if _, err := readSubstitutionFile("secret.txt", []string{"", secondDir}); err != nil {
 		t.Fatalf("readSubstitutionFile skipped empty dirs: %v", err)
 	}
-	if _, err := MCPServerHeaders(map[string]any{"headers": http.Header{"X": []string{"bad"}}}); err == nil {
+	if _, err := (MCPServer{raw: map[string]any{"headers": http.Header{"X": []string{"bad"}}}}).Headers(); err == nil {
 		t.Fatal("expected http.Header input to be rejected because config values must be plain objects")
 	}
 }

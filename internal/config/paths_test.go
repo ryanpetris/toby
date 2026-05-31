@@ -14,7 +14,6 @@ func TestNewPathsUsesXDGProjectAndCacheDirectories(t *testing.T) {
 	t.Setenv("XDG_PROJECTS_DIR", projects)
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("XDG_CONFIG_DIR", "")
 
 	paths, err := NewPaths()
 	if err != nil {
@@ -38,7 +37,6 @@ func TestNewPathsDefaults(t *testing.T) {
 	t.Setenv("XDG_PROJECTS_DIR", "")
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_CONFIG_DIR", "")
 
 	paths, err := NewPaths()
 	if err != nil {
@@ -52,22 +50,6 @@ func TestNewPathsDefaults(t *testing.T) {
 		t.Fatalf("SandboxRoot = %q, want %q", paths.SandboxRoot, wantSandboxRoot)
 	}
 	if paths.TobyConfigDir() != filepath.Join(home, ".config", "toby") {
-		t.Fatalf("TobyConfigDir = %q", paths.TobyConfigDir())
-	}
-}
-
-func TestNewPathsUsesLegacyXDGConfigDirFallback(t *testing.T) {
-	home := t.TempDir()
-	configDir := filepath.Join(home, "ConfigDir")
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_CONFIG_DIR", configDir)
-
-	paths, err := NewPaths()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if paths.TobyConfigDir() != filepath.Join(configDir, "toby") {
 		t.Fatalf("TobyConfigDir = %q", paths.TobyConfigDir())
 	}
 }

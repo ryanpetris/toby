@@ -128,7 +128,6 @@ func convertLocalMCPServer(name string, server map[string]any) (map[string]any, 
 	copyCommonFields(converted, server)
 	toolconfig.CopyField(converted, server, "env", "env")
 	toolconfig.CopyField(converted, server, "environment", "env")
-	toolconfig.CopyEnvVars(converted, server)
 	toolconfig.CopyField(converted, server, "cwd", "cwd")
 	return converted, nil
 }
@@ -141,9 +140,6 @@ func convertRemoteMCPServer(name, typ string, server map[string]any) (map[string
 	converted := map[string]any{"type": typ, "url": url}
 	copyCommonFields(converted, server)
 	toolconfig.CopyField(converted, server, "headers", "headers")
-	toolconfig.CopyField(converted, server, "http_headers", "headers")
-	toolconfig.CopyEnvHeaders(converted, server)
-	toolconfig.CopyBearerTokenEnv(converted, server)
 	return converted, nil
 }
 

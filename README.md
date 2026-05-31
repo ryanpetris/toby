@@ -70,7 +70,7 @@ Project paths must resolve to `XDG_PROJECTS_DIR` or a directory below it. This k
 
 ## Host Configuration
 
-Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`; if `XDG_CONFIG_HOME` is unset, Toby also accepts `XDG_CONFIG_DIR` before falling back to `~/.config`. If more than one file exists, Toby deep merges them in that order.
+Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`. If more than one file exists, Toby deep merges them in that order.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
@@ -234,12 +234,69 @@ Toby automatically exposes a sandbox-only MCP server to supported tools launched
 
 Sandbox-facing Toby commands use `TOBY_CONTROL_HOST=host:port` and `TOBY_CONTROL_TOKEN` to connect back to the host for control operations such as helper download and sandbox Git CLI commands. MCP proxy URLs use `TOBY_CONTROL_HOST` and the per-run proxy UUID.
 
-Configured remote MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby opens the upstream connection from the host process and applies configured `headers`, `http_headers`, `env_http_headers`, and `bearer_token_env_var` values there. Local MCP entries are rendered as local commands for tools that support them.
+Configured remote MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://$TOBY_CONTROL_HOST/proxy/<uuid>`. Toby opens the upstream connection from the host process and applies the configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox. Local MCP entries are rendered as local commands for tools that support them.
 
 Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok's `managed_config.toml` symlink points back to `/tmp/toby/context/grok/config.toml`. Tool-specific instruction injection is also session-scoped: Copilot receives a generated `AGENTS.md` directory through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, Grok receives combined rules through `--rules`, and Codex receives combined developer instructions through `-c developer_instructions=...`.
 
 Inside the sandbox, Toby downloads the sandbox-facing Toby binary as `toby` and enables hidden `toby sandbox ...` commands for sandbox management and Git diagnostics. On the host these commands are hidden from help but still registered for diagnostics.
 
+## Tools
+
+Toby launches one **primary** (foreground) tool and can install others
+alongside it. Available tools:
+
+| Tool (`toby <name>`) | CLI | Group | What it is |
+| --- | --- | --- | --- |
+| `opencode` | `opencode` | AI | OpenCode coding agent |
+| `claude` | `claude` | AI | Claude Code |
+| `codex` | `codex` | AI | OpenAI Codex |
+| `copilot` | `copilot` | AI | GitHub Copilot CLI |
+| `grok` | `grok` | AI | Grok CLI |
+| `speckit` | `specify` | AI | GitHub Spec Kit |
+| `t3` | `t3` | UI | T3 Code launcher (drives the coding tools) |
+| `emdash` | `emdash` | UI | Emdash |
+| `docker` | `docker` | System | Host Docker access |
+| `npm` | `npm` | System | Node package manager |
+| `uv` | `uv` | System | Python package/tool manager |
+| `github_cli` | `gh` | VCS | GitHub CLI |
+| `gitlab_cli` | `glab` | VCS | GitLab CLI |
+| `fj` | `fj` | VCS | Forgejo CLI |
+| `exec` | (command) | Command | Run an arbitrary sandbox command |
+
+For OpenCode, Claude Code, Codex, Copilot, and Grok, Toby generates synthetic
+configuration (MCP servers, providers, and instructions) without touching the
+tools' normal config files. See [docs/tools.md](docs/tools.md) for the install
+mechanism and config injection per tool.
+
+### Running T3 Code with coding tools
+
+`t3` is a launcher that can drive the other coding tools. Use `--with-<tool>` to
+install and wire up each tool you want available inside it:
+
+```sh
+toby t3 my-app --with-claude
+toby t3 my-app --with-claude --with-codex --with-opencode
+```
+
+Each enabled tool is installed into the sandbox and gets its Toby integration
+(the `git.*` MCP server, configured providers, and your instruction files)
+generated, so it works as soon as you select it inside t3. The declarative
+equivalent lists t3 first and the coding tools after it:
+
+```yaml
+projects: [my-app]
+tools: [t3, claude, codex, opencode]
+```
+
+```sh
+toby --config t3.yaml
+```
+
 ## More Docs
 
-- [Sandbox and integration details](docs/sandbox.md)
+- [Architecture](docs/architecture.md) — host/sandbox split, control protocol, runtimes, launch flow.
+- [Configuration reference](docs/configuration.md) — host config, launch config, tool state, warnings.
+- [Tools](docs/tools.md) — per-tool install and synthetic config, including the t3 walkthrough.
+- [Examples](docs/examples.md) — end-to-end recipes.
+- [Sandbox and integration details](docs/sandbox.md) — generated artifacts and per-tool integration surface.
+- [Control protocol schema](docs/toby-control-openapi.yaml) — JSON-RPC over WebSocket OpenAPI spec.
