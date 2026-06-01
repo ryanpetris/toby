@@ -24,6 +24,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test with coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go test -covermode=atomic -coverprofile=dist/coverage.out ./...
+          go tool cover -func=dist/coverage.out | tee dist/coverage.txt
+          go tool cover -html=dist/coverage.out -o dist/coverage.html
+          {
+            printf '## Test Coverage\n\n'
+            printf '```\n'
+            cat dist/coverage.txt
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            dist/coverage.out
+            dist/coverage.txt
+            dist/coverage.html
+
       - name: Derive version
         id: version
         shell: bash
@@ -70,7 +94,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          assets=(dist/toby-linux-x86_64.tar.gz dist/toby-linux-arm64.tar.gz dist/toby-darwin-x86_64.tar.gz dist/toby-darwin-arm64.tar.gz)
+          assets=(
+            dist/toby-linux-x86_64.tar.gz
+            dist/toby-linux-arm64.tar.gz
+            dist/toby-darwin-x86_64.tar.gz
+            dist/toby-darwin-arm64.tar.gz
+            dist/coverage.out
+            dist/coverage.txt
+            dist/coverage.html
+          )
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
