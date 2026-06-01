@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"petris.dev/toby/internal/config/file"
@@ -15,6 +13,7 @@ import (
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/providers/anthropic"
 	"petris.dev/toby/internal/providers/openai"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
@@ -187,7 +186,19 @@ func (m *Mount) syntheticProvider(ctx context.Context, providerID string, provid
 
 func (m *Mount) fetchProviderModels(ctx context.Context, providerID string, provider tobyconfig.ProviderConfig) (map[string]any, error) {
 	if provider.Type == tobyconfig.ProviderTypeAnthropic {
-		return m.fetchAnthropicProviderModels(ctx, providerID, provider)
+		headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
+		if err != nil {
+			return nil, err
+		}
+		client, err := anthropic.NewClient(m.http, provider.BaseURL, headerStrings(headers))
+		if err != nil {
+			return nil, err
+		}
+		models, err := client.Models(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return anthropicProviderModels(models), nil
 	}
 	headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
 	if err != nil {
@@ -204,95 +215,6 @@ func (m *Mount) fetchProviderModels(ctx context.Context, providerID string, prov
 	return providerModels(ids), nil
 }
 
-func (m *Mount) fetchAnthropicProviderModels(ctx context.Context, providerID string, provider tobyconfig.ProviderConfig) (map[string]any, error) {
-	headers, err := m.tobyConfig.ResolveProviderHeaders(providerID, provider)
-	if err != nil {
-		return nil, err
-	}
-	models := map[string]any{}
-	var after string
-	for {
-		endpoint, err := anthropicModelsURL(provider.BaseURL, after)
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", openai.UserAgent)
-		for key, values := range headers {
-			req.Header.Del(key)
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
-		}
-		resp, err := m.http.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("request failed: %w", err)
-		}
-		payload, err := decodeAnthropicModelsResponse(resp)
-		if err != nil {
-			return nil, err
-		}
-		for _, model := range payload.Data {
-			if model.ID == "" {
-				continue
-			}
-			entry := map[string]any{"name": model.ID}
-			if model.DisplayName != "" {
-				entry["name"] = model.DisplayName
-			}
-			models[model.ID] = entry
-		}
-		if !payload.HasMore || payload.LastID == "" || payload.LastID == after {
-			return models, nil
-		}
-		after = payload.LastID
-	}
-}
-
-type anthropicModelsResponse struct {
-	Data []struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"display_name"`
-	} `json:"data"`
-	HasMore bool   `json:"has_more"`
-	LastID  string `json:"last_id"`
-}
-
-func anthropicModelsURL(baseURL, after string) (string, error) {
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
-	if after != "" {
-		query := parsed.Query()
-		query.Set("after_id", after)
-		parsed.RawQuery = query.Encode()
-	}
-	return parsed.String(), nil
-}
-
-func decodeAnthropicModelsResponse(resp *http.Response) (anthropicModelsResponse, error) {
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		details := strings.TrimSpace(string(body))
-		if details == "" {
-			details = resp.Status
-		}
-		return anthropicModelsResponse{}, fmt.Errorf("request failed with HTTP %d: %s", resp.StatusCode, details)
-	}
-	var payload anthropicModelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return anthropicModelsResponse{}, err
-	}
-	return payload, nil
-}
-
 func headerStrings(headers http.Header) map[string]string {
 	items := make(map[string]string, len(headers))
 	for key, values := range headers {
@@ -306,6 +228,18 @@ func headerStrings(headers http.Header) map[string]string {
 		items[key] = strings.Join(values, ",")
 	}
 	return items
+}
+
+func anthropicProviderModels(modelList []anthropic.Model) map[string]any {
+	models := make(map[string]any, len(modelList))
+	for _, model := range modelList {
+		name := model.ID
+		if model.DisplayName != "" {
+			name = model.DisplayName
+		}
+		models[model.ID] = map[string]any{"name": name}
+	}
+	return models
 }
 
 func providerModels(modelIDs []string) map[string]any {

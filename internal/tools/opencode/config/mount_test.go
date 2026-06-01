@@ -83,6 +83,44 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 	}
 }
 
+func TestGeneratedConfigIncludesFetchedAnthropicModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude","display_name":"Claude"},{"id":"fallback"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	cfgDir := t.TempDir()
+	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
+		"provider": map[string]any{
+			"anthropic": map[string]any{
+				"type":    "anthropic",
+				"baseURL": server.URL,
+			},
+		},
+	})
+	cfg, err := tobyconfig.Load(cfgDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := readGeneratedConfigWithTobyConfig(t, server.Client(), filepath.Join(t.TempDir(), "Projects"), testInstructions, cfg)
+
+	provider := config["provider"].(map[string]any)["anthropic"].(map[string]any)
+	if provider["npm"] != "@ai-sdk/anthropic" {
+		t.Fatalf("provider npm = %#v", provider["npm"])
+	}
+	models := provider["models"].(map[string]any)
+	if name := models["claude"].(map[string]any)["name"]; name != "Claude" {
+		t.Fatalf("claude model name = %#v, want Claude", name)
+	}
+	if name := models["fallback"].(map[string]any)["name"]; name != "fallback" {
+		t.Fatalf("fallback model name = %#v, want fallback", name)
+	}
+}
+
 func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "models should not be fetched", http.StatusInternalServerError)
