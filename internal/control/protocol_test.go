@@ -314,6 +314,23 @@ func TestDecodeCommandRunParamsAllowsForegroundEmptyArgv(t *testing.T) {
 	}
 }
 
+func TestDecodeUIDGIDNullDefaultsRoot(t *testing.T) {
+	fileParams, err := DecodeFileCreateParams(json.RawMessage(`{"path":"file","uid":null,"gid":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileParams.UID != 0 || fileParams.GID != 0 {
+		t.Fatalf("file owner = %d:%d, want root", fileParams.UID, fileParams.GID)
+	}
+	commandParams, err := DecodeCommandRunParams(json.RawMessage(`{"command_id":"id","argv":["true"],"uid":null,"gid":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commandParams.UID != 0 || commandParams.GID != 0 {
+		t.Fatalf("command user = %d:%d, want root", commandParams.UID, commandParams.GID)
+	}
+}
+
 func TestDecodeCommandRunParamsRejectsBackgroundEmptyArgv(t *testing.T) {
 	raw, err := json.Marshal(CommandRunParams{CommandID: "id"})
 	if err != nil {

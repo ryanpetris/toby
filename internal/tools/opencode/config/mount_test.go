@@ -217,8 +217,8 @@ func TestGeneratedFilesAreReadOnly(t *testing.T) {
 		if file == nil {
 			t.Fatalf("files = %#v, want %s", files, path)
 		}
-		if file.Mode != 0o400 {
-			t.Fatalf("mode %s = %#o, want 0400", path, file.Mode)
+		if file.Mode != 0o644 {
+			t.Fatalf("mode %s = %#o, want 0644", path, file.Mode)
 		}
 	}
 	if file := findStaticFile(files, StaticGitignorePath); string(file.Data) != "*\n" {

@@ -10,6 +10,11 @@ import (
 const JSONRPCVersion = "2.0"
 
 const (
+	HostUser  = -2
+	HostGroup = -2
+)
+
+const (
 	MethodContextInit      = "context.init"
 	MethodFileCreate       = "file.create"
 	MethodFileDelete       = "file.delete"
@@ -62,6 +67,8 @@ type FileCreateParams struct {
 	Path string `json:"path" jsonschema:"path to write inside the sandbox"`
 	Mode uint32 `json:"mode" jsonschema:"file mode bits"`
 	Data []byte `json:"data" jsonschema:"file contents, base64-encoded by JSON"`
+	UID  int    `json:"uid,omitempty" jsonschema:"owner user id; 0 means root"`
+	GID  int    `json:"gid,omitempty" jsonschema:"owner group id; 0 means root"`
 }
 
 type FileDeleteParams struct {
@@ -72,11 +79,15 @@ type FileDeleteParams struct {
 type FileMkdirParams struct {
 	Path string `json:"path" jsonschema:"directory path to create inside the sandbox"`
 	Mode uint32 `json:"mode" jsonschema:"directory mode bits"`
+	UID  int    `json:"uid,omitempty" jsonschema:"owner user id; 0 means root"`
+	GID  int    `json:"gid,omitempty" jsonschema:"owner group id; 0 means root"`
 }
 
 type FileSymlinkParams struct {
 	Path   string `json:"path" jsonschema:"symlink path to create inside the sandbox"`
 	Target string `json:"target" jsonschema:"symlink target"`
+	UID    int    `json:"uid,omitempty" jsonschema:"owner user id; 0 means root"`
+	GID    int    `json:"gid,omitempty" jsonschema:"owner group id; 0 means root"`
 }
 
 type EnvironmentGetResult struct {
@@ -93,6 +104,9 @@ type CommandRunParams struct {
 	Argv       []string `json:"argv" jsonschema:"command argv to run inside the sandbox"`
 	Foreground bool     `json:"foreground,omitempty" jsonschema:"whether this command is the foreground process"`
 	HideOutput bool     `json:"hide_output,omitempty" jsonschema:"redirect stdout and stderr to /dev/null"`
+	UID        int      `json:"uid,omitempty" jsonschema:"process user id; 0 means root"`
+	GID        int      `json:"gid,omitempty" jsonschema:"process group id; 0 means root"`
+	Groups     []int    `json:"groups,omitempty" jsonschema:"supplementary group ids"`
 }
 
 type CommandExitParams struct {
@@ -448,6 +462,13 @@ func DecodeCommandExitParams(raw json.RawMessage) (CommandExitParams, error) {
 		return CommandExitParams{}, errors.New("command_id is required")
 	}
 	return params, nil
+}
+
+func (e *RPCError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
 }
 
 func decodeRequiredParams(raw json.RawMessage, dest any) error {

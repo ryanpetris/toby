@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/tools/helpers"
@@ -121,7 +123,7 @@ func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	return s.runner.Run(ctx, cmd, spec.Env, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
+	return s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 }
 
 func (s *instance) prepareHostDirs() error {
@@ -169,6 +171,9 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	if s.xauthority != "" {
 		args = append(args, "--ro-bind-try", s.xauthority, s.xauthority)
 	}
+	for _, name := range sortedEnvNames(spec.Env) {
+		args = append(args, "--setenv", name, spec.Env[name])
+	}
 	args = append(args,
 		"--bind", s.homeHostPath, s.HomeDir(),
 		"--bind", s.runtimeHostPath, s.TobyRuntimeDir(),
@@ -183,6 +188,17 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	args = append(args, "--chdir", s.ChdirDir())
 	args = append(args, spec.Argv...)
 	return args, nil
+}
+
+func sortedEnvNames(env tool.Environment) []string {
+	names := make([]string, 0, 3)
+	for _, name := range []string{"HOME", control.EnvControlHost, control.EnvControlToken} {
+		if _, ok := env[name]; ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *instance) runtimeBind(name string) []string {

@@ -69,7 +69,7 @@ func (t *gitlabCLITool) RegisterContextFiles(ctx context.Context, _ tool.Context
 		if err != nil {
 			return err
 		}
-		_, err = t.contextFiles.AddFile(ctx, gitlabCLIInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, gitlabCLIInstallPath, data, 0o755)
 		return err
 	})
 }

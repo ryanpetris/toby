@@ -89,7 +89,7 @@ func (t *t3Tool) RegisterContextFiles(ctx context.Context, opts tool.ContextOpti
 		if err != nil {
 			return err
 		}
-		_, err = t.contextFiles.AddFile(ctx, t3WrapperPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, t3WrapperPath, data, 0o755)
 		return err
 	})
 }

@@ -63,10 +63,10 @@ func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfi
 	if err != nil {
 		return nil, err
 	}
-	if err := registrar.AddBytes(StaticGitignorePath, opencodeGitignore, 0o400); err != nil {
+	if err := registrar.AddBytes(StaticGitignorePath, opencodeGitignore, 0o644); err != nil {
 		return nil, err
 	}
-	if err := registrar.AddBytes(StaticConfigPath, config, 0o400); err != nil {
+	if err := registrar.AddBytes(StaticConfigPath, config, 0o644); err != nil {
 		return nil, err
 	}
 	return append([]error(nil), mount.modelWarnings...), nil

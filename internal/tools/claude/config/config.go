@@ -46,13 +46,13 @@ func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, 
 	if err != nil {
 		return err
 	}
-	if err := registrar.AddBytes(StaticMcpPath, mcp, 0o400); err != nil {
+	if err := registrar.AddBytes(StaticMcpPath, mcp, 0o644); err != nil {
 		return err
 	}
-	if err := registrar.AddBytes(StaticSettingsPath, settings, 0o400); err != nil {
+	if err := registrar.AddBytes(StaticSettingsPath, settings, 0o644); err != nil {
 		return err
 	}
-	if err := registrar.AddBytes(StaticInstructionsPath, toolconfig.JoinInstructionsOrNewline(instructions), 0o400); err != nil {
+	if err := registrar.AddBytes(StaticInstructionsPath, toolconfig.JoinInstructionsOrNewline(instructions), 0o644); err != nil {
 		return err
 	}
 	return nil

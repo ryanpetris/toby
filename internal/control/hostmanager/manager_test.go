@@ -28,6 +28,36 @@ func (m *fakeResolver) VisibleHostPath(repository string) (string, error) {
 	return "", errors.New("repository is not visible")
 }
 
+func TestResolveOwnerHostSentinels(t *testing.T) {
+	uid, gid, err := resolveOwner(HostUser, HostGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid != os.Getuid() || gid != os.Getgid() {
+		t.Fatalf("owner = %d:%d, want %d:%d", uid, gid, os.Getuid(), os.Getgid())
+	}
+	if _, _, err := resolveOwner(-1, 0); err == nil {
+		t.Fatal("expected invalid uid to fail")
+	}
+}
+
+func TestResolveCommandRunParamsHostIdentity(t *testing.T) {
+	params, err := resolveCommandRunParams(CommandRunParams{UID: HostUser, GID: HostGroup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.UID != os.Getuid() || params.GID != os.Getgid() {
+		t.Fatalf("command identity = %#v, want uid=%d gid=%d", params, os.Getuid(), os.Getgid())
+	}
+	hostGroups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Groups) != len(hostGroups) {
+		t.Fatalf("groups = %#v, want %#v", params.Groups, hostGroups)
+	}
+}
+
 func TestHostManagerGitCommitCommitsStagedFilesOnly(t *testing.T) {
 	requireGit(t)
 	projectRoot := t.TempDir()

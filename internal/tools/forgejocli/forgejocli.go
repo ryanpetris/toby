@@ -69,7 +69,7 @@ func (t *forgejoCLITool) RegisterContextFiles(ctx context.Context, _ tool.Contex
 		if err != nil {
 			return err
 		}
-		_, err = t.contextFiles.AddFile(ctx, forgejoCLIInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, forgejoCLIInstallPath, data, 0o755)
 		return err
 	})
 }

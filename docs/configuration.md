@@ -33,13 +33,13 @@ Sandbox paths are runtime-specific. Docker uses `/toby`: `/toby/home` is
 helper binary, and `/toby/context` contains generated configuration and
 instructions. Bubblewrap keeps `$HOME` and `$XDG_PROJECTS_DIR` at their normal
 paths and stores Toby internals under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
-These paths are also available as `TOBY_ROOT`, `TOBY_HOME`,
-`TOBY_WORKSPACE_DIR`, `TOBY_BIN_DIR`, and `TOBY_CONTEXT_DIR`. Toby also sets
-`SHELL=/bin/bash` and sets `XDG_PROJECTS_DIR` to the selected runtime's project
-root.
+Toby does not construct startup environment variables from host values. It sets
+calculated `HOME` for the selected sandbox paths and otherwise lets the runtime
+supply the sandbox environment.
 
-Sandbox-facing commands receive `TOBY_CONTROL_HOST=host:port` and
-`TOBY_CONTROL_TOKEN` to reach the host control server.
+The sandbox bootstrap and manager also receive `TOBY_CONTROL_HOST=host:port` and
+`TOBY_CONTROL_TOKEN` to reach the host control server. Launched sandbox commands
+do not receive those control variables.
 
 Path expansion: a leading `~` or `~/` expands to the relevant home directory.
 Toby does not otherwise clean, canonicalize, or resolve symlinks during config
@@ -72,7 +72,7 @@ top-level keys are `instructions`, `mcp`, `permission`, `provider`, and
 An array of host instruction file paths or glob patterns. Relative paths
 resolve from `$XDG_CONFIG_HOME/toby`; a leading `~` expands to the host home.
 During context init, matching files are copied into
-`$TOBY_CONTEXT_DIR/instructions/` using the source basename. If two included
+the generated context directory using the source basename. If two included
 files share a basename, later files get a short random suffix before the
 extension (e.g. `foobar.1a2b3c.md`). Instruction contents are combined and
 delivered to each tool through that tool's native instruction mechanism (see
@@ -88,7 +88,7 @@ instructions:
 ### `mcp`
 
 A map of MCP server name to definition. Entries are rendered into supported
-synthetic tool configs under `$TOBY_CONTEXT_DIR`; Toby's own MCP server is
+synthetic tool configs under the generated context directory; Toby's own MCP server is
 always injected as `toby` after host config is merged.
 
 | Field | Type | Notes |
@@ -100,7 +100,7 @@ always injected as `toby` after host config is merged.
 | `headers` | object | Headers for remote servers. Values are a string or string array and may use `{env:VAR}` / `{file:path}` substitution (resolved on the host). |
 
 Remote entries are exposed to tools through a per-run
-`http://$TOBY_CONTROL_HOST/proxy/<uuid>` URL; Toby opens the upstream connection
+`http://<control-host>/proxy/<uuid>` URL; Toby opens the upstream connection
 from the host, resolves any `{env:VAR}` / `{file:path}` substitutions in
 `headers`, and applies the resolved headers there, so the upstream URL and
 credentials stay on the host. Local entries are rendered as local commands for
@@ -135,7 +135,7 @@ permission:
 A map of provider name to declaration. Supported `type` values are `openai`
 (OpenAI-compatible) and `anthropic` (Anthropic-compatible). Toby keeps upstream
 `baseURL` and credential `headers` on the host and exposes each provider to
-tools through `http://$TOBY_CONTROL_HOST/proxy/<uuid>`.
+tools through `http://<control-host>/proxy/<uuid>`.
 
 | Field | Type | Notes |
 | --- | --- | --- |

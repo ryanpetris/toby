@@ -4,8 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/config"
@@ -215,42 +213,6 @@ func TestVisibleHostPathRejectsSymlinkEscape(t *testing.T) {
 	}
 	if _, err := sbx.VisibleHostPath("foobar/link"); err == nil {
 		t.Fatal("expected symlink escape to be rejected")
-	}
-}
-
-func TestSetupEnvironmentPrependsTobyBinAndSetsRuntimePaths(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	runtimeRoot := filepath.Join(home, "runtime", "toby")
-	sandboxPaths := tool.SandboxPaths{Root: runtimeRoot, Home: paths.Home, Context: filepath.Join(runtimeRoot, "context"), Bin: filepath.Join(runtimeRoot, "bin"), Workspace: paths.ProjectRoot}
-	sbx := &BaseInstance{paths: paths, label: "demo", sandboxPaths: sandboxPaths, homeDir: paths.Home, projectsDir: paths.ProjectRoot, runtimeDir: runtimeRoot}
-	env := tool.Environment{"PATH": "/usr/bin", "SHELL": "/usr/bin/zsh", "XDG_RUNTIME_DIR": "/keep", "XDG_PROJECTS_DIR": "/host/projects"}
-	sbx.SetupEnvironment(env)
-	pathEntries := strings.Split(env["PATH"], ":")
-	want := []string{sandboxPaths.Bin, filepath.Join(paths.Home, ".local", "bin"), "/usr/bin"}
-	if !slices.Equal(pathEntries, want) {
-		t.Fatalf("PATH entries = %#v, want %#v", pathEntries, want)
-	}
-	if env["XDG_RUNTIME_DIR"] != "/keep" {
-		t.Fatalf("XDG_RUNTIME_DIR = %q", env["XDG_RUNTIME_DIR"])
-	}
-	if env["TOBY_SANDBOX"] != "1" {
-		t.Fatalf("TOBY_SANDBOX = %q", env["TOBY_SANDBOX"])
-	}
-	if env["XDG_PROJECTS_DIR"] != paths.ProjectRoot {
-		t.Fatalf("XDG_PROJECTS_DIR = %q, want %q", env["XDG_PROJECTS_DIR"], paths.ProjectRoot)
-	}
-	if env[tool.EnvTobyRoot] != sandboxPaths.Root || env[tool.EnvTobyHome] != sandboxPaths.Home || env[tool.EnvTobyContext] != sandboxPaths.Context || env[tool.EnvTobyBin] != sandboxPaths.Bin || env[tool.EnvTobyWorkspace] != sandboxPaths.Workspace {
-		t.Fatalf("toby env = %#v", env)
-	}
-	if env["SHELL"] != "/bin/bash" {
-		t.Fatalf("SHELL = %q", env["SHELL"])
-	}
-	if sbx.TobyContextDir() != sandboxPaths.Context {
-		t.Fatalf("TobyContextDir = %q", sbx.TobyContextDir())
-	}
-	if sbx.TobyGitAgentsPath() != filepath.Join(sandboxPaths.Context, "GIT_AGENTS.md") {
-		t.Fatalf("TobyGitAgentsPath = %q", sbx.TobyGitAgentsPath())
 	}
 }
 

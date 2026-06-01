@@ -219,12 +219,6 @@ const (
 	DefaultSandboxContext   = "/toby/context"
 	DefaultSandboxBin       = "/toby/bin"
 	DefaultSandboxWorkspace = "/toby/workspace"
-
-	EnvTobyRoot      = "TOBY_ROOT"
-	EnvTobyHome      = "TOBY_HOME"
-	EnvTobyContext   = "TOBY_CONTEXT_DIR"
-	EnvTobyBin       = "TOBY_BIN_DIR"
-	EnvTobyWorkspace = "TOBY_WORKSPACE_DIR"
 )
 
 type SandboxPaths struct {
@@ -321,9 +315,12 @@ type SandboxService interface {
 	AppendEnvironment(context.Context, string, string, string) error
 	AddBind(Bind) error
 	AddFile(context.Context, string, []byte, uint32) error
+	AddFileOwned(context.Context, string, []byte, uint32, int, int) error
 	DeletePath(context.Context, string, bool) error
 	Mkdir(context.Context, string, uint32) error
+	MkdirOwned(context.Context, string, uint32, int, int) error
 	Symlink(context.Context, string, string) error
+	SymlinkOwned(context.Context, string, string, int, int) error
 	Exec(context.Context, []string, ExecOptions) (int, error)
 	TobyMCPURL() string
 }

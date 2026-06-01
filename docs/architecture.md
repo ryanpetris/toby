@@ -60,7 +60,7 @@ The CLI is built in `internal/cli/commands`. `NewRootCommand` registers:
 
 - one launch subcommand per registered tool that has launch help, via
   `Registry.LaunchTools()` (see `internal/cli/commands/root.go`);
-- the hidden `toby sandbox ...` command tree (`sandbox.go`, `sandbox_git.go`);
+- the hidden `toby sandbox manager` command tree (`sandbox.go`);
 - a shell-completion command.
 
 The root `--config <file>` flag turns the invocation into a config-owned launch.
@@ -113,8 +113,8 @@ The same host listener also serves:
 | Method | Direction | Purpose |
 | --- | --- | --- |
 | `context.init` | sandbox → host | First message; triggers context injection. |
-| `file.create` | host → sandbox | Write a file (`path`, `data`, `mode`). |
-| `file.mkdir` | host → sandbox | Create a directory. |
+| `file.create` | host → sandbox | Write a file (`path`, `data`, `mode`, `uid`, `gid`). |
+| `file.mkdir` | host → sandbox | Create a directory (`path`, `mode`, `uid`, `gid`). |
 | `file.delete` | host → sandbox | Remove a file or directory (`recursive`). |
 | `file.symlink` | host → sandbox | Create a symlink (`path`, `target`). |
 | `command.run` | host → sandbox | Run a command (`command_id`, `argv`, `foreground`, `hide_output`). |
@@ -142,15 +142,19 @@ host so host config, SSH agent, GPG signing, and credential helpers all apply.
 `toby sandbox manager` dials the host, sends `context.init`, and then serves the
 `file.*`, `command.run`, and `sandbox.terminate` methods. `command.run` spawns a
 child process tracked by `command_id`; at most one command may be `foreground`.
-The manager forwards SIGINT/SIGTERM/SIGHUP/SIGQUIT to the foreground process and
-reports completion with `command.exit`. On `sandbox.terminate` it shuts down
-gracefully (SIGTERM then SIGKILL after a short grace period).
+The manager applies the requested uid, gid, and supplementary groups to child
+commands when it has permission; host-driven command execution defaults to the
+host uid/gid/groups. It also removes `TOBY_CONTROL_HOST` and
+`TOBY_CONTROL_TOKEN` from child command environments. The manager forwards
+SIGINT/SIGTERM/SIGHUP/SIGQUIT to the foreground process and reports completion
+with `command.exit`. On `sandbox.terminate` it shuts down gracefully (SIGTERM
+then SIGKILL after a short grace period).
 
 ### HTTP proxy (`internal/control/httpproxy`)
 
 Remote MCP servers, model providers, and the built-in Toby MCP server are each
 registered as a proxy target keyed by a random UUID and exposed at
-`http://$TOBY_CONTROL_HOST/proxy/<uuid>`. The host applies upstream URLs and
+`http://<control-host>/proxy/<uuid>`. The host applies upstream URLs and
 credential headers when forwarding, so secrets never enter the sandbox. The
 built-in Toby MCP target dispatches to the in-process MCP handler instead of an
 upstream URL.
@@ -161,11 +165,11 @@ Toby selects the available runtime with the lowest priority number: Docker has
 priority 0 and Bubblewrap priority 1, so Docker is preferred when present. The
 runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
 
-- **Docker** (`internal/sandbox/docker`): `docker run --rm --init` with the configured image
-  (default `node:lts-bookworm`). `/toby` is backed by a named Docker volume
-  (e.g. `toby-home-<env>`) so `/toby/home` persists across runs; projects
-  bind-mount from the host under `/toby/workspace`. The image can be built from
-  `sandbox.runtime.docker.build`.
+- **Docker** (`internal/sandbox/docker`): `docker run --rm --init --user 0:0` with the configured image
+  (default `node:lts-bookworm`). `$HOME` (`/toby/home` by default) is backed by
+  a named Docker volume (e.g. `toby-home-<env>`) so private home state persists
+  across runs; projects bind-mount from the host under `/toby/workspace`. The
+  image can be built from `sandbox.runtime.docker.build`.
 - **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts a private
   host directory at the normal `$HOME` path, keeps projects under
   `$XDG_PROJECTS_DIR`, and stores Toby internals under
@@ -197,16 +201,18 @@ A direct launch such as `toby claude my-app` proceeds through
    bind mounts with the sandbox service.
 2. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
    `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
-   set `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the sandbox environment.
+   set calculated `HOME` plus `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the
+   sandbox manager startup environment.
 3. **Launch the sandbox.** The runtime runs a `/bin/sh` bootstrap that creates
-   `$TOBY_BIN_DIR`, downloads the helper from `/binary` with the bearer token,
-   marks it executable, and `exec`s `toby sandbox manager`.
+   the runtime's Toby bin directory, downloads the helper from `/binary` with
+   the bearer token, marks it executable, and `exec`s `toby sandbox manager` by
+   absolute path.
 4. **Bootstrap the manager.** Inside the sandbox the manager connects back over
    the control WebSocket and sends `context.init`.
 5. **Inject context.** The host runs the ordered context-init services
    (`internal/context/setup`): agent instructions (order 10), host-config
    instructions/MCP/providers (order 20), and tool-specific config (order 30).
-   Each writes files under `$TOBY_CONTEXT_DIR` via the sandbox service and
+   Each writes files under the generated context directory via the sandbox service and
    sandbox manager `file.create` calls.
 6. **Install and launch.** The toolset installs any missing tools, then the
    primary tool's `Launch` runs the foreground command via `command.run`.

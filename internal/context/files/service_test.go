@@ -26,7 +26,7 @@ func TestEmittingSessionSendsFilesToSink(t *testing.T) {
 	if len(sink.files) != 1 {
 		t.Fatalf("sink files = %#v", sink.files)
 	}
-	if sink.files[0].Path != "instructions/AGENTS.md" || string(sink.files[0].Data) != "hi" || sink.files[0].Mode != 0o400 {
+	if sink.files[0].Path != "instructions/AGENTS.md" || string(sink.files[0].Data) != "hi" || sink.files[0].Mode != 0o644 {
 		t.Fatalf("sink file = %#v", sink.files[0])
 	}
 	paths := session.InstructionPaths()
@@ -49,7 +49,7 @@ func TestBuilderAddBytesValidatesPathDefaultsModeAndClonesData(t *testing.T) {
 	}
 	data[0] = 'H'
 	files := builder.Files()
-	want := []File{{Path: "dir/file.txt", Data: []byte("hello"), Mode: 0o400}}
+	want := []File{{Path: "dir/file.txt", Data: []byte("hello"), Mode: 0o644}}
 	if !reflect.DeepEqual(files, want) {
 		t.Fatalf("files = %#v, want %#v", files, want)
 	}

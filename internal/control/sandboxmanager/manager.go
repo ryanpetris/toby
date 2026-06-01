@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,10 +99,25 @@ func (r *Runtime) Handle(ctx context.Context, data []byte) ([]byte, error) {
 }
 
 func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParams) error {
-	argv := r.commandArgv(params)
+	env := r.commandEnvironmentSnapshot()
+	argv := r.commandArgv(params, env)
+	var ok bool
+	argv, ok = resolveCommandArgv(argv, env)
+	if !ok {
+		go r.sendCommandExit(params.CommandID, 127, "")
+		return nil
+	}
 	commandCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
-	cmd.Env = r.environmentList()
+	cmd.Env = environmentList(env)
+	credential, err := commandCredential(params)
+	if err != nil {
+		cancel()
+		return err
+	}
+	if credential != nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
+	}
 	if params.Foreground {
 		cmd.Stdin = os.Stdin
 	}
@@ -149,16 +165,16 @@ func (r *Runtime) commandRun(ctx context.Context, params control.CommandRunParam
 	return nil
 }
 
-func (r *Runtime) commandArgv(params control.CommandRunParams) []string {
+func (r *Runtime) commandArgv(params control.CommandRunParams, env map[string]string) []string {
 	if len(params.Argv) > 0 {
 		return params.Argv
 	}
-	return r.defaultShellCommand()
+	return r.defaultShellCommand(env)
 }
 
-func (r *Runtime) defaultShellCommand() []string {
-	shell, _ := r.getEnvironment("SHELL")
-	if shell := executableShell(shell); shell != "" {
+func (r *Runtime) defaultShellCommand(env map[string]string) []string {
+	shell := env["SHELL"]
+	if shell := executableShell(shell, env["PATH"]); shell != "" {
 		return []string{shell, "-i"}
 	}
 	return []string{"/bin/sh", "-i"}
@@ -193,8 +209,23 @@ func (r *Runtime) setEnvironment(name, value string) {
 func (r *Runtime) environmentList() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	values := make([]string, 0, len(r.env))
-	for name, value := range r.env {
+	return environmentList(r.env)
+}
+
+func (r *Runtime) commandEnvironmentList() []string {
+	return environmentList(r.commandEnvironmentSnapshot())
+}
+
+func (r *Runtime) commandEnvironmentSnapshot() map[string]string {
+	env := r.environmentSnapshot()
+	delete(env, control.EnvControlHost)
+	delete(env, control.EnvControlToken)
+	return env
+}
+
+func environmentList(env map[string]string) []string {
+	values := make([]string, 0, len(env))
+	for name, value := range env {
 		values = append(values, name+"="+value)
 	}
 	return values
@@ -220,12 +251,12 @@ func cloneEnvironment(env map[string]string) map[string]string {
 	return clone
 }
 
-func executableShell(shell string) string {
+func executableShell(shell, pathEnv string) string {
 	if shell == "" {
 		return ""
 	}
-	path, err := exec.LookPath(shell)
-	if err != nil {
+	path, ok := resolveExecutable(shell, pathEnv)
+	if !ok {
 		return ""
 	}
 	info, err := os.Stat(path)
@@ -233,6 +264,39 @@ func executableShell(shell string) string {
 		return ""
 	}
 	return path
+}
+
+func resolveCommandArgv(argv []string, env map[string]string) ([]string, bool) {
+	if len(argv) == 0 {
+		return argv, true
+	}
+	path, ok := resolveExecutable(argv[0], env["PATH"])
+	if !ok {
+		return nil, false
+	}
+	resolved := append([]string(nil), argv...)
+	resolved[0] = path
+	return resolved, true
+}
+
+func resolveExecutable(name, pathEnv string) (string, bool) {
+	if name == "" || strings.ContainsRune(name, 0) {
+		return "", false
+	}
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name, true
+	}
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			dir = "."
+		}
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 func (r *Runtime) addCommand(state *commandState) error {
@@ -363,6 +427,35 @@ func waitResult(ctx context.Context, err error) (int, string) {
 		return 130, ""
 	}
 	return 1, err.Error()
+}
+
+func commandCredential(params control.CommandRunParams) (*syscall.Credential, error) {
+	if params.UID == control.HostUser || params.GID == control.HostGroup {
+		return nil, fmt.Errorf("unresolved host command identity")
+	}
+	if params.UID < 0 {
+		return nil, fmt.Errorf("invalid command uid")
+	}
+	if params.GID < 0 {
+		return nil, fmt.Errorf("invalid command gid")
+	}
+	groups := make([]uint32, 0, len(params.Groups))
+	for _, group := range params.Groups {
+		if group == control.HostGroup {
+			return nil, fmt.Errorf("unresolved host command group")
+		}
+		if group < 0 {
+			return nil, fmt.Errorf("invalid supplementary gid")
+		}
+		groups = append(groups, uint32(group))
+	}
+	if os.Geteuid() != 0 {
+		if params.UID == os.Getuid() && params.GID == os.Getgid() {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cannot set command credentials as non-root")
+	}
+	return &syscall.Credential{Uid: uint32(params.UID), Gid: uint32(params.GID), Groups: groups}, nil
 }
 
 func startErrorCode(err error) int {

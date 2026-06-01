@@ -15,11 +15,11 @@ var agentFiles embed.FS
 func AgentFiles() fs.FS { return agentFiles }
 
 func RegisterAgentFiles(registrar Registrar) error {
-	return registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400)
+	return registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o644)
 }
 
 func RegisterAgentInstructions(session *Session) error {
-	return session.AddInstructionFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o400)
+	return session.AddInstructionFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o644)
 }
 
 func AgentContents() ([][]byte, error) {

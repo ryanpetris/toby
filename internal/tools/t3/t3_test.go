@@ -27,7 +27,7 @@ func TestRegisterContextFilesWritesWrapper(t *testing.T) {
 		t.Fatalf("files = %#v", files)
 	}
 	file := files[0]
-	if file.Path != t3WrapperPath || file.Mode != 0o500 {
+	if file.Path != t3WrapperPath || file.Mode != 0o755 {
 		t.Fatalf("file = %#v", file)
 	}
 	for _, want := range [][]byte{[]byte(`t3 "$@" &`), []byte(`trap terminate_child INT`), []byte(`kill -TERM "$child"`)} {

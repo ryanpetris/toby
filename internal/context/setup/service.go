@@ -47,7 +47,7 @@ type Result struct {
 func NewServices(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) Result {
 	return Result{
 		AgentInstructions: Registration{Name: "agent-instructions", Order: 10, Service: ServiceFunc(func(ctx context.Context, _ Params) error {
-			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o400)
+			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o644)
 			return err
 		})},
 		TobyConfig: Registration{Name: "toby-config", Order: 20, Service: ServiceFunc(func(ctx context.Context, _ Params) error {

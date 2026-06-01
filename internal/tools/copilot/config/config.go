@@ -27,10 +27,10 @@ func RegisterContextFiles(registrar contextfiles.Registrar, instructions [][]byt
 	if err != nil {
 		return err
 	}
-	if err := registrar.AddBytes(StaticMCPPath, mcp, 0o400); err != nil {
+	if err := registrar.AddBytes(StaticMCPPath, mcp, 0o644); err != nil {
 		return err
 	}
-	return registrar.AddBytes(StaticInstructionsPath, toolconfig.JoinInstructions(instructions), 0o400)
+	return registrar.AddBytes(StaticInstructionsPath, toolconfig.JoinInstructions(instructions), 0o644)
 }
 
 func MCPConfigPath(contextDir string) string {

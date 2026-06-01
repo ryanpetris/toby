@@ -71,7 +71,7 @@ func (t *grokTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptio
 		if err != nil {
 			return err
 		}
-		if _, err := t.contextFiles.AddFile(ctx, grokInstallPath, data, 0o500); err != nil {
+		if _, err := t.contextFiles.AddFile(ctx, grokInstallPath, data, 0o755); err != nil {
 			return err
 		}
 		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
@@ -96,10 +96,10 @@ func (t *grokTool) SandboxInit(ctx context.Context) error {
 		contextDir := t.Sandbox.Paths().Context
 		home := t.Sandbox.Paths().Home
 		grokHome := filepath.Join(home, ".grok")
-		if err := t.Sandbox.Mkdir(ctx, grokHome, 0o755); err != nil {
+		if err := t.Sandbox.MkdirOwned(ctx, grokHome, 0o755, control.HostUser, control.HostGroup); err != nil {
 			return err
 		}
-		return t.Sandbox.Symlink(ctx, filepath.Join(grokHome, "managed_config.toml"), grokconfig.ConfigPath(contextDir))
+		return t.Sandbox.SymlinkOwned(ctx, filepath.Join(grokHome, "managed_config.toml"), grokconfig.ConfigPath(contextDir), control.HostUser, control.HostGroup)
 	})
 }
 

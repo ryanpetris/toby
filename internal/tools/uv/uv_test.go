@@ -50,7 +50,7 @@ func TestRegisterContextFilesWritesInstaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := sandbox.Files
-	if len(files) != 1 || files[0].Path != uvInstallPath || files[0].Mode != 0o500 {
+	if len(files) != 1 || files[0].Path != uvInstallPath || files[0].Mode != 0o755 {
 		t.Fatalf("files = %#v", files)
 	}
 	if !bytes.Contains(files[0].Data, []byte("#!/bin/sh")) || !bytes.Contains(files[0].Data, []byte("uvx")) {

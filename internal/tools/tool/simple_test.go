@@ -93,9 +93,18 @@ func (s *fakeSandboxService) AddBind(bind Bind) error {
 	return nil
 }
 func (s fakeSandboxService) AddFile(context.Context, string, []byte, uint32) error { return nil }
-func (s fakeSandboxService) DeletePath(context.Context, string, bool) error        { return nil }
-func (s fakeSandboxService) Mkdir(context.Context, string, uint32) error           { return nil }
-func (s fakeSandboxService) Symlink(context.Context, string, string) error         { return nil }
+func (s fakeSandboxService) AddFileOwned(context.Context, string, []byte, uint32, int, int) error {
+	return nil
+}
+func (s fakeSandboxService) DeletePath(context.Context, string, bool) error { return nil }
+func (s fakeSandboxService) Mkdir(context.Context, string, uint32) error    { return nil }
+func (s fakeSandboxService) MkdirOwned(context.Context, string, uint32, int, int) error {
+	return nil
+}
+func (s fakeSandboxService) Symlink(context.Context, string, string) error { return nil }
+func (s fakeSandboxService) SymlinkOwned(context.Context, string, string, int, int) error {
+	return nil
+}
 func (s fakeSandboxService) Exec(ctx context.Context, argv []string, opts ExecOptions) (int, error) {
 	return s.exec(ctx, argv, opts)
 }

@@ -23,6 +23,17 @@ func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Opt
 	return 0, nil
 }
 
+type recordingRunner struct {
+	argv []string
+	env  map[string]string
+}
+
+func (r *recordingRunner) Run(_ context.Context, argv []string, env map[string]string, _ executil.Options) (int, error) {
+	r.argv = append([]string(nil), argv...)
+	r.env = env
+	return 0, nil
+}
+
 func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
@@ -46,7 +57,7 @@ func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 		{HostPath: "/host/readonly", Target: helpers.HomeTarget(".config", "readonly"), Type: tool.BindReadOnly, Optional: true},
 		{HostPath: "/host/demo.sock", Target: helpers.AbsoluteTarget(devSandboxPath), Type: tool.BindDev, Optional: true},
 	}
-	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Binds: binds})
+	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Binds: binds, Env: tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": paths.Home}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +68,9 @@ func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", filepath.Join(runtimeDir, "wayland-test"), filepath.Join(runtimeDir, "wayland-test")})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", "/run/udev", "/run/udev"})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", xauthority, xauthority})
+	assertContainsSequence(t, cmd, []string{"--setenv", "TOBY_CONTROL_HOST", "127.0.0.1:1234"})
+	assertContainsSequence(t, cmd, []string{"--setenv", "TOBY_CONTROL_TOKEN", "secret"})
+	assertContainsSequence(t, cmd, []string{"--setenv", "HOME", paths.Home})
 	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "demo"), paths.Home})
 	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(runtimeDir, "toby"), filepath.Join(runtimeDir, "toby")})
 	assertContainsSequence(t, cmd, []string{"--bind", projectDir, projectDir})
@@ -104,6 +118,29 @@ func TestConfiguredProjectsMountUnderProjectRootByName(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--bind", firstSource, firstTarget})
 	assertContainsSequence(t, cmd, []string{"--bind", secondSource, secondTarget})
 	assertContainsSequence(t, cmd, []string{"--chdir", "/tmp/custom-workdir"})
+}
+
+func TestRunDoesNotReplaceBubblewrapHostEnvironment(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	factory := testFactory(paths, runner)
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeBubblewrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := sbx.Run(context.Background(), sandbox.RunSpec{Argv: []string{"/bin/true"}, Env: tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234"}})
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if runner.env != nil {
+		t.Fatalf("bubblewrap runner env = %#v, want host env", runner.env)
+	}
+	assertContainsSequence(t, runner.argv, []string{"--setenv", "TOBY_CONTROL_HOST", "127.0.0.1:1234"})
 }
 
 func TestConfiguredProjectsDefaultWorkdirIsPrimaryProject(t *testing.T) {
@@ -203,4 +240,13 @@ func assertContainsSequence(t *testing.T, values, sequence []string) {
 		}
 	}
 	t.Fatalf("%#v does not contain sequence %#v", values, sequence)
+}
+
+func assertNotContainsSequence(t *testing.T, values, sequence []string) {
+	t.Helper()
+	for i := 0; i+len(sequence) <= len(values); i++ {
+		if slices.Equal(values[i:i+len(sequence)], sequence) {
+			t.Fatalf("%#v contains sequence %#v", values, sequence)
+		}
+	}
 }

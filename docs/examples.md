@@ -183,19 +183,19 @@ header there, so the token never enters the sandbox. (`{file:path}` reads a
 secret from a host file the same way.) Toby's built-in `toby` MCP server (the
 `git.*` tools) is always injected as well.
 
-## Commit, push, and tag from inside the sandbox
+## Commit, push, and tag with host credentials
 
 Host SSH keys and GPG setup are not mounted into the sandbox. Use the Toby Git
-MCP tools (available to agents automatically) or the equivalent CLI commands so
-the operation runs on the host with your real credentials:
+MCP tools, available to agents automatically, so the operation runs on the host
+with your real credentials:
 
-```sh
-# inside the sandbox
-toby sandbox git commit my-app -m "Fix bug"
-toby sandbox git push my-app main
-toby sandbox git tag my-app v1.2.3 -m "Release 1.2.3"
-toby sandbox git fetch my-app
-toby sandbox git rebase my-app origin/main
+```text
+# through the Toby MCP server
+git.commit(repository: "my-app", message: "Fix bug")
+git.push(repository: "my-app", branch: "main")
+git.tag(repository: "my-app", tag: "v1.2.3", message: "Release 1.2.3")
+git.fetch(repository: "my-app")
+git.rebase(repository: "my-app", base: "origin/main")
 ```
 
 Repository names are relative to the sandbox project root and must already be visible

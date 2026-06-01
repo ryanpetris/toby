@@ -64,7 +64,6 @@ type Instance interface {
 	TobyBinDir() string
 	TobyBinaryPath() string
 	TobyGitAgentsPath() string
-	SetupEnvironment(tool.Environment)
 	HostControlEndpoint() control.Endpoint
 	SetupControlEndpoint(tool.Environment, control.Endpoint)
 	Run(context.Context, RunSpec) (int, error)
@@ -492,24 +491,6 @@ func (s *BaseInstance) sandboxHost(host string) string {
 
 func (s *BaseInstance) Cleanup() error {
 	return nil
-}
-
-func (s *BaseInstance) SetupEnvironment(env tool.Environment) {
-	env["HOME"] = s.HomeDir()
-	env["XDG_PROJECTS_DIR"] = s.Projects()
-	env["GRML_CHROOT"] = "1"
-	env["CHROOT"] = "(" + s.label + ")"
-	env["TOBY_SANDBOX"] = "1"
-	env[tool.EnvTobyRoot] = s.TobyRuntimeDir()
-	env[tool.EnvTobyHome] = s.HomeDir()
-	env[tool.EnvTobyContext] = s.TobyContextDir()
-	env[tool.EnvTobyBin] = s.TobyBinDir()
-	env[tool.EnvTobyWorkspace] = s.Projects()
-	env["SHELL"] = "/bin/bash"
-	env["BASH_ENV"] = filepath.Join(s.HomeDir(), ".env")
-	delete(env, "TOBY_MOUNTABLE_PROJECTS")
-	env.Prepend("PATH", filepath.Join(s.HomeDir(), ".local", "bin"))
-	env.Prepend("PATH", s.TobyBinDir())
 }
 
 func (s *BaseInstance) ChdirDir() string {

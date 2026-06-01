@@ -31,7 +31,7 @@ through launch config `tools:` entries.
 
 All tools receive the built-in **Toby MCP server** (the `git.*` tools) when the
 tool supports MCP. "Synthetic config" means Toby generates configuration under
-`$TOBY_CONTEXT_DIR` (or injects it via launch flags) without touching the tool's
+the generated context directory (or injects it via launch flags) without touching the tool's
 normal config files. See [configuration.md](configuration.md) for the host
 config that feeds this generation, and [sandbox.md](sandbox.md) for the exact
 generated files per tool.
@@ -64,7 +64,7 @@ instructions. The full generated artifacts are documented in
 
 ### OpenCode
 
-Toby sets `OPENCODE_CONFIG_DIR=$TOBY_CONTEXT_DIR/opencode`. The generated
+Toby sets `OPENCODE_CONFIG_DIR` to the generated OpenCode context directory. The generated
 `opencode.json` carries the Toby MCP server (as a remote `/proxy/<uuid>` URL),
 configured remote/local MCP entries, providers translated to
 `@ai-sdk/openai-compatible` / `@ai-sdk/anthropic`, and the combined
@@ -166,7 +166,6 @@ See [examples.md](examples.md) for more end-to-end recipes.
   [configuration.md](configuration.md#tool-state)).
 - `github_cli` (`gh`), `gitlab_cli` (`glab`), `fj` — forge CLIs. For operations
   that need host credentials (signing, pushing over SSH), prefer the Toby Git
-  MCP tools / `toby sandbox git ...` commands described in
-  [sandbox.md](sandbox.md), which run on the host.
+  MCP tools described in [sandbox.md](sandbox.md), which run on the host.
 - `exec` — run an arbitrary command in the sandbox: `toby exec <env> -- <cmd>`,
   or as the first tool in a launch config to script the sandbox.

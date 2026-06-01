@@ -127,7 +127,7 @@ func (s *Service) addFile(ctx context.Context, path string, data []byte, mode ui
 		return "", err
 	}
 	if mode == 0 {
-		mode = 0o400
+		mode = 0o644
 	}
 	s.mu.Lock()
 	sandbox := s.sandbox
@@ -196,7 +196,7 @@ func (s *Session) AddBytes(path string, data []byte, mode uint32) error {
 		return err
 	}
 	if mode == 0 {
-		mode = 0o400
+		mode = 0o644
 	}
 	if s.builder != nil {
 		if err := s.builder.addCleanBytes(path, data, mode); err != nil {
@@ -294,7 +294,7 @@ func (b *Builder) AddBytes(path string, data []byte, mode uint32) error {
 		return err
 	}
 	if mode == 0 {
-		mode = 0o400
+		mode = 0o644
 	}
 	return b.addCleanBytes(path, data, mode)
 }

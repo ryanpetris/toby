@@ -17,7 +17,6 @@ func newSandboxCommand(params Params) *cobra.Command {
 		Hidden: os.Getenv("TOBY_SANDBOX") != "1",
 	}
 	cmd.AddCommand(newSandboxManagerCommand(params.SandboxManager))
-	cmd.AddCommand(newSandboxGitCommand())
 	return cmd
 }
 

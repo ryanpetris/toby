@@ -21,7 +21,6 @@ import (
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/binary"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -66,10 +65,9 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
-	env := helpers.EnvironmentFromList(os.Environ())
+	env := tool.Environment{"HOME": sbx.HomeDir()}
 	params.ContextFiles.SetSandbox(params.SandboxService)
 	params.ContextFiles.Reset()
-	sbx.SetupEnvironment(env)
 
 	exits := sandbox.NewCommandExits()
 	ready := make(chan sandboxManagerReady, 1)
@@ -240,8 +238,8 @@ func warnHostToolState(stderr io.Writer, suppression warning.Suppression, toolse
 func sandboxManagerArgv(sbx sandbox.Instance) []string {
 	return []string{
 		"/bin/sh", "-c",
-		`set -e; mkdir -p "${TOBY_BIN_DIR:?}"; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN}" "http://${TOBY_CONTROL_HOST}/binary" -o "${TOBY_BIN_DIR}/toby"; chmod 755 "${TOBY_BIN_DIR}/toby"; exec "$@"`,
-		"toby-startup", sbx.TobyBinaryPath(), "sandbox", "manager",
+		`set -e; mkdir -p "$1"; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN:?}" "http://${TOBY_CONTROL_HOST:?}/binary" -o "$2"; chmod 755 "$2"; exec "$2" sandbox manager`,
+		"toby-startup", sbx.TobyBinDir(), sbx.TobyBinaryPath(),
 	}
 }
 

@@ -28,7 +28,7 @@ func TestRegisterContextFilesWritesSandboxInit(t *testing.T) {
 		t.Fatalf("files = %#v", files)
 	}
 	file := files[0]
-	if file.Path != npmSandboxInitPath || file.Mode != 0o500 {
+	if file.Path != npmSandboxInitPath || file.Mode != 0o755 {
 		t.Fatalf("file = %#v", file)
 	}
 	for _, want := range [][]byte{[]byte("#!/bin/sh"), []byte("command -v npm"), []byte("mkdir -p")} {

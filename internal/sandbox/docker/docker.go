@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
@@ -259,10 +260,9 @@ func (s *instance) BuildHomeVolumeInitCommand() []string {
 		s.docker, "run", "--rm",
 		"--user", "0:0",
 		"--entrypoint", "chown",
-		"--mount", dockerVolume(s.homeVolume, s.TobyRuntimeDir()),
-		"--env", "HOME=" + s.HomeDir(),
+		"--mount", dockerVolume(s.homeVolume, s.HomeDir()),
 		s.image,
-		"-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), s.TobyRuntimeDir(),
+		"-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), s.HomeDir(),
 	}
 }
 
@@ -273,7 +273,7 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	}
 	args = append(args,
 		"--name", s.containerName,
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"--user", "0:0",
 	)
 	if runtime.GOOS != "darwin" {
 		args = append(args, "--network", "host")
@@ -287,7 +287,7 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	for _, mount := range s.mounts(spec.Binds) {
 		args = append(args, "--mount", mount)
 	}
-	for _, item := range dockerEnv(spec.Env) {
+	for _, item := range dockerControlEnv(spec.Env) {
 		args = append(args, "--env", item)
 	}
 	args = append(args, "--workdir", s.ChdirDir(), s.image)
@@ -297,7 +297,7 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 
 func (s *instance) mounts(binds []tool.Bind) []string {
 	mounts := []string{
-		dockerVolume(s.homeVolume, s.TobyRuntimeDir()),
+		dockerVolume(s.homeVolume, s.HomeDir()),
 	}
 	for _, project := range s.ProjectMounts() {
 		mounts = append(mounts, dockerBind(project.HostPath, project.SandboxPath, false))
@@ -360,6 +360,19 @@ func dockerEnv(env tool.Environment) []string {
 	}
 	sort.Strings(values)
 	return values
+}
+
+func dockerControlEnv(env tool.Environment) []string {
+	controlEnv := tool.Environment{}
+	if value, ok := env["HOME"]; ok {
+		controlEnv["HOME"] = value
+	}
+	for _, name := range []string{control.EnvControlHost, control.EnvControlToken} {
+		if value, ok := env[name]; ok {
+			controlEnv[name] = value
+		}
+	}
+	return dockerEnv(controlEnv)
 }
 
 func stdinIsTerminal() bool { return isCharDevice(os.Stdin) }

@@ -21,7 +21,7 @@ func RegisterContextFiles(registrar contextfiles.Registrar, _ [][]byte, cfg *tob
 	if err != nil {
 		return err
 	}
-	return registrar.AddBytes(StaticConfigPath, config, 0o400)
+	return registrar.AddBytes(StaticConfigPath, config, 0o644)
 }
 
 func ConfigPath(contextDir string) string {

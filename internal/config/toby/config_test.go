@@ -426,9 +426,18 @@ func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte,
 	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
+func (s *configFakeSandbox) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, _, _ int) error {
+	return s.AddFile(ctx, path, data, mode)
+}
 func (s *configFakeSandbox) DeletePath(context.Context, string, bool) error { return nil }
 func (s *configFakeSandbox) Mkdir(context.Context, string, uint32) error    { return nil }
-func (s *configFakeSandbox) Symlink(context.Context, string, string) error  { return nil }
+func (s *configFakeSandbox) MkdirOwned(ctx context.Context, path string, mode uint32, _, _ int) error {
+	return s.Mkdir(ctx, path, mode)
+}
+func (s *configFakeSandbox) Symlink(context.Context, string, string) error { return nil }
+func (s *configFakeSandbox) SymlinkOwned(ctx context.Context, path, target string, _, _ int) error {
+	return s.Symlink(ctx, path, target)
+}
 func (s *configFakeSandbox) Exec(context.Context, []string, tool.ExecOptions) (int, error) {
 	return 0, nil
 }

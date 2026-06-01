@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"syscall"
 
 	"petris.dev/toby/internal/control"
@@ -101,6 +102,15 @@ func (c *SandboxClient) FileCreate(ctx context.Context, path string, data []byte
 	return err
 }
 
+func (c *SandboxClient) FileCreateOwned(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error {
+	uid, gid, err := resolveOwner(uid, gid)
+	if err != nil {
+		return err
+	}
+	_, err = c.peer.Call(ctx, control.MethodFileCreate, control.FileCreateParams{Path: path, Data: data, Mode: mode, UID: uid, GID: gid})
+	return err
+}
+
 func (c *SandboxClient) FileDelete(ctx context.Context, path string, recursive bool) error {
 	_, err := c.peer.Call(ctx, control.MethodFileDelete, control.FileDeleteParams{Path: path, Recursive: recursive})
 	return err
@@ -111,8 +121,26 @@ func (c *SandboxClient) FileMkdir(ctx context.Context, path string, mode uint32)
 	return err
 }
 
+func (c *SandboxClient) FileMkdirOwned(ctx context.Context, path string, mode uint32, uid, gid int) error {
+	uid, gid, err := resolveOwner(uid, gid)
+	if err != nil {
+		return err
+	}
+	_, err = c.peer.Call(ctx, control.MethodFileMkdir, control.FileMkdirParams{Path: path, Mode: mode, UID: uid, GID: gid})
+	return err
+}
+
 func (c *SandboxClient) FileSymlink(ctx context.Context, path, target string) error {
 	_, err := c.peer.Call(ctx, control.MethodFileSymlink, control.FileSymlinkParams{Path: path, Target: target})
+	return err
+}
+
+func (c *SandboxClient) FileSymlinkOwned(ctx context.Context, path, target string, uid, gid int) error {
+	uid, gid, err := resolveOwner(uid, gid)
+	if err != nil {
+		return err
+	}
+	_, err = c.peer.Call(ctx, control.MethodFileSymlink, control.FileSymlinkParams{Path: path, Target: target, UID: uid, GID: gid})
 	return err
 }
 
@@ -134,11 +162,97 @@ func (c *SandboxClient) EnvironmentSet(ctx context.Context, name, value string) 
 }
 
 func (c *SandboxClient) CommandRun(ctx context.Context, params control.CommandRunParams) error {
-	_, err := c.peer.Call(ctx, control.MethodCommandRun, params)
+	var err error
+	params, err = resolveCommandRunParams(params)
+	if err != nil {
+		return err
+	}
+	_, err = c.peer.Call(ctx, control.MethodCommandRun, params)
 	return err
 }
 
 func (c *SandboxClient) Terminate(ctx context.Context) error {
 	_, err := c.peer.Call(ctx, control.MethodSandboxTerminate, nil)
 	return err
+}
+
+func resolveOwner(uid, gid int) (int, int, error) {
+	resolvedUID, err := resolveUID(uid)
+	if err != nil {
+		return 0, 0, err
+	}
+	resolvedGID, err := resolveGID(gid)
+	if err != nil {
+		return 0, 0, err
+	}
+	return resolvedUID, resolvedGID, nil
+}
+
+func resolveCommandRunParams(params control.CommandRunParams) (control.CommandRunParams, error) {
+	useHostGroups := params.UID == control.HostUser || params.GID == control.HostGroup
+	uid, err := resolveUID(params.UID)
+	if err != nil {
+		return control.CommandRunParams{}, err
+	}
+	gid, err := resolveGID(params.GID)
+	if err != nil {
+		return control.CommandRunParams{}, err
+	}
+	groups := params.Groups
+	if len(groups) == 0 && useHostGroups {
+		groups, err = os.Getgroups()
+		if err != nil {
+			return control.CommandRunParams{}, err
+		}
+	} else {
+		groups, err = resolveGroups(groups)
+		if err != nil {
+			return control.CommandRunParams{}, err
+		}
+	}
+	params.UID = uid
+	params.GID = gid
+	params.Groups = append([]int(nil), groups...)
+	return params, nil
+}
+
+func resolveUID(uid int) (int, error) {
+	switch {
+	case uid == control.HostUser:
+		return os.Getuid(), nil
+	case uid < 0:
+		return 0, errors.New("invalid uid")
+	default:
+		return uid, nil
+	}
+}
+
+func resolveGID(gid int) (int, error) {
+	switch {
+	case gid == control.HostGroup:
+		return os.Getgid(), nil
+	case gid < 0:
+		return 0, errors.New("invalid gid")
+	default:
+		return gid, nil
+	}
+}
+
+func resolveGroups(groups []int) ([]int, error) {
+	resolved := make([]int, 0, len(groups))
+	for _, group := range groups {
+		switch {
+		case group == control.HostGroup:
+			hostGroups, err := os.Getgroups()
+			if err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, hostGroups...)
+		case group < 0:
+			return nil, errors.New("invalid supplementary gid")
+		default:
+			resolved = append(resolved, group)
+		}
+	}
+	return resolved, nil
 }

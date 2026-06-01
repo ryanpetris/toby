@@ -393,7 +393,7 @@ func (s *Service) RegisterContextFiles(ctx context.Context, service *contextfile
 			return err
 		}
 		rel := filepath.ToSlash(filepath.Join(InstructionsDir, name))
-		if _, err := service.AddInstruction(ctx, rel, data, 0o400); err != nil {
+		if _, err := service.AddInstruction(ctx, rel, data, 0o644); err != nil {
 			return err
 		}
 	}

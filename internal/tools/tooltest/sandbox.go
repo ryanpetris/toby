@@ -87,10 +87,16 @@ func (s *Sandbox) AddFile(_ context.Context, path string, data []byte, mode uint
 	s.Files = append(s.Files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
+func (s *Sandbox) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, _, _ int) error {
+	return s.AddFile(ctx, path, data, mode)
+}
 func (s *Sandbox) DeletePath(context.Context, string, bool) error { return nil }
 func (s *Sandbox) Mkdir(_ context.Context, path string, _ uint32) error {
 	s.Dirs = append(s.Dirs, path)
 	return nil
+}
+func (s *Sandbox) MkdirOwned(ctx context.Context, path string, mode uint32, _, _ int) error {
+	return s.Mkdir(ctx, path, mode)
 }
 func (s *Sandbox) Symlink(_ context.Context, path, target string) error {
 	if s.Symlinks == nil {
@@ -98,6 +104,9 @@ func (s *Sandbox) Symlink(_ context.Context, path, target string) error {
 	}
 	s.Symlinks[path] = target
 	return nil
+}
+func (s *Sandbox) SymlinkOwned(ctx context.Context, path, target string, _, _ int) error {
+	return s.Symlink(ctx, path, target)
 }
 func (s *Sandbox) Exec(ctx context.Context, argv []string, opts tool.ExecOptions) (int, error) {
 	if s.ExecFunc != nil {

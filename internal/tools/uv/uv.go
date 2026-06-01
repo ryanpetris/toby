@@ -11,6 +11,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
@@ -82,7 +83,7 @@ func (t *uvTool) SandboxInit(ctx context.Context) error {
 		}
 		for _, key := range []string{"UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR"} {
 			dir, _ := t.sandbox.GetEnvironment(key)
-			if err := t.sandbox.Mkdir(ctx, dir, 0o755); err != nil {
+			if err := t.sandbox.MkdirOwned(ctx, dir, 0o755, control.HostUser, control.HostGroup); err != nil {
 				return err
 			}
 		}
@@ -96,7 +97,7 @@ func (t *uvTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions
 		if err != nil {
 			return err
 		}
-		_, err = t.contextFiles.AddFile(ctx, uvInstallPath, data, 0o500)
+		_, err = t.contextFiles.AddFile(ctx, uvInstallPath, data, 0o755)
 		return err
 	})
 }

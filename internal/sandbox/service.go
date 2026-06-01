@@ -203,6 +203,14 @@ func (s *Service) AddFile(ctx context.Context, path string, data []byte, mode ui
 	return client.FileCreate(ctx, path, data, mode)
 }
 
+func (s *Service) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error {
+	client, _, _, err := s.connected()
+	if err != nil {
+		return err
+	}
+	return client.FileCreateOwned(ctx, path, data, mode, uid, gid)
+}
+
 func (s *Service) DeletePath(ctx context.Context, path string, recursive bool) error {
 	client, _, _, err := s.connected()
 	if err != nil {
@@ -219,12 +227,28 @@ func (s *Service) Mkdir(ctx context.Context, path string, mode uint32) error {
 	return client.FileMkdir(ctx, path, mode)
 }
 
+func (s *Service) MkdirOwned(ctx context.Context, path string, mode uint32, uid, gid int) error {
+	client, _, _, err := s.connected()
+	if err != nil {
+		return err
+	}
+	return client.FileMkdirOwned(ctx, path, mode, uid, gid)
+}
+
 func (s *Service) Symlink(ctx context.Context, path, target string) error {
 	client, _, _, err := s.connected()
 	if err != nil {
 		return err
 	}
 	return client.FileSymlink(ctx, path, target)
+}
+
+func (s *Service) SymlinkOwned(ctx context.Context, path, target string, uid, gid int) error {
+	client, _, _, err := s.connected()
+	if err != nil {
+		return err
+	}
+	return client.FileSymlinkOwned(ctx, path, target, uid, gid)
 }
 
 func (s *Service) Exec(ctx context.Context, argv []string, options tool.ExecOptions) (int, error) {
@@ -237,7 +261,7 @@ func (s *Service) Exec(ctx context.Context, argv []string, options tool.ExecOpti
 		return 1, err
 	}
 	exitCh := exits.watch(commandID)
-	if err := client.CommandRun(ctx, control.CommandRunParams{CommandID: commandID, Argv: argv, Foreground: options.Foreground, HideOutput: options.HideOutput}); err != nil {
+	if err := client.CommandRun(ctx, control.CommandRunParams{CommandID: commandID, Argv: argv, Foreground: options.Foreground, HideOutput: options.HideOutput, UID: control.HostUser, GID: control.HostGroup}); err != nil {
 		exits.unwatch(commandID)
 		return 1, err
 	}

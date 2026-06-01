@@ -30,8 +30,8 @@ func TestContextFilesIncludeTobyMCPAndInstructions(t *testing.T) {
 	if got := string(fileByPath(t, files, StaticInstructionsPath).Data); got != "# git\n\n# extra\n" {
 		t.Fatalf("instructions = %q", got)
 	}
-	if fileByPath(t, files, StaticMCPPath).Mode != 0o400 || fileByPath(t, files, StaticInstructionsPath).Mode != 0o400 {
-		t.Fatalf("context files should be mode 0400")
+	if fileByPath(t, files, StaticMCPPath).Mode != 0o644 || fileByPath(t, files, StaticInstructionsPath).Mode != 0o644 {
+		t.Fatalf("context files should be mode 0644")
 	}
 }
 
