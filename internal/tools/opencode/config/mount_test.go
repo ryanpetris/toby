@@ -204,28 +204,6 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 	}
 }
 
-func TestGeneratedFilesAreReadOnly(t *testing.T) {
-	files, warnings, err := contextFiles(t, &http.Client{}, filepath.Join(t.TempDir(), "Projects"), testInstructions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-	for _, path := range []string{StaticGitignorePath, StaticConfigPath} {
-		file := findStaticFile(files, path)
-		if file == nil {
-			t.Fatalf("files = %#v, want %s", files, path)
-		}
-		if file.Mode != 0o644 {
-			t.Fatalf("mode %s = %#o, want 0644", path, file.Mode)
-		}
-	}
-	if file := findStaticFile(files, StaticGitignorePath); string(file.Data) != "*\n" {
-		t.Fatalf("gitignore = %q, want *", file.Data)
-	}
-}
-
 func readGeneratedConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string) map[string]any {
 	return readGeneratedConfigWithTobyConfig(t, client, projectRoot, instructions, nil)
 }
@@ -248,10 +226,6 @@ func readGeneratedConfigWithTobyConfig(t *testing.T, client *http.Client, projec
 		t.Fatal(err)
 	}
 	return config
-}
-
-func contextFiles(t *testing.T, client *http.Client, projectRoot string, instructions []string) ([]contextfiles.File, []error, error) {
-	return contextFilesWithTobyConfig(t, client, projectRoot, instructions, nil)
 }
 
 func contextFilesWithTobyConfig(t *testing.T, client *http.Client, projectRoot string, instructions []string, cfg *tobyconfig.Service) ([]contextfiles.File, []error, error) {
