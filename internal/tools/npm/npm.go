@@ -7,6 +7,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -52,12 +53,8 @@ type npmTool struct {
 	contextFiles *contextfiles.Service
 }
 
-func (t *npmTool) PathEntries() []tool.PathTarget {
-	return []tool.PathTarget{tool.HomeTarget(".local", "npm-global", "bin")}
-}
-
 func (t *npmTool) SandboxContextSetup(ctx context.Context) error {
-	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
 		home := t.sandbox.Paths().Home
 		prefix := filepath.Join(home, ".local", "npm-global")
 		cache := filepath.Join(home, ".cache", "npm")
@@ -71,19 +68,19 @@ func (t *npmTool) SandboxContextSetup(ctx context.Context) error {
 				return err
 			}
 		}
-		return nil
+		return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(prefix, "bin"), ":")
 	})
 }
 
 func (t *npmTool) SandboxInit(ctx context.Context) error {
-	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxInitOnce(ctx, t.Name(), func() error {
 		_, err := t.sandbox.Exec(ctx, []string{t.contextPath(npmSandboxInitPath)}, tool.ExecOptions{})
 		return err
 	})
 }
 
 func (t *npmTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		data, err := npmFiles.ReadFile("sandbox-init.sh")
 		if err != nil {
 			return err

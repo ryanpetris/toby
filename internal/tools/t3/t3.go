@@ -7,6 +7,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -63,14 +64,6 @@ type t3Tool struct {
 
 func (t *t3Tool) deps() []tool.Tool { return []tool.Tool{t.npm} }
 
-func (t *t3Tool) Binds() []tool.Bind {
-	return toolutil.Binds(t.deps(), t.Simple.Binds())
-}
-
-func (t *t3Tool) PathEntries() []tool.PathTarget {
-	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
-}
-
 func (t *t3Tool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
 	if err := toolutil.HostInitDependencies(ctx, opts, t.npm); err != nil {
 		return err
@@ -86,7 +79,7 @@ func (t *t3Tool) SandboxContextSetup(ctx context.Context) error {
 }
 
 func (t *t3Tool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
 			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err

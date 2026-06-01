@@ -20,6 +20,9 @@ type Service struct {
 	managerExit *ManagerExit
 	env         tool.Environment
 	mcpURL      string
+	binds       []tool.Bind
+	seenBinds   map[tool.Bind]bool
+	started     bool
 }
 
 type SandboxService = Service
@@ -36,7 +39,34 @@ func (s *Service) Prepare(instance Instance) {
 	s.managerExit = nil
 	s.env = nil
 	s.mcpURL = ""
+	s.binds = nil
+	s.seenBinds = nil
+	s.started = false
 	s.mu.Unlock()
+}
+
+func (s *Service) AddBind(bind tool.Bind) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return fmt.Errorf("sandbox is already started")
+	}
+	if s.seenBinds == nil {
+		s.seenBinds = map[tool.Bind]bool{}
+	}
+	if s.seenBinds[bind] {
+		return nil
+	}
+	s.seenBinds[bind] = true
+	s.binds = append(s.binds, bind)
+	return nil
+}
+
+func (s *Service) StartBinds() []tool.Bind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.started = true
+	return append([]tool.Bind(nil), s.binds...)
 }
 
 func (s *Service) Connect(ctx context.Context, instance Instance, client *hostmanager.SandboxClient, exits *CommandExits, managerExit *ManagerExit) error {
@@ -56,6 +86,7 @@ func (s *Service) Connect(ctx context.Context, instance Instance, client *hostma
 	s.exits = exits
 	s.managerExit = managerExit
 	s.env = tool.Environment(env).Clone()
+	s.started = true
 	s.mu.Unlock()
 	return nil
 }

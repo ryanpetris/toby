@@ -81,15 +81,6 @@ type ToolStateConfig struct {
 	StateRoot string
 }
 
-func ParseToolState(value string) (ToolState, error) {
-	switch state := ToolState(strings.TrimSpace(value)); state {
-	case ToolStatePrivate, ToolStateHost:
-		return state, nil
-	default:
-		return "", fmt.Errorf("tool state must be %q or %q", ToolStatePrivate, ToolStateHost)
-	}
-}
-
 func (s ToolStateSettings) Clone() ToolStateSettings {
 	clone := ToolStateSettings{Default: s.Default}
 	if len(s.Tools) > 0 {
@@ -167,7 +158,7 @@ func (s ToolStateSettings) ResolveStateRoots(home, base string) (ToolStateSettin
 	if resolved.Default.StateRoot == "" {
 		resolved.Default.StateRoot = home
 	} else {
-		root, err := ResolveStateRoot(resolved.Default.StateRoot, home, base)
+		root, err := resolveStateRoot(resolved.Default.StateRoot, home, base)
 		if err != nil {
 			return ToolStateSettings{}, err
 		}
@@ -177,7 +168,7 @@ func (s ToolStateSettings) ResolveStateRoots(home, base string) (ToolStateSettin
 		if cfg.StateRoot == "" {
 			continue
 		}
-		root, err := ResolveStateRoot(cfg.StateRoot, home, base)
+		root, err := resolveStateRoot(cfg.StateRoot, home, base)
 		if err != nil {
 			return ToolStateSettings{}, err
 		}
@@ -187,7 +178,7 @@ func (s ToolStateSettings) ResolveStateRoots(home, base string) (ToolStateSettin
 	return resolved, nil
 }
 
-func ResolveStateRoot(value, home, base string) (string, error) {
+func resolveStateRoot(value, home, base string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("stateRoot must not be empty")
@@ -244,34 +235,12 @@ type SandboxPaths struct {
 	Workspace string
 }
 
-func DefaultSandboxPaths() SandboxPaths {
-	return SandboxPaths{
-		Root:      DefaultSandboxRoot,
-		Home:      DefaultSandboxHome,
-		Context:   DefaultSandboxContext,
-		Bin:       DefaultSandboxBin,
-		Workspace: DefaultSandboxWorkspace,
-	}
-}
-
 type PathTarget struct {
 	Base PathBase
 	Path string
 }
 
-func AbsoluteTarget(path string) PathTarget { return PathTarget{Base: PathAbsolute, Path: path} }
-
-func RootTarget(parts ...string) PathTarget { return pathTarget(PathRoot, parts...) }
-
-func HomeTarget(parts ...string) PathTarget { return pathTarget(PathHome, parts...) }
-
-func RuntimeTarget(parts ...string) PathTarget { return pathTarget(PathRuntime, parts...) }
-
-func ContextTarget(parts ...string) PathTarget { return pathTarget(PathContext, parts...) }
-
-func BinTarget(parts ...string) PathTarget { return pathTarget(PathBin, parts...) }
-
-func ProjectsTarget(parts ...string) PathTarget { return pathTarget(PathProjects, parts...) }
+func homeTarget(parts ...string) PathTarget { return pathTarget(PathHome, parts...) }
 
 func pathTarget(base PathBase, parts ...string) PathTarget {
 	if len(parts) == 0 {
@@ -280,32 +249,15 @@ func pathTarget(base PathBase, parts ...string) PathTarget {
 	return PathTarget{Base: base, Path: filepath.ToSlash(filepath.Join(parts...))}
 }
 
-func ResolvePath(target PathTarget, sandbox Sandbox) string {
-	switch target.Base {
-	case PathRoot:
-		return joinSandboxPath(sandbox.Paths().Root, target.Path)
-	case PathHome:
-		return joinSandboxPath(sandbox.Paths().Home, target.Path)
-	case PathRuntime:
-		return joinSandboxPath(sandbox.Paths().Root, target.Path)
-	case PathContext:
-		return joinSandboxPath(sandbox.Paths().Context, target.Path)
-	case PathBin:
-		return joinSandboxPath(sandbox.Paths().Bin, target.Path)
-	case PathProjects:
-		return joinSandboxPath(sandbox.Paths().Workspace, target.Path)
-	case PathAbsolute, "":
-		return target.Path
-	default:
-		return target.Path
+func resolveStateBindHostPath(root string, bind Bind) string {
+	statePath := bind.StatePath
+	if statePath == "" && bind.Target.Base == PathHome {
+		statePath = bind.Target.Path
 	}
-}
-
-func joinSandboxPath(base, rel string) string {
-	if rel == "" {
-		return base
+	if root == "" || statePath == "" {
+		return bind.HostPath
 	}
-	return filepath.Join(base, filepath.FromSlash(rel))
+	return filepath.Join(root, filepath.FromSlash(statePath))
 }
 
 type CommandOptions struct {
@@ -367,6 +319,7 @@ type SandboxService interface {
 	SetEnvironment(context.Context, string, string) error
 	PrependEnvironment(context.Context, string, string, string) error
 	AppendEnvironment(context.Context, string, string, string) error
+	AddBind(Bind) error
 	AddFile(context.Context, string, []byte, uint32) error
 	DeletePath(context.Context, string, bool) error
 	Mkdir(context.Context, string, uint32) error
@@ -389,8 +342,6 @@ type Tool interface {
 	CommandName() string
 	LaunchHelp() string
 	ContextGroups() []string
-	Binds() []Bind
-	PathEntries() []PathTarget
 	ConfigureCommand(*cobra.Command)
 	HostInit(context.Context, *CommandOptions) error
 	SandboxContextSetup(context.Context) error
@@ -407,6 +358,10 @@ type ContextOptions struct {
 
 type ContextFileTool interface {
 	RegisterContextFiles(context.Context, ContextOptions) error
+}
+
+type StatefulTool interface {
+	UsesToolState() bool
 }
 
 type Metadata struct {
@@ -435,10 +390,6 @@ func (b Base) LaunchHelp() string { return b.Metadata.LaunchHelp }
 
 func (b Base) ContextGroups() []string { return append([]string(nil), b.Metadata.ContextGroups...) }
 
-func (b Base) Binds() []Bind { return nil }
-
-func (b Base) PathEntries() []PathTarget { return nil }
-
 func (b Base) ConfigureCommand(*cobra.Command) {}
 
 func (b Base) HostInit(context.Context, *CommandOptions) error { return nil }
@@ -453,9 +404,4 @@ func (b Base) Upgrade(context.Context) error { return nil }
 
 func (b Base) Launch(context.Context, []string) error {
 	return ErrNotLaunchable(b.Name())
-}
-
-func HomePath(home string, parts ...string) string {
-	items := append([]string{home}, parts...)
-	return filepath.Join(items...)
 }

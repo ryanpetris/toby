@@ -3,7 +3,6 @@ package tool
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 
 	"go.uber.org/fx"
@@ -161,76 +160,19 @@ func (t *Toolset) Has(name string) bool {
 	return false
 }
 
-func (t *Toolset) Binds() []Bind {
-	var binds []Bind
-	seen := map[Bind]bool{}
-	for _, item := range t.ordered {
-		state := t.toolStates.StateFor(item.Name())
-		for _, bind := range item.Binds() {
-			if bind.State && state != ToolStateHost {
-				continue
-			}
-			if bind.State {
-				bind.HostPath = t.stateBindHostPath(item.Name(), bind)
-			}
-			if seen[bind] {
-				continue
-			}
-			seen[bind] = true
-			binds = append(binds, bind)
-		}
-	}
-	return binds
-}
-
-func (t *Toolset) stateBindHostPath(name string, bind Bind) string {
-	root := t.toolStates.StateRootFor(name)
-	statePath := bind.StatePath
-	if statePath == "" && bind.Target.Base == PathHome {
-		statePath = bind.Target.Path
-	}
-	if root == "" || statePath == "" {
-		return bind.HostPath
-	}
-	return filepath.Join(root, filepath.FromSlash(statePath))
-}
-
 func (t *Toolset) HostStateToolNames() []string {
 	var names []string
 	if t == nil {
 		return names
 	}
 	for _, item := range t.ordered {
-		if item.Name() == DockerToolName || t.toolStates.StateFor(item.Name()) != ToolStateHost || !hasStateBind(item) {
+		stateful, ok := item.(StatefulTool)
+		if item.Name() == DockerToolName || t.toolStates.StateFor(item.Name()) != ToolStateHost || !ok || !stateful.UsesToolState() {
 			continue
 		}
 		names = append(names, item.Name())
 	}
 	return names
-}
-
-func hasStateBind(item Tool) bool {
-	for _, bind := range item.Binds() {
-		if bind.State {
-			return true
-		}
-	}
-	return false
-}
-
-func (t *Toolset) PathEntries() []PathTarget {
-	var entries []PathTarget
-	seen := map[PathTarget]bool{}
-	for _, item := range t.ordered {
-		for _, entry := range item.PathEntries() {
-			if seen[entry] {
-				continue
-			}
-			seen[entry] = true
-			entries = append(entries, entry)
-		}
-	}
-	return entries
 }
 
 func (t *Toolset) HostInit(ctx context.Context, opts *CommandOptions) error {
@@ -244,9 +186,9 @@ func (t *Toolset) HostInit(ctx context.Context, opts *CommandOptions) error {
 
 func (t *Toolset) lifecycleContext(ctx context.Context) context.Context {
 	if t.lifecycle == nil {
-		t.lifecycle = NewLifecycle()
+		t.lifecycle = newLifecycle()
 	}
-	return WithLifecycle(ctx, t.lifecycle)
+	return context.WithValue(ctx, LifecycleKey{}, t.lifecycle)
 }
 
 func (t *Toolset) SandboxContextSetup(ctx context.Context) error {
@@ -276,7 +218,7 @@ func (t *Toolset) RegisterContextFiles(ctx context.Context, opts ContextOptions)
 		if !ok {
 			continue
 		}
-		if err := RegisterContextFilesOnce(ctx, item.Name(), func() error {
+		if err := registerContextFilesOnce(ctx, item.Name(), func() error {
 			return registrar.RegisterContextFiles(ctx, opts)
 		}); err != nil {
 			return err

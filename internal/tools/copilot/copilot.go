@@ -9,6 +9,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -64,14 +65,6 @@ type copilotTool struct {
 
 func (t *copilotTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
 
-func (t *copilotTool) Binds() []tool.Bind {
-	return toolutil.Binds(t.deps(), t.Simple.Binds())
-}
-
-func (t *copilotTool) PathEntries() []tool.PathTarget {
-	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
-}
-
 func (t *copilotTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
 	if err := toolutil.HostInitDependencies(ctx, opts, t.npm); err != nil {
 		return err
@@ -86,7 +79,7 @@ func (t *copilotTool) SandboxContextSetup(ctx context.Context) error {
 	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
 		return err
 	}
-	return tool.SandboxContextSetupOnce(ctx, t.Name()+".context", func() error {
+	return helpers.SandboxContextSetupOnce(ctx, t.Name()+".context", func() error {
 		contextDir := copilotconfig.InstructionsDir(t.Sandbox.Paths().Context)
 		return t.Sandbox.PrependEnvironment(ctx, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", contextDir, ",")
 	})
@@ -100,7 +93,7 @@ func (t *copilotTool) SandboxInit(ctx context.Context) error {
 }
 
 func (t *copilotTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
 			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err

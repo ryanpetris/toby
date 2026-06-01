@@ -33,50 +33,6 @@ func Simple(paths config.Paths, sandbox tool.SandboxService, base tool.Base, hos
 	}
 }
 
-func Binds(deps []tool.Tool, own []tool.Bind) []tool.Bind {
-	var binds []tool.Bind
-	seen := map[tool.Bind]bool{}
-	for _, dep := range deps {
-		for _, bind := range dep.Binds() {
-			if seen[bind] {
-				continue
-			}
-			seen[bind] = true
-			binds = append(binds, bind)
-		}
-	}
-	for _, bind := range own {
-		if seen[bind] {
-			continue
-		}
-		seen[bind] = true
-		binds = append(binds, bind)
-	}
-	return binds
-}
-
-func PathEntries(deps []tool.Tool, own []tool.PathTarget) []tool.PathTarget {
-	var entries []tool.PathTarget
-	seen := map[tool.PathTarget]bool{}
-	for _, dep := range deps {
-		for _, entry := range dep.PathEntries() {
-			if seen[entry] {
-				continue
-			}
-			seen[entry] = true
-			entries = append(entries, entry)
-		}
-	}
-	for _, entry := range own {
-		if seen[entry] {
-			continue
-		}
-		seen[entry] = true
-		entries = append(entries, entry)
-	}
-	return entries
-}
-
 func HostInitDependencies(ctx context.Context, opts *tool.CommandOptions, deps ...tool.Tool) error {
 	for _, dep := range deps {
 		if err := dep.HostInit(ctx, opts); err != nil {

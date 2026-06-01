@@ -16,14 +16,11 @@ import (
 	"petris.dev/toby/internal/tools/tooltest"
 )
 
-func TestPathEntriesAndSandboxContextSetup(t *testing.T) {
+func TestSandboxContextSetupConfiguresEnvironment(t *testing.T) {
 	home := t.TempDir()
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "context"))
 	sandbox.PathsValue.Home = home
 	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
-	if got, want := svc.PathEntries(), []tool.PathTarget{tool.HomeTarget(".local", "share", "toby", "uv", "bin")}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("PathEntries = %#v, want %#v", got, want)
-	}
 	if err := svc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +34,9 @@ func TestPathEntriesAndSandboxContextSetup(t *testing.T) {
 		if sandbox.Env[key] != want {
 			t.Fatalf("%s = %q, want %q", key, sandbox.Env[key], want)
 		}
+	}
+	if got, want := sandbox.Env["PATH"], filepath.Join(shared, "bin"); got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
 	}
 }
 

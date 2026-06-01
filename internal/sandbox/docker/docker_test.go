@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -54,15 +55,6 @@ func cloneTestEnv(env map[string]string) map[string]string {
 		clone[name] = value
 	}
 	return clone
-}
-
-type bindTool struct {
-	tool.Base
-	binds []tool.Bind
-}
-
-func (t bindTool) Binds() []tool.Bind {
-	return append([]tool.Bind(nil), t.binds...)
 }
 
 func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
@@ -282,18 +274,8 @@ func TestDockerPrimeCommandUsesFinalMountsAndWorkdir(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{bindTool{
-		Base:  tool.Base{Metadata: tool.Metadata{Name: "bind"}},
-		binds: []tool.Bind{{HostPath: "/host/opencode", Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular}},
-	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset, err := registry.Build([]string{"bind"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := docker.BuildHomeVolumePrimeCommand(sandbox.RunSpec{Toolset: toolset})
+	binds := []tool.Bind{{HostPath: "/host/opencode", Target: helpers.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular}}
+	cmd := docker.BuildHomeVolumePrimeCommand(sandbox.RunSpec{Binds: binds})
 	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
 	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxRoot)})
 	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(tool.DefaultSandboxWorkspace, "demo"), false)})

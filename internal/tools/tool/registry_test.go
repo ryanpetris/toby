@@ -8,14 +8,14 @@ import (
 
 type fakeTool struct {
 	Base
-	binds []Bind
+	stateful bool
 }
 
 func newFakeTool(name string) fakeTool {
 	return fakeTool{Base: Base{Metadata: Metadata{Name: name}}}
 }
 
-func (t fakeTool) Binds() []Bind { return append([]Bind(nil), t.binds...) }
+func (t fakeTool) UsesToolState() bool { return t.stateful }
 
 type lifecycleTool struct {
 	Base
@@ -33,7 +33,7 @@ func (t *lifecycleTool) Install(ctx context.Context) error {
 			return err
 		}
 	}
-	return InstallOnce(ctx, t.Name(), func() error {
+	return installOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "install:"+t.Name())
 		return nil
 	})
@@ -45,7 +45,7 @@ func (t *lifecycleTool) Upgrade(ctx context.Context) error {
 			return err
 		}
 	}
-	return UpgradeOnce(ctx, t.Name(), func() error {
+	return upgradeOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "upgrade:"+t.Name())
 		return nil
 	})
@@ -67,7 +67,7 @@ func (t *contextLifecycleTool) RegisterContextFiles(ctx context.Context, opts Co
 			return err
 		}
 	}
-	return RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return registerContextFilesOnce(ctx, t.Name(), func() error {
 		*t.calls = append(*t.calls, "context:"+t.Name())
 		return nil
 	})
@@ -135,39 +135,32 @@ func TestToolsetLifecycleStopsOnError(t *testing.T) {
 	}
 }
 
-func TestToolsetBindsFiltersStateBinds(t *testing.T) {
-	home := t.TempDir()
-	stateBind := Bind{HostPath: "/host/opencode", Target: HomeTarget(".config", "opencode"), State: true}
-	dockerState := Bind{HostPath: "/host/docker", Target: HomeTarget(".docker"), State: true}
-	dockerSocket := Bind{HostPath: "/var/run/docker.sock", Target: AbsoluteTarget("/var/run/docker.sock"), Type: BindDev}
-	resolvedStateBind := stateBind
-	resolvedStateBind.HostPath = home + "/.config/opencode"
-	resolvedDockerState := dockerState
-	resolvedDockerState.HostPath = home + "/.docker"
+func TestToolsetHostStateToolNamesFiltersStatefulTools(t *testing.T) {
 	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
-		fakeTool{Base: Base{Metadata: Metadata{Name: OpenCodeToolName}}, binds: []Bind{stateBind}},
-		fakeTool{Base: Base{Metadata: Metadata{Name: DockerToolName}}, binds: []Bind{dockerState, dockerSocket}},
+		fakeTool{Base: Base{Metadata: Metadata{Name: OpenCodeToolName}}, stateful: true},
+		fakeTool{Base: Base{Metadata: Metadata{Name: DockerToolName}}, stateful: true},
+		fakeTool{Base: Base{Metadata: Metadata{Name: NpmToolName}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	toolset, err := registry.Build([]string{OpenCodeToolName, DockerToolName}, "")
+	toolset, err := registry.Build([]string{OpenCodeToolName, DockerToolName, NpmToolName}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStatePrivate, StateRoot: home}, Tools: map[string]ToolStateConfig{DockerToolName: {State: ToolStateHost}}})
-	got := toolset.Binds()
-	want := []Bind{resolvedDockerState, dockerSocket}
+	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost}})
+	got := toolset.HostStateToolNames()
+	want := []string{OpenCodeToolName}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("private/default binds = %#v, want %#v", got, want)
+		t.Fatalf("host state names = %#v, want %#v", got, want)
 	}
 
-	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: home}, Tools: map[string]ToolStateConfig{DockerToolName: {State: ToolStatePrivate}}})
-	got = toolset.Binds()
-	want = []Bind{resolvedStateBind, dockerSocket}
+	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost}, Tools: map[string]ToolStateConfig{OpenCodeToolName: {State: ToolStatePrivate}}})
+	got = toolset.HostStateToolNames()
+	want = nil
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("host/private docker binds = %#v, want %#v", got, want)
+		t.Fatalf("private state names = %#v, want %#v", got, want)
 	}
 }
 

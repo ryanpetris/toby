@@ -5,6 +5,7 @@ import (
 
 	"petris.dev/toby/internal/cli/launchconfig"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
@@ -120,7 +121,7 @@ func unexpectedLaunchArgument(arg string) error {
 }
 
 func parseToolStateFlag(value string) (tool.ToolState, error) {
-	state, err := tool.ParseToolState(value)
+	state, err := helpers.ParseToolState(value)
 	if err != nil {
 		return "", exitcode.New(2, "--tool-state: %v", err)
 	}

@@ -420,6 +420,7 @@ func (s *configFakeSandbox) PrependEnvironment(context.Context, string, string, 
 func (s *configFakeSandbox) AppendEnvironment(context.Context, string, string, string) error {
 	return nil
 }
+func (s *configFakeSandbox) AddBind(tool.Bind) error { return nil }
 func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
 	rel := strings.TrimPrefix(path, s.contextDir+string(os.PathSeparator))
 	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})

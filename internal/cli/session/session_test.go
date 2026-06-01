@@ -276,11 +276,7 @@ func (t statefulTestTool) LaunchHelp() string { return "Launch " + t.name }
 
 func (t statefulTestTool) ContextGroups() []string { return nil }
 
-func (t statefulTestTool) Binds() []tool.Bind {
-	return []tool.Bind{{HostPath: "/host/" + t.name, Target: tool.HomeTarget("." + t.name), State: true}}
-}
-
-func (t statefulTestTool) PathEntries() []tool.PathTarget { return nil }
+func (t statefulTestTool) UsesToolState() bool { return true }
 
 func (t statefulTestTool) ConfigureCommand(*cobra.Command) {}
 

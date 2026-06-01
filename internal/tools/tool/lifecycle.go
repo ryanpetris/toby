@@ -11,69 +11,73 @@ const (
 	lifecycleUpgrade              = "upgrade"
 )
 
-type lifecycleKey struct{}
+type LifecycleKey struct{}
 
 type Lifecycle struct {
 	done map[string]bool
 }
 
-func NewLifecycle() *Lifecycle {
-	return &Lifecycle{done: map[string]bool{}}
+func newLifecycle() *Lifecycle {
+	return &Lifecycle{}
 }
 
-func WithLifecycle(ctx context.Context, lifecycle *Lifecycle) context.Context {
-	if lifecycle == nil {
-		return ctx
+func (l *Lifecycle) RunOnce(phase, name string, fn func() error) error {
+	if l == nil {
+		return fn()
 	}
-	return context.WithValue(ctx, lifecycleKey{}, lifecycle)
+	if l.done == nil {
+		l.done = map[string]bool{}
+	}
+	return once(l.done, phase, name, fn)
 }
 
-func HostInitOnce(opts *CommandOptions, name string, fn func() error) error {
+func (o *CommandOptions) RunOnce(phase, name string, fn func() error) error {
+	if o == nil {
+		return fn()
+	}
+	if o.lifecycle == nil {
+		o.lifecycle = map[string]bool{}
+	}
+	return once(o.lifecycle, phase, name, fn)
+}
+
+func hostInitOnce(opts *CommandOptions, name string, fn func() error) error {
 	return commandOnce(opts, lifecycleHostInit, name, fn)
 }
 
-func SandboxContextSetupOnce(ctx context.Context, name string, fn func() error) error {
+func sandboxContextSetupOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleSandboxContextSetup, name, fn)
 }
 
-func RegisterContextFilesOnce(ctx context.Context, name string, fn func() error) error {
+func registerContextFilesOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleRegisterContextFiles, name, fn)
 }
 
-func SandboxInitOnce(ctx context.Context, name string, fn func() error) error {
+func sandboxInitOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleSandboxInit, name, fn)
 }
 
-func InstallOnce(ctx context.Context, name string, fn func() error) error {
+func installOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleInstall, name, fn)
 }
 
-func UpgradeOnce(ctx context.Context, name string, fn func() error) error {
+func upgradeOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleUpgrade, name, fn)
 }
 
 func commandOnce(opts *CommandOptions, phase, name string, fn func() error) error {
-	if opts == nil {
-		return fn()
-	}
-	if opts.lifecycle == nil {
-		opts.lifecycle = map[string]bool{}
-	}
-	return once(opts.lifecycle, phase, name, fn)
+	return opts.RunOnce(phase, name, fn)
 }
 
 func runOnce(ctx context.Context, phase, name string, fn func() error) error {
 	if ctx == nil {
 		return fn()
 	}
-	lifecycle, _ := ctx.Value(lifecycleKey{}).(*Lifecycle)
+	lifecycle, _ := ctx.Value(LifecycleKey{}).(*Lifecycle)
 	if lifecycle == nil {
 		return fn()
 	}
-	if lifecycle.done == nil {
-		lifecycle.done = map[string]bool{}
-	}
-	return once(lifecycle.done, phase, name, fn)
+	return lifecycle.RunOnce(phase, name, fn)
 }
 
 func once(done map[string]bool, phase, name string, fn func() error) error {

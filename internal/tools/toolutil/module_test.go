@@ -12,47 +12,13 @@ import (
 
 type recordingTool struct {
 	tool.Base
-	binds   []tool.Bind
-	entries []tool.PathTarget
-	calls   *[]string
-	err     error
-}
-
-func (t recordingTool) Binds() []tool.Bind { return append([]tool.Bind(nil), t.binds...) }
-
-func (t recordingTool) PathEntries() []tool.PathTarget {
-	return append([]tool.PathTarget(nil), t.entries...)
+	calls *[]string
+	err   error
 }
 
 func (t recordingTool) Install(context.Context) error {
 	*t.calls = append(*t.calls, "install:"+t.Name())
 	return t.err
-}
-
-func TestBindsDeduplicatesDependenciesBeforeOwnBinds(t *testing.T) {
-	shared := tool.Bind{HostPath: "/host/shared", Target: tool.HomeTarget("shared")}
-	depBind := tool.Bind{HostPath: "/host/dep", Target: tool.HomeTarget("dep")}
-	ownBind := tool.Bind{HostPath: "/host/own", Target: tool.HomeTarget("own")}
-	dep := recordingTool{binds: []tool.Bind{shared, depBind}}
-
-	got := Binds([]tool.Tool{dep}, []tool.Bind{shared, ownBind})
-	want := []tool.Bind{shared, depBind, ownBind}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Binds = %#v, want %#v", got, want)
-	}
-}
-
-func TestPathEntriesDeduplicatesDependenciesBeforeOwnEntries(t *testing.T) {
-	shared := tool.HomeTarget(".local", "bin")
-	depEntry := tool.HomeTarget("dep", "bin")
-	ownEntry := tool.HomeTarget("own", "bin")
-	dep := recordingTool{entries: []tool.PathTarget{shared, depEntry}}
-
-	got := PathEntries([]tool.Tool{dep}, []tool.PathTarget{shared, ownEntry})
-	want := []tool.PathTarget{shared, depEntry, ownEntry}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("PathEntries = %#v, want %#v", got, want)
-	}
 }
 
 func TestInstallDependenciesStopsOnFirstError(t *testing.T) {

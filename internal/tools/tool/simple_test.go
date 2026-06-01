@@ -8,33 +8,46 @@ import (
 	"testing"
 )
 
-func TestSimpleBindsDefaultsAndSandboxSubpathFallback(t *testing.T) {
-	simple := &Simple{RootDir: "/root", HostSubpath: []string{"state", "tool"}}
-	binds := simple.Binds()
+func TestSimpleHostInitRegistersStateBind(t *testing.T) {
+	root := t.TempDir()
+	stateRoot := filepath.Join(root, "state-root")
+	sandbox := &fakeSandboxService{}
+	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, RootDir: filepath.Join(root, "private"), HostSubpath: []string{"state", "tool"}}
+	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+		t.Fatal(err)
+	}
 	want := []Bind{{
-		HostPath: filepath.Join("/root", "state", "tool"),
-		Target:   HomeTarget("state", "tool"),
+		HostPath: filepath.Join(stateRoot, "state", "tool"),
+		Target:   homeTarget("state", "tool"),
 		Type:     BindRegular,
 		State:    true,
 	}}
-	if !reflect.DeepEqual(binds, want) {
-		t.Fatalf("binds = %#v, want %#v", binds, want)
+	if !reflect.DeepEqual(sandbox.binds, want) {
+		t.Fatalf("binds = %#v, want %#v", sandbox.binds, want)
 	}
 
-	simple = &Simple{RootDir: "/root", HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, BindType: BindReadOnly}
-	binds = simple.Binds()
-	if len(binds) != 1 || binds[0].Target != HomeTarget("sandbox") || binds[0].Type != BindReadOnly {
-		t.Fatalf("custom binds = %#v", binds)
+	sandbox = &fakeSandboxService{}
+	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, RootDir: filepath.Join(root, "private"), HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, BindType: BindReadOnly}
+	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.binds) != 1 || sandbox.binds[0].HostPath != filepath.Join(stateRoot, "sandbox") || sandbox.binds[0].Target != homeTarget("sandbox") || sandbox.binds[0].Type != BindReadOnly {
+		t.Fatalf("custom binds = %#v", sandbox.binds)
 	}
 
-	if binds := (&Simple{}).Binds(); binds != nil {
-		t.Fatalf("empty binds = %#v", binds)
+	sandbox = &fakeSandboxService{}
+	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox}
+	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.binds) != 0 || simple.UsesToolState() {
+		t.Fatalf("empty binds = %#v, uses state = %v", sandbox.binds, simple.UsesToolState())
 	}
 }
 
 func TestSimpleLaunchUsesDefaultAndOverrideCommands(t *testing.T) {
 	var calls [][]string
-	sandbox := fakeSandboxService{exec: func(_ context.Context, argv []string, _ ExecOptions) (int, error) {
+	sandbox := &fakeSandboxService{exec: func(_ context.Context, argv []string, _ ExecOptions) (int, error) {
 		calls = append(calls, append([]string(nil), argv...))
 		return 0, nil
 	}}
@@ -53,14 +66,15 @@ func TestSimpleLaunchUsesDefaultAndOverrideCommands(t *testing.T) {
 
 func TestSimpleLaunchReturnsExecError(t *testing.T) {
 	sentinel := errors.New("boom")
-	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: fakeSandboxService{exec: func(context.Context, []string, ExecOptions) (int, error) { return 0, sentinel }}}
+	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: &fakeSandboxService{exec: func(context.Context, []string, ExecOptions) (int, error) { return 0, sentinel }}}
 	if err := simple.Launch(context.Background(), nil); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}
 }
 
 type fakeSandboxService struct {
-	exec func(context.Context, []string, ExecOptions) (int, error)
+	exec  func(context.Context, []string, ExecOptions) (int, error)
+	binds []Bind
 }
 
 func (s fakeSandboxService) Paths() SandboxPaths                                  { return SandboxPaths{} }
@@ -72,6 +86,10 @@ func (s fakeSandboxService) PrependEnvironment(context.Context, string, string, 
 	return nil
 }
 func (s fakeSandboxService) AppendEnvironment(context.Context, string, string, string) error {
+	return nil
+}
+func (s *fakeSandboxService) AddBind(bind Bind) error {
+	s.binds = append(s.binds, bind)
 	return nil
 }
 func (s fakeSandboxService) AddFile(context.Context, string, []byte, uint32) error { return nil }

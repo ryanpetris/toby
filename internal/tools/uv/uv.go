@@ -59,12 +59,8 @@ type uvTool struct {
 	contextFiles *contextfiles.Service
 }
 
-func (t *uvTool) PathEntries() []tool.PathTarget {
-	return []tool.PathTarget{tool.HomeTarget(".local", "share", "toby", "uv", "bin")}
-}
-
 func (t *uvTool) SandboxContextSetup(ctx context.Context) error {
-	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
 		shared := filepath.Join(t.sandbox.Paths().Home, ".local", "share", "toby", "uv")
 		for key, value := range map[string]string{
 			"UV_TOOL_DIR":     filepath.Join(shared, "tools"),
@@ -75,12 +71,12 @@ func (t *uvTool) SandboxContextSetup(ctx context.Context) error {
 				return err
 			}
 		}
-		return nil
+		return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(shared, "bin"), ":")
 	})
 }
 
 func (t *uvTool) SandboxInit(ctx context.Context) error {
-	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxInitOnce(ctx, t.Name(), func() error {
 		if err := t.Install(ctx); err != nil {
 			return err
 		}
@@ -95,7 +91,7 @@ func (t *uvTool) SandboxInit(ctx context.Context) error {
 }
 
 func (t *uvTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		data, err := uvFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
@@ -114,9 +110,9 @@ func (t *uvTool) Upgrade(ctx context.Context) error {
 }
 
 func (t *uvTool) install(ctx context.Context, force bool) error {
-	once := tool.InstallOnce
+	once := helpers.InstallOnce
 	if force {
-		once = tool.UpgradeOnce
+		once = helpers.UpgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		if !force {

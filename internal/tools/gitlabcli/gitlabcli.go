@@ -58,13 +58,13 @@ type gitlabCLITool struct {
 }
 
 func (t *gitlabCLITool) SandboxInit(ctx context.Context) error {
-	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxInitOnce(ctx, t.Name(), func() error {
 		return t.Install(ctx)
 	})
 }
 
 func (t *gitlabCLITool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		data, err := gitlabCLIFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
@@ -83,9 +83,9 @@ func (t *gitlabCLITool) Upgrade(ctx context.Context) error {
 }
 
 func (t *gitlabCLITool) install(ctx context.Context, force bool) error {
-	once := tool.InstallOnce
+	once := helpers.InstallOnce
 	if force {
-		once = tool.UpgradeOnce
+		once = helpers.UpgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		if !force {

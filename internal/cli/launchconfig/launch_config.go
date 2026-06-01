@@ -13,6 +13,7 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -477,7 +478,7 @@ func parseLaunchSandboxTool(name string, raw map[string]any, dir, home string) (
 			if !ok {
 				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state must be a string", name)
 			}
-			parsed, err := tool.ParseToolState(rawState)
+			parsed, err := helpers.ParseToolState(rawState)
 			if err != nil {
 				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state: %w", name, err)
 			}
@@ -487,7 +488,7 @@ func parseLaunchSandboxTool(name string, raw map[string]any, dir, home string) (
 			if !ok {
 				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot must be a string", name)
 			}
-			root, err := tool.ResolveStateRoot(rawRoot, home, dir)
+			root, err := helpers.ResolveStateRoot(rawRoot, home, dir)
 			if err != nil {
 				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot: %w", name, err)
 			}

@@ -21,6 +21,7 @@ import (
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/binary"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -48,6 +49,10 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 		return err
 	}
 	defer sbx.Cleanup()
+	if params.SandboxService == nil {
+		return fmt.Errorf("sandbox service is not configured")
+	}
+	params.SandboxService.Prepare(sbx)
 
 	toolset, err := params.Registry.Build(requestedTools, primary)
 	if err != nil {
@@ -61,19 +66,15 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
-	env := tool.EnvironmentFromList(os.Environ())
-	params.SandboxService.Prepare(sbx)
+	env := helpers.EnvironmentFromList(os.Environ())
 	params.ContextFiles.SetSandbox(params.SandboxService)
 	params.ContextFiles.Reset()
-	sbx.SetupEnvironment(env, toolset)
+	sbx.SetupEnvironment(env)
 
 	exits := sandbox.NewCommandExits()
 	ready := make(chan sandboxManagerReady, 1)
 	if params.HostManager == nil {
 		return fmt.Errorf("host manager is not configured")
-	}
-	if params.SandboxService == nil {
-		return fmt.Errorf("sandbox service is not configured")
 	}
 	manager := params.HostManager
 	manager.RepositoryResolver = params.SandboxService
@@ -111,8 +112,9 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	}
 	params.SandboxService.SetTobyMCPURL(mcpURL)
 
+	binds := params.SandboxService.StartBinds()
 	go func() {
-		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Toolset: toolset, Env: env})
+		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds})
 		sandboxManagerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
 	}()
 

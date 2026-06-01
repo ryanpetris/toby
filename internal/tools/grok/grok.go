@@ -65,12 +65,8 @@ type grokTool struct {
 	contextFiles *contextfiles.Service
 }
 
-func (t *grokTool) PathEntries() []tool.PathTarget {
-	return []tool.PathTarget{tool.HomeTarget(".grok", "bin")}
-}
-
 func (t *grokTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		data, err := grokFiles.ReadFile("install.sh")
 		if err != nil {
 			return err
@@ -83,11 +79,20 @@ func (t *grokTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptio
 	})
 }
 
+func (t *grokTool) SandboxContextSetup(ctx context.Context) error {
+	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
+		return err
+	}
+	return helpers.SandboxContextSetupOnce(ctx, t.Name()+".path", func() error {
+		return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(t.Sandbox.Paths().Home, ".grok", "bin"), ":")
+	})
+}
+
 func (t *grokTool) SandboxInit(ctx context.Context) error {
 	if err := t.Simple.SandboxInit(ctx); err != nil {
 		return err
 	}
-	return tool.SandboxInitOnce(ctx, t.Name()+".managed-config", func() error {
+	return helpers.SandboxInitOnce(ctx, t.Name()+".managed-config", func() error {
 		contextDir := t.Sandbox.Paths().Context
 		home := t.Sandbox.Paths().Home
 		grokHome := filepath.Join(home, ".grok")
@@ -107,9 +112,9 @@ func (t *grokTool) Upgrade(ctx context.Context) error {
 }
 
 func (t *grokTool) install(ctx context.Context, force bool) error {
-	once := tool.InstallOnce
+	once := helpers.InstallOnce
 	if force {
-		once = tool.UpgradeOnce
+		once = helpers.UpgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		if !force {

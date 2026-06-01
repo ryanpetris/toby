@@ -2,10 +2,9 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-
-	"petris.dev/toby/internal/tools/helpers"
 )
 
 type Simple struct {
@@ -25,18 +24,26 @@ func (t *Simple) HostInit(_ context.Context, opts *CommandOptions) error {
 	if opts.ToolStateFor(t.Name()) != ToolStateHost {
 		return nil
 	}
-	return HostInitOnce(opts, t.Name(), func() error {
-		if len(t.HostSubpath) == 0 {
+	return hostInitOnce(opts, t.Name(), func() error {
+		bind, ok := t.bind()
+		if !ok {
 			return nil
 		}
-		root := opts.ToolStateRootFor(t.Name())
-		return os.MkdirAll(filepath.Join(append([]string{root}, t.HostSubpath...)...), 0o755)
+		bind.HostPath = resolveStateBindHostPath(opts.ToolStateRootFor(t.Name()), bind)
+		if err := os.MkdirAll(bind.HostPath, 0o755); err != nil {
+			return err
+		}
+		return t.Sandbox.AddBind(bind)
 	})
 }
 
-func (t *Simple) Binds() []Bind {
+func (t *Simple) UsesToolState() bool {
+	return len(t.HostSubpath) > 0
+}
+
+func (t *Simple) bind() (Bind, bool) {
 	if len(t.HostSubpath) == 0 {
-		return nil
+		return Bind{}, false
 	}
 	sandboxParts := t.SandboxSubpath
 	if len(sandboxParts) == 0 {
@@ -46,16 +53,16 @@ func (t *Simple) Binds() []Bind {
 	if bindType == "" {
 		bindType = BindRegular
 	}
-	return []Bind{{
+	return Bind{
 		HostPath: filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...),
-		Target:   HomeTarget(sandboxParts...),
+		Target:   homeTarget(sandboxParts...),
 		Type:     bindType,
 		State:    true,
-	}}
+	}, true
 }
 
 func (t *Simple) SandboxContextSetup(ctx context.Context) error {
-	return SandboxContextSetupOnce(ctx, t.Name(), func() error {
+	return sandboxContextSetupOnce(ctx, t.Name(), func() error {
 		for key, value := range t.SandboxEnv {
 			if err := t.Sandbox.SetEnvironment(ctx, key, value); err != nil {
 				return err
@@ -74,9 +81,9 @@ func (t *Simple) Upgrade(ctx context.Context) error {
 }
 
 func (t *Simple) install(ctx context.Context, force bool) error {
-	once := InstallOnce
+	once := installOnce
 	if force {
-		once = UpgradeOnce
+		once = upgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		return t.runInstall(ctx, force)
@@ -92,7 +99,7 @@ func (t *Simple) runInstall(ctx context.Context, force bool) error {
 		check = t.Name()
 	}
 	if !force {
-		exists, err := helpers.CommandExists(ctx, t.Sandbox.Exec, ExecOptions{HideOutput: true}, check)
+		exists, err := commandExists(ctx, t.Sandbox.Exec, ExecOptions{HideOutput: true}, check)
 		if err != nil {
 			return err
 		}
@@ -102,6 +109,18 @@ func (t *Simple) runInstall(ctx context.Context, force bool) error {
 	}
 	_, err := t.Sandbox.Exec(ctx, t.InstallCommand, ExecOptions{})
 	return err
+}
+
+func commandExists(ctx context.Context, exec func(context.Context, []string, ExecOptions) (int, error), opts ExecOptions, command string) (bool, error) {
+	rc, err := exec(ctx, []string{"which", command}, opts)
+	if err != nil {
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) && err.Error() == "" {
+			return false, nil
+		}
+		return false, err
+	}
+	return rc == 0, nil
 }
 
 func (t *Simple) Launch(ctx context.Context, extra []string) error {

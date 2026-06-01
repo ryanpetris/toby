@@ -68,10 +68,6 @@ type openCodeTool struct {
 
 func (t *openCodeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
 
-func (t *openCodeTool) PathEntries() []tool.PathTarget {
-	return toolutil.PathEntries(t.deps(), nil)
-}
-
 func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
 	if err := toolutil.HostInitDependencies(ctx, opts, t.npm); err != nil {
 		return err
@@ -79,9 +75,14 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 	if opts.ToolStateFor(t.Name()) != tool.ToolStateHost {
 		return nil
 	}
-	return tool.HostInitOnce(opts, t.Name(), func() error {
-		for _, dir := range t.stateDirs(opts.ToolStateRootFor(t.Name())) {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+	return helpers.HostInitOnce(opts, t.Name(), func() error {
+		root := opts.ToolStateRootFor(t.Name())
+		for _, bind := range t.stateBinds() {
+			bind.HostPath = helpers.ResolveStateBindHostPath(root, bind)
+			if err := os.MkdirAll(bind.HostPath, 0o755); err != nil {
+				return err
+			}
+			if err := t.sandbox.AddBind(bind); err != nil {
 				return err
 			}
 		}
@@ -89,18 +90,12 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 	})
 }
 
-func (t *openCodeTool) Binds() []tool.Bind {
-	own := []tool.Bind{
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), Target: tool.HomeTarget(".config", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".config", "opencode"))},
-		{HostPath: filepath.Join(t.paths.SandboxRoot, ".local", "share", "opencode"), Target: tool.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".local", "share", "opencode"))},
-	}
-	return toolutil.Binds(t.deps(), own)
-}
+func (t *openCodeTool) UsesToolState() bool { return true }
 
-func (t *openCodeTool) stateDirs(root string) []string {
-	return []string{
-		filepath.Join(root, ".config", "opencode"),
-		filepath.Join(root, ".local", "share", "opencode"),
+func (t *openCodeTool) stateBinds() []tool.Bind {
+	return []tool.Bind{
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".config", "opencode"), Target: helpers.HomeTarget(".config", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".config", "opencode"))},
+		{HostPath: filepath.Join(t.paths.SandboxRoot, ".local", "share", "opencode"), Target: helpers.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular, State: true, StatePath: filepath.ToSlash(filepath.Join(".local", "share", "opencode"))},
 	}
 }
 
@@ -108,7 +103,7 @@ func (t *openCodeTool) SandboxContextSetup(ctx context.Context) error {
 	if err := toolutil.SandboxContextSetupDependencies(ctx, t.npm); err != nil {
 		return err
 	}
-	return tool.SandboxContextSetupOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
 		return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", filepath.Join(t.sandbox.Paths().Context, "opencode"))
 	})
 }
@@ -118,7 +113,7 @@ func (t *openCodeTool) SandboxInit(ctx context.Context) error {
 }
 
 func (t *openCodeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if t.renderer == nil {
 			return fmt.Errorf("opencode renderer is not configured")
 		}
@@ -154,9 +149,9 @@ func (t *openCodeTool) Upgrade(ctx context.Context) error {
 }
 
 func (t *openCodeTool) install(ctx context.Context, force bool) error {
-	once := tool.InstallOnce
+	once := helpers.InstallOnce
 	if force {
-		once = tool.UpgradeOnce
+		once = helpers.UpgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		if !force {

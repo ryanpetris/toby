@@ -4,18 +4,6 @@ import "strings"
 
 type Environment map[string]string
 
-func EnvironmentFromList(values []string) Environment {
-	env := make(Environment, len(values))
-	for _, item := range values {
-		name, value, ok := strings.Cut(item, "=")
-		if !ok {
-			continue
-		}
-		env[name] = value
-	}
-	return env
-}
-
 func (e Environment) List() []string {
 	values := make([]string, 0, len(e))
 	for name, value := range e {

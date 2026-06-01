@@ -7,23 +7,28 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
 )
 
-func TestProvideMetadataAndBinds(t *testing.T) {
+func TestProvideMetadataAndHostInitBinds(t *testing.T) {
 	home := t.TempDir()
-	svc := Provide(config.Paths{Home: home}, tooltest.NewSandbox("/toby/context")).Service
+	sandbox := tooltest.NewSandbox("/toby/context")
+	svc := Provide(config.Paths{Home: home}, sandbox).Service
 
 	if svc.Name() != tool.DockerToolName || svc.CommandName() != tool.DockerToolName || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
-	want := []tool.Bind{
-		{HostPath: filepath.Join(home, ".docker"), Target: tool.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true},
-		{HostPath: "/var/run/docker.sock", Target: tool.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true},
+	if err := svc.HostInit(context.Background(), &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Default: tool.ToolStateConfig{StateRoot: home}}}); err != nil {
+		t.Fatal(err)
 	}
-	if got := svc.Binds(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Binds = %#v, want %#v", got, want)
+	want := []tool.Bind{
+		{HostPath: filepath.Join(home, ".docker"), Target: helpers.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true},
+		{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true},
+	}
+	if !reflect.DeepEqual(sandbox.Binds, want) {
+		t.Fatalf("Binds = %#v, want %#v", sandbox.Binds, want)
 	}
 }
 

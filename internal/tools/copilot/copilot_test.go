@@ -16,10 +16,6 @@ import (
 
 type fakeNPM struct{ tool.Base }
 
-func (fakeNPM) PathEntries() []tool.PathTarget {
-	return []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}
-}
-
 func TestSandboxContextSetupAddsCustomInstructionsDir(t *testing.T) {
 	home := t.TempDir()
 	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"))

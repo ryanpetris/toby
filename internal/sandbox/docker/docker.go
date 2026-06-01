@@ -18,6 +18,7 @@ import (
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
@@ -75,7 +76,7 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	if image == "" && !spec.DockerBuild.IsSet() {
 		image = defaultDockerImage
 	}
-	sandboxPaths := tool.DefaultSandboxPaths()
+	sandboxPaths := helpers.DefaultSandboxPaths()
 	if spec.DockerHome != "" {
 		sandboxPaths.Home = expandSandboxHome(spec.DockerHome, sandboxPaths.Home)
 	}
@@ -246,7 +247,7 @@ func (s *instance) BuildHomeVolumePrimeCommand(spec sandbox.RunSpec) []string {
 		"--user", "0:0",
 		"--entrypoint", "/bin/sh",
 	}
-	for _, mount := range s.mounts(spec.Toolset) {
+	for _, mount := range s.mounts(spec.Binds) {
 		args = append(args, "--mount", mount)
 	}
 	args = append(args, "--workdir", s.ChdirDir(), s.image, "-c", "exit")
@@ -283,7 +284,7 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 			args = append(args, "--group-add", strconv.Itoa(group))
 		}
 	}
-	for _, mount := range s.mounts(spec.Toolset) {
+	for _, mount := range s.mounts(spec.Binds) {
 		args = append(args, "--mount", mount)
 	}
 	for _, item := range dockerEnv(spec.Env) {
@@ -294,24 +295,22 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	return args, nil
 }
 
-func (s *instance) mounts(toolset *tool.Toolset) []string {
+func (s *instance) mounts(binds []tool.Bind) []string {
 	mounts := []string{
 		dockerVolume(s.homeVolume, s.TobyRuntimeDir()),
 	}
 	for _, project := range s.ProjectMounts() {
 		mounts = append(mounts, dockerBind(project.HostPath, project.SandboxPath, false))
 	}
-	if toolset != nil {
-		for _, bind := range toolset.Binds() {
-			if bind.Optional {
-				if _, err := os.Stat(bind.HostPath); err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						continue
-					}
+	for _, bind := range binds {
+		if bind.Optional {
+			if _, err := os.Stat(bind.HostPath); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
 				}
 			}
-			mounts = append(mounts, dockerBind(bind.HostPath, tool.ResolvePath(bind.Target, s), bind.Type == tool.BindReadOnly))
 		}
+		mounts = append(mounts, dockerBind(bind.HostPath, helpers.ResolvePath(bind.Target, s), bind.Type == tool.BindReadOnly))
 	}
 	return mounts
 }

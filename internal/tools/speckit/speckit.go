@@ -56,14 +56,6 @@ type speckitTool struct {
 
 func (t *speckitTool) deps() []tool.Tool { return []tool.Tool{t.uv} }
 
-func (t *speckitTool) Binds() []tool.Bind {
-	return toolutil.Binds(t.deps(), nil)
-}
-
-func (t *speckitTool) PathEntries() []tool.PathTarget {
-	return toolutil.PathEntries(t.deps(), nil)
-}
-
 func (t *speckitTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
 	return toolutil.HostInitDependencies(ctx, opts, t.uv)
 }
@@ -73,7 +65,7 @@ func (t *speckitTool) SandboxContextSetup(ctx context.Context) error {
 }
 
 func (t *speckitTool) SandboxInit(ctx context.Context) error {
-	return tool.SandboxInitOnce(ctx, t.Name(), func() error {
+	return helpers.SandboxInitOnce(ctx, t.Name(), func() error {
 		if err := toolutil.SandboxInitDependencies(ctx, t.uv); err != nil {
 			return err
 		}
@@ -96,9 +88,9 @@ func (t *speckitTool) Upgrade(ctx context.Context) error {
 }
 
 func (t *speckitTool) install(ctx context.Context, force bool) error {
-	once := tool.InstallOnce
+	once := helpers.InstallOnce
 	if force {
-		once = tool.UpgradeOnce
+		once = helpers.UpgradeOnce
 	}
 	return once(ctx, t.Name(), func() error {
 		if !force {

@@ -12,6 +12,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
@@ -176,10 +177,8 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	for _, project := range s.ProjectMounts() {
 		args = append(args, "--bind", project.HostPath, project.SandboxPath)
 	}
-	if spec.Toolset != nil {
-		for _, bind := range spec.Toolset.Binds() {
-			args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, tool.ResolvePath(bind.Target, s))
-		}
+	for _, bind := range spec.Binds {
+		args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, helpers.ResolvePath(bind.Target, s))
 	}
 	args = append(args, "--chdir", s.ChdirDir())
 	args = append(args, spec.Argv...)

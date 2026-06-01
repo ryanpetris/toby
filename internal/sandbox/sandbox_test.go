@@ -10,6 +10,7 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -26,7 +27,7 @@ func (e testEnvironment) Priority() int { return e.priority }
 func (e testEnvironment) Available() error { return nil }
 
 func (e testEnvironment) NewInstance(spec Spec) (Instance, error) {
-	sandboxPaths := tool.DefaultSandboxPaths()
+	sandboxPaths := helpers.DefaultSandboxPaths()
 	base, err := NewBaseInstance(BaseInstanceParams{
 		Paths:        e.paths,
 		Label:        spec.Label,
@@ -224,7 +225,7 @@ func TestSetupEnvironmentPrependsTobyBinAndSetsRuntimePaths(t *testing.T) {
 	sandboxPaths := tool.SandboxPaths{Root: runtimeRoot, Home: paths.Home, Context: filepath.Join(runtimeRoot, "context"), Bin: filepath.Join(runtimeRoot, "bin"), Workspace: paths.ProjectRoot}
 	sbx := &BaseInstance{paths: paths, label: "demo", sandboxPaths: sandboxPaths, homeDir: paths.Home, projectsDir: paths.ProjectRoot, runtimeDir: runtimeRoot}
 	env := tool.Environment{"PATH": "/usr/bin", "SHELL": "/usr/bin/zsh", "XDG_RUNTIME_DIR": "/keep", "XDG_PROJECTS_DIR": "/host/projects"}
-	sbx.SetupEnvironment(env, &tool.Toolset{})
+	sbx.SetupEnvironment(env)
 	pathEntries := strings.Split(env["PATH"], ":")
 	want := []string{sandboxPaths.Bin, filepath.Join(paths.Home, ".local", "bin"), "/usr/bin"}
 	if !slices.Equal(pathEntries, want) {
@@ -312,7 +313,7 @@ func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
 	instance := &BaseInstance{
 		paths:              paths,
 		label:              "demo",
-		sandboxPaths:       tool.DefaultSandboxPaths(),
+		sandboxPaths:       helpers.DefaultSandboxPaths(),
 		homeDir:            tool.DefaultSandboxHome,
 		projectsDir:        tool.DefaultSandboxWorkspace,
 		runtimeDir:         tool.DefaultSandboxRoot,

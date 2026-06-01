@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
 	grokconfig "petris.dev/toby/internal/tools/grok/config"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
 )
@@ -18,7 +19,8 @@ import (
 func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {
 	home := t.TempDir()
 	stateRoot := filepath.Join(home, "state-root")
-	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}}).Service
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox}).Service
 	opts := &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Tools: map[string]tool.ToolStateConfig{tool.GrokToolName: {State: tool.ToolStateHost, StateRoot: stateRoot}}}}
 	if err := gr.HostInit(context.Background(), opts); err != nil {
 		t.Fatal(err)
@@ -26,18 +28,8 @@ func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(stateRoot, ".grok")); err != nil || !info.IsDir() {
 		t.Fatalf("host state dir not created: info=%v err=%v", info, err)
 	}
-	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{gr}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset, err := registry.Build([]string{tool.GrokToolName}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset.SetToolStates(opts.ToolStates)
-	binds := toolset.Binds()
-	if len(binds) != 1 || binds[0].HostPath != filepath.Join(stateRoot, ".grok") || binds[0].Target != tool.HomeTarget(".grok") {
-		t.Fatalf("binds = %#v", binds)
+	if len(sandbox.Binds) != 1 || sandbox.Binds[0].HostPath != filepath.Join(stateRoot, ".grok") || sandbox.Binds[0].Target != helpers.HomeTarget(".grok") {
+		t.Fatalf("binds = %#v", sandbox.Binds)
 	}
 }
 

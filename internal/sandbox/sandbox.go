@@ -52,8 +52,8 @@ type Project struct {
 
 type RunSpec struct {
 	Argv        []string
-	Toolset     *tool.Toolset
 	Env         tool.Environment
+	Binds       []tool.Bind
 	ExecOptions tool.ExecOptions
 }
 
@@ -64,7 +64,7 @@ type Instance interface {
 	TobyBinDir() string
 	TobyBinaryPath() string
 	TobyGitAgentsPath() string
-	SetupEnvironment(tool.Environment, *tool.Toolset)
+	SetupEnvironment(tool.Environment)
 	HostControlEndpoint() control.Endpoint
 	SetupControlEndpoint(tool.Environment, control.Endpoint)
 	Run(context.Context, RunSpec) (int, error)
@@ -494,7 +494,7 @@ func (s *BaseInstance) Cleanup() error {
 	return nil
 }
 
-func (s *BaseInstance) SetupEnvironment(env tool.Environment, toolset *tool.Toolset) {
+func (s *BaseInstance) SetupEnvironment(env tool.Environment) {
 	env["HOME"] = s.HomeDir()
 	env["XDG_PROJECTS_DIR"] = s.Projects()
 	env["GRML_CHROOT"] = "1"
@@ -509,12 +509,6 @@ func (s *BaseInstance) SetupEnvironment(env tool.Environment, toolset *tool.Tool
 	env["BASH_ENV"] = filepath.Join(s.HomeDir(), ".env")
 	delete(env, "TOBY_MOUNTABLE_PROJECTS")
 	env.Prepend("PATH", filepath.Join(s.HomeDir(), ".local", "bin"))
-	if toolset != nil {
-		entries := toolset.PathEntries()
-		for i := len(entries) - 1; i >= 0; i-- {
-			env.Prepend("PATH", tool.ResolvePath(entries[i], s))
-		}
-	}
 	env.Prepend("PATH", s.TobyBinDir())
 }
 

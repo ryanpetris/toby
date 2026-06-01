@@ -31,10 +31,6 @@ type fakeNPM struct {
 	sandbox tool.SandboxService
 }
 
-func (fakeNPM) PathEntries() []tool.PathTarget {
-	return []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}
-}
-
 func (t fakeNPM) SandboxContextSetup(ctx context.Context) error {
 	if t.sandbox == nil {
 		return nil
@@ -91,9 +87,6 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 		ContextFiles: contextFiles,
 	}).Service
 
-	if got, want := oc.PathEntries(), []tool.PathTarget{tool.AbsoluteTarget("/npm/bin")}; len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("PathEntries = %#v, want %#v", got, want)
-	}
 	if err := oc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +102,10 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 func TestOpenCodePrivateStateDoesNotBindHostState(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
 	called := false
 	npm := hostInitNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}, called: &called, sandboxRoot: paths.SandboxRoot}
-	oc := Provide(Params{Paths: paths, NPM: npm}).Service
+	oc := Provide(Params{Paths: paths, NPM: npm, Sandbox: sandbox}).Service
 	if err := oc.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +122,8 @@ func TestOpenCodePrivateStateDoesNotBindHostState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, bind := range oc.Binds() {
-		if !bind.State {
-			continue
-		}
-		if bind.HostPath == "" || !filepath.IsAbs(bind.HostPath) {
-			t.Fatalf("state bind = %#v", bind)
-		}
+	if len(sandbox.Binds) != 0 {
+		t.Fatalf("private state registered binds: %#v", sandbox.Binds)
 	}
 }
 
@@ -142,7 +131,8 @@ func TestOpenCodeHostStateCreatesHostDirs(t *testing.T) {
 	home := t.TempDir()
 	stateRoot := filepath.Join(home, "state-root")
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
-	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}}).Service
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
+	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox}).Service
 	opts := &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Default: tool.ToolStateConfig{StateRoot: home}, Tools: map[string]tool.ToolStateConfig{tool.OpenCodeToolName: {State: tool.ToolStateHost, StateRoot: stateRoot}}}}
 	if err := oc.HostInit(context.Background(), opts); err != nil {
 		t.Fatal(err)
@@ -164,21 +154,11 @@ func TestOpenCodeHostStateCreatesHostDirs(t *testing.T) {
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{oc}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset, err := registry.Build([]string{tool.OpenCodeToolName}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset.SetToolStates(opts.ToolStates)
-	binds := toolset.Binds()
 	want := []string{filepath.Join(stateRoot, ".config", "opencode"), filepath.Join(stateRoot, ".local", "share", "opencode")}
-	if len(binds) != len(want) {
-		t.Fatalf("binds = %#v", binds)
+	if len(sandbox.Binds) != len(want) {
+		t.Fatalf("binds = %#v", sandbox.Binds)
 	}
-	for i, bind := range binds {
+	for i, bind := range sandbox.Binds {
 		if bind.HostPath != want[i] {
 			t.Fatalf("bind[%d] = %#v, want host %q", i, bind, want[i])
 		}

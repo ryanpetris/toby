@@ -10,6 +10,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	claudeconfig "petris.dev/toby/internal/tools/claude/config"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -67,14 +68,6 @@ type claudeTool struct {
 
 func (t *claudeTool) deps() []tool.Tool { return []tool.Tool{t.npm} }
 
-func (t *claudeTool) Binds() []tool.Bind {
-	return toolutil.Binds(t.deps(), t.Simple.Binds())
-}
-
-func (t *claudeTool) PathEntries() []tool.PathTarget {
-	return toolutil.PathEntries(t.deps(), t.Simple.PathEntries())
-}
-
 func (t *claudeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
 	if err := toolutil.HostInitDependencies(ctx, opts, t.npm); err != nil {
 		return err
@@ -100,7 +93,7 @@ func (t *claudeTool) SandboxInit(ctx context.Context) error {
 }
 
 func (t *claudeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
-	return tool.RegisterContextFilesOnce(ctx, t.Name(), func() error {
+	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		if registrar, ok := t.npm.(tool.ContextFileTool); ok {
 			if err := registrar.RegisterContextFiles(ctx, opts); err != nil {
 				return err

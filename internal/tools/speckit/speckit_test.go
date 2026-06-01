@@ -15,16 +15,8 @@ import (
 
 type fakeUV struct {
 	tool.Base
-	binds   []tool.Bind
-	entries []tool.PathTarget
-	calls   *[]string
-	err     error
-}
-
-func (t fakeUV) Binds() []tool.Bind { return append([]tool.Bind(nil), t.binds...) }
-
-func (t fakeUV) PathEntries() []tool.PathTarget {
-	return append([]tool.PathTarget(nil), t.entries...)
+	calls *[]string
+	err   error
 }
 
 func (t fakeUV) Install(context.Context) error {
@@ -35,20 +27,6 @@ func (t fakeUV) Install(context.Context) error {
 func (t fakeUV) Upgrade(context.Context) error {
 	*t.calls = append(*t.calls, "upgrade:"+t.Name())
 	return t.err
-}
-
-func TestBindsAndPathEntriesDelegateToUV(t *testing.T) {
-	var calls []string
-	bind := tool.Bind{HostPath: "/uv", Target: tool.HomeTarget(".uv")}
-	entry := tool.HomeTarget(".uv", "bin")
-	svc := &speckitTool{uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, binds: []tool.Bind{bind}, entries: []tool.PathTarget{entry}, calls: &calls}}
-
-	if got, want := svc.Binds(), []tool.Bind{bind}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Binds = %#v, want %#v", got, want)
-	}
-	if got, want := svc.PathEntries(), []tool.PathTarget{entry}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("PathEntries = %#v, want %#v", got, want)
-	}
 }
 
 func TestLatestReleaseTagTrimsTag(t *testing.T) {

@@ -14,6 +14,7 @@ type Sandbox struct {
 	Env        map[string]string
 	Files      []contextfiles.File
 	Dirs       []string
+	Binds      []tool.Bind
 	Symlinks   map[string]string
 	ExecFunc   func(context.Context, []string, tool.ExecOptions) (int, error)
 	MCPURL     string
@@ -52,6 +53,12 @@ func (s *Sandbox) PrependEnvironment(ctx context.Context, name, value, separator
 func (s *Sandbox) AppendEnvironment(ctx context.Context, name, value, separator string) error {
 	return s.setPathEntry(ctx, name, value, separator, false)
 }
+
+func (s *Sandbox) AddBind(bind tool.Bind) error {
+	s.Binds = append(s.Binds, bind)
+	return nil
+}
+
 func (s *Sandbox) setPathEntry(ctx context.Context, name, value, separator string, atStart bool) error {
 	if separator == "" {
 		separator = ":"

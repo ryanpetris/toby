@@ -13,6 +13,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -20,15 +21,6 @@ type fakeRunner struct{}
 
 func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Options) (int, error) {
 	return 0, nil
-}
-
-type bindTool struct {
-	tool.Base
-	binds []tool.Bind
-}
-
-func (t bindTool) Binds() []tool.Bind {
-	return append([]tool.Bind(nil), t.binds...)
 }
 
 func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
@@ -49,22 +41,12 @@ func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	regularSandboxPath := filepath.Join(paths.Home, ".config", "regular")
 	readonlySandboxPath := filepath.Join(paths.Home, ".config", "readonly")
 	devSandboxPath := "/var/run/demo.sock"
-	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{bindTool{
-		Base: tool.Base{Metadata: tool.Metadata{Name: "bind"}},
-		binds: []tool.Bind{
-			{HostPath: "/host/regular", Target: tool.HomeTarget(".config", "regular"), Type: tool.BindRegular},
-			{HostPath: "/host/readonly", Target: tool.HomeTarget(".config", "readonly"), Type: tool.BindReadOnly, Optional: true},
-			{HostPath: "/host/demo.sock", Target: tool.AbsoluteTarget(devSandboxPath), Type: tool.BindDev, Optional: true},
-		},
-	}}})
-	if err != nil {
-		t.Fatal(err)
+	binds := []tool.Bind{
+		{HostPath: "/host/regular", Target: helpers.HomeTarget(".config", "regular"), Type: tool.BindRegular},
+		{HostPath: "/host/readonly", Target: helpers.HomeTarget(".config", "readonly"), Type: tool.BindReadOnly, Optional: true},
+		{HostPath: "/host/demo.sock", Target: helpers.AbsoluteTarget(devSandboxPath), Type: tool.BindDev, Optional: true},
 	}
-	toolset, err := registry.Build([]string{"bind"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Toolset: toolset})
+	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Binds: binds})
 	if err != nil {
 		t.Fatal(err)
 	}

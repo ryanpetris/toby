@@ -192,7 +192,9 @@ A direct launch such as `toby claude my-app` proceeds through
 
 1. **Resolve options.** Parse CLI flags, merge host-config sandbox defaults,
    and (if enabled) autoload `<project>/.toby.yaml`. Build the toolset from the
-   requested tools, designating the primary (foreground) tool.
+   requested tools, designating the primary (foreground) tool. Host-side
+   initialization runs before the sandbox starts and registers any required
+   bind mounts with the sandbox service.
 2. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
    `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
    set `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the sandbox environment.
@@ -223,8 +225,8 @@ Lifecycle phases (each tool may implement any subset):
 
 | Phase | When | Typical use |
 | --- | --- | --- |
-| `HostInit` | before the sandbox starts | host-side setup, dependency host-init |
-| `SandboxContextSetup` | building the run context | set environment variables, PATH |
+| `HostInit` | before the sandbox starts | host-side setup, bind registration, dependency host-init |
+| `SandboxContextSetup` | building the run context | set environment variables, append PATH entries |
 | `RegisterContextFiles` | context injection | emit synthetic config / instructions |
 | `SandboxInit` | once per sandbox | run embedded install/init scripts |
 | `Install` / `Upgrade` | before launch | install or reinstall the tool |

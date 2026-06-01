@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
 
@@ -35,11 +36,19 @@ type dockerTool struct {
 	sandbox tool.SandboxService
 }
 
-func (t *dockerTool) Binds() []tool.Bind {
-	return []tool.Bind{
-		{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: tool.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true},
-		{HostPath: "/var/run/docker.sock", Target: tool.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true},
-	}
+func (t *dockerTool) UsesToolState() bool { return true }
+
+func (t *dockerTool) HostInit(_ context.Context, opts *tool.CommandOptions) error {
+	return helpers.HostInitOnce(opts, t.Name(), func() error {
+		if opts.ToolStateFor(t.Name()) == tool.ToolStateHost {
+			bind := tool.Bind{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: helpers.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true}
+			bind.HostPath = helpers.ResolveStateBindHostPath(opts.ToolStateRootFor(t.Name()), bind)
+			if err := t.sandbox.AddBind(bind); err != nil {
+				return err
+			}
+		}
+		return t.sandbox.AddBind(tool.Bind{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true})
+	})
 }
 
 func (t *dockerTool) Launch(ctx context.Context, extra []string) error {
