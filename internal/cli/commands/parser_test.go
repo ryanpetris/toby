@@ -18,15 +18,12 @@ func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch Node Package Manager"}}},
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
-	parsed, err := executeTestLaunchParser(t, []string{"proj", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--tool-state", "host", "--tool-state-root=state/root", "--", "foo", "--", "bar"}, ctxTools)
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--", "foo", "--", "bar"}, ctxTools)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
 		t.Fatalf("parsed options = %#v", parsed.Options)
-	}
-	if parsed.Options.ToolStates.Default.State != tool.ToolStateHost || parsed.Options.ToolStates.Default.StateRoot != "state/root" {
-		t.Fatalf("tool state = %#v", parsed.Options.ToolStates)
 	}
 	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("requested = %#v, want %#v", got, want)
@@ -70,13 +67,6 @@ func TestParseLaunchCommandLetsCobraRejectUnknownFlag(t *testing.T) {
 	_, err := executeTestLaunchParser(t, []string{"env", "--print"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown flag: --print") {
 		t.Fatalf("err = %v, want unknown flag error", err)
-	}
-}
-
-func TestParseLaunchCommandRejectsInvalidToolState(t *testing.T) {
-	_, err := executeTestLaunchParser(t, []string{"env", "--tool-state=shared"}, nil)
-	if err == nil {
-		t.Fatal("expected invalid tool state to fail")
 	}
 }
 

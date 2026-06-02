@@ -74,5 +74,5 @@ func newTestT3(t *testing.T, contextDir string) (*t3Tool, *tooltest.Sandbox) {
 	sandbox := tooltest.NewSandbox(contextDir)
 	contextFiles := contextfiles.NewService()
 	contextFiles.SetSandbox(sandbox)
-	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox, ContextFiles: contextFiles}).Service.(*t3Tool), sandbox
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox, ContextFiles: contextFiles}).Service.(*t3Tool), sandbox
 }

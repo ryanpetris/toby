@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
@@ -20,15 +21,18 @@ func TestProvideMetadataAndHostInitBinds(t *testing.T) {
 	if svc.Name() != tool.DockerToolName || svc.CommandName() != tool.DockerToolName || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
-	if err := svc.HostInit(context.Background(), &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Default: tool.ToolStateConfig{StateRoot: home}}}); err != nil {
+	if err := svc.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []tool.Bind{
-		{HostPath: filepath.Join(home, ".docker"), Target: helpers.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true},
-		{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true},
+	want := []sandboxmount.Bind{
+		{HostPath: filepath.Join(home, ".docker"), Target: helpers.HomeTarget(".docker"), Access: sandboxmount.AccessReadOnly, Optional: true},
+		{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Access: sandboxmount.AccessDev, Optional: true},
 	}
 	if !reflect.DeepEqual(sandbox.Binds, want) {
 		t.Fatalf("Binds = %#v, want %#v", sandbox.Binds, want)
+	}
+	if len(sandbox.Mounts) != 0 {
+		t.Fatalf("Mounts = %#v", sandbox.Mounts)
 	}
 }
 

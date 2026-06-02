@@ -19,6 +19,8 @@ import (
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
@@ -41,7 +43,7 @@ type instance struct {
 	image         string
 	build         tool.DockerBuildConfig
 	containerName string
-	homeVolume    string
+	primed        bool
 }
 
 func Module() fx.Option {
@@ -77,7 +79,7 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	if image == "" && !spec.DockerBuild.IsSet() {
 		image = defaultDockerImage
 	}
-	sandboxPaths := helpers.DefaultSandboxPaths()
+	sandboxPaths := sandboxpath.Defaults()
 	if spec.DockerHome != "" {
 		sandboxPaths.Home = expandSandboxHome(spec.DockerHome, sandboxPaths.Home)
 	}
@@ -103,7 +105,7 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	base, err := sandbox.NewBaseInstance(sandbox.BaseInstanceParams{
 		Paths:              e.paths,
 		Label:              spec.Label,
-		SandboxPaths:       sandboxPaths,
+		PathSet:            sandboxPaths,
 		HomeDir:            sandboxPaths.Home,
 		ProjectsDir:        sandboxPaths.Workspace,
 		RuntimeDir:         sandboxPaths.Root,
@@ -121,7 +123,6 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 		image:         image,
 		build:         spec.DockerBuild,
 		containerName: fmt.Sprintf("toby-%d-%d", os.Getpid(), time.Now().UnixNano()),
-		homeVolume:    dockerHomeVolumeName(spec.Label),
 	}, nil
 }
 
@@ -144,25 +145,40 @@ func expandSandboxHome(value, home string) string {
 	return value
 }
 
-func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+func (s *instance) Prime(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+	if s.primed {
+		return 0, nil
+	}
 	if code, err := s.resolveImage(ctx, spec); err != nil || code != 0 {
 		return code, err
 	}
-	primeCmd := s.BuildHomeVolumePrimeCommand(spec)
+	primeCmd := s.BuildPrimeCommand(spec)
 	primeCode, primeErr := s.runner.Run(ctx, primeCmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 	if primeErr != nil {
 		return primeCode, primeErr
 	}
 	if primeCode != 0 {
-		return primeCode, exitcode.New(primeCode, "docker home volume preparation failed")
+		return primeCode, exitcode.New(primeCode, "docker volume preparation failed")
 	}
-	initCmd := s.BuildHomeVolumeInitCommand()
-	initCode, initErr := s.runner.Run(ctx, initCmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
-	if initErr != nil {
-		return initCode, initErr
+	s.primed = true
+	return 0, nil
+}
+
+func (s *instance) Setup(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+	cmd, err := s.BuildSetupCommand(spec)
+	if err != nil {
+		return 1, err
 	}
-	if initCode != 0 {
-		return initCode, exitcode.New(initCode, "docker home volume initialization failed")
+	code, runErr := s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
+	if ctx.Err() != nil && s.containerName != "" {
+		_ = exec.Command(s.docker, "rm", "-f", s.containerName).Run()
+	}
+	return code, runErr
+}
+
+func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+	if code, err := s.Prime(ctx, spec); err != nil || code != 0 {
+		return code, err
 	}
 	cmd, err := s.BuildCommand(spec)
 	if err != nil {
@@ -242,28 +258,17 @@ func (s *instance) BuildUntaggedImageBuildCommand(iidFile string) []string {
 	return []string{s.docker, "build", "--iidfile", iidFile, "-f", s.build.Dockerfile, s.build.Context}
 }
 
-func (s *instance) BuildHomeVolumePrimeCommand(spec sandbox.RunSpec) []string {
+func (s *instance) BuildPrimeCommand(spec sandbox.RunSpec) []string {
 	args := []string{
 		s.docker, "run", "--rm",
 		"--user", "0:0",
 		"--entrypoint", "/bin/sh",
 	}
-	for _, mount := range s.mounts(spec.Binds) {
+	for _, mount := range s.finalMounts(spec.Binds, spec.Mounts) {
 		args = append(args, "--mount", mount)
 	}
 	args = append(args, "--workdir", s.ChdirDir(), s.image, "-c", "exit")
 	return args
-}
-
-func (s *instance) BuildHomeVolumeInitCommand() []string {
-	return []string{
-		s.docker, "run", "--rm",
-		"--user", "0:0",
-		"--entrypoint", "chown",
-		"--mount", dockerVolume(s.homeVolume, s.HomeDir()),
-		s.image,
-		"-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), s.HomeDir(),
-	}
 }
 
 func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
@@ -284,7 +289,7 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 			args = append(args, "--group-add", strconv.Itoa(group))
 		}
 	}
-	for _, mount := range s.mounts(spec.Binds) {
+	for _, mount := range s.finalMounts(spec.Binds, spec.Mounts) {
 		args = append(args, "--mount", mount)
 	}
 	for _, item := range dockerControlEnv(spec.Env) {
@@ -295,12 +300,34 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	return args, nil
 }
 
-func (s *instance) mounts(binds []tool.Bind) []string {
-	mounts := []string{
-		dockerVolume(s.homeVolume, s.HomeDir()),
+func (s *instance) BuildSetupCommand(spec sandbox.RunSpec) ([]string, error) {
+	args := []string{s.docker, "run", "--rm", "--init", "-i"}
+	args = append(args,
+		"--name", s.containerName,
+		"--user", "0:0",
+	)
+	if runtime.GOOS != "darwin" {
+		args = append(args, "--network", "host")
 	}
+	for _, mount := range s.setupMounts(spec.Mounts) {
+		args = append(args, "--mount", mount)
+	}
+	for _, item := range dockerControlEnv(spec.Env) {
+		args = append(args, "--env", item)
+	}
+	args = append(args, "--workdir", "/", s.image)
+	args = append(args, spec.Argv...)
+	return args, nil
+}
+
+func (s *instance) finalMounts(binds []sandboxmount.Bind, resolved []sandboxmount.RuntimeMount) []string {
+	type finalMount struct {
+		target string
+		value  string
+	}
+	items := []finalMount{}
 	for _, project := range s.ProjectMounts() {
-		mounts = append(mounts, dockerBind(project.HostPath, project.SandboxPath, false))
+		items = append(items, finalMount{target: project.SandboxPath, value: dockerBind(project.HostPath, project.SandboxPath, false)})
 	}
 	for _, bind := range binds {
 		if bind.Optional {
@@ -310,7 +337,33 @@ func (s *instance) mounts(binds []tool.Bind) []string {
 				}
 			}
 		}
-		mounts = append(mounts, dockerBind(bind.HostPath, helpers.ResolvePath(bind.Target, s), bind.Type == tool.BindReadOnly))
+		target := helpers.ResolvePath(bind.Target, s)
+		items = append(items, finalMount{target: target, value: dockerBind(bind.HostPath, target, bind.Access == sandboxmount.AccessReadOnly)})
+	}
+	for _, mount := range resolved {
+		switch mount.Source.Kind {
+		case sandboxmount.SourceProvider:
+			items = append(items, finalMount{target: mount.Target, value: dockerVolume(mount.ProviderID, mount.Target)})
+		case sandboxmount.SourceHostPath:
+			items = append(items, finalMount{target: mount.Target, value: dockerBind(mount.Source.Value, mount.Target, mount.Access == sandboxmount.AccessReadOnly)})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].target < items[j].target
+	})
+	mounts := make([]string, 0, len(items))
+	for _, item := range items {
+		mounts = append(mounts, item.value)
+	}
+	return mounts
+}
+
+func (s *instance) setupMounts(resolved []sandboxmount.RuntimeMount) []string {
+	mounts := []string{}
+	for _, mount := range resolved {
+		if mount.Source.Kind == sandboxmount.SourceProvider && mount.SetupPath != "" {
+			mounts = append(mounts, dockerVolume(mount.ProviderID, mount.SetupPath))
+		}
 	}
 	return mounts
 }
@@ -325,32 +378,6 @@ func dockerBind(source, target string, readonly bool) string {
 
 func dockerVolume(source, target string) string {
 	return "type=volume,source=" + source + ",target=" + target
-}
-
-func dockerHomeVolumeName(label string) string {
-	var b strings.Builder
-	b.WriteString("toby-home-")
-	lastDash := false
-	for _, r := range label {
-		if isDockerVolumeNameChar(r) {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	name := strings.TrimRight(b.String(), "-")
-	if name == "toby-home" {
-		return "toby-home-sandbox"
-	}
-	return name
-}
-
-func isDockerVolumeNameChar(r rune) bool {
-	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-'
 }
 
 func dockerEnv(env tool.Environment) []string {

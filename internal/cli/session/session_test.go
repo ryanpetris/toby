@@ -2,7 +2,6 @@ package session
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,9 +10,8 @@ import (
 
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
-
-	"github.com/spf13/cobra"
 )
 
 func TestApplySandboxDefaultsUsesHostDockerDefaults(t *testing.T) {
@@ -32,17 +30,17 @@ sandbox:
         dockerfile: Dockerfile.toby
     bubblewrap:
       root: ./sandboxes
-  tools:
-    default:
-      state: host
-      stateRoot: ./state
+mountProfiles:
+  default:
+    backing: host
+    hostRoot: ./state
 `))
 	cfg, err := tobyconfig.Load(dir, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := applySandboxDefaults(&tool.CommandOptions{}, cfg)
+	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
 	if got.SandboxRuntime != "docker" || got.DockerImage != "node:host" || got.DockerHome != "/home/host" || got.DockerProjects != "/workspace/host" {
 		t.Fatalf("defaults = %#v", got)
 	}
@@ -52,8 +50,9 @@ sandbox:
 	if got.BubblewrapRoot != filepath.Join(dir, "sandboxes") {
 		t.Fatalf("defaults = %#v", got)
 	}
-	if got.ToolStates.Default.State != tool.ToolStateHost || got.ToolStates.Default.StateRoot != filepath.Join(dir, "state") {
-		t.Fatalf("tool states = %#v", got.ToolStates)
+	mounts := got.MountProfiles.Config("default")
+	if mounts.Backing != sandboxmount.BackingHost || mounts.HostRoot != filepath.Join(dir, "state") {
+		t.Fatalf("mounts = %#v", mounts)
 	}
 }
 
@@ -76,36 +75,54 @@ sandbox:
 		t.Fatal(err)
 	}
 
-	got := applySandboxDefaults(&tool.CommandOptions{SandboxRuntime: "docker", DockerImage: "node:launch", DockerHome: "/home/launch", DockerProjects: "/workspace/launch"}, cfg)
+	got := ApplySandboxDefaults(&tool.CommandOptions{SandboxRuntime: "docker", DockerImage: "node:launch", DockerHome: "/home/launch", DockerProjects: "/workspace/launch"}, cfg)
 	if got.DockerImage != "node:launch" || got.DockerHome != "/home/launch" || got.DockerProjects != "/workspace/launch" {
 		t.Fatalf("defaults = %#v", got)
 	}
 }
 
-func TestApplySandboxDefaultsMergesLaunchToolStateOverrides(t *testing.T) {
+func TestApplySandboxDefaultsMergesLaunchMountOverrides(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
 	writeTobyConfig(t, dir, []byte(`
-sandbox:
-  tools:
-    default:
-      state: host
-      stateRoot: ~/state/default
-    claude:
-      state: host
-      stateRoot: state/claude
+mountProfiles:
+  default:
+    backing: host
+    hostRoot: ~/state/default
 `))
 	cfg, err := tobyconfig.Load(dir, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := applySandboxDefaults(&tool.CommandOptions{ToolStates: tool.ToolStateSettings{Tools: map[string]tool.ToolStateConfig{tool.ClaudeToolName: {State: tool.ToolStatePrivate}}}}, cfg)
-	if got.ToolStates.StateFor(tool.OpenCodeToolName) != tool.ToolStateHost || got.ToolStates.StateFor(tool.ClaudeToolName) != tool.ToolStatePrivate {
-		t.Fatalf("tool states = %#v", got.ToolStates)
+	opencodeKey := sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}
+	claudeKey := sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.ClaudeToolName, Purpose: "state"}
+	got := ApplySandboxDefaults(&tool.CommandOptions{MountProfiles: sandboxmount.Profiles{"default": {Backing: sandboxmount.BackingPrivate}}}, cfg)
+	mounts := got.MountProfiles.Config("default")
+	if mounts.BackingFor(opencodeKey) != sandboxmount.BackingPrivate || mounts.BackingFor(claudeKey) != sandboxmount.BackingPrivate {
+		t.Fatalf("mounts = %#v", mounts)
 	}
-	if got.ToolStates.StateRootFor(tool.OpenCodeToolName) != filepath.Join(home, "state", "default") || got.ToolStates.StateRootFor(tool.ClaudeToolName) != filepath.Join(dir, "state", "claude") {
-		t.Fatalf("tool roots = %#v", got.ToolStates)
+	if mounts.HostRootFor(opencodeKey) != filepath.Join(home, "state", "default") {
+		t.Fatalf("mount roots = %#v", mounts)
+	}
+}
+
+func TestApplySandboxDefaultsMergesHostToolDefaults(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+tools:
+  opencode:
+    mountProfile: host-state
+`))
+	cfg, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := ApplySandboxDefaults(&tool.CommandOptions{ToolMountProfiles: map[string]string{tool.ClaudeToolName: "private"}}, cfg)
+	if got.ToolMountProfiles[tool.OpenCodeToolName] != "host-state" || got.ToolMountProfiles[tool.ClaudeToolName] != "private" {
+		t.Fatalf("tool mount profiles = %#v", got.ToolMountProfiles)
 	}
 }
 
@@ -113,7 +130,7 @@ func TestApplySandboxDefaultsMergesWarningSuppression(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
 	writeTobyConfig(t, dir, []byte(`
-sandbox:
+settings:
   suppressWarnings: true
 `))
 	cfg, err := tobyconfig.Load(dir, home)
@@ -121,45 +138,29 @@ sandbox:
 		t.Fatal(err)
 	}
 
-	got := applySandboxDefaults(&tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ToolHostState: true}}}, cfg)
-	if !got.SuppressWarnings.Suppresses(warning.ToolHostState) || got.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+	got := ApplySandboxDefaults(&tool.CommandOptions{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.MountHostBacking: true}}}, cfg)
+	if !got.SuppressWarnings.Suppresses(warning.MountHostBacking) || got.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", got.SuppressWarnings)
 	}
 }
 
-func TestWarnHostToolStateSkipsDocker(t *testing.T) {
-	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
-		statefulTestTool{name: tool.OpenCodeToolName},
-		statefulTestTool{name: tool.DockerToolName},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset, err := registry.Build([]string{tool.OpenCodeToolName, tool.DockerToolName}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset.SetToolStates(tool.ToolStateSettings{Default: tool.ToolStateConfig{State: tool.ToolStateHost, StateRoot: t.TempDir()}})
+func TestWarnHostBackedMounts(t *testing.T) {
+	mounts := []sandboxmount.Info{{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}}}
 	var stderr bytes.Buffer
-	warnHostToolState(&stderr, warning.Suppression{}, toolset)
-	if got := stderr.String(); got == "" || !bytes.Contains(stderr.Bytes(), []byte("warning[tool.host-state]")) || !bytes.Contains(stderr.Bytes(), []byte(tool.OpenCodeToolName)) || bytes.Contains(stderr.Bytes(), []byte(tool.DockerToolName)) {
+	warnHostBackedMounts(&stderr, warning.Suppression{}, mounts)
+	if got := stderr.String(); got == "" || !bytes.Contains(stderr.Bytes(), []byte("warning[mount.host-backing]")) || !bytes.Contains(stderr.Bytes(), []byte("tool.opencode.config")) {
 		t.Fatalf("warning = %q", got)
 	}
 	stderr.Reset()
-	warnHostToolState(&stderr, warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ToolHostState: true}}, toolset)
+	warnHostBackedMounts(&stderr, warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.MountHostBacking: true}}, mounts)
 	if stderr.Len() != 0 {
 		t.Fatalf("suppressed warning = %q", stderr.String())
 	}
 
-	toolset, err = registry.Build([]string{tool.DockerToolName}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset.SetToolStates(tool.ToolStateSettings{})
 	stderr.Reset()
-	warnHostToolState(&stderr, warning.Suppression{}, toolset)
+	warnHostBackedMounts(&stderr, warning.Suppression{}, nil)
 	if stderr.Len() != 0 {
-		t.Fatalf("docker warning = %q", stderr.String())
+		t.Fatalf("empty warning = %q", stderr.String())
 	}
 }
 
@@ -179,7 +180,7 @@ sandbox:
 		t.Fatal(err)
 	}
 
-	got := applySandboxDefaults(&tool.CommandOptions{}, cfg)
+	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
 	if got.DockerImage != "" || got.DockerHome != "" || got.DockerProjects != "" || got.DockerBuild.IsSet() {
 		t.Fatalf("defaults = %#v", got)
 	}
@@ -265,32 +266,6 @@ func TestPrepareConfiguredProjectsAllowsSameSourceWithDifferentNames(t *testing.
 		t.Fatalf("options = %#v, want projects %#v", opts, want)
 	}
 }
-
-type statefulTestTool struct{ name string }
-
-func (t statefulTestTool) Name() string { return t.name }
-
-func (t statefulTestTool) CommandName() string { return t.name }
-
-func (t statefulTestTool) LaunchHelp() string { return "Launch " + t.name }
-
-func (t statefulTestTool) ContextGroups() []string { return nil }
-
-func (t statefulTestTool) UsesToolState() bool { return true }
-
-func (t statefulTestTool) ConfigureCommand(*cobra.Command) {}
-
-func (t statefulTestTool) HostInit(context.Context, *tool.CommandOptions) error { return nil }
-
-func (t statefulTestTool) SandboxContextSetup(context.Context) error { return nil }
-
-func (t statefulTestTool) SandboxInit(context.Context) error { return nil }
-
-func (t statefulTestTool) Install(context.Context) error { return nil }
-
-func (t statefulTestTool) Upgrade(context.Context) error { return nil }
-
-func (t statefulTestTool) Launch(context.Context, []string) error { return nil }
 
 func writeTobyConfig(t *testing.T, dir string, data []byte) {
 	t.Helper()

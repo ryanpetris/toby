@@ -4,22 +4,28 @@ import (
 	"path/filepath"
 	"testing"
 
-	"petris.dev/toby/internal/tools/tool"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 )
 
-func TestParseToolState(t *testing.T) {
-	if state, err := ParseToolState(" host "); err != nil || state != tool.ToolStateHost {
-		t.Fatalf("ParseToolState host = %q, %v", state, err)
+func TestParseMountBacking(t *testing.T) {
+	if backing, err := ParseMountBacking(" host "); err != nil || backing != sandboxmount.BackingHost {
+		t.Fatalf("ParseMountBacking host = %q, %v", backing, err)
 	}
-	if state, err := ParseToolState("private"); err != nil || state != tool.ToolStatePrivate {
-		t.Fatalf("ParseToolState private = %q, %v", state, err)
+	if backing, err := ParseMountBacking("private"); err != nil || backing != sandboxmount.BackingPrivate {
+		t.Fatalf("ParseMountBacking private = %q, %v", backing, err)
 	}
-	if _, err := ParseToolState("shared"); err == nil {
-		t.Fatal("expected invalid state to fail")
+	if backing, err := ParseMountBacking("default"); err != nil || backing != sandboxmount.BackingDefault {
+		t.Fatalf("ParseMountBacking default = %q, %v", backing, err)
+	}
+	if backing, err := ParseMountBacking("provider"); err != nil || backing != sandboxmount.BackingProvider {
+		t.Fatalf("ParseMountBacking provider = %q, %v", backing, err)
+	}
+	if _, err := ParseMountBacking("shared"); err == nil {
+		t.Fatal("expected invalid backing to fail")
 	}
 }
 
-func TestResolveStateRoot(t *testing.T) {
+func TestResolveMountHostRoot(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "home", "demo")
 	base := filepath.Join(home, "project")
 	tests := []struct {
@@ -35,7 +41,7 @@ func TestResolveStateRoot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolveStateRoot(tt.value, home, base)
+			got, err := ResolveMountHostRoot(tt.value, home, base)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -43,7 +49,7 @@ func TestResolveStateRoot(t *testing.T) {
 				return
 			}
 			if err != nil || got != tt.want {
-				t.Fatalf("ResolveStateRoot = %q, %v; want %q", got, err, tt.want)
+				t.Fatalf("ResolveMountHostRoot = %q, %v; want %q", got, err, tt.want)
 			}
 		})
 	}

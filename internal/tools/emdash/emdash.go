@@ -25,8 +25,7 @@ var emdashFiles embed.FS
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"emdash"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 type Params struct {
@@ -38,7 +37,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &emdashTool{Base: toolutil.Base(tool.EmdashToolName, "Launch Emdash", tool.GroupUI, tool.GroupAI, tool.GroupSystem, tool.GroupVCS), sandbox: params.Sandbox, contextFiles: params.ContextFiles}
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type emdashTool struct {

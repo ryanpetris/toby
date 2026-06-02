@@ -4,6 +4,7 @@ import "context"
 
 const (
 	lifecycleHostInit             = "host-init"
+	lifecycleMountSetup           = "mount-setup"
 	lifecycleSandboxContextSetup  = "sandbox-context-setup"
 	lifecycleRegisterContextFiles = "register-context-files"
 	lifecycleSandboxInit          = "sandbox-init"
@@ -47,6 +48,10 @@ func hostInitOnce(opts *CommandOptions, name string, fn func() error) error {
 
 func sandboxContextSetupOnce(ctx context.Context, name string, fn func() error) error {
 	return runOnce(ctx, lifecycleSandboxContextSetup, name, fn)
+}
+
+func mountSetupOnce(ctx context.Context, name string, fn func() error) error {
+	return runOnce(ctx, lifecycleMountSetup, name, fn)
 }
 
 func registerContextFilesOnce(ctx context.Context, name string, fn func() error) error {

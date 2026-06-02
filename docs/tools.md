@@ -73,8 +73,8 @@ instructions. Provider models are used verbatim or discovered from `/models`.
 ### Claude Code
 
 Toby sets `CLAUDE_CONFIG_DIR=$HOME/.config/claude` (so credentials and session
-state live in private sandbox state unless host state is enabled) and injects
-context through launch flags rather than the config directory:
+state live under the configured managed mount backing) and injects context
+through launch flags rather than the config directory:
 
 - `--mcp-config .../claude/mcp.json` — the Toby MCP server.
 - `--append-system-prompt-file .../claude/instructions.md` — `GIT_AGENTS.md`
@@ -143,11 +143,12 @@ tools listed after it:
 
 ```yaml
 projects:
-  - my-app
+  my-app:
 tools:
-  - t3
-  - claude
-  - codex
+  t3:
+    primary: true
+  claude:
+  codex:
 ```
 
 ```sh
@@ -161,9 +162,9 @@ See [examples.md](examples.md) for more end-to-end recipes.
 - `npm` / `uv` — package managers, used both directly and as dependencies of
   other tools. They redirect their global/tool/cache directories into the
   sandbox home so installs persist and never touch the host.
-- `docker` — binds the host Docker socket and `~/.docker` config so containers
-  run against the host daemon. Defaults to host state (see
-  [configuration.md](configuration.md#tool-state)).
+- `docker` — binds the host Docker socket so containers run against the host
+  daemon. It also explicitly bind-mounts `~/.docker` read-only; it does not use
+  managed mounts (see [configuration.md](configuration.md#managed-mounts)).
 - `github_cli` (`gh`), `gitlab_cli` (`glab`), `fj` — forge CLIs. For operations
   that need host credentials (signing, pushing over SSH), prefer the Toby Git
   MCP tools described in [sandbox.md](sandbox.md), which run on the host.

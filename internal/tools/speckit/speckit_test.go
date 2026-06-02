@@ -2,7 +2,6 @@ package speckit
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -12,22 +11,6 @@ import (
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
 )
-
-type fakeUV struct {
-	tool.Base
-	calls *[]string
-	err   error
-}
-
-func (t fakeUV) Install(context.Context) error {
-	*t.calls = append(*t.calls, "install:"+t.Name())
-	return t.err
-}
-
-func (t fakeUV) Upgrade(context.Context) error {
-	*t.calls = append(*t.calls, "upgrade:"+t.Name())
-	return t.err
-}
 
 func TestLatestReleaseTagTrimsTag(t *testing.T) {
 	svc := &speckitTool{http: speckitHTTPClient(http.StatusOK, `{"tag_name":" v0.5.0 "}`)}
@@ -50,10 +33,9 @@ func TestLatestReleaseTagRejectsMissingTag(t *testing.T) {
 	}
 }
 
-func TestInstallRunsUVDependencyAndSkipsWhenSpecifyExists(t *testing.T) {
-	var depCalls []string
+func TestInstallSkipsWhenSpecifyExists(t *testing.T) {
 	sandbox := tooltest.NewSandbox("/toby/context")
-	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls}, sandbox: sandbox}
+	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, sandbox: sandbox}
 	var execCalls [][]string
 	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
 		execCalls = append(execCalls, append([]string(nil), argv...))
@@ -63,21 +45,16 @@ func TestInstallRunsUVDependencyAndSkipsWhenSpecifyExists(t *testing.T) {
 	if err := svc.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"install:uv"}; !reflect.DeepEqual(depCalls, want) {
-		t.Fatalf("dependency calls = %#v, want %#v", depCalls, want)
-	}
 	if want := [][]string{{"which", "specify"}}; !reflect.DeepEqual(execCalls, want) {
 		t.Fatalf("exec calls = %#v, want %#v", execCalls, want)
 	}
 }
 
 func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
-	var depCalls []string
 	sandbox := tooltest.NewSandbox("/toby/context")
 	svc := &speckitTool{
 		Base:    tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}},
 		http:    speckitHTTPClient(http.StatusOK, `{"tag_name":"v0.5.0"}`),
-		uv:      fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls},
 		sandbox: sandbox,
 	}
 	var execCalls [][]string
@@ -89,27 +66,16 @@ func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
 	if err := svc.Upgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"upgrade:uv"}; !reflect.DeepEqual(depCalls, want) {
-		t.Fatalf("dependency calls = %#v, want %#v", depCalls, want)
-	}
 	wantCommand := []string{"uv", "tool", "install", "specify-cli", "--force", "--from", "git+" + repositoryURL + "@v0.5.0"}
 	if want := [][]string{wantCommand}; !reflect.DeepEqual(execCalls, want) {
 		t.Fatalf("exec calls = %#v, want %#v", execCalls, want)
 	}
 }
 
-func TestInstallStopsWhenUVDependencyFails(t *testing.T) {
-	boom := errors.New("boom")
-	var depCalls []string
-	sandbox := tooltest.NewSandbox("/toby/context")
-	svc := &speckitTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.SpeckitToolName}}, uv: fakeUV{Base: tool.Base{Metadata: tool.Metadata{Name: tool.UvToolName}}, calls: &depCalls, err: boom}, sandbox: sandbox}
-	sandbox.ExecFunc = func(context.Context, []string, tool.ExecOptions) (int, error) {
-		t.Fatal("executor should not run")
-		return 0, nil
-	}
-
-	if err := svc.Install(context.Background()); !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want boom", err)
+func TestSpeckitDeclaresUVDependency(t *testing.T) {
+	svc := Provide(Params{HTTP: http.DefaultClient, Sandbox: tooltest.NewSandbox("/toby/context")}).Service
+	if got := svc.Dependencies(); len(got) != 1 || got[0] != tool.UvToolName || svc.LifecyclePriority() != 100 {
+		t.Fatalf("dependency metadata = deps %#v priority %d", got, svc.LifecyclePriority())
 	}
 }
 

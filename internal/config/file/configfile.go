@@ -25,6 +25,13 @@ func Decode(data []byte, format Format, label string) (map[string]any, error) {
 	return decodeJSONC(data, label)
 }
 
+func DecodeInto(data []byte, format Format, label string, dest any) error {
+	if format == FormatYAML {
+		return decodeYAMLInto(data, label, dest)
+	}
+	return decodeJSONCInto(data, label, dest)
+}
+
 func Merge(dst, src map[string]any) {
 	for key, value := range src {
 		srcMap, srcOK := value.(map[string]any)
@@ -96,6 +103,33 @@ func decodeJSONC(data []byte, label string) (map[string]any, error) {
 	return config, nil
 }
 
+func decodeJSONCInto(data []byte, label string, dest any) error {
+	cleaned, err := stripJSONC(data)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(cleaned))
+	decoder.UseNumber()
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", label, err)
+		}
+		return fmt.Errorf("parse %s: multiple JSON values", label)
+	}
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	return nil
+}
+
 func decodeYAML(data []byte, label string) (map[string]any, error) {
 	var value any
 	if err := yaml.Unmarshal(data, &value); err != nil {
@@ -113,6 +147,30 @@ func decodeYAML(data []byte, label string) (map[string]any, error) {
 		return nil, fmt.Errorf("%s must be a YAML object", label)
 	}
 	return config, nil
+}
+
+func decodeYAMLInto(data []byte, label string, dest any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	if len(node.Content) == 0 {
+		return nil
+	}
+	encoded, err := yaml.Marshal(&node)
+	if err != nil {
+		return err
+	}
+	decoder = yaml.NewDecoder(bytes.NewReader(encoded))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	return nil
 }
 
 func normalizeYAML(value any, label string) (any, error) {

@@ -60,7 +60,7 @@ repository's own `.toby.yaml`.
   launch flags in `Launch`); never write into the tools' real config files on
   the host or in the sandbox home.
 - **Warnings** must use a registered ID in `internal/diagnostic/warning` so they
-  remain suppressible via `sandbox.suppressWarnings`.
+  remain suppressible via `settings.suppressWarnings`.
 - Match the surrounding code style; keep tests alongside the code they cover.
 
 ## Documentation sync rules

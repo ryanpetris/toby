@@ -32,9 +32,13 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 		fx.Invoke(func(params struct {
 			fx.In
 
-			Claude tool.Tool `name:"claude"`
+			Tools []tool.Tool `group:"toby.tools"`
 		}) {
-			claude = params.Claude
+			for _, item := range params.Tools {
+				if item.Name() == tool.ClaudeToolName {
+					claude = item
+				}
+			}
 		}),
 	)
 	app.RequireStart()

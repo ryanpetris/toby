@@ -5,7 +5,6 @@ import (
 
 	"petris.dev/toby/internal/cli/launchconfig"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
@@ -50,28 +49,6 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 		return result, err
 	}
 	result.Options.DockerImage = dockerImage
-	if flagChanged(cmd, "tool-state") {
-		value, err := flags.GetString("tool-state")
-		if err != nil {
-			return result, err
-		}
-		state, err := parseToolStateFlag(value)
-		if err != nil {
-			return result, err
-		}
-		result.Options.ToolStates.Default.State = state
-	}
-	if flagChanged(cmd, "tool-state-root") {
-		value, err := flags.GetString("tool-state-root")
-		if err != nil {
-			return result, err
-		}
-		root, err := parseToolStateRootFlag(value)
-		if err != nil {
-			return result, err
-		}
-		result.Options.ToolStates.Default.StateRoot = root
-	}
 	for _, item := range contextTools {
 		if item.Name() == primary {
 			continue
@@ -118,22 +95,6 @@ func unexpectedLaunchArgument(arg string) error {
 		return exitcode.New(2, "unknown argument %q; command arguments must follow --", arg)
 	}
 	return exitcode.New(2, "unexpected argument %q; command arguments must follow --", arg)
-}
-
-func parseToolStateFlag(value string) (tool.ToolState, error) {
-	state, err := helpers.ParseToolState(value)
-	if err != nil {
-		return "", exitcode.New(2, "--tool-state: %v", err)
-	}
-	return state, nil
-}
-
-func parseToolStateRootFlag(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", exitcode.New(2, "--tool-state-root requires a value")
-	}
-	return value, nil
 }
 
 func appendIfMissing(values []string, value string) []string {

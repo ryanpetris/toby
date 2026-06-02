@@ -5,13 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -72,31 +73,27 @@ func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
 	}
 	docker := sbx.(*instance)
 	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": docker.HomeDir()}
-	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: env})
+	mounts := dockerHomeMount(docker.HomeDir())
+	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: env, Mounts: mounts})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--init", "-i"})
 	assertContainsSequence(t, cmd, []string{"--user", "0:0"})
 	assertContainsSequence(t, cmd, []string{"--network", "host"})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(tool.DefaultSandboxWorkspace, "demo"), false)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
 	assertContainsSequence(t, cmd, []string{"--env", "TOBY_CONTROL_HOST=127.0.0.1:1234"})
 	assertContainsSequence(t, cmd, []string{"--env", "TOBY_CONTROL_TOKEN=secret"})
-	assertContainsSequence(t, cmd, []string{"--env", "HOME=" + tool.DefaultSandboxHome})
+	assertContainsSequence(t, cmd, []string{"--env", "HOME=" + sandboxpath.DefaultHome})
 	assertNoDockerEnv(t, cmd, "PATH")
-	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), defaultDockerImage})
+	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage})
 	assertContainsSequence(t, cmd, []string{docker.TobyBinaryPath(), "sandbox", "manager"})
-	primeCmd := docker.BuildHomeVolumePrimeCommand(sandbox.RunSpec{})
+	primeCmd := docker.BuildPrimeCommand(sandbox.RunSpec{Mounts: mounts})
 	assertContainsSequence(t, primeCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertContainsSequence(t, primeCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(tool.DefaultSandboxWorkspace, "demo"), false)})
-	assertContainsSequence(t, primeCmd, []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
-	initCmd := docker.BuildHomeVolumeInitCommand()
-	assertContainsSequence(t, initCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown"})
-	assertContainsSequence(t, initCmd, []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertNoDockerEnv(t, initCmd, "HOME")
-	assertContainsSequence(t, initCmd, []string{defaultDockerImage, "-R", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()), tool.DefaultSandboxHome})
+	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
+	assertContainsSequence(t, primeCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
+	assertContainsSequence(t, primeCmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
 }
 
 func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
@@ -113,19 +110,17 @@ func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: tool.Environment{}})
+	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 3 {
+	if len(runner.commands) != 2 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertContainsSequence(t, runner.commands[0], []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
-	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "chown"})
-	assertContainsSequence(t, runner.commands[1], []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertContainsSequence(t, runner.commands[2], []string{"docker", "run", "--rm", "--init", "-i"})
+	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
+	assertContainsSequence(t, runner.commands[0], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
+	assertContainsSequence(t, runner.commands[1], []string{"docker", "run", "--rm", "--init", "-i"})
 }
 
 func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
@@ -146,18 +141,17 @@ func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 5 {
+	if len(runner.commands) != 4 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
 	assertContainsSequence(t, runner.commands[1], []string{"docker", "build", "-t", "custom:dev", "-f", filepath.Join(contextDir, "Dockerfile.toby"), contextDir})
 	assertContainsSequence(t, runner.commands[2], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[3], []string{"custom:dev", "-R"})
-	assertContainsSequence(t, runner.commands[4], []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), "custom:dev"})
+	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "custom:dev"})
 }
 
 func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
@@ -178,17 +172,16 @@ func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 4 {
+	if len(runner.commands) != 3 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
 	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[2], []string{"custom:dev", "-R"})
-	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), "custom:dev"})
+	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "custom:dev"})
 }
 
 func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
@@ -209,18 +202,17 @@ func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if len(runner.commands) != 4 {
+	if len(runner.commands) != 3 {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	assertContainsSequence(t, runner.commands[0], []string{"docker", "build", "--iidfile"})
 	assertContainsSequence(t, runner.commands[0], []string{"-f", filepath.Join(contextDir, "Dockerfile"), contextDir})
 	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[2], []string{"sha256:built", "-R"})
-	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), "sha256:built"})
+	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "sha256:built"})
 }
 
 func TestDockerRunUsesHostEnvironmentForDockerCLI(t *testing.T) {
@@ -241,8 +233,8 @@ func TestDockerRunUsesHostEnvironmentForDockerCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": tool.DefaultSandboxHome}
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: env})
+	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": sandboxpath.DefaultHome}
+	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
@@ -258,9 +250,9 @@ func TestDockerRunUsesHostEnvironmentForDockerCLI(t *testing.T) {
 	finalCommand := runner.commands[len(runner.commands)-1]
 	assertContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTROL_HOST=127.0.0.1:1234"})
 	assertContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTROL_TOKEN=secret"})
-	assertContainsSequence(t, finalCommand, []string{"--env", "HOME=" + tool.DefaultSandboxHome})
-	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_BIN_DIR=" + tool.DefaultSandboxBin})
-	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTEXT_DIR=" + filepath.Join(tool.DefaultSandboxRoot, "context")})
+	assertContainsSequence(t, finalCommand, []string{"--env", "HOME=" + sandboxpath.DefaultHome})
+	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_BIN_DIR=" + sandboxpath.DefaultBin})
+	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTEXT_DIR=" + sandboxpath.DefaultContext})
 }
 
 func TestDockerPrimeCommandUsesFinalMountsAndWorkdir(t *testing.T) {
@@ -276,13 +268,44 @@ func TestDockerPrimeCommandUsesFinalMountsAndWorkdir(t *testing.T) {
 		t.Fatal(err)
 	}
 	docker := sbx.(*instance)
-	binds := []tool.Bind{{HostPath: "/host/opencode", Target: helpers.HomeTarget(".local", "share", "opencode"), Type: tool.BindRegular}}
-	cmd := docker.BuildHomeVolumePrimeCommand(sandbox.RunSpec{Binds: binds})
+	binds := []sandboxmount.Bind{{HostPath: "/host/opencode", Target: helpers.HomeTarget(".local", "share", "opencode"), Access: sandboxmount.AccessRegular}}
+	cmd := docker.BuildPrimeCommand(sandbox.RunSpec{Binds: binds, Mounts: dockerHomeMount(docker.HomeDir())})
 	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", tool.DefaultSandboxHome)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(tool.DefaultSandboxWorkspace, "demo"), false)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind("/host/opencode", filepath.Join(tool.DefaultSandboxHome, ".local", "share", "opencode"), false)})
-	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(tool.DefaultSandboxWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerBind("/host/opencode", filepath.Join(sandboxpath.DefaultHome, ".local", "share", "opencode"), false)})
+	assertSequenceBefore(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)}, []string{"--mount", dockerBind("/host/opencode", filepath.Join(sandboxpath.DefaultHome, ".local", "share", "opencode"), false)})
+	assertSequenceBefore(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)}, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
+	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
+}
+
+func TestDockerManagedMountsUseFinalAndSetupTargets(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*instance)
+	mount := sandboxmount.RuntimeMount{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}, ProviderID: "toby.demo.tool.opencode.config", Source: sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: "toby.demo.tool.opencode.config"}, Target: filepath.Join(sandboxpath.DefaultHome, ".config", "opencode"), SetupPath: filepath.Join(sandboxpath.DefaultRoot, "mounts", "opencode-config")}
+	primeCmd := docker.BuildPrimeCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}})
+	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.Target)})
+	setupCmd, err := docker.BuildSetupCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}, Env: tool.Environment{"HOME": sandboxpath.DefaultHome}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsSequence(t, setupCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.SetupPath)})
+	assertNotContainsSequence(t, setupCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
+	runCmd, err := docker.BuildCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsSequence(t, runCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.Target)})
 }
 
 func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
@@ -310,11 +333,11 @@ func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
 	if docker.Projects() != "/toby/custom-home/workspace" {
 		t.Fatalf("Projects = %q", docker.Projects())
 	}
-	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}})
+	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby-home-demo", "/toby/custom-home")})
+	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", "/toby/custom-home")})
 	assertContainsSequence(t, cmd, []string{"--workdir", "/toby/custom-home/workspace/demo", "custom:latest"})
 }
 
@@ -336,12 +359,6 @@ func TestDockerOptionsRejectPathsOutsideSandboxRoot(t *testing.T) {
 	}
 }
 
-func TestDockerHomeVolumeNameSanitizesLabel(t *testing.T) {
-	if got, want := dockerHomeVolumeName("review env"), "toby-home-review-env"; got != want {
-		t.Fatalf("volume name = %q, want %q", got, want)
-	}
-}
-
 func TestDockerHelpersFormatAndSortValues(t *testing.T) {
 	if got, want := dockerBind("/host", "/target", false), "type=bind,source=/host,target=/target"; got != want {
 		t.Fatalf("dockerBind = %q, want %q", got, want)
@@ -352,20 +369,20 @@ func TestDockerHelpersFormatAndSortValues(t *testing.T) {
 	if got, want := dockerVolume("home", "/home/demo"), "type=volume,source=home,target=/home/demo"; got != want {
 		t.Fatalf("dockerVolume = %q, want %q", got, want)
 	}
-	if got, want := dockerHomeVolumeName("!!!"), "toby-home-sandbox"; got != want {
-		t.Fatalf("fallback volume name = %q, want %q", got, want)
-	}
-	for _, r := range []rune{'a', 'Z', '0', '_', '.', '-'} {
-		if !isDockerVolumeNameChar(r) {
-			t.Fatalf("%q should be a docker volume name char", r)
-		}
-	}
-	if isDockerVolumeNameChar(' ') {
-		t.Fatal("space should not be a docker volume name char")
-	}
 	if got, want := dockerEnv(tool.Environment{"B": "2", "A": "1"}), []string{"A=1", "B=2"}; !slices.Equal(got, want) {
 		t.Fatalf("dockerEnv = %#v, want %#v", got, want)
 	}
+}
+
+func dockerHomeMount(target string) []sandboxmount.RuntimeMount {
+	homeKey := sandboxmount.RuntimeHomeKey("demo")
+	providerID := sandboxmount.ProviderID("default", homeKey)
+	return []sandboxmount.RuntimeMount{{
+		Key:        homeKey,
+		ProviderID: providerID,
+		Source:     sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: providerID},
+		Target:     target,
+	}}
 }
 
 func testPaths(home string) config.Paths {
@@ -388,21 +405,41 @@ func testFactory(paths config.Paths, runner executil.Runner) sandbox.Factory {
 
 func assertContainsSequence(t *testing.T, values, sequence []string) {
 	t.Helper()
-	for i := 0; i+len(sequence) <= len(values); i++ {
-		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			return
-		}
+	if indexOfSequence(values, sequence) >= 0 {
+		return
 	}
 	t.Fatalf("%#v does not contain sequence %#v", values, sequence)
 }
 
+func assertSequenceBefore(t *testing.T, values, first, second []string) {
+	t.Helper()
+	firstIndex := indexOfSequence(values, first)
+	if firstIndex < 0 {
+		t.Fatalf("%#v does not contain first sequence %#v", values, first)
+	}
+	secondIndex := indexOfSequence(values, second)
+	if secondIndex < 0 {
+		t.Fatalf("%#v does not contain second sequence %#v", values, second)
+	}
+	if firstIndex >= secondIndex {
+		t.Fatalf("%#v contains %#v at %d after %#v at %d", values, first, firstIndex, second, secondIndex)
+	}
+}
+
 func assertNotContainsSequence(t *testing.T, values, sequence []string) {
 	t.Helper()
+	if indexOfSequence(values, sequence) >= 0 {
+		t.Fatalf("%#v contains sequence %#v", values, sequence)
+	}
+}
+
+func indexOfSequence(values, sequence []string) int {
 	for i := 0; i+len(sequence) <= len(values); i++ {
 		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			t.Fatalf("%#v contains sequence %#v", values, sequence)
+			return i
 		}
 	}
+	return -1
 }
 
 func assertNoDockerEnv(t *testing.T, values []string, name string) {

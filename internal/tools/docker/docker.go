@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/config"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -17,8 +18,7 @@ var Module = fx.Module("tools.docker", fx.Provide(Provide))
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"docker"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 func Provide(paths config.Paths, sandbox tool.SandboxService) Result {
@@ -27,7 +27,7 @@ func Provide(paths config.Paths, sandbox tool.SandboxService) Result {
 		paths:   paths,
 		sandbox: sandbox,
 	}
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type dockerTool struct {
@@ -36,18 +36,12 @@ type dockerTool struct {
 	sandbox tool.SandboxService
 }
 
-func (t *dockerTool) UsesToolState() bool { return true }
-
 func (t *dockerTool) HostInit(_ context.Context, opts *tool.CommandOptions) error {
 	return helpers.HostInitOnce(opts, t.Name(), func() error {
-		if opts.ToolStateFor(t.Name()) == tool.ToolStateHost {
-			bind := tool.Bind{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: helpers.HomeTarget(".docker"), Type: tool.BindReadOnly, Optional: true, State: true}
-			bind.HostPath = helpers.ResolveStateBindHostPath(opts.ToolStateRootFor(t.Name()), bind)
-			if err := t.sandbox.AddBind(bind); err != nil {
-				return err
-			}
+		if err := t.sandbox.AddBind(sandboxmount.Bind{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: helpers.HomeTarget(".docker"), Access: sandboxmount.AccessReadOnly, Optional: true}); err != nil {
+			return err
 		}
-		return t.sandbox.AddBind(tool.Bind{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Type: tool.BindDev, Optional: true})
+		return t.sandbox.AddBind(sandboxmount.Bind{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Access: sandboxmount.AccessDev, Optional: true})
 	})
 }
 

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"petris.dev/toby/internal/tools/tool"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 )
 
 func TestPathTargetsAndResolvePath(t *testing.T) {
@@ -36,21 +36,14 @@ func TestPathTargetsAndResolvePath(t *testing.T) {
 	}
 }
 
-func TestDefaultSandboxPaths(t *testing.T) {
-	paths := DefaultSandboxPaths()
-	if paths.Root != tool.DefaultSandboxRoot || paths.Home != tool.DefaultSandboxHome || paths.Context != tool.DefaultSandboxContext || paths.Bin != tool.DefaultSandboxBin || paths.Workspace != tool.DefaultSandboxWorkspace {
-		t.Fatalf("paths = %#v", paths)
-	}
-}
-
 type pathSandbox struct {
 	home     string
 	runtime  string
 	projects string
 }
 
-func (s pathSandbox) Paths() tool.SandboxPaths {
-	return tool.SandboxPaths{Root: s.runtime, Home: s.home, Context: filepath.Join(s.runtime, "context"), Bin: filepath.Join(s.runtime, "bin"), Workspace: s.projects}
+func (s pathSandbox) Paths() sandboxpath.Paths {
+	return sandboxpath.Paths{Root: s.runtime, Home: s.home, Context: filepath.Join(s.runtime, "context"), Bin: filepath.Join(s.runtime, "bin"), Workspace: s.projects}
 }
 
 func (s pathSandbox) HomeDir() string        { return s.home }

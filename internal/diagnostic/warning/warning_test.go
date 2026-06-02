@@ -11,15 +11,15 @@ func TestParseSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !all.Set || !all.All || !all.Suppresses(ToolHostState) {
+	if !all.Set || !all.All || !all.Suppresses(MountHostBacking) {
 		t.Fatalf("all suppression = %#v", all)
 	}
 
-	ids, err := ParseSuppression([]any{" tool.host-state ", "project.missing"}, "warnings")
+	ids, err := ParseSuppression([]any{" mount.host-backing ", "project.missing"}, "warnings")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ids.Set || ids.All || !ids.Suppresses(ToolHostState) || !ids.Suppresses(ProjectMissing) || ids.Suppresses(OpenCodeModelDiscovery) {
+	if !ids.Set || ids.All || !ids.Suppresses(MountHostBacking) || !ids.Suppresses(ProjectMissing) || ids.Suppresses(OpenCodeModelDiscovery) {
 		t.Fatalf("id suppression = %#v", ids)
 	}
 
@@ -53,10 +53,10 @@ func TestParseSuppressionRejectsInvalidValues(t *testing.T) {
 }
 
 func TestSuppressionCloneAndMerge(t *testing.T) {
-	src := Suppression{Set: true, IDs: map[ID]bool{ToolHostState: true}}
+	src := Suppression{Set: true, IDs: map[ID]bool{MountHostBacking: true}}
 	clone := src.Clone()
-	clone.IDs[ToolHostState] = false
-	if !src.Suppresses(ToolHostState) {
+	clone.IDs[MountHostBacking] = false
+	if !src.Suppresses(MountHostBacking) {
 		t.Fatalf("source changed after clone mutation: %#v", src)
 	}
 
@@ -66,21 +66,21 @@ func TestSuppressionCloneAndMerge(t *testing.T) {
 		t.Fatalf("unset merge changed suppression: %#v", dst)
 	}
 	dst.Merge(src)
-	src.IDs[ToolHostState] = false
-	if dst.All || !dst.Suppresses(ToolHostState) {
+	src.IDs[MountHostBacking] = false
+	if dst.All || !dst.Suppresses(MountHostBacking) {
 		t.Fatalf("merge did not clone source: %#v", dst)
 	}
 }
 
 func TestFprintfHonorsSuppression(t *testing.T) {
 	var buf bytes.Buffer
-	Fprintf(&buf, Suppression{All: true}, ToolHostState, "hidden %s", "warning")
+	Fprintf(&buf, Suppression{All: true}, MountHostBacking, "hidden %s", "warning")
 	if buf.Len() != 0 {
 		t.Fatalf("suppressed warning wrote %q", buf.String())
 	}
 
-	Fprintf(&buf, Suppression{}, ToolHostState, "visible %s", "warning")
-	if got := buf.String(); !strings.Contains(got, "toby: warning[tool.host-state]: visible warning\n") {
+	Fprintf(&buf, Suppression{}, MountHostBacking, "visible %s", "warning")
+	if got := buf.String(); !strings.Contains(got, "toby: warning[mount.host-backing]: visible warning\n") {
 		t.Fatalf("warning output = %q", got)
 	}
 }

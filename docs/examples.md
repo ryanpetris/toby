@@ -57,18 +57,18 @@ Pass extra arguments through to t3 after `--`:
 toby t3 my-app --with-claude -- <t3 arguments>
 ```
 
-Or define it declaratively — t3 is the first (primary) tool, and the coding
-tools follow:
+Or define it declaratively with t3 as the primary tool:
 
 ```yaml
 # t3.yaml
 projects:
-  - my-app
+  my-app:
 tools:
-  - t3
-  - claude
-  - codex
-  - opencode
+  t3:
+    primary: true
+  claude:
+  codex:
+  opencode:
 ```
 
 ```sh
@@ -87,26 +87,25 @@ sandbox:
     default: docker
     docker:
       image: node:lts-bookworm
-  tools:
-    default:
-      state: private
 projects:
-  - app
-  - name: shared
+  app:
+    primary: true
+  shared:
     path: ../shared-lib
 tools:
-  - name: opencode
+  opencode:
+    primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]
-  - uv
-  - npm
+  uv:
+  npm:
 ```
 
 ```sh
 toby --config review.yaml
 ```
 
-The first tool (`opencode`) launches in the foreground; `uv` and `npm` are
-installed and available. The first existing project (`app`) is the working
+The primary tool (`opencode`) launches in the foreground; `uv` and `npm` are
+installed and available. The primary project (`app`) is the working
 directory. In this Docker example, both projects appear inside the sandbox under
 `/toby/workspace/`.
 
@@ -125,11 +124,12 @@ projects.
 ```yaml
 # test.yaml
 projects:
-  - my-app
+  my-app:
 tools:
-  - name: exec
+  exec:
+    primary: true
     params: ["npm", "test"]
-  - npm
+  npm:
 ```
 
 ```sh
@@ -138,7 +138,7 @@ toby --config test.yaml -- -- --watch   # runs: npm test -- --watch
 ```
 
 Everything after the first `--` (including later `--` tokens) is appended to the
-first tool's `params`.
+primary tool's `params`.
 
 ## Add a model provider
 
@@ -147,7 +147,7 @@ proxies them to tools through a per-run URL.
 
 ```yaml
 # ~/.config/toby/config.yaml
-provider:
+providers:
   local:
     type: openai
     baseURL: https://api.example.com/v1
@@ -165,7 +165,7 @@ EXAMPLE_API_KEY=sk-... toby opencode my-app
 
 ```yaml
 # ~/.config/toby/config.yaml
-mcp:
+mcps:
   docs:
     type: remote
     url: https://example.com/mcp
@@ -202,26 +202,31 @@ Repository names are relative to the sandbox project root and must already be vi
 in the sandbox. `git.commit` commits only already-staged files; it does not add
 files. See [sandbox.md](sandbox.md#mcp) for the full tool reference.
 
-## Use host tool state
+## Use Host-Backed Mounts
 
-By default each environment keeps tool state private. To share a tool's state
-from the host (for example, to reuse an existing OpenCode login), enable host
-state for that tool:
+By default each environment uses provider-backed managed mounts. To share a
+tool's data from a host directory (for example, to reuse an existing OpenCode
+login), enable host backing for that tool's managed mounts:
 
 ```yaml
 # ~/.config/toby/config.yaml
-sandbox:
-  tools:
-    opencode:
-      state: host
-      stateRoot: ~/.config/toby/tool-state/opencode
+mountProfiles:
+  default:
+    backing: provider
+  host-state:
+    backing: host
+    hostRoot: ~/.config/toby/mounts/opencode
+settings:
   suppressWarnings:
-    - tool.host-state
+    - mount.host-backing
+tools:
+  opencode:
+    mountProfile: host-state
 ```
 
-Running multiple sandboxes against the same host tool state can corrupt that
-tool's databases, which is why Toby emits `tool.host-state` for non-Docker
-tools unless you suppress it.
+Running multiple sandboxes against the same host-backed managed mount can
+corrupt that tool's databases, which is why Toby emits `mount.host-backing`
+unless you suppress it.
 
 ## Build a custom Docker image for the sandbox
 
@@ -235,9 +240,10 @@ sandbox:
         context: .
         dockerfile: Dockerfile.toby
 projects:
-  - my-app
+  my-app:
 tools:
-  - opencode
+  opencode:
+    primary: true
 ```
 
 ```sh

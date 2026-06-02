@@ -12,6 +12,8 @@ import (
 
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -20,42 +22,60 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.jsonc"), []byte(`{
   // JSONC is accepted.
-  "mcp": {
+  "mcps": {
     "docs": { "type": "remote", "url": "https://example.com/mcp" },
   },
   "instructions": ["base.md"],
-  "provider": {
+  "providers": {
       "local": { "type": "openai", "headers": { "Authorization": "Bearer base" } }
     },
-  "permission": {
+  "permissions": {
     "paths": {
       "~/allowed": "allow",
       "~/allowed/**": "allow"
     }
+  },
+  "mountProfiles": { "default": { "backing": "host", "hostRoot": "~/state/default" } },
+  "settings": {
+    "mountProfile": "default",
+    "suppressWarnings": true,
+    "autoloadProjectConfig": true
+  },
+  "tools": {
+    "opencode": { "mountProfile": "default" }
   },
   "sandbox": {
     "runtime": {
       "default": "bubblewrap",
       "docker": { "image": "node:base", "home": "/home/base" },
       "bubblewrap": { "root": "sandboxes/base" }
-    },
-    "tools": { "default": { "state": "host", "stateRoot": "~/state/default" }, "opencode": { "state": "private" } },
-    "suppressWarnings": true,
-    "autoloadProjectConfig": true
+    }
   },
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-mcp:
+mcps:
   docs:
     enabled: true
 instructions:
   - extra.md
-provider:
+providers:
   local:
     baseURL: https://models.example.com
-permission:
+permissions:
   paths:
     /tmp/shared: allow
+mountProfiles:
+  default:
+    hostRoot: state/default
+settings:
+  suppressWarnings:
+    - mount.host-backing
+  autoloadProjectConfig: false
+tools:
+  opencode:
+    mountProfile: shared
+  claude:
+    mountProfile: default
 sandbox:
   runtime:
     default: docker
@@ -63,13 +83,6 @@ sandbox:
       image: node:custom
       projects: /workspace/custom
       build: {}
-  tools:
-    claude:
-      state: host
-      stateRoot: state/claude
-  suppressWarnings:
-    - tool.host-state
-  autoloadProjectConfig: false
 `))
 
 	cfg, err := Load(dir, home)
@@ -108,17 +121,26 @@ sandbox:
 	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "base") {
 		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
 	}
-	if sandbox.Tools.Default.State != tool.ToolStateHost || sandbox.Tools.StateFor("opencode") != tool.ToolStatePrivate || sandbox.Tools.StateFor("claude") != tool.ToolStateHost {
-		t.Fatalf("sandbox tools = %#v", sandbox.Tools)
+	mounts := cfg.MountProfiles().Config("default")
+	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
+		t.Fatalf("mounts = %#v", mounts)
 	}
-	if sandbox.Tools.StateRootFor("opencode") != filepath.Join(home, "state", "default") || sandbox.Tools.StateRootFor("claude") != filepath.Join(dir, "state", "claude") {
-		t.Fatalf("sandbox tool roots = %#v", sandbox.Tools)
+	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != filepath.Join(dir, "state", "default") {
+		t.Fatalf("mount roots = %#v", mounts)
 	}
-	if !sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) || sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
-		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
+	toolProfiles := cfg.ToolMountProfiles()
+	if toolProfiles[tool.OpenCodeToolName] != "shared" || toolProfiles[tool.ClaudeToolName] != "default" {
+		t.Fatalf("tool mount profiles = %#v", toolProfiles)
 	}
-	if sandbox.AutoloadProjectConfigEnabled() {
-		t.Fatalf("autoloadProjectConfig = %#v", sandbox.AutoloadProjectConfig)
+	settings := cfg.Settings()
+	if settings.MountProfile != "default" {
+		t.Fatalf("mount profile = %q", settings.MountProfile)
+	}
+	if !settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+		t.Fatalf("suppress warnings = %#v", settings.SuppressWarnings)
+	}
+	if settings.AutoloadProjectConfigEnabled() {
+		t.Fatalf("autoloadProjectConfig = %#v", settings.AutoloadProjectConfig)
 	}
 }
 
@@ -138,13 +160,11 @@ sandbox:
         dockerfile: ../Dockerfile.toby
     bubblewrap:
       root: ~/sandboxes
-  tools:
-    default:
-      state: private
-      stateRoot: ~/unused
-    opencode:
-      state: host
-      stateRoot: /tmp/opencode-state
+mountProfiles:
+  default:
+    backing: host
+    hostRoot: /tmp/opencode-state
+settings:
   suppressWarnings:
     - opencode.model-discovery
   autoloadProjectConfig: true
@@ -164,32 +184,33 @@ sandbox:
 	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(home, "sandboxes") {
 		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
 	}
-	if sandbox.Tools.Default.State != tool.ToolStatePrivate || sandbox.Tools.StateFor("opencode") != tool.ToolStateHost {
-		t.Fatalf("sandbox tools = %#v", sandbox.Tools)
+	mounts := cfg.MountProfiles().Config("default")
+	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
+		t.Fatalf("mounts = %#v", mounts)
 	}
-	if sandbox.Tools.StateRootFor("opencode") != "/tmp/opencode-state" {
-		t.Fatalf("sandbox tool roots = %#v", sandbox.Tools)
+	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != "/tmp/opencode-state" {
+		t.Fatalf("mount roots = %#v", mounts)
 	}
-	if !sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) {
-		t.Fatalf("suppress warnings = %#v", sandbox.SuppressWarnings)
+	settings := cfg.Settings()
+	if !settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || settings.SuppressWarnings.Suppresses(warning.MountHostBacking) {
+		t.Fatalf("suppress warnings = %#v", settings.SuppressWarnings)
 	}
-	if !sandbox.AutoloadProjectConfigEnabled() {
-		t.Fatalf("autoloadProjectConfig = %#v", sandbox.AutoloadProjectConfig)
+	if !settings.AutoloadProjectConfigEnabled() {
+		t.Fatalf("autoloadProjectConfig = %#v", settings.AutoloadProjectConfig)
 	}
 }
 
-func TestLoadRejectsInvalidToolState(t *testing.T) {
+func TestLoadRejectsInvalidMountBacking(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-sandbox:
-  tools:
-    opencode:
-      state: shared
+mountProfiles:
+  default:
+    backing: shared
 `))
 
 	if _, err := Load(dir, home); err == nil {
-		t.Fatal("expected invalid tool state to fail")
+		t.Fatal("expected invalid mount backing to fail")
 	}
 }
 
@@ -197,7 +218,7 @@ func TestLoadRejectsInvalidSuppressedWarning(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-sandbox:
+settings:
   suppressWarnings:
     - unknown.warning
 `))
@@ -211,7 +232,7 @@ func TestLoadRejectsUnsupportedProviderType(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-provider:
+providers:
   local:
     type: bedrock
     baseURL: https://example.com/v1
@@ -407,8 +428,8 @@ type configFakeSandbox struct {
 	files      []contextfiles.File
 }
 
-func (s *configFakeSandbox) Paths() tool.SandboxPaths {
-	return tool.SandboxPaths{Context: s.contextDir}
+func (s *configFakeSandbox) Paths() sandboxpath.Paths {
+	return sandboxpath.Paths{Context: s.contextDir}
 }
 func (s *configFakeSandbox) ProjectPath(string) (string, bool)                    { return "", false }
 func (s *configFakeSandbox) VisibleHostPath(string) (string, error)               { return "", nil }
@@ -420,7 +441,13 @@ func (s *configFakeSandbox) PrependEnvironment(context.Context, string, string, 
 func (s *configFakeSandbox) AppendEnvironment(context.Context, string, string, string) error {
 	return nil
 }
-func (s *configFakeSandbox) AddBind(tool.Bind) error { return nil }
+func (s *configFakeSandbox) AddBind(sandboxmount.Bind) error { return nil }
+func (s *configFakeSandbox) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
+	return sandboxmount.Info{Key: req.Key}, nil
+}
+func (s *configFakeSandbox) Mount(sandboxmount.Key) (sandboxmount.Info, bool) {
+	return sandboxmount.Info{}, false
+}
 func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
 	rel := strings.TrimPrefix(path, s.contextDir+string(os.PathSeparator))
 	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})

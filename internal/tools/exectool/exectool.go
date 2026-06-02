@@ -14,8 +14,7 @@ var Module = fx.Module("tools.exec", fx.Provide(Provide))
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"exec"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 func Provide(sandbox tool.SandboxService) Result {
@@ -30,7 +29,7 @@ func Provide(sandbox tool.SandboxService) Result {
 		),
 		sandbox: sandbox,
 	}
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type execTool struct {

@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"petris.dev/toby/internal/cli/launchconfig"
-	"petris.dev/toby/internal/cli/session"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/tools/tool"
 
@@ -51,16 +50,16 @@ func newLaunchCommand(params Params, primary tool.Tool, rootConfigPath *string) 
 				if err != nil {
 					return err
 				}
-				return session.Run(cmd.Context(), sessionParams(params), &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+				return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
 			}
 			launch, ok, err := launchconfig.MaybeAutoloadProjectConfig(launchConfigParams(params), parsed, primary.Name())
 			if err != nil {
 				return err
 			}
 			if ok {
-				return session.Run(cmd.Context(), sessionParams(params), &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+				return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
 			}
-			return session.Run(cmd.Context(), sessionParams(params), &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name())
+			return runSession(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name())
 		},
 	}
 	addSandboxFlags(cmd)
@@ -75,8 +74,6 @@ func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
 	cmd.Flags().String("sandbox-runtime", "", "Sandbox runtime to use: bubblewrap or docker.")
 	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
-	cmd.Flags().String("tool-state", "", "Tool state source to use by default: private or host.")
-	cmd.Flags().String("tool-state-root", "", "Host root to use as HOME for tool state when --tool-state=host.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {

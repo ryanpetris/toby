@@ -42,8 +42,7 @@ type Params struct {
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"grok"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 func Provide(params Params) Result {
@@ -55,7 +54,7 @@ func Provide(params Params) Result {
 		SandboxSubpath: []string{".grok"},
 	}, config: params.Config, contextFiles: params.ContextFiles}
 	svc.proxy = params.Proxy
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type grokTool struct {

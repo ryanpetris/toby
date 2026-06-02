@@ -31,6 +31,17 @@ func NewRegistry(params RegistryParams) (*Registry, error) {
 		}
 		registry.tools[item.Name()] = item
 	}
+	for _, item := range params.Tools {
+		for _, dep := range item.Dependencies() {
+			depTool, ok := registry.tools[dep]
+			if !ok {
+				return nil, fmt.Errorf("tool %s depends on unknown tool: %s", item.Name(), dep)
+			}
+			if depTool.LifecyclePriority() >= item.LifecyclePriority() {
+				return nil, fmt.Errorf("tool %s dependency %s must have lower lifecycle priority", item.Name(), dep)
+			}
+		}
+	}
 	return registry, nil
 }
 
@@ -76,16 +87,33 @@ func (r *Registry) LaunchTools() []Tool {
 func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
 	seen := map[string]bool{}
 	ordered := make([]Tool, 0, len(requested)+1)
-	for _, name := range requested {
+	var add func(string, map[string]bool) error
+	add = func(name string, visiting map[string]bool) error {
+		if seen[name] {
+			return nil
+		}
+		if visiting[name] {
+			return fmt.Errorf("tool dependency cycle includes %s", name)
+		}
 		item, ok := r.Get(name)
 		if !ok {
-			return nil, fmt.Errorf("unknown tool: %s", name)
+			return fmt.Errorf("unknown tool: %s", name)
 		}
-		if seen[name] {
-			continue
+		visiting[name] = true
+		for _, dep := range item.Dependencies() {
+			if err := add(dep, visiting); err != nil {
+				return err
+			}
 		}
+		delete(visiting, name)
 		seen[name] = true
 		ordered = append(ordered, item)
+		return nil
+	}
+	for _, name := range requested {
+		if err := add(name, map[string]bool{}); err != nil {
+			return nil, err
+		}
 	}
 	var primaryTool Tool
 	if primary != "" {
@@ -94,10 +122,16 @@ func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown primary tool: %s", primary)
 		}
-		if !seen[primary] {
-			ordered = append(ordered, primaryTool)
+		if err := add(primary, map[string]bool{}); err != nil {
+			return nil, err
 		}
 	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].LifecyclePriority() == ordered[j].LifecyclePriority() {
+			return ordered[i].Name() < ordered[j].Name()
+		}
+		return ordered[i].LifecyclePriority() < ordered[j].LifecyclePriority()
+	})
 	return &Toolset{primary: primaryTool, ordered: ordered}, nil
 }
 
@@ -126,17 +160,9 @@ func ExpandGroups(groups []string) []string {
 }
 
 type Toolset struct {
-	primary    Tool
-	ordered    []Tool
-	toolStates ToolStateSettings
-	lifecycle  *Lifecycle
-}
-
-func (t *Toolset) SetToolStates(settings ToolStateSettings) {
-	if t == nil {
-		return
-	}
-	t.toolStates = settings.Clone()
+	primary   Tool
+	ordered   []Tool
+	lifecycle *Lifecycle
 }
 
 func (t *Toolset) OrderedTools() []Tool {
@@ -151,6 +177,13 @@ func (t *Toolset) OrderedToolNames() []string {
 	return names
 }
 
+func (t *Toolset) Primary() Tool {
+	if t == nil {
+		return nil
+	}
+	return t.primary
+}
+
 func (t *Toolset) Has(name string) bool {
 	for _, item := range t.ordered {
 		if item.Name() == name {
@@ -158,21 +191,6 @@ func (t *Toolset) Has(name string) bool {
 		}
 	}
 	return false
-}
-
-func (t *Toolset) HostStateToolNames() []string {
-	var names []string
-	if t == nil {
-		return names
-	}
-	for _, item := range t.ordered {
-		stateful, ok := item.(StatefulTool)
-		if item.Name() == DockerToolName || t.toolStates.StateFor(item.Name()) != ToolStateHost || !ok || !stateful.UsesToolState() {
-			continue
-		}
-		names = append(names, item.Name())
-	}
-	return names
 }
 
 func (t *Toolset) HostInit(ctx context.Context, opts *CommandOptions) error {

@@ -1,7 +1,7 @@
 // Package config generates the synthetic Claude Code configuration that
 // Toby writes into the sandbox runtime context directory. Unlike OpenCode, Claude Code
 // writes runtime state (credentials, history, transcripts) into its config
-// directory, so Toby leaves Claude's config directory on normal tool state.
+// directory, so Toby leaves Claude's config directory on managed mount backing.
 // The generated files here are passed to Claude via launch flags
 // (--mcp-config, --settings, --append-system-prompt-file), which
 // achieves the same injection OpenCode gets from its merged opencode.json.

@@ -40,21 +40,24 @@ The wire protocol is documented as an OpenAPI schema in
 ## Process model
 
 Toby is wired together with [uber-go/fx](https://github.com/uber-go/fx)
-dependency injection. `main.go` calls `app.Run()`, which builds the fx
+dependency injection. `main.go` calls `app.Run()`, which builds a planning fx
 application from `internal/app/module.go` and executes the Cobra CLI.
 
-`internal/app/module.go` composes these modules:
+The root planning graph composes:
 
-- `tools.Module()` — the tool registry and every tool implementation
-  (`internal/tools/...`).
-- `sandbox.Module()` — runtime selection and the Docker/Bubblewrap instances
-  (`internal/sandbox/...`).
-- `hostmanager.Module()` — host-side control RPC handlers.
-- `sandboxmanager.Module()` — sandbox-side control RPC handlers.
-- `mcpserver.Module()` — the built-in Toby MCP server (`git.*` tools).
+- `tools.PlanningModule()` — metadata-only tools used for command generation,
+  config validation, dependency expansion, and launch-tool discovery.
+- `sandboxmanager.Module()` — sandbox-side control RPC handlers for the hidden
+  `toby sandbox manager` command.
 - Supporting providers: `config.NewPaths` (XDG path resolution),
-  `executil.NewProcessRunner`, `contextfiles.NewService`, `tobyconfig.New`,
-  `contextinit.NewServices`, and `tool.NewRegistry`.
+  `tobyconfig.New`, `tool.NewRegistry`, and the session runner factory.
+
+Each launch builds a separate execution fx graph. That graph contains only the
+selected tool dependency closure from `tools.SelectedModule(...)`, the selected
+sandbox runtime module when known, and the host-side services needed for that
+run: `sandbox.Module()`, `hostmanager.Module()`, `mcpserver.Module()`,
+`contextfiles.NewService`, `executil.NewProcessRunner`, `tool.NewRegistry`, and
+the lifecycle hook providers.
 
 The CLI is built in `internal/cli/commands`. `NewRootCommand` registers:
 
@@ -77,7 +80,7 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `internal/config/file` | Config file discovery, format parsing (JSON/JSONC/YAML), deep merge. |
 | `internal/config/toby` | Host config schema, validation, and context-file rendering. |
 | `internal/context/files` | Context file session/builder, embedded `GIT_AGENTS.md`. |
-| `internal/context/setup` | Ordered context-init services (agent instructions, config, tools). |
+| `internal/context/setup` | Context lifecycle hooks for agent instructions and host config. |
 | `internal/control` | Control transport: WebSocket, JSON-RPC peer, server, proxy, MCP. |
 | `internal/control/hostmanager` | Host-side RPC handlers, host Git execution. |
 | `internal/control/sandboxmanager` | Sandbox-side RPC handlers, command execution. |
@@ -129,7 +132,7 @@ plus a Toby-specific `-32007` for "project not visible".
 ### Host side (`internal/control/hostmanager`)
 
 The host manager accepts a sandbox connection, requires the first message to be
-`context.init`, then runs the registered context-init services to populate the
+`context.init`, then runs the registered context lifecycle hooks to populate the
 sandbox before handing control to the launched tool. It services
 `command.exit` notifications (to track foreground completion) and the `git.*`
 methods. Git execution lives in `git.go`/`git_service.go`: repository names are
@@ -167,15 +170,17 @@ runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
 
 - **Docker** (`internal/sandbox/docker`): `docker run --rm --init --user 0:0` with the configured image
   (default `node:lts-bookworm`). `$HOME` (`/toby/home` by default) is backed by
-  a named Docker volume (e.g. `toby-home-<env>`) so private home state persists
-  across runs; projects bind-mount from the host under `/toby/workspace`. The
-  image can be built from `sandbox.runtime.docker.build`.
-- **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts a private
-  host directory at the normal `$HOME` path, keeps projects under
-  `$XDG_PROJECTS_DIR`, and stores Toby internals under
+  a named Docker volume (e.g. `toby.<profile>.runtime.home.default`) so private
+  home state persists across runs; provider-backed managed mounts use lazy
+  volumes named `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host
+  under `/toby/workspace`. The image can be built from
+  `sandbox.runtime.docker.build`.
+- **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts
+  provider-backed directories from `sandbox.runtime.bubblewrap.root` by provider
+  ID, keeps projects under `$XDG_PROJECTS_DIR`, and stores Toby internals under
   `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
 
-The selected runtime provides a `tool.SandboxPaths` value. The host-side
+The selected runtime provides `sandboxpath.Paths`. The host-side
 `sandbox.SandboxService` exposes those paths and centralizes sandbox file and
 command operations for tool setup; it does not decide Docker or Bubblewrap path
 policy.
@@ -191,52 +196,72 @@ require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
 
 ## End-to-end launch flow
 
-A direct launch such as `toby claude my-app` proceeds through
-`internal/cli/session/session.go`:
+A direct launch such as `toby claude my-app` proceeds through the app session
+runner and `internal/cli/session/session.go`:
 
-1. **Resolve options.** Parse CLI flags, merge host-config sandbox defaults,
-   and (if enabled) autoload `<project>/.toby.yaml`. Build the toolset from the
-   requested tools, designating the primary (foreground) tool. Host-side
-   initialization runs before the sandbox starts and registers any required
-   bind mounts with the sandbox service.
-2. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
+1. **Plan execution.** Parse CLI flags, merge host-config sandbox defaults, and
+   (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands
+   the requested tools to include declared dependencies and determines the
+   primary (foreground) tool. The app then builds an execution fx graph scoped to
+   that tool closure and the selected runtime.
+2. **Register host-side mounts.** Build the execution toolset, apply managed
+   mount settings, and run `toby.lifecycle.host.init` hooks. These hooks register
+   explicit binds and managed mount requests with the sandbox service before the
+   sandbox starts.
+3. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
    `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
    set calculated `HOME` plus `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the
    sandbox manager startup environment.
-3. **Launch the sandbox.** The runtime runs a `/bin/sh` bootstrap that creates
+4. **Prepare mounts.** Docker primes volumes in their final locations, then runs
+   a setup sandbox with home and provider volumes mounted at isolated
+   `/toby/mounts/<random>` paths so runtime and `toby.lifecycle.sandbox.mount.init`
+   hooks can run setup commands as root without crossing into nested mounts.
+5. **Launch the sandbox.** The runtime runs a `/bin/sh` bootstrap that creates
    the runtime's Toby bin directory, downloads the helper from `/binary` with
    the bearer token, marks it executable, and `exec`s `toby sandbox manager` by
    absolute path.
-4. **Bootstrap the manager.** Inside the sandbox the manager connects back over
+6. **Bootstrap the manager.** Inside the sandbox the manager connects back over
    the control WebSocket and sends `context.init`.
-5. **Inject context.** The host runs the ordered context-init services
-   (`internal/context/setup`): agent instructions (order 10), host-config
-   instructions/MCP/providers (order 20), and tool-specific config (order 30).
-   Each writes files under the generated context directory via the sandbox service and
-   sandbox manager `file.create` calls.
-6. **Install and launch.** The toolset installs any missing tools, then the
-   primary tool's `Launch` runs the foreground command via `command.run`.
-7. **Tear down.** When the foreground command exits, the host sends
+7. **Inject context.** The host runs `toby.lifecycle.sandbox.context.setup`,
+   clears the generated context directory, then runs
+   `toby.lifecycle.sandbox.context.init`. Agent instructions and host config run
+   before tool-specific context hooks. Each hook writes files under the generated
+   context directory via the sandbox service and sandbox manager `file.create`
+   calls.
+8. **Install and launch.** The host runs `toby.lifecycle.sandbox.init`, then
+   `toby.lifecycle.sandbox.install` or `toby.lifecycle.sandbox.upgrade` as
+   needed. The primary tool's `Launch` runs the foreground command via
+   `command.run`.
+9. **Tear down.** When the foreground command exits, the host sends
    `sandbox.terminate`; the host process exits with the foreground command's
    exit code.
 
 ## Tool abstraction (`internal/tools/tool`)
 
-Every tool implements the `Tool` interface. Tools register into the
-`toby.tools` fx group and are looked up by name in the `Registry`. A `Toolset`
-is an ordered collection with one primary tool; `session` drives the lifecycle
-across the whole set.
+Every full tool implements the `Tool` interface. Tool implementations register
+into the `toby.tools` fx group in the execution graph and are looked up by name
+in the `Registry`. Planning uses metadata-only `Tool` values with the same names,
+CLI names, groups, declared dependencies, and lifecycle priorities.
 
-Lifecycle phases (each tool may implement any subset):
+A `Toolset` is an ordered collection with one primary tool. Dependencies select
+additional tools; they do not directly run dependency code. Static lifecycle
+priority controls hook ordering, so dependency tools use lower priorities than
+their dependents.
 
-| Phase | When | Typical use |
+Lifecycle hook groups:
+
+| Group | When | Typical use |
 | --- | --- | --- |
-| `HostInit` | before the sandbox starts | host-side setup, bind registration, dependency host-init |
-| `SandboxContextSetup` | building the run context | set environment variables, append PATH entries |
-| `RegisterContextFiles` | context injection | emit synthetic config / instructions |
-| `SandboxInit` | once per sandbox | run embedded install/init scripts |
-| `Install` / `Upgrade` | before launch | install or reinstall the tool |
-| `Launch` | foreground | run the tool (primary only) |
+| `toby.lifecycle.host.init` | before the sandbox starts | host-side setup, bind and managed-mount registration |
+| `toby.lifecycle.sandbox.mount.init` | setup sandbox after managed mounts are attached | root-owned mount setup, provider-volume ownership |
+| `toby.lifecycle.sandbox.context.setup` | before context files are generated | set environment variables, append PATH entries |
+| `toby.lifecycle.sandbox.context.init` | context injection | emit synthetic config / instructions |
+| `toby.lifecycle.sandbox.init` | once per sandbox | run embedded install/init scripts |
+| `toby.lifecycle.sandbox.install` | before launch or `--install` | install missing tools |
+| `toby.lifecycle.sandbox.upgrade` | `--upgrade` / auto-upgrade | reinstall tools |
+
+Only the primary tool's `Launch` method runs in the foreground after lifecycle
+hooks complete.
 
 Tools are grouped (`GroupAI`, `GroupUI`, `GroupSystem`, `GroupVCS`,
 `GroupCommand`). A tool declares `ContextGroups()`; launching it exposes a
@@ -250,6 +275,6 @@ matrix and the t3 walkthrough.
   `0` is success and unclassified errors map to `1`. Command execution maps
   `127` (not found), `126` (not executable), and `130` (canceled).
 - **Warnings** (`internal/diagnostic/warning`): suppressible IDs are
-  `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`,
+  `mount.host-backing`, `opencode.model-discovery`, `project.autoload-disabled`,
   `project.duplicate`, and `project.missing`. Suppress all with
-  `sandbox.suppressWarnings: true` or a subset with a list of IDs.
+  `settings.suppressWarnings: true` or a subset with a list of IDs.

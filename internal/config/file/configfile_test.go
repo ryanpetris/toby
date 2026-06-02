@@ -72,6 +72,49 @@ func TestDecodeYAMLRejectsNonObjectAndNormalizesNestedValues(t *testing.T) {
 	}
 }
 
+func TestDecodeIntoParsesStrictYAMLAndJSONC(t *testing.T) {
+	type config struct {
+		Name string `yaml:"name" json:"name"`
+	}
+
+	for _, tt := range []struct {
+		name   string
+		data   []byte
+		format Format
+	}{
+		{name: "yaml", data: []byte("name: demo\n"), format: FormatYAML},
+		{name: "jsonc", data: []byte(`{"name":"demo", // comment
+}`), format: FormatJSON},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var decoded config
+			if err := DecodeInto(tt.data, tt.format, "test config", &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Name != "demo" {
+				t.Fatalf("name = %q", decoded.Name)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		data   []byte
+		format Format
+	}{
+		{name: "yaml", data: []byte("name: demo\nextra: true\n"), format: FormatYAML},
+		{name: "jsonc", data: []byte(`{"name":"demo","extra":true}`), format: FormatJSON},
+	} {
+		t.Run(tt.name+" unknown", func(t *testing.T) {
+			var decoded config
+			err := DecodeInto(tt.data, tt.format, "test config", &decoded)
+			if err == nil || !strings.Contains(err.Error(), "extra") {
+				t.Fatalf("err = %v, want unknown extra field", err)
+			}
+		})
+	}
+}
+
 func TestMergeDeepMergesDedupeListsAndClonesValues(t *testing.T) {
 	srcReplace := map[string]any{"key": "value"}
 	dst := map[string]any{

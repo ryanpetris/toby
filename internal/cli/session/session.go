@@ -12,7 +12,6 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
-	"petris.dev/toby/internal/context/setup"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/hostmanager"
 	"petris.dev/toby/internal/control/httpproxy"
@@ -21,6 +20,7 @@ import (
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/binary"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -30,15 +30,32 @@ type Params struct {
 	SandboxService *sandbox.SandboxService
 	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
-	ContextInit    []contextinit.Registration
 	HostManager    *hostmanager.HostManager
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *tobyconfig.Service
 	Stderr         io.Writer
+
+	HostInitHooks     []tool.LifecycleHook
+	MountInitHooks    []tool.LifecycleHook
+	ContextSetupHooks []tool.LifecycleHook
+	ContextInitHooks  []tool.LifecycleHook
+	SandboxInitHooks  []tool.LifecycleHook
+	InstallHooks      []tool.LifecycleHook
+	UpgradeHooks      []tool.LifecycleHook
+}
+
+type Runner interface {
+	Run(context.Context, *tool.CommandOptions, []string, []string, string) error
+}
+
+type RunnerFunc func(context.Context, *tool.CommandOptions, []string, []string, string) error
+
+func (f RunnerFunc) Run(ctx context.Context, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
+	return f(ctx, opts, extra, requestedTools, primary)
 }
 
 func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
-	effectiveOpts := applySandboxDefaults(opts, params.TobyConfig)
+	effectiveOpts := ApplySandboxDefaults(opts, params.TobyConfig)
 	opts = &effectiveOpts
 	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts); err != nil {
 		return err
@@ -52,16 +69,20 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 		return fmt.Errorf("sandbox service is not configured")
 	}
 	params.SandboxService.Prepare(sbx)
+	if err := params.SandboxService.ConfigureMounts(opts); err != nil {
+		return err
+	}
 
 	toolset, err := params.Registry.Build(requestedTools, primary)
 	if err != nil {
 		return err
 	}
-	toolset.SetToolStates(opts.ToolStates)
-	warnHostToolState(params.Stderr, opts.SuppressWarnings, toolset)
-	if err := toolset.HostInit(ctx, opts); err != nil {
+	lifecycleCtx := tool.LifecycleContext{Options: opts, Stderr: params.Stderr}
+	activeTools := toolset.OrderedToolNames()
+	if err := tool.RunLifecycle(ctx, params.HostInitHooks, activeTools, lifecycleCtx); err != nil {
 		return err
 	}
+	warnHostBackedMounts(params.Stderr, opts.SuppressWarnings, params.SandboxService.HostBackedManagedMounts())
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
@@ -69,27 +90,11 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	params.ContextFiles.SetSandbox(params.SandboxService)
 	params.ContextFiles.Reset()
 
-	exits := sandbox.NewCommandExits()
-	ready := make(chan sandboxManagerReady, 1)
 	if params.HostManager == nil {
 		return fmt.Errorf("host manager is not configured")
 	}
 	manager := params.HostManager
 	manager.RepositoryResolver = params.SandboxService
-	manager.CommandExit = exits.Complete
-	sandboxManagerExit := sandbox.NewManagerExit()
-	manager.ContextInit = func(ctx context.Context, client *hostmanager.SandboxClient) error {
-		if err := params.SandboxService.Connect(ctx, sbx, client, exits, sandboxManagerExit); err != nil {
-			return err
-		}
-		if err := toolset.SandboxContextSetup(ctx); err != nil {
-			return err
-		}
-		return initSandboxContext(ctx, params, toolset, opts)
-	}
-	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
-		ready <- sandboxManagerReady{client: client, err: err}
-	}
 	endpoint := sbx.HostControlEndpoint()
 	endpoint.BinarySource = sandboxbinary.SourceBytes
 	routes := []control.HTTPRoute{}
@@ -110,33 +115,29 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	}
 	params.SandboxService.SetTobyMCPURL(mcpURL)
 
+	mounts := params.SandboxService.RuntimeMounts()
 	binds := params.SandboxService.StartBinds()
-	go func() {
-		code, err := sbx.Run(ctx, sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds})
-		sandboxManagerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
-	}()
-
-	var sandboxClient *hostmanager.SandboxClient
-	select {
-	case result := <-ready:
-		if result.err != nil {
-			return waitSandboxManagerAfterError(ctx, sandboxManagerExit, result.client, result.err)
-		}
-		sandboxClient = result.client
-	case <-sandboxManagerExit.Done():
-		result := sandboxManagerExit.Result()
-		if result.Err != nil {
-			return result.Err
-		}
-		return exitcode.New(result.ExitCode, "sandbox manager exited before context init")
-	case <-ctx.Done():
-		return ctx.Err()
+	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts}
+	primeCode, primeErr := sbx.Prime(ctx, runSpec)
+	if primeErr != nil {
+		return primeErr
 	}
+	if primeCode != 0 {
+		return exitcode.Code(primeCode)
+	}
+	if err := runMountInit(ctx, params, manager, sbx, runSpec, activeTools, lifecycleCtx); err != nil {
+		return err
+	}
+	sandboxClient, sandboxManagerExit, err := startRunSandboxManager(ctx, params, manager, sbx, opts, runSpec, activeTools, lifecycleCtx)
+	if err != nil {
+		return err
+	}
+
 	var runErr error
-	if err := toolset.SandboxInit(ctx); err != nil {
+	if err := tool.RunLifecycle(ctx, params.SandboxInitHooks, activeTools, lifecycleCtx); err != nil {
 		runErr = err
 	} else {
-		runErr = toolset.Launch(ctx, opts, extra)
+		runErr = launchTool(ctx, params, toolset, opts, extra, activeTools, lifecycleCtx)
 	}
 	if termErr := terminateSandboxManager(ctx, sandboxClient, sandboxManagerExit); runErr == nil && termErr != nil {
 		return termErr
@@ -144,15 +145,21 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	return runErr
 }
 
-func applySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) tool.CommandOptions {
+func ApplySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) tool.CommandOptions {
 	if opts == nil {
 		opts = &tool.CommandOptions{}
 	}
 	result := *opts
 	defaults := config.Sandbox()
-	result.ToolStates = defaults.Tools.Clone()
-	result.ToolStates.Merge(opts.ToolStates)
-	result.SuppressWarnings = defaults.SuppressWarnings.Clone()
+	settings := config.Settings()
+	result.MountProfiles = config.MountProfiles()
+	result.MountProfiles.Merge(opts.MountProfiles)
+	if result.MountProfile == "" {
+		result.MountProfile = settings.MountProfile
+	}
+	result.ToolMountProfiles = config.ToolMountProfiles()
+	mergeStringMap(result.ToolMountProfiles, opts.ToolMountProfiles)
+	result.SuppressWarnings = settings.SuppressWarnings.Clone()
 	result.SuppressWarnings.Merge(opts.SuppressWarnings)
 	if result.BubblewrapRoot == "" {
 		result.BubblewrapRoot = defaults.Runtime.Bubblewrap.Root
@@ -176,6 +183,26 @@ func applySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 		result.DockerBuild = defaults.Runtime.Docker.Build
 	}
 	return result
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(src))
+	for key, value := range src {
+		clone[key] = value
+	}
+	return clone
+}
+
+func mergeStringMap(dst, src map[string]string) {
+	if len(src) == 0 {
+		return
+	}
+	for key, value := range src {
+		dst[key] = value
+	}
 }
 
 func prepareConfiguredProjects(stderr io.Writer, home string, opts *tool.CommandOptions) error {
@@ -227,12 +254,15 @@ func resolveConfiguredProjectSource(project tool.ProjectMount, home string) (too
 	return tool.ProjectMount{Name: name, Source: abs}, true, nil
 }
 
-func warnHostToolState(stderr io.Writer, suppression warning.Suppression, toolset *tool.Toolset) {
-	names := toolset.HostStateToolNames()
-	if len(names) == 0 {
+func warnHostBackedMounts(stderr io.Writer, suppression warning.Suppression, mounts []sandboxmount.Info) {
+	if len(mounts) == 0 {
 		return
 	}
-	warning.Fprintf(stderr, suppression, warning.ToolHostState, "using host tool state for %s; running multiple sandbox instances with the same host tool state can corrupt tool databases.", strings.Join(names, ", "))
+	names := make([]string, 0, len(mounts))
+	for _, item := range mounts {
+		names = append(names, item.Key.String())
+	}
+	warning.Fprintf(stderr, suppression, warning.MountHostBacking, "using host-backed managed mounts for %s; running multiple sandbox instances with the same host-backed mounts can corrupt tool databases.", strings.Join(names, ", "))
 }
 
 func sandboxManagerArgv(sbx sandbox.Instance) []string {
@@ -243,12 +273,88 @@ func sandboxManagerArgv(sbx sandbox.Instance) []string {
 	}
 }
 
+func runMountInit(ctx context.Context, params Params, manager *hostmanager.HostManager, sbx sandbox.Instance, spec sandbox.RunSpec, activeTools []string, lifecycleCtx tool.LifecycleContext) error {
+	exits := sandbox.NewCommandExits()
+	ready := make(chan sandboxManagerReady, 1)
+	managerExit := sandbox.NewManagerExit()
+	manager.CommandExit = exits.Complete
+	manager.ContextInit = func(ctx context.Context, client *hostmanager.SandboxClient) error {
+		if err := params.SandboxService.Connect(ctx, sbx, client, exits, managerExit); err != nil {
+			return err
+		}
+		if err := params.SandboxService.MountSetup(ctx); err != nil {
+			return err
+		}
+		return tool.RunLifecycle(ctx, params.MountInitHooks, activeTools, lifecycleCtx)
+	}
+	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
+		ready <- sandboxManagerReady{client: client, err: err}
+	}
+	go func() {
+		code, err := sbx.Setup(ctx, spec)
+		managerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
+	}()
+	select {
+	case result := <-ready:
+		if result.err != nil {
+			return waitSandboxManagerAfterError(ctx, managerExit, result.client, result.err)
+		}
+		return terminateSandboxManager(ctx, result.client, managerExit)
+	case <-managerExit.Done():
+		result := managerExit.Result()
+		if result.Err != nil {
+			return result.Err
+		}
+		return exitcode.New(result.ExitCode, "sandbox setup manager exited before context init")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func startRunSandboxManager(ctx context.Context, params Params, manager *hostmanager.HostManager, sbx sandbox.Instance, opts *tool.CommandOptions, spec sandbox.RunSpec, activeTools []string, lifecycleCtx tool.LifecycleContext) (*hostmanager.SandboxClient, *sandbox.ManagerExit, error) {
+	exits := sandbox.NewCommandExits()
+	ready := make(chan sandboxManagerReady, 1)
+	managerExit := sandbox.NewManagerExit()
+	manager.CommandExit = exits.Complete
+	manager.ContextInit = func(ctx context.Context, client *hostmanager.SandboxClient) error {
+		if err := params.SandboxService.Connect(ctx, sbx, client, exits, managerExit); err != nil {
+			return err
+		}
+		if err := tool.RunLifecycle(ctx, params.ContextSetupHooks, activeTools, lifecycleCtx); err != nil {
+			return err
+		}
+		return initSandboxContext(ctx, params, opts, activeTools, lifecycleCtx)
+	}
+	manager.SandboxReady = func(client *hostmanager.SandboxClient, err error) {
+		ready <- sandboxManagerReady{client: client, err: err}
+	}
+	go func() {
+		code, err := sbx.Run(ctx, spec)
+		managerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
+	}()
+	select {
+	case result := <-ready:
+		if result.err != nil {
+			return nil, nil, waitSandboxManagerAfterError(ctx, managerExit, result.client, result.err)
+		}
+		return result.client, managerExit, nil
+	case <-managerExit.Done():
+		result := managerExit.Result()
+		if result.Err != nil {
+			return nil, nil, result.Err
+		}
+		return nil, nil, exitcode.New(result.ExitCode, "sandbox manager exited before context init")
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+}
+
 type sandboxManagerReady struct {
 	client *hostmanager.SandboxClient
 	err    error
 }
 
-func initSandboxContext(ctx context.Context, params Params, toolset *tool.Toolset, opts *tool.CommandOptions) error {
+func initSandboxContext(ctx context.Context, params Params, opts *tool.CommandOptions, activeTools []string, lifecycleCtx tool.LifecycleContext) error {
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
@@ -256,12 +362,28 @@ func initSandboxContext(ctx context.Context, params Params, toolset *tool.Toolse
 	if err := params.SandboxService.DeletePath(ctx, contextDir, true); err != nil {
 		return err
 	}
-	for _, service := range contextinit.Ordered(params.ContextInit) {
-		if err := service.InitContext(ctx, contextinit.Params{Toolset: toolset, Options: opts, Stderr: params.Stderr}); err != nil {
+	lifecycleCtx.Options = opts
+	return tool.RunLifecycle(ctx, params.ContextInitHooks, activeTools, lifecycleCtx)
+}
+
+func launchTool(ctx context.Context, params Params, toolset *tool.Toolset, opts *tool.CommandOptions, extra []string, activeTools []string, lifecycleCtx tool.LifecycleContext) error {
+	primary := toolset.Primary()
+	if primary == nil {
+		return fmt.Errorf("toolset cannot launch without a primary tool")
+	}
+	if opts != nil && opts.Install {
+		return tool.RunLifecycle(ctx, params.InstallHooks, activeTools, lifecycleCtx)
+	}
+	if opts != nil && opts.Upgrade {
+		if err := tool.RunLifecycle(ctx, params.UpgradeHooks, activeTools, lifecycleCtx); err != nil {
 			return err
 		}
+		return primary.Launch(ctx, extra)
 	}
-	return nil
+	if err := tool.RunLifecycle(ctx, params.InstallHooks, activeTools, lifecycleCtx); err != nil {
+		return err
+	}
+	return primary.Launch(ctx, extra)
 }
 
 func registerTobyMCPProxy(params Params, manager *hostmanager.HostManager, controlHost string) (string, error) {

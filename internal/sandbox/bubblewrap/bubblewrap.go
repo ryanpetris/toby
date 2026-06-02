@@ -14,6 +14,8 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 
@@ -35,7 +37,7 @@ type instance struct {
 	sandbox.BaseInstance
 	runner          executil.Runner
 	bwrap           string
-	homeHostPath    string
+	providerRoot    string
 	runtimeHostPath string
 	runtime         string
 	pipewireCore    string
@@ -88,7 +90,7 @@ func (e *environment) Available() error { return e.available }
 
 func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	runtimeRoot := filepath.Join(e.runtime, "toby")
-	sandboxPaths := tool.SandboxPaths{
+	sandboxPaths := sandboxpath.Paths{
 		Root:      runtimeRoot,
 		Home:      e.paths.Home,
 		Context:   filepath.Join(runtimeRoot, "context"),
@@ -96,14 +98,14 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 		Workspace: e.paths.ProjectRoot,
 	}
 	base, err := sandbox.NewBaseInstance(sandbox.BaseInstanceParams{
-		Paths:        e.paths,
-		Label:        spec.Label,
-		SandboxPaths: sandboxPaths,
-		HomeDir:      e.paths.Home,
-		ProjectsDir:  e.paths.ProjectRoot,
-		RuntimeDir:   runtimeRoot,
-		Workdir:      spec.Workdir,
-		Projects:     spec.Projects,
+		Paths:       e.paths,
+		Label:       spec.Label,
+		PathSet:     sandboxPaths,
+		HomeDir:     e.paths.Home,
+		ProjectsDir: e.paths.ProjectRoot,
+		RuntimeDir:  runtimeRoot,
+		Workdir:     spec.Workdir,
+		Projects:    spec.Projects,
 	})
 	if err != nil {
 		return nil, err
@@ -112,11 +114,29 @@ func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	if root == "" {
 		root = e.paths.SandboxRoot
 	}
-	return &instance{BaseInstance: base, runner: e.runner, bwrap: e.bwrap, homeHostPath: filepath.Join(root, filepath.FromSlash(spec.Label)), runtimeHostPath: runtimeRoot, runtime: e.runtime, pipewireCore: e.pipewireCore, waylandDisplay: e.waylandDisplay, xauthority: e.xauthority}, nil
+	return &instance{BaseInstance: base, runner: e.runner, bwrap: e.bwrap, providerRoot: root, runtimeHostPath: runtimeRoot, runtime: e.runtime, pipewireCore: e.pipewireCore, waylandDisplay: e.waylandDisplay, xauthority: e.xauthority}, nil
+}
+
+func (s *instance) Prime(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+	if err := s.prepareHostDirs(spec.Mounts); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}
+
+func (s *instance) Setup(ctx context.Context, spec sandbox.RunSpec) (int, error) {
+	if err := s.prepareHostDirs(spec.Mounts); err != nil {
+		return 1, err
+	}
+	cmd, err := s.BuildSetupCommand(spec)
+	if err != nil {
+		return 1, err
+	}
+	return s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 }
 
 func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
-	if err := s.prepareHostDirs(); err != nil {
+	if err := s.prepareHostDirs(spec.Mounts); err != nil {
 		return 1, err
 	}
 	cmd, err := s.BuildCommand(spec)
@@ -126,12 +146,17 @@ func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
 	return s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 }
 
-func (s *instance) prepareHostDirs() error {
+func (s *instance) prepareHostDirs(mounts []sandboxmount.RuntimeMount) error {
 	dirs := []string{
-		s.homeHostPath,
+		s.providerRoot,
 		s.runtimeHostPath,
 		filepath.Join(s.runtimeHostPath, "context"),
 		filepath.Join(s.runtimeHostPath, "bin"),
+	}
+	for _, mount := range mounts {
+		if mount.Source.Kind == sandboxmount.SourceProvider {
+			dirs = append(dirs, s.providerHostPath(mount))
+		}
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -175,19 +200,94 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 		args = append(args, "--setenv", name, spec.Env[name])
 	}
 	args = append(args,
-		"--bind", s.homeHostPath, s.HomeDir(),
 		"--bind", s.runtimeHostPath, s.TobyRuntimeDir(),
 		"--bind", "/usr/bin/true", "/usr/bin/xdg-open",
 	)
+	type finalMount struct {
+		target string
+		args   []string
+	}
+	var finalMounts []finalMount
 	for _, project := range s.ProjectMounts() {
-		args = append(args, "--bind", project.HostPath, project.SandboxPath)
+		finalMounts = append(finalMounts, finalMount{target: project.SandboxPath, args: []string{"--bind", project.HostPath, project.SandboxPath}})
 	}
 	for _, bind := range spec.Binds {
-		args = append(args, bindFlag(bind.Type, bind.Optional), bind.HostPath, helpers.ResolvePath(bind.Target, s))
+		target := helpers.ResolvePath(bind.Target, s)
+		finalMounts = append(finalMounts, finalMount{target: target, args: []string{bindFlag(bind.Access, bind.Optional), bind.HostPath, target}})
+	}
+	for _, mount := range spec.Mounts {
+		mountArgs := s.mountArgs(mount, false)
+		if len(mountArgs) > 0 {
+			finalMounts = append(finalMounts, finalMount{target: mount.Target, args: mountArgs})
+		}
+	}
+	sort.SliceStable(finalMounts, func(i, j int) bool {
+		return finalMounts[i].target < finalMounts[j].target
+	})
+	for _, mount := range finalMounts {
+		args = append(args, mount.args...)
 	}
 	args = append(args, "--chdir", s.ChdirDir())
 	args = append(args, spec.Argv...)
 	return args, nil
+}
+
+func (s *instance) BuildSetupCommand(spec sandbox.RunSpec) ([]string, error) {
+	args := []string{
+		s.bwrap,
+		"--die-with-parent",
+		"--unshare-pid",
+		"--proc", "/proc",
+		"--dev-bind", "/dev", "/dev",
+		"--tmpfs", "/tmp",
+		"--ro-bind-try", "/etc", "/etc",
+		"--ro-bind-try", "/opt", "/opt",
+		"--bind-try", "/sys", "/sys",
+		"--ro-bind-try", "/usr", "/usr",
+		"--symlink", "usr/bin", "/bin",
+		"--symlink", "usr/bin", "/sbin",
+		"--symlink", "usr/lib", "/lib",
+		"--symlink", "usr/lib", "/lib64",
+		"--dir", sandboxpath.DefaultRoot,
+		"--dir", filepath.ToSlash(filepath.Join(sandboxpath.DefaultRoot, "mounts")),
+	}
+	for _, name := range sortedEnvNames(spec.Env) {
+		args = append(args, "--setenv", name, spec.Env[name])
+	}
+	args = append(args,
+		"--bind", s.runtimeHostPath, s.TobyRuntimeDir(),
+	)
+	for _, mount := range spec.Mounts {
+		args = append(args, s.mountArgs(mount, true)...)
+	}
+	args = append(args, "--chdir", "/")
+	args = append(args, spec.Argv...)
+	return args, nil
+}
+
+func (s *instance) mountArgs(mount sandboxmount.RuntimeMount, setup bool) []string {
+	target := mount.Target
+	if setup {
+		if mount.Source.Kind != sandboxmount.SourceProvider || mount.SetupPath == "" {
+			return nil
+		}
+		target = mount.SetupPath
+	}
+	switch mount.Source.Kind {
+	case sandboxmount.SourceProvider:
+		return []string{bindFlag(mount.Access, mount.Optional), s.providerHostPath(mount), target}
+	case sandboxmount.SourceHostPath:
+		if setup {
+			return nil
+		}
+		return []string{bindFlag(mount.Access, mount.Optional), mount.Source.Value, target}
+	default:
+		return nil
+	}
+}
+
+func (s *instance) providerHostPath(mount sandboxmount.RuntimeMount) string {
+	return filepath.Join(s.providerRoot, mount.ProviderID)
 }
 
 func sortedEnvNames(env tool.Environment) []string {
@@ -209,17 +309,17 @@ func (s *instance) runtimeBind(name string) []string {
 	return []string{"--ro-bind-try", path, path}
 }
 
-func bindFlag(kind tool.BindType, optional bool) string {
+func bindFlag(kind sandboxmount.Access, optional bool) string {
 	suffix := ""
 	if optional {
 		suffix = "-try"
 	}
 	switch kind {
-	case tool.BindRegular, "":
+	case sandboxmount.AccessRegular, "":
 		return "--bind" + suffix
-	case tool.BindReadOnly:
+	case sandboxmount.AccessReadOnly:
 		return "--ro-bind" + suffix
-	case tool.BindDev:
+	case sandboxmount.AccessDev:
 		return "--dev-bind" + suffix
 	default:
 		return "--bind" + suffix

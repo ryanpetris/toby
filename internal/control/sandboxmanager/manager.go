@@ -450,10 +450,7 @@ func commandCredential(params control.CommandRunParams) (*syscall.Credential, er
 		groups = append(groups, uint32(group))
 	}
 	if os.Geteuid() != 0 {
-		if params.UID == os.Getuid() && params.GID == os.Getgid() {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("cannot set command credentials as non-root")
+		return nil, nil
 	}
 	return &syscall.Credential{Uid: uint32(params.UID), Gid: uint32(params.GID), Groups: groups}, nil
 }

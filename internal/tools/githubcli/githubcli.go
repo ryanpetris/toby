@@ -28,8 +28,7 @@ var githubCLIFiles embed.FS
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"github_cli"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 type Params struct {
@@ -47,7 +46,7 @@ func Provide(params Params) Result {
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
 	}
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type githubCLITool struct {

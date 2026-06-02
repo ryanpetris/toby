@@ -8,14 +8,11 @@ import (
 
 type fakeTool struct {
 	Base
-	stateful bool
 }
 
 func newFakeTool(name string) fakeTool {
 	return fakeTool{Base: Base{Metadata: Metadata{Name: name}}}
 }
-
-func (t fakeTool) UsesToolState() bool { return t.stateful }
 
 type lifecycleTool struct {
 	Base
@@ -73,11 +70,11 @@ func (t *contextLifecycleTool) RegisterContextFiles(ctx context.Context, opts Co
 	})
 }
 
-func TestRegistryBuildPreservesExplicitSelectionOrder(t *testing.T) {
+func TestRegistryBuildOrdersByLifecyclePriority(t *testing.T) {
 	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
-		newFakeTool("npm"),
-		newFakeTool("claude"),
-		newFakeTool("docker"),
+		fakeTool{Base: Base{Metadata: Metadata{Name: "npm", Priority: 10}}},
+		fakeTool{Base: Base{Metadata: Metadata{Name: "claude", Priority: 100, Dependencies: []string{"npm"}}}},
+		fakeTool{Base: Base{Metadata: Metadata{Name: "docker", Priority: 10}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +84,7 @@ func TestRegistryBuildPreservesExplicitSelectionOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := toolset.OrderedToolNames()
-	want := []string{"docker", "claude"}
+	want := []string{"docker", "npm", "claude"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered names = %#v, want %#v", got, want)
 	}
@@ -132,35 +129,6 @@ func TestToolsetLifecycleStopsOnError(t *testing.T) {
 	}
 	if err := toolset.HostInit(ctx, &CommandOptions{}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestToolsetHostStateToolNamesFiltersStatefulTools(t *testing.T) {
-	registry, err := NewRegistry(RegistryParams{Tools: []Tool{
-		fakeTool{Base: Base{Metadata: Metadata{Name: OpenCodeToolName}}, stateful: true},
-		fakeTool{Base: Base{Metadata: Metadata{Name: DockerToolName}}, stateful: true},
-		fakeTool{Base: Base{Metadata: Metadata{Name: NpmToolName}}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	toolset, err := registry.Build([]string{OpenCodeToolName, DockerToolName, NpmToolName}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost}})
-	got := toolset.HostStateToolNames()
-	want := []string{OpenCodeToolName}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("host state names = %#v, want %#v", got, want)
-	}
-
-	toolset.SetToolStates(ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost}, Tools: map[string]ToolStateConfig{OpenCodeToolName: {State: ToolStatePrivate}}})
-	got = toolset.HostStateToolNames()
-	want = nil
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("private state names = %#v, want %#v", got, want)
 	}
 }
 

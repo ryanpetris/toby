@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -22,7 +23,6 @@ func TestLoadLaunchConfigDefaultsSandboxNameAndResolvesProjectPaths(t *testing.T
 	configPath := filepath.Join(dir, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
 sandbox:
-  autoUpgrade: true
   runtime:
     default: docker
     docker:
@@ -34,38 +34,39 @@ sandbox:
         dockerfile: ../Dockerfile.toby
     bubblewrap:
       root: sandboxes/review
-  tools:
-    default:
-      state: private
-      stateRoot: ~/unused-default
-    opencode:
-      state: host
-      stateRoot: state/opencode
+mountProfiles:
+  review:
+    backing: host
+    hostRoot: state/opencode
+settings:
+  mountProfile: review
+  autoUpgrade: true
   suppressWarnings: true
 workdir: ~/literal-workdir/../raw
 projects:
-  - foo
-  - name: named
-  - name: dot
+  foo:
+  named:
+  dot:
     path: .
-  - name: bar
+  bar:
     path: ../bar-src
-  - name: abs
+  abs:
     path: `+absolute+`
-  - name: tilde
+  tilde:
     path: ~/tilde-source/../raw
 tools:
-  - opencode
-  - uv
-  - npm
+  opencode:
+    mountProfile: review
+  uv:
+  npm:
 `))
 
 	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sandbox.Name != "" || !cfg.Sandbox.AutoUpgrade {
-		t.Fatalf("sandbox = %#v", cfg.Sandbox)
+	if cfg.Sandbox.Name != "" || !cfg.Settings.AutoUpgrade || cfg.Settings.MountProfile != "review" {
+		t.Fatalf("settings/sandbox = %#v %#v", cfg.Settings, cfg.Sandbox)
 	}
 	wantWorkdir := "~/literal-workdir/../raw"
 	if cfg.Workdir != wantWorkdir {
@@ -80,27 +81,28 @@ tools:
 	if cfg.Sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "review") {
 		t.Fatalf("sandbox bubblewrap config = %#v", cfg.Sandbox)
 	}
-	if cfg.Sandbox.Tools.Default.State != tool.ToolStatePrivate || cfg.Sandbox.Tools.StateFor("opencode") != tool.ToolStateHost {
-		t.Fatalf("sandbox tools = %#v", cfg.Sandbox.Tools)
+	mounts := cfg.MountProfiles.Config("review")
+	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
+		t.Fatalf("mounts = %#v", mounts)
 	}
-	if cfg.Sandbox.Tools.Default.StateRoot != filepath.Join(home, "unused-default") || cfg.Sandbox.Tools.StateRootFor("opencode") != filepath.Join(dir, "state", "opencode") {
-		t.Fatalf("sandbox tool roots = %#v", cfg.Sandbox.Tools)
+	if mounts.HostRoot != filepath.Join(dir, "state", "opencode") || mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != filepath.Join(dir, "state", "opencode") {
+		t.Fatalf("mount roots = %#v", mounts)
 	}
-	if !cfg.Sandbox.SuppressWarnings.Suppresses(warning.ToolHostState) || !cfg.Sandbox.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
-		t.Fatalf("suppress warnings = %#v", cfg.Sandbox.SuppressWarnings)
+	if !cfg.Settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || !cfg.Settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+		t.Fatalf("suppress warnings = %#v", cfg.Settings.SuppressWarnings)
 	}
 	wantProjects := []tool.ProjectMount{
+		{Name: "abs", Source: absolute},
+		{Name: "bar", Source: dir + string(filepath.Separator) + "../bar-src"},
+		{Name: "dot", Source: dir},
 		{Name: "foo", Source: filepath.Join(projectRoot, "foo")},
 		{Name: "named", Source: filepath.Join(projectRoot, "named")},
-		{Name: "dot", Source: dir},
-		{Name: "bar", Source: dir + string(filepath.Separator) + "../bar-src"},
-		{Name: "abs", Source: absolute},
 		{Name: "tilde", Source: home + "/tilde-source/../raw"},
 	}
-	if !reflect.DeepEqual(cfg.Projects, wantProjects) {
+	if !reflect.DeepEqual(projectMounts(cfg.Projects), wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", cfg.Projects, wantProjects)
 	}
-	wantTools := []launchToolConfig{{Name: "opencode"}, {Name: "uv"}, {Name: "npm"}}
+	wantTools := []launchToolConfig{{Name: "npm", Label: "tools.npm"}, {Name: "opencode", Label: "tools.opencode", MountProfile: "review"}, {Name: "uv", Label: "tools.uv"}}
 	if !reflect.DeepEqual(cfg.Tools, wantTools) {
 		t.Fatalf("tools = %#v, want %#v", cfg.Tools, wantTools)
 	}
@@ -110,7 +112,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	configPath := filepath.Join(home, "toby.json")
-	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"bubblewrap"},"projects":["foo"],"tools":["opencode"]}`))
+	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"bubblewrap"},"projects":{"foo":null},"tools":{"opencode":null}}`))
 
 	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
@@ -122,7 +124,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	if cfg.Sandbox.Runtime.Default != "bubblewrap" {
 		t.Fatalf("runtime = %#v", cfg.Sandbox.Runtime)
 	}
-	if got, want := cfg.Projects[0].Source, filepath.Join(projectRoot, "foo"); got != want {
+	if got, want := cfg.Projects[0].Mount.Source, filepath.Join(projectRoot, "foo"); got != want {
 		t.Fatalf("project source = %q, want %q", got, want)
 	}
 }
@@ -132,18 +134,21 @@ func TestBuildConfiguredLaunchResolvesCommandNames(t *testing.T) {
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
 projects:
-  - foo
+  foo:
 workdir: /tmp/work
-sandbox:
-  tools:
-    claude:
-      state: host
-      stateRoot: ./claude-state
+mountProfiles:
+  shared:
+    backing: host
+    hostRoot: ./claude-state
+settings:
+  mountProfile: shared
   suppressWarnings:
     - opencode.model-discovery
 tools:
-  - gh
-  - npm
+  gh:
+    primary: true
+  npm:
+    mountProfile: shared
 `))
 	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
 		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
@@ -167,14 +172,18 @@ tools:
 	if launch.Options.Env != "" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
 		t.Fatalf("options = %#v", launch.Options)
 	}
-	if launch.Options.ToolStates.StateFor("claude") != tool.ToolStateHost {
-		t.Fatalf("tool states = %#v", launch.Options.ToolStates)
+	mounts := launch.Options.MountProfiles.Config("shared")
+	if launch.Options.MountProfile != "shared" || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "claude", Purpose: "state"}) != sandboxmount.BackingHost {
+		t.Fatalf("mount backing = profile %q mounts %#v", launch.Options.MountProfile, mounts)
 	}
-	if !launch.Options.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.ToolHostState) {
+	if !launch.Options.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
 	}
-	if launch.Options.ToolStates.StateRootFor("claude") != filepath.Join(home, "claude-state") {
-		t.Fatalf("tool roots = %#v", launch.Options.ToolStates)
+	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "claude", Purpose: "state"}) != filepath.Join(home, "claude-state") {
+		t.Fatalf("mount roots = %#v", mounts)
+	}
+	if launch.Options.ToolMountProfiles[tool.NpmToolName] != "shared" {
+		t.Fatalf("tool mount profiles = %#v", launch.Options.ToolMountProfiles)
 	}
 	if got, want := launch.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("extra = %#v, want %#v", got, want)
@@ -186,11 +195,12 @@ func TestBuildConfiguredLaunchAppendsCLIArgsAfterPrimaryParams(t *testing.T) {
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
 projects:
-  - foo
+  foo:
 tools:
-  - name: exec
+  exec:
+    primary: true
     params: ["npm", "test"]
-  - npm
+  npm:
 `))
 	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
 		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.ExecToolName, LaunchHelp: "Run a command"}}},
@@ -233,14 +243,14 @@ func TestBuildOverlayConfiguredLaunchKeepsCLIPrimaryAndAddsConfigToolsProjects(t
 sandbox:
   name: custom-name
 projects:
-  - name: duplicate
+  duplicate:
     path: Projects/app
-  - shared
-  - name: extra
+  shared:
+  extra:
     path: extra
 tools:
-  - opencode
-  - npm
+  opencode:
+  npm:
 `))
 	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
 		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
@@ -265,26 +275,34 @@ tools:
 	if launch.Options.Env != "custom-name" || !reflect.DeepEqual(launch.Extra, []string{"--foreground"}) {
 		t.Fatalf("launch = %#v extra %#v", launch.Options, launch.Extra)
 	}
-	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "duplicate", Source: project}, {Name: "shared", Source: sharedProject}, {Name: "extra", Source: extraProject}}
+	wantProjects := []tool.ProjectMount{{Name: "app", Source: project}, {Name: "duplicate", Source: project}, {Name: "extra", Source: extraProject}, {Name: "shared", Source: sharedProject}}
 	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
 	}
 }
 
-func TestLoadLaunchConfigRejectsParamsOnSecondaryTool(t *testing.T) {
+func TestBuildConfiguredLaunchRejectsParamsOnSecondaryTool(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
 projects:
-  - foo
+  foo:
 tools:
-  - exec
-  - name: npm
+  exec:
+    primary: true
+  npm:
     params: ["test"]
 `))
+	registry, err := tool.NewRegistry(tool.RegistryParams{Tools: []tool.Tool{
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.ExecToolName, LaunchHelp: "Run a command"}}},
+		configTestTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch npm"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := loadLaunchConfig(configPath, home)
-	if err == nil || !strings.Contains(err.Error(), "tools[1].params is only supported on the primary tool") {
+	_, err = BuildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, nil)
+	if err == nil || !strings.Contains(err.Error(), "tools.npm.params is only supported on the primary tool") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -293,17 +311,17 @@ func TestLoadLaunchConfigRejectsInvalidSuppressedWarning(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
-sandbox:
+settings:
   suppressWarnings:
     - unknown.warning
 projects:
-  - foo
+  foo:
 tools:
-  - exec
+  exec:
 `))
 
 	_, err := loadLaunchConfig(configPath, home)
-	if err == nil || !strings.Contains(err.Error(), "sandbox.suppressWarnings[0]") {
+	if err == nil || !strings.Contains(err.Error(), "settings.suppressWarnings[0]") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -313,9 +331,9 @@ func TestBuildConfiguredLaunchRejectsUnknownTools(t *testing.T) {
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
 projects:
-  - foo
+  foo:
 tools:
-  - unknown-command
+  unknown-command:
 `))
 	registry, err := tool.NewRegistry(tool.RegistryParams{})
 	if err != nil {
@@ -335,7 +353,7 @@ func TestMaybeAutoloadProjectConfigWarnsWhenDisabled(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("projects: []\ntools: []\n"))
+	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("projects: {}\ntools: {}\n"))
 	cfgSvc, err := tobyconfig.Load(t.TempDir(), home)
 	if err != nil {
 		t.Fatal(err)
@@ -369,14 +387,14 @@ func TestMaybeAutoloadProjectConfigLoadsWhenEnabled(t *testing.T) {
 sandbox:
   name: review
 projects:
-  - sibling
+  sibling:
 tools:
-  - opencode
-  - npm
+  opencode:
+  npm:
 `))
 	configDir := t.TempDir()
 	writeTestFile(t, filepath.Join(configDir, "config.yaml"), []byte(`
-sandbox:
+settings:
   autoloadProjectConfig: true
 `))
 	cfgSvc, err := tobyconfig.Load(configDir, home)

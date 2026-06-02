@@ -8,17 +8,10 @@ import (
 	"os"
 
 	"petris.dev/toby/internal/cli"
+	"petris.dev/toby/internal/cli/session"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
-	"petris.dev/toby/internal/context/files"
-	"petris.dev/toby/internal/context/setup"
-	"petris.dev/toby/internal/control/hostmanager"
-	"petris.dev/toby/internal/control/mcpserver"
 	"petris.dev/toby/internal/control/sandboxmanager"
-	"petris.dev/toby/internal/platform/executil"
-	"petris.dev/toby/internal/sandbox"
-	sandboxbubblewrap "petris.dev/toby/internal/sandbox/bubblewrap"
-	sandboxdocker "petris.dev/toby/internal/sandbox/docker"
 	"petris.dev/toby/internal/tools"
 	"petris.dev/toby/internal/tools/tool"
 
@@ -72,21 +65,14 @@ type args []string
 func Module() fx.Option {
 	return fx.Options(
 		fx.NopLogger,
-		hostmanager.Module(),
-		mcpserver.Module(),
-		tools.Module(),
-		sandbox.Module(),
-		sandboxbubblewrap.Module(),
-		sandboxdocker.Module(),
 		sandboxmanager.Module(),
+		tools.PlanningModule(),
 		fx.Provide(
 			config.NewPaths,
-			executil.NewProcessRunner,
-			contextfiles.NewService,
 			tobyconfig.New,
-			contextinit.NewServices,
 			tool.NewRegistry,
 			newArgs,
+			newSessionRunner,
 			newRootCommand,
 		),
 		fx.Invoke(runCLI),
@@ -104,30 +90,20 @@ type rootCommandParams struct {
 	fx.In
 
 	Registry       *tool.Registry
-	Factory        sandbox.Factory
-	SandboxService *sandbox.SandboxService
 	Paths          config.Paths
-	ContextFiles   *contextfiles.Service
-	ContextInit    []contextinit.Registration `group:"toby.context.init"`
-	HostManager    *hostmanager.HostManager
-	SandboxManager *sandboxmanager.Runner
-	MCPServer      *mcpserver.Runner
 	Config         *tobyconfig.Service
+	SandboxManager *sandboxmanager.Runner
+	SessionRunner  session.Runner
 	Args           args
 }
 
 func newRootCommand(params rootCommandParams) *cobra.Command {
 	cliParams := cli.Params{
 		Registry:       params.Registry,
-		SandboxFactory: params.Factory,
-		SandboxService: params.SandboxService,
 		Paths:          params.Paths,
-		ContextFiles:   params.ContextFiles,
-		ContextInit:    params.ContextInit,
-		HostManager:    params.HostManager,
-		SandboxManager: params.SandboxManager,
-		MCPServer:      params.MCPServer,
 		TobyConfig:     params.Config,
+		SandboxManager: params.SandboxManager,
+		SessionRunner:  params.SessionRunner,
 		Args:           []string(params.Args),
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,

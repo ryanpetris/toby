@@ -14,6 +14,8 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
@@ -53,19 +55,23 @@ type Project struct {
 type RunSpec struct {
 	Argv        []string
 	Env         tool.Environment
-	Binds       []tool.Bind
+	Binds       []sandboxmount.Bind
+	Mounts      []sandboxmount.RuntimeMount
 	ExecOptions tool.ExecOptions
 }
 
 type Instance interface {
 	tool.Sandbox
 
+	Label() string
 	ProjectPath(string) (string, bool)
 	TobyBinDir() string
 	TobyBinaryPath() string
 	TobyGitAgentsPath() string
 	HostControlEndpoint() control.Endpoint
 	SetupControlEndpoint(tool.Environment, control.Endpoint)
+	Prime(context.Context, RunSpec) (int, error)
+	Setup(context.Context, RunSpec) (int, error)
 	Run(context.Context, RunSpec) (int, error)
 	Cleanup() error
 	VisibleHostPath(string) (string, error)
@@ -141,9 +147,7 @@ func (f Factory) FromOptions(opts *tool.CommandOptions) (Instance, error) {
 		}
 		env = selected
 	}
-	if runtime != RuntimeDocker && (opts.DockerImage != "" || opts.DockerHome != "" || opts.DockerProjects != "" || opts.DockerBuild.IsSet()) {
-		return nil, exitcode.New(2, "docker sandbox settings require sandbox runtime %q", RuntimeDocker)
-	}
+	opts.SandboxRuntime = runtime
 
 	spec, err := f.specFromOptions(opts)
 	if err != nil {
@@ -178,19 +182,21 @@ func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
-	stateRootBase := f.paths.ProjectRoot
+	hostRootBase := f.paths.ProjectRoot
 	if len(spec.Projects) > 0 {
-		stateRootBase = spec.Projects[0].HostPath
+		hostRootBase = spec.Projects[0].HostPath
 	}
-	toolStates, err := opts.ToolStates.ResolveStateRoots(f.paths.Home, stateRootBase)
+	mounts, err := opts.MountProfiles.ResolveHostRoots(f.paths.Home, hostRootBase)
 	if err != nil {
 		return Spec{}, exitcode.New(2, "%s", err)
 	}
-	opts.ToolStates = toolStates
-	spec.DockerImage = strings.TrimSpace(opts.DockerImage)
-	spec.DockerHome = strings.TrimSpace(opts.DockerHome)
-	spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
-	spec.DockerBuild = opts.DockerBuild
+	opts.MountProfiles = mounts
+	if opts.SandboxRuntime == RuntimeDocker {
+		spec.DockerImage = strings.TrimSpace(opts.DockerImage)
+		spec.DockerHome = strings.TrimSpace(opts.DockerHome)
+		spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
+		spec.DockerBuild = opts.DockerBuild
+	}
 	spec.BubblewrapRoot = strings.TrimSpace(opts.BubblewrapRoot)
 	return spec, nil
 }
@@ -345,7 +351,7 @@ type ProjectMount struct {
 type BaseInstance struct {
 	paths              config.Paths
 	label              string
-	sandboxPaths       tool.SandboxPaths
+	sandboxPaths       sandboxpath.Paths
 	homeDir            string
 	projectsDir        string
 	runtimeDir         string
@@ -358,7 +364,7 @@ type BaseInstance struct {
 type BaseInstanceParams struct {
 	Paths              config.Paths
 	Label              string
-	SandboxPaths       tool.SandboxPaths
+	PathSet            sandboxpath.Paths
 	HomeDir            string
 	ProjectsDir        string
 	RuntimeDir         string
@@ -380,7 +386,7 @@ func NewBaseInstance(params BaseInstanceParams) (BaseInstance, error) {
 	return BaseInstance{
 		paths:              params.Paths,
 		label:              params.Label,
-		sandboxPaths:       params.SandboxPaths,
+		sandboxPaths:       params.PathSet,
 		homeDir:            params.HomeDir,
 		projectsDir:        params.ProjectsDir,
 		runtimeDir:         params.RuntimeDir,
@@ -407,7 +413,7 @@ func (s *BaseInstance) ProjectMounts() []ProjectMount {
 	return append([]ProjectMount(nil), s.projects...)
 }
 
-func (s *BaseInstance) Paths() tool.SandboxPaths {
+func (s *BaseInstance) Paths() sandboxpath.Paths {
 	paths := s.sandboxPaths
 	if paths.Root == "" {
 		paths.Root = s.runtimeDir
@@ -428,6 +434,8 @@ func (s *BaseInstance) Paths() tool.SandboxPaths {
 }
 
 func (s *BaseInstance) HomeDir() string { return s.Paths().Home }
+
+func (s *BaseInstance) Label() string { return s.label }
 
 func (s *BaseInstance) Projects() string { return s.Paths().Workspace }
 

@@ -13,6 +13,7 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -52,12 +53,12 @@ func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	regularSandboxPath := filepath.Join(paths.Home, ".config", "regular")
 	readonlySandboxPath := filepath.Join(paths.Home, ".config", "readonly")
 	devSandboxPath := "/var/run/demo.sock"
-	binds := []tool.Bind{
-		{HostPath: "/host/regular", Target: helpers.HomeTarget(".config", "regular"), Type: tool.BindRegular},
-		{HostPath: "/host/readonly", Target: helpers.HomeTarget(".config", "readonly"), Type: tool.BindReadOnly, Optional: true},
-		{HostPath: "/host/demo.sock", Target: helpers.AbsoluteTarget(devSandboxPath), Type: tool.BindDev, Optional: true},
+	binds := []sandboxmount.Bind{
+		{HostPath: "/host/regular", Target: helpers.HomeTarget(".config", "regular"), Access: sandboxmount.AccessRegular},
+		{HostPath: "/host/readonly", Target: helpers.HomeTarget(".config", "readonly"), Access: sandboxmount.AccessReadOnly, Optional: true},
+		{HostPath: "/host/demo.sock", Target: helpers.AbsoluteTarget(devSandboxPath), Access: sandboxmount.AccessDev, Optional: true},
 	}
-	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Binds: binds, Env: tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": paths.Home}})
+	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Binds: binds, Mounts: bubblewrapHomeMount(paths.Home), Env: tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": paths.Home}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +72,11 @@ func TestBuildCommandBindsProjectAndToolBinds(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--setenv", "TOBY_CONTROL_HOST", "127.0.0.1:1234"})
 	assertContainsSequence(t, cmd, []string{"--setenv", "TOBY_CONTROL_TOKEN", "secret"})
 	assertContainsSequence(t, cmd, []string{"--setenv", "HOME", paths.Home})
-	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "demo"), paths.Home})
+	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "toby.default.runtime.home.demo"), paths.Home})
 	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(runtimeDir, "toby"), filepath.Join(runtimeDir, "toby")})
 	assertContainsSequence(t, cmd, []string{"--bind", projectDir, projectDir})
+	assertSequenceBefore(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "toby.default.runtime.home.demo"), paths.Home}, []string{"--bind", projectDir, projectDir})
+	assertSequenceBefore(t, cmd, []string{"--bind", filepath.Join(paths.SandboxRoot, "toby.default.runtime.home.demo"), paths.Home}, []string{"--bind", "/host/regular", regularSandboxPath})
 	assertContainsSequence(t, cmd, []string{"--bind", "/usr/bin/true", "/usr/bin/xdg-open"})
 	assertContainsSequence(t, cmd, []string{"--bind", "/host/regular", regularSandboxPath})
 	assertContainsSequence(t, cmd, []string{"--ro-bind-try", "/host/readonly", readonlySandboxPath})
@@ -166,7 +169,7 @@ func TestConfiguredProjectsDefaultWorkdirIsPrimaryProject(t *testing.T) {
 	assertContainsSequence(t, cmd, []string{"--chdir", filepath.Join(paths.ProjectRoot, "foo")})
 }
 
-func TestBubblewrapRootOptionOverridesDefaultSandboxRoot(t *testing.T) {
+func TestBubblewrapRootOptionOverridesDefaultRoot(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
 	projectDir := filepath.Join(paths.ProjectRoot, "demo")
@@ -179,11 +182,22 @@ func TestBubblewrapRootOptionOverridesDefaultSandboxRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}})
+	cmd, err := sbx.(*instance).BuildCommand(sandbox.RunSpec{Argv: []string{"/bin/true"}, Mounts: bubblewrapHomeMount(paths.Home)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(customRoot, "demo"), paths.Home})
+	assertContainsSequence(t, cmd, []string{"--bind", filepath.Join(customRoot, "toby.default.runtime.home.demo"), paths.Home})
+}
+
+func bubblewrapHomeMount(target string) []sandboxmount.RuntimeMount {
+	homeKey := sandboxmount.RuntimeHomeKey("demo")
+	providerID := sandboxmount.ProviderID("default", homeKey)
+	return []sandboxmount.RuntimeMount{{
+		Key:        homeKey,
+		ProviderID: providerID,
+		Source:     sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: providerID},
+		Target:     target,
+	}}
 }
 
 func TestBubblewrapHelpers(t *testing.T) {
@@ -209,7 +223,7 @@ func TestBubblewrapHelpers(t *testing.T) {
 	if got := (&instance{}).runtimeBind("wayland-0"); got != nil {
 		t.Fatalf("empty runtimeBind = %#v", got)
 	}
-	if bindFlag(tool.BindRegular, false) != "--bind" || bindFlag(tool.BindReadOnly, true) != "--ro-bind-try" || bindFlag(tool.BindDev, true) != "--dev-bind-try" || bindFlag("unknown", false) != "--bind" {
+	if bindFlag(sandboxmount.AccessRegular, false) != "--bind" || bindFlag(sandboxmount.AccessReadOnly, true) != "--ro-bind-try" || bindFlag(sandboxmount.AccessDev, true) != "--dev-bind-try" || bindFlag("unknown", false) != "--bind" {
 		t.Fatal("unexpected bind flags")
 	}
 }
@@ -234,19 +248,39 @@ func testFactory(paths config.Paths, runner executil.Runner) sandbox.Factory {
 
 func assertContainsSequence(t *testing.T, values, sequence []string) {
 	t.Helper()
-	for i := 0; i+len(sequence) <= len(values); i++ {
-		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			return
-		}
+	if indexOfSequence(values, sequence) >= 0 {
+		return
 	}
 	t.Fatalf("%#v does not contain sequence %#v", values, sequence)
 }
 
+func assertSequenceBefore(t *testing.T, values, first, second []string) {
+	t.Helper()
+	firstIndex := indexOfSequence(values, first)
+	if firstIndex < 0 {
+		t.Fatalf("%#v does not contain first sequence %#v", values, first)
+	}
+	secondIndex := indexOfSequence(values, second)
+	if secondIndex < 0 {
+		t.Fatalf("%#v does not contain second sequence %#v", values, second)
+	}
+	if firstIndex >= secondIndex {
+		t.Fatalf("%#v contains %#v at %d after %#v at %d", values, first, firstIndex, second, secondIndex)
+	}
+}
+
 func assertNotContainsSequence(t *testing.T, values, sequence []string) {
 	t.Helper()
+	if indexOfSequence(values, sequence) >= 0 {
+		t.Fatalf("%#v contains sequence %#v", values, sequence)
+	}
+}
+
+func indexOfSequence(values, sequence []string) int {
 	for i := 0; i+len(sequence) <= len(values); i++ {
 		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			t.Fatalf("%#v contains sequence %#v", values, sequence)
+			return i
 		}
 	}
+	return -1
 }

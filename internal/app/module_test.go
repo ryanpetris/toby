@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,15 +9,8 @@ import (
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
-	"petris.dev/toby/internal/context/files"
-	"petris.dev/toby/internal/context/setup"
-	"petris.dev/toby/internal/control/hostmanager"
-	"petris.dev/toby/internal/control/mcpserver"
 	"petris.dev/toby/internal/control/sandboxmanager"
-	"petris.dev/toby/internal/platform/executil"
-	"petris.dev/toby/internal/sandbox"
-	sandboxbubblewrap "petris.dev/toby/internal/sandbox/bubblewrap"
-	sandboxdocker "petris.dev/toby/internal/sandbox/docker"
+	"petris.dev/toby/internal/tools"
 	"petris.dev/toby/internal/tools/tool"
 
 	"github.com/spf13/cobra"
@@ -26,30 +18,18 @@ import (
 	"go.uber.org/fx/fxtest"
 )
 
-type fakeRunner struct{}
-
-func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Options) (int, error) {
-	return 0, nil
-}
-
 func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
-		hostmanager.Module(),
-		mcpserver.Module(),
-		sandbox.Module(),
-		sandboxbubblewrap.Module(),
-		sandboxdocker.Module(),
 		sandboxmanager.Module(),
+		tools.PlanningModule(),
 		fx.Supply(paths, args(nil)),
 		fx.Provide(
-			func() executil.Runner { return fakeRunner{} },
-			contextfiles.NewService,
 			tobyconfig.New,
-			contextinit.NewServices,
 			tool.NewRegistry,
+			newSessionRunner,
 			newRootCommand,
 		),
 		fx.Populate(&cmd),
@@ -75,19 +55,13 @@ func TestRunAppReportsInvalidConfig(t *testing.T) {
 	var stderr bytes.Buffer
 	app := fx.New(
 		fx.NopLogger,
-		hostmanager.Module(),
-		mcpserver.Module(),
-		sandbox.Module(),
-		sandboxbubblewrap.Module(),
-		sandboxdocker.Module(),
 		sandboxmanager.Module(),
+		tools.PlanningModule(),
 		fx.Supply(paths, args([]string{"--help"})),
 		fx.Provide(
-			func() executil.Runner { return fakeRunner{} },
-			contextfiles.NewService,
 			tobyconfig.New,
-			contextinit.NewServices,
 			tool.NewRegistry,
+			newSessionRunner,
 			newRootCommand,
 		),
 		fx.Invoke(runCLI),

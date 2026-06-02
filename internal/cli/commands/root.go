@@ -1,13 +1,14 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"petris.dev/toby/internal/cli/launchconfig"
-	"petris.dev/toby/internal/cli/session"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/version"
 
 	"github.com/spf13/cobra"
@@ -46,7 +47,7 @@ func NewRootCommand(params Params) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return session.Run(cmd.Context(), sessionParams(params), &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+			return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
 		},
 	}
 	cmd.SetOut(stdout)
@@ -80,17 +81,9 @@ func launchConfigParams(params Params) launchconfig.Params {
 	}
 }
 
-func sessionParams(params Params) session.Params {
-	return session.Params{
-		Registry:       params.Registry,
-		SandboxFactory: params.SandboxFactory,
-		SandboxService: params.SandboxService,
-		Paths:          params.Paths,
-		ContextFiles:   params.ContextFiles,
-		ContextInit:    params.ContextInit,
-		HostManager:    params.HostManager,
-		MCPServer:      params.MCPServer,
-		TobyConfig:     params.TobyConfig,
-		Stderr:         params.Stderr,
+func runSession(ctx context.Context, params Params, opts *tool.CommandOptions, extra, requestedTools []string, primary string) error {
+	if params.SessionRunner == nil {
+		return fmt.Errorf("session runner is not configured")
 	}
+	return params.SessionRunner.Run(ctx, opts, extra, requestedTools, primary)
 }

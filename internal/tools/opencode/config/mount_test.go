@@ -56,7 +56,7 @@ func TestGeneratedConfigIncludesFetchedModels(t *testing.T) {
 
 	cfgDir := t.TempDir()
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
-		"provider": map[string]any{
+		"providers": map[string]any{
 			"local": map[string]any{
 				"type":    "openai",
 				"baseURL": server.URL,
@@ -95,7 +95,7 @@ func TestGeneratedConfigIncludesFetchedAnthropicModels(t *testing.T) {
 
 	cfgDir := t.TempDir()
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
-		"provider": map[string]any{
+		"providers": map[string]any{
 			"anthropic": map[string]any{
 				"type":    "anthropic",
 				"baseURL": server.URL,
@@ -129,10 +129,10 @@ func TestGeneratedConfigUsesConfiguredProviderModelsVerbatim(t *testing.T) {
 
 	cfgDir := t.TempDir()
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
-		"mcp": map[string]any{
+		"mcps": map[string]any{
 			"docs": map[string]any{"type": "remote", "url": "https://example.com/mcp"},
 		},
-		"provider": map[string]any{
+		"providers": map[string]any{
 			"local": map[string]any{
 				"type":    "openai",
 				"baseURL": server.URL,
@@ -171,7 +171,7 @@ func TestGeneratedConfigReturnsModelFetchWarnings(t *testing.T) {
 
 	cfgDir := t.TempDir()
 	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
-		"provider": map[string]any{
+		"providers": map[string]any{
 			"local": map[string]any{
 				"type":    "openai",
 				"baseURL": server.URL,

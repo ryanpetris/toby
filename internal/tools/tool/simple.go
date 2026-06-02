@@ -3,8 +3,10 @@ package tool
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
+
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 )
 
 type Simple struct {
@@ -13,7 +15,7 @@ type Simple struct {
 	RootDir             string
 	HostSubpath         []string
 	SandboxSubpath      []string
-	BindType            BindType
+	Access              sandboxmount.Access
 	InstallCommand      []string
 	InstallCheckCommand string
 	SandboxEnv          map[string]string
@@ -21,43 +23,35 @@ type Simple struct {
 }
 
 func (t *Simple) HostInit(_ context.Context, opts *CommandOptions) error {
-	if opts.ToolStateFor(t.Name()) != ToolStateHost {
-		return nil
-	}
 	return hostInitOnce(opts, t.Name(), func() error {
-		bind, ok := t.bind()
+		mount, ok := t.mountRequest()
 		if !ok {
 			return nil
 		}
-		bind.HostPath = resolveStateBindHostPath(opts.ToolStateRootFor(t.Name()), bind)
-		if err := os.MkdirAll(bind.HostPath, 0o755); err != nil {
-			return err
-		}
-		return t.Sandbox.AddBind(bind)
+		_, err := t.Sandbox.AddMount(mount)
+		return err
 	})
 }
 
-func (t *Simple) UsesToolState() bool {
-	return len(t.HostSubpath) > 0
-}
+func (t *Simple) UsesManagedMounts() bool { return len(t.HostSubpath) > 0 }
 
-func (t *Simple) bind() (Bind, bool) {
+func (t *Simple) mountRequest() (sandboxmount.Request, bool) {
 	if len(t.HostSubpath) == 0 {
-		return Bind{}, false
+		return sandboxmount.Request{}, false
 	}
 	sandboxParts := t.SandboxSubpath
 	if len(sandboxParts) == 0 {
 		sandboxParts = t.HostSubpath
 	}
-	bindType := t.BindType
-	if bindType == "" {
-		bindType = BindRegular
+	access := t.Access
+	if access == "" {
+		access = sandboxmount.AccessRegular
 	}
-	return Bind{
-		HostPath: filepath.Join(append([]string{t.RootDir}, t.HostSubpath...)...),
-		Target:   homeTarget(sandboxParts...),
-		Type:     bindType,
-		State:    true,
+	return sandboxmount.Request{
+		Key:     sandboxmount.Key{Type: sandboxmount.TypeTool, Name: t.Name(), Purpose: "state"},
+		Target:  sandboxpath.HomePath(sandboxParts...),
+		Subpath: filepath.ToSlash(filepath.Join(sandboxParts...)),
+		Access:  access,
 	}, true
 }
 

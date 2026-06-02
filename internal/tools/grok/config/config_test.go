@@ -34,7 +34,7 @@ func TestContextFilesIncludeTobyConfig(t *testing.T) {
 
 func TestContextFilesIncludeConfiguredMCPServers(t *testing.T) {
 	cfg := testTobyConfig(t, []byte(`
-mcp:
+mcps:
   docs:
     type: local
     command: [npx, -y, docs-mcp]

@@ -73,7 +73,7 @@ func newTestCopilot(t *testing.T, contextDir string) (tool.Tool, *tooltest.Sandb
 	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
 	contextFiles := contextfiles.NewService()
 	contextFiles.SetSandbox(sandbox)
-	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox, ContextFiles: contextFiles}).Service, sandbox, contextFiles
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox, ContextFiles: contextFiles}).Service, sandbox, contextFiles
 }
 
 func hasFile(files []contextfiles.File, path string) bool {

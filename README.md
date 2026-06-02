@@ -72,16 +72,16 @@ Project paths must resolve to `XDG_PROJECTS_DIR` or a directory below it. This k
 
 Toby reads host configuration from `${XDG_CONFIG_HOME:-~/.config}/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`. If more than one file exists, Toby deep merges them in that order.
 
-Toby config is its own format. Supported top-level keys are `instructions`, `mcp`, `permission`, `provider`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
+Toby config is its own format. Supported top-level keys are `instructions`, `mcps`, `permissions`, `providers`, `mountProfiles`, `settings`, `tools`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcp` entries are added to supported generated tool configs, alongside Toby's built-in MCP server. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`. Remote entries are exposed through per-run `/proxy/<uuid>` URLs, and Toby resolves configured headers on the host side before registering the proxy target. Generated tool config lives under Toby's generated context directory inside the sandbox and does not modify the tools' normal config files.
+- `mcps` entries are added to supported generated tool configs, alongside Toby's built-in MCP server. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`. Remote entries are exposed through per-run `/proxy/<uuid>` URLs, and Toby resolves configured headers on the host side before registering the proxy target. Generated tool config lives under Toby's generated context directory inside the sandbox and does not modify the tools' normal config files.
 - `instructions` entries are host instruction file paths. Relative paths resolve from the Toby config directory. Toby copies them into the generated context directory inside the sandbox using the source filename, adding a short random suffix before the extension if two files share a filename.
-- `permission.paths` entries are host path patterns and permission modes used for generated tool configs. Leading `~` expands to the host home directory.
-- `provider` entries are Toby provider declarations. Supported provider types are `openai` for OpenAI-compatible APIs and `anthropic` for Anthropic-compatible APIs. Toby exposes each provider to supported tools through a per-run `/proxy/<uuid>` URL, so upstream `baseURL` and credential `headers` stay on the host. OpenCode receives these providers translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are used verbatim, otherwise Toby queries `/models` on the upstream provider during sandbox startup. Discovery failures log `opencode.model-discovery` and leave only that provider out of generated OpenCode config.
+- `permissions.paths` entries are host path patterns and permission modes used for generated tool configs. Leading `~` expands to the host home directory.
+- `providers` entries are Toby provider declarations. Supported provider types are `openai` for OpenAI-compatible APIs and `anthropic` for Anthropic-compatible APIs. Toby exposes each provider to supported tools through a per-run `/proxy/<uuid>` URL, so upstream `baseURL` and credential `headers` stay on the host. OpenCode receives these providers translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are used verbatim, otherwise Toby queries `/models` on the upstream provider during sandbox startup. Discovery failures log `opencode.model-discovery` and leave only that provider out of generated OpenCode config.
 - `sandbox` sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
 
 ```yaml
-provider:
+providers:
   local:
     type: openai
     baseURL: https://api.example.com/v1
@@ -89,32 +89,33 @@ provider:
       Authorization: "Bearer {env:EXAMPLE_API_KEY}"
     models:
       example-model: {}
-permission:
+permissions:
   paths:
     ~/shared: allow
     ~/shared/**: allow
 ```
 
-Tool state controls whether selected tools use per-environment private state or bind mount the host's tool state directories. It defaults to `private`; the Docker tool is the exception and uses host state unless `docker.state` is explicitly set to `private`. The Docker socket is still passed to the Docker tool when its state is private.
+Managed mount profiles control whether runtime/tool data uses provider-backed storage, private sandbox-home storage, or host bind mounts. The default profile is `default`; `settings.mountProfile` selects another profile for a launch, and `tools.<tool>.mountProfile` can select a profile for one tool. The default backing is `provider`; omitting `backing` is the same as `backing: default`, which resolves to provider-backed storage. The Docker tool is an exception: it explicitly bind-mounts `/var/run/docker.sock` and `~/.docker` instead of using managed mounts.
 
 ```yaml
-sandbox:
-  tools:
-    default:
-      state: private
-    opencode:
-      state: host
-      stateRoot: ~/.config/toby/tool-state/opencode
-    docker:
-      state: private
+mountProfiles:
+  default:
+    backing: provider
+  host-state:
+    backing: host
+    hostRoot: ~/.config/toby/mounts/opencode
+settings:
   suppressWarnings:
-    - tool.host-state
+    - mount.host-backing
   autoloadProjectConfig: true # optional; load <project>/.toby.yaml on direct launches
+tools:
+  opencode:
+    mountProfile: host-state
 ```
 
-When host state is enabled, `stateRoot` is treated like `$HOME` for that tool's known state paths. For OpenCode, `stateRoot: ~/.config/toby/tool-state/opencode` uses `~/.config/toby/tool-state/opencode/.config/opencode` and `~/.config/toby/tool-state/opencode/.local/share/opencode`. If `stateRoot` is omitted, host state uses `$HOME`; relative `stateRoot` values in Toby config resolve from the config file directory. When host state is enabled for a non-Docker tool, Toby emits the `tool.host-state` warning because running multiple instances against the same host tool state can corrupt tool databases. Set `sandbox.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `tool.host-state`, `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Toby still generates synthetic tool config in both modes.
+Provider-backed tool mounts use IDs like `toby.<mountProfile>.tool.<tool>.<purpose>`; runtime home uses `toby.<mountProfile>.runtime.home.<sandboxName>`. Docker stores provider-backed mounts in Docker volumes. Bubblewrap stores them under `sandbox.runtime.bubblewrap.root` with the provider ID as the directory name, for example `~/.cache/toby/sandboxes/toby.default.tool.opencode.config`. Host-backed mounts use `hostRoot` as if it were `$HOME` for that mount's known subpath. For OpenCode, `hostRoot: ~/.config/toby/mounts/opencode` uses `~/.config/toby/mounts/opencode/.config/opencode` and `~/.config/toby/mounts/opencode/.local/share/opencode`. If `hostRoot` is omitted, host backing uses `$HOME`; relative `hostRoot` values in Toby config resolve from the config file directory. When host backing is enabled for a managed tool mount, Toby emits the `mount.host-backing` warning because running multiple instances against the same host-backed mount can corrupt tool databases. Set `settings.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `mount.host-backing`, `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Toby still generates synthetic tool config in all modes.
 
-Set `sandbox.autoloadProjectConfig: true` in host config to load `<project>/.toby.yaml` during direct launches such as `toby opencode my-app`. If `.toby.yaml` exists and autoload is disabled, Toby emits `project.autoload-disabled`. In autoload mode, the CLI tool and project stay foreground and primary; tools and projects from `.toby.yaml` are added, with duplicate project names skipped after warning.
+Set `settings.autoloadProjectConfig: true` in host config to load `<project>/.toby.yaml` during direct launches such as `toby opencode my-app`. If `.toby.yaml` exists and autoload is disabled, Toby emits `project.autoload-disabled`. In autoload mode, the CLI tool and project stay foreground and primary; tools and projects from `.toby.yaml` are added, with duplicate project names skipped after warning.
 
 Example global Docker sandbox defaults:
 
@@ -139,7 +140,6 @@ Use `--config` to launch from a per-run YAML or JSON file. JSON files are parsed
 ```yaml
 sandbox:
   name: foo # optional; defaults to the first project name
-  autoUpgrade: true # optional; defaults to false
   runtime:
     default: docker # optional; defaults to the highest-priority available runtime
     docker:
@@ -151,35 +151,40 @@ sandbox:
         dockerfile: Dockerfile.toby # optional; relative to context, defaults to Dockerfile
     bubblewrap:
       root: .toby/sandboxes # optional; relative to this config file
-  tools:
-    default:
-      state: private # optional; private or host
-    claude:
-      state: host # optional; overrides default for this tool
-      stateRoot: .toby/claude-state # optional; relative to this config file
-  suppressWarnings: [tool.host-state] # optional; true suppresses all warnings
+mountProfiles:
+  default:
+    backing: provider # optional; default, provider, private, or host
+  host-state:
+    backing: host
+    hostRoot: .toby/tool-state # optional; relative to this config file
+settings:
+  autoUpgrade: true # optional; defaults to false
+  suppressWarnings: [mount.host-backing] # optional; true suppresses all warnings
 workdir: ~/tmp # optional; defaults to the primary project path inside the sandbox
 projects:
-  - foo
-  - name: baz # equivalent to `baz`; source defaults to $XDG_PROJECTS_DIR/baz
-  - name: bar
+  foo:
+    primary: true
+  baz: # source defaults to $XDG_PROJECTS_DIR/baz
+  bar:
     path: ../bar-source # optional source; relative to this config file, leading ~ expands
 tools:
-  - name: opencode
-    params: ["--model", "anthropic/claude-sonnet-4-5"] # optional; only valid on the first tool
-  - uv
-  - npm
+  opencode:
+    primary: true
+    params: ["--model", "anthropic/claude-sonnet-4-5"] # optional; only valid on the primary tool
+    mountProfile: host-state # optional; selects a mount profile for this tool
+  uv:
+  npm:
 ```
 
-In config-owned launches, the first existing project is the working directory. Configured project paths that do not exist are skipped with the suppressible `project.missing` warning. Duplicate configured project names are skipped with the suppressible `project.duplicate` warning; the same host source path may be mounted multiple times under different project names. In overlay launches, the CLI project remains first and configured projects are additional. In config-owned launches, the first tool is the launch tool, and later tools are installed and made available in order. In overlay launches, configured tools are additional and are deduplicated with the CLI tool. Tool entries may be strings or objects with `name`; `params` is only applied to the first tool in config-owned launches. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
+In config-owned launches, the primary project is the working directory. Set `primary: true` when multiple projects are configured; if there is exactly one project, Toby infers it. Configured project paths that do not exist are skipped with the suppressible `project.missing` warning. Duplicate configured project names are skipped with the suppressible `project.duplicate` warning; the same host source path may be mounted multiple times under different project names. In overlay launches, the CLI project remains first and configured projects are additional. In config-owned launches, the primary tool is the foreground tool. Set `primary: true` when multiple tools are configured; if there is exactly one tool, Toby infers it. In overlay launches, the CLI tool is primary and configured tools are additional. `params` is only applied when that tool is the resolved primary tool. Tool names must be registered Toby tools, such as `opencode`, `exec`, `uv`, or `npm`.
 
-Bubblewrap private homes are stored under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default. Configure `sandbox.runtime.bubblewrap.root` to use a different host directory. Docker homes use named Docker volumes instead.
+Bubblewrap provider-backed mounts are stored under `${XDG_CACHE_HOME:-~/.cache}/toby/sandboxes` by default using provider ID directory names. Configure `sandbox.runtime.bubblewrap.root` to use a different host directory. Docker provider-backed mounts use named Docker volumes instead.
 
 Path values in launch config expand a leading `~` to the user's home directory. Toby does not otherwise clean, canonicalize, or resolve symlinks as part of config path expansion.
 
 `workdir` is passed to the selected sandbox runtime after leading `~` expansion to the sandbox home and is not otherwise resolved or validated by Toby. If omitted, Toby uses the first configured project's sandbox path.
 
-Toby parses all arguments before the first `--`; command arguments must come after it. Everything after that first `--`, including later `--` values, is appended to the first tool's configured `params`:
+Toby parses all arguments before the first `--`; command arguments must come after it. Everything after that first `--`, including later `--` values, is appended to the primary tool's configured `params`:
 
 ```sh
 toby --config myconfig.yaml -- --additional-param value
@@ -191,11 +196,12 @@ Configured project `path` values are host source directories. If a project is a 
 
 ```yaml
 projects:
-  - foo
+  foo:
 tools:
-  - name: exec
+  exec:
+    primary: true
     params: ["npm", "test"]
-  - npm
+  npm:
 ```
 
 ```sh
@@ -222,8 +228,6 @@ Useful flags:
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
 - `--sandbox-runtime <bubblewrap|docker>` selects the sandbox runtime.
 - `--sandbox-image <image>` selects the Docker image for Docker-backed direct launches.
-- `--tool-state <private|host>` selects the default tool state source for direct launches.
-- `--tool-state-root <dir>` selects the default host state root for direct launches with host state; relative paths resolve from the project root.
 - `--config <file>` launches from a YAML or JSON launch configuration.
 - `--install` installs the selected tool and exits.
 - `--upgrade` reinstalls the selected tool, then launches it.
@@ -234,7 +238,7 @@ Toby automatically exposes a sandbox-only MCP server to supported tools launched
 
 The sandbox manager uses `TOBY_CONTROL_HOST=host:port` and `TOBY_CONTROL_TOKEN` to connect back to the host and download the helper binary. Launched sandbox commands do not receive those control variables. `HOME` remains available to commands. MCP proxy URLs use the per-run control host and proxy UUID.
 
-Configured remote MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://<control-host>/proxy/<uuid>`. Toby opens the upstream connection from the host process and applies the configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox. Local MCP entries are rendered as local commands for tools that support them.
+Configured remote MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, a `mcps.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://<control-host>/proxy/<uuid>`. Toby opens the upstream connection from the host process and applies the configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox. Local MCP entries are rendered as local commands for tools that support them.
 
 Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok's `managed_config.toml` symlink points back to the generated Grok config. Tool-specific instruction injection is also session-scoped: Copilot receives a generated `AGENTS.md` directory through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, Grok receives combined rules through `--rules`, and Codex receives combined developer instructions through `-c developer_instructions=...`.
 
@@ -284,8 +288,14 @@ generated, so it works as soon as you select it inside t3. The declarative
 equivalent lists t3 first and the coding tools after it:
 
 ```yaml
-projects: [my-app]
-tools: [t3, claude, codex, opencode]
+projects:
+  my-app:
+tools:
+  t3:
+    primary: true
+  claude:
+  codex:
+  opencode:
 ```
 
 ```sh
@@ -295,7 +305,7 @@ toby --config t3.yaml
 ## More Docs
 
 - [Architecture](docs/architecture.md) — host/sandbox split, control protocol, runtimes, launch flow.
-- [Configuration reference](docs/configuration.md) — host config, launch config, tool state, warnings.
+- [Configuration reference](docs/configuration.md) — host config, launch config, managed mounts, warnings.
 - [Tools](docs/tools.md) — per-tool install and synthetic config, including the t3 walkthrough.
 - [Examples](docs/examples.md) — end-to-end recipes.
 - [Sandbox and integration details](docs/sandbox.md) — generated artifacts and per-tool integration surface.

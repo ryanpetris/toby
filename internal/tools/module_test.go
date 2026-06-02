@@ -19,6 +19,7 @@ func TestModuleRegistersEveryConfiguredTool(t *testing.T) {
 	home := t.TempDir()
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "context"))
 	var registered []string
+	registeredTools := map[string]tool.Tool{}
 	app := fxtest.New(t,
 		fx.Supply(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}),
 		fx.Supply(fx.Annotate(sandbox, fx.As(new(tool.SandboxService)))),
@@ -31,6 +32,7 @@ func TestModuleRegistersEveryConfiguredTool(t *testing.T) {
 		}) {
 			for _, item := range params.Tools {
 				registered = append(registered, item.Name())
+				registeredTools[item.Name()] = item
 			}
 		}),
 	)
@@ -51,6 +53,97 @@ func TestModuleRegistersEveryConfiguredTool(t *testing.T) {
 			t.Fatalf("duplicate tool registration: %s", name)
 		}
 		seen[name] = true
+	}
+	for _, metadata := range Metadata() {
+		registeredTool := registeredTools[metadata.Name]
+		if registeredTool == nil {
+			continue
+		}
+		expected := tool.Base{Metadata: metadata}
+		if registeredTool.CommandName() != expected.CommandName() || registeredTool.LaunchHelp() != expected.LaunchHelp() || registeredTool.LifecyclePriority() != expected.LifecyclePriority() {
+			t.Fatalf("metadata mismatch for %s", metadata.Name)
+		}
+		if !reflect.DeepEqual(registeredTool.ContextGroups(), expected.ContextGroups()) || !reflect.DeepEqual(registeredTool.Dependencies(), expected.Dependencies()) {
+			t.Fatalf("metadata mismatch for %s", metadata.Name)
+		}
+	}
+}
+
+func TestPlanningModuleRegistersEveryConfiguredToolWithoutExecutionServices(t *testing.T) {
+	var registered []string
+	app := fxtest.New(t,
+		PlanningModule(),
+		fx.Invoke(func(params struct {
+			fx.In
+
+			Tools []tool.Tool `group:"toby.tools"`
+		}) {
+			for _, item := range params.Tools {
+				registered = append(registered, item.Name())
+			}
+		}),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+
+	sort.Strings(registered)
+	if want := configuredToolNames(); !reflect.DeepEqual(registered, want) {
+		t.Fatalf("planning tools = %#v, want %#v", registered, want)
+	}
+}
+
+func TestSelectedModuleRegistersOnlySelectedTools(t *testing.T) {
+	module, err := SelectedModule([]string{tool.OpenCodeToolName, tool.NpmToolName, tool.OpenCodeToolName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	sandbox := tooltest.NewSandbox(filepath.Join(home, "context"))
+	var registered []string
+	app := fxtest.New(t,
+		fx.Supply(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}),
+		fx.Supply(fx.Annotate(sandbox, fx.As(new(tool.SandboxService)))),
+		fx.Provide(contextfiles.NewService),
+		module,
+		fx.Invoke(func(params struct {
+			fx.In
+
+			Tools []tool.Tool `group:"toby.tools"`
+		}) {
+			for _, item := range params.Tools {
+				registered = append(registered, item.Name())
+			}
+		}),
+	)
+	app.RequireStart()
+	t.Cleanup(app.RequireStop)
+
+	sort.Strings(registered)
+	want := []string{tool.NpmToolName, tool.OpenCodeToolName}
+	if !reflect.DeepEqual(registered, want) {
+		t.Fatalf("selected tools = %#v, want %#v", registered, want)
+	}
+}
+
+func TestMetadataAndSelectedModulesCoverConfiguredTools(t *testing.T) {
+	metadataNames := make([]string, 0, len(Metadata()))
+	for _, metadata := range Metadata() {
+		metadataNames = append(metadataNames, metadata.Name)
+	}
+	sort.Strings(metadataNames)
+
+	moduleNames := make([]string, 0, len(toolModules))
+	for name := range toolModules {
+		moduleNames = append(moduleNames, name)
+	}
+	sort.Strings(moduleNames)
+
+	want := configuredToolNames()
+	if !reflect.DeepEqual(metadataNames, want) {
+		t.Fatalf("metadata tools = %#v, want %#v", metadataNames, want)
+	}
+	if !reflect.DeepEqual(moduleNames, want) {
+		t.Fatalf("selected modules = %#v, want %#v", moduleNames, want)
 	}
 }
 

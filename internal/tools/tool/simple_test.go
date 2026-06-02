@@ -3,45 +3,45 @@ package tool
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"testing"
+
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 )
 
-func TestSimpleHostInitRegistersStateBind(t *testing.T) {
-	root := t.TempDir()
-	stateRoot := filepath.Join(root, "state-root")
+func TestSimpleHostInitRegistersManagedMount(t *testing.T) {
 	sandbox := &fakeSandboxService{}
-	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, RootDir: filepath.Join(root, "private"), HostSubpath: []string{"state", "tool"}}
-	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+	simple := &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, HostSubpath: []string{"state", "tool"}}
+	if err := simple.HostInit(context.Background(), &CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []Bind{{
-		HostPath: filepath.Join(stateRoot, "state", "tool"),
-		Target:   homeTarget("state", "tool"),
-		Type:     BindRegular,
-		State:    true,
+	want := []sandboxmount.Request{{
+		Key:     sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "tool", Purpose: "state"},
+		Target:  sandboxpath.HomePath("state", "tool"),
+		Subpath: "state/tool",
+		Access:  sandboxmount.AccessRegular,
 	}}
-	if !reflect.DeepEqual(sandbox.binds, want) {
-		t.Fatalf("binds = %#v, want %#v", sandbox.binds, want)
+	if !reflect.DeepEqual(sandbox.mountRequests, want) {
+		t.Fatalf("mounts = %#v, want %#v", sandbox.mountRequests, want)
 	}
 
 	sandbox = &fakeSandboxService{}
-	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, RootDir: filepath.Join(root, "private"), HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, BindType: BindReadOnly}
-	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, Access: sandboxmount.AccessReadOnly}
+	if err := simple.HostInit(context.Background(), &CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.binds) != 1 || sandbox.binds[0].HostPath != filepath.Join(stateRoot, "sandbox") || sandbox.binds[0].Target != homeTarget("sandbox") || sandbox.binds[0].Type != BindReadOnly {
-		t.Fatalf("custom binds = %#v", sandbox.binds)
+	if len(sandbox.mountRequests) != 1 || sandbox.mountRequests[0].Target != sandboxpath.HomePath("sandbox") || sandbox.mountRequests[0].Access != sandboxmount.AccessReadOnly {
+		t.Fatalf("custom mounts = %#v", sandbox.mountRequests)
 	}
 
 	sandbox = &fakeSandboxService{}
 	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox}
-	if err := simple.HostInit(context.Background(), &CommandOptions{ToolStates: ToolStateSettings{Default: ToolStateConfig{State: ToolStateHost, StateRoot: stateRoot}}}); err != nil {
+	if err := simple.HostInit(context.Background(), &CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.binds) != 0 || simple.UsesToolState() {
-		t.Fatalf("empty binds = %#v, uses state = %v", sandbox.binds, simple.UsesToolState())
+	if len(sandbox.mountRequests) != 0 || simple.UsesManagedMounts() {
+		t.Fatalf("empty mounts = %#v, uses managed mounts = %v", sandbox.mountRequests, simple.UsesManagedMounts())
 	}
 }
 
@@ -73,11 +73,15 @@ func TestSimpleLaunchReturnsExecError(t *testing.T) {
 }
 
 type fakeSandboxService struct {
-	exec  func(context.Context, []string, ExecOptions) (int, error)
-	binds []Bind
+	exec          func(context.Context, []string, ExecOptions) (int, error)
+	binds         []sandboxmount.Bind
+	mountRequests []sandboxmount.Request
+	mounts        map[sandboxmount.Key]sandboxmount.Info
 }
 
-func (s fakeSandboxService) Paths() SandboxPaths                                  { return SandboxPaths{} }
+func (s fakeSandboxService) Paths() sandboxpath.Paths {
+	return sandboxpath.Defaults()
+}
 func (s fakeSandboxService) ProjectPath(string) (string, bool)                    { return "", false }
 func (s fakeSandboxService) VisibleHostPath(string) (string, error)               { return "", nil }
 func (s fakeSandboxService) GetEnvironment(string) (string, bool)                 { return "", false }
@@ -88,9 +92,22 @@ func (s fakeSandboxService) PrependEnvironment(context.Context, string, string, 
 func (s fakeSandboxService) AppendEnvironment(context.Context, string, string, string) error {
 	return nil
 }
-func (s *fakeSandboxService) AddBind(bind Bind) error {
+func (s *fakeSandboxService) AddBind(bind sandboxmount.Bind) error {
 	s.binds = append(s.binds, bind)
 	return nil
+}
+func (s *fakeSandboxService) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
+	s.mountRequests = append(s.mountRequests, req)
+	info := sandboxmount.Info{Key: req.Key, Target: sandboxpath.Resolve(req.Target, s.Paths()), Active: true}
+	if s.mounts == nil {
+		s.mounts = map[sandboxmount.Key]sandboxmount.Info{}
+	}
+	s.mounts[req.Key] = info
+	return info, nil
+}
+func (s *fakeSandboxService) Mount(key sandboxmount.Key) (sandboxmount.Info, bool) {
+	info, ok := s.mounts[key]
+	return info, ok
 }
 func (s fakeSandboxService) AddFile(context.Context, string, []byte, uint32) error { return nil }
 func (s fakeSandboxService) AddFileOwned(context.Context, string, []byte, uint32, int, int) error {
@@ -106,6 +123,9 @@ func (s fakeSandboxService) SymlinkOwned(context.Context, string, string, int, i
 	return nil
 }
 func (s fakeSandboxService) Exec(ctx context.Context, argv []string, opts ExecOptions) (int, error) {
+	if s.exec == nil {
+		return 0, nil
+	}
 	return s.exec(ctx, argv, opts)
 }
 func (s fakeSandboxService) TobyMCPURL() string { return "" }

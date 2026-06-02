@@ -64,8 +64,9 @@ are last-write-wins.
 
 Toby config is its **own** format — it is not OpenCode config, though some
 nested shapes intentionally mirror OpenCode for convenience. The only supported
-top-level keys are `instructions`, `mcp`, `permission`, `provider`, and
-`sandbox`. **Any other top-level key fails config loading.**
+top-level keys are `instructions`, `mcps`, `permissions`, `providers`,
+`mountProfiles`, `settings`, `tools`, and `sandbox`. **Any other top-level key fails
+config loading.**
 
 ### `instructions`
 
@@ -85,7 +86,7 @@ instructions:
   - prompts/*.md
 ```
 
-### `mcp`
+### `mcps`
 
 A map of MCP server name to definition. Entries are rendered into supported
 synthetic tool configs under the generated context directory; Toby's own MCP server is
@@ -107,7 +108,7 @@ credentials stay on the host. Local entries are rendered as local commands for
 tools that support them.
 
 ```yaml
-mcp:
+mcps:
   docs:
     type: remote
     url: https://example.com/mcp
@@ -118,19 +119,19 @@ mcp:
     command: ["my-mcp-server", "--root", "/srv"]
 ```
 
-### `permission`
+### `permissions`
 
-`permission.paths` maps host path patterns to permission modes (e.g. `allow`)
+`permissions.paths` maps host path patterns to permission modes (e.g. `allow`)
 rendered into supported tool configs. A leading `~` expands to the host home.
 
 ```yaml
-permission:
+permissions:
   paths:
     ~/shared: allow
     ~/shared/**: allow
 ```
 
-### `provider`
+### `providers`
 
 A map of provider name to declaration. Supported `type` values are `openai`
 (OpenAI-compatible) and `anthropic` (Anthropic-compatible). Toby keeps upstream
@@ -152,7 +153,7 @@ Discovery failures emit the `opencode.model-discovery` warning and omit only
 the failed provider from generated OpenCode config.
 
 ```yaml
-provider:
+providers:
   local:
     type: openai
     baseURL: https://api.example.com/v1
@@ -162,9 +163,11 @@ provider:
       example-model: {}
 ```
 
-### `sandbox`
+### `sandbox`, `mountProfiles`, and `settings`
 
-Global sandbox defaults. Every field can be overridden per launch.
+Global sandbox runtime defaults live under `sandbox`. Managed mount profiles and
+warning/autoload settings are top-level `mountProfiles` and `settings` keys.
+Every field can be overridden per launch.
 
 ```yaml
 sandbox:
@@ -176,59 +179,71 @@ sandbox:
         context: ~/docker/toby
     bubblewrap:
       root: ~/.cache/toby/sandboxes
-  tools:
-    default:
-      state: private         # private | host
-    opencode:
-      state: host
-      stateRoot: ~/.config/toby/tool-state/opencode
-    docker:
-      state: private
+mountProfiles:
+  default:
+    backing: provider        # default | provider | private | host
+  host-state:
+    backing: host
+    hostRoot: ~/.config/toby/mounts/opencode
+settings:
   suppressWarnings:
-    - tool.host-state
+    - mount.host-backing
   autoloadProjectConfig: true
+tools:
+  opencode:
+    mountProfile: host-state
 ```
 
 - `sandbox.runtime` may be a string shorthand (`runtime: docker`) when no
   runtime-specific options are needed.
 - `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects` are
   sandbox-visible paths; if set, they must stay under `/toby`.
-- `sandbox.runtime.bubblewrap.root` and relative `stateRoot` values in host
+- `sandbox.runtime.bubblewrap.root` and relative `hostRoot` values in host
   config resolve from the Toby config file directory.
-- `sandbox.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
+- `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
 
-## Tool state
+## Managed Mounts
 
-`sandbox.tools` controls where each tool keeps its own state.
+`mountProfiles` controls where managed runtime/tool mounts are backed. Each
+profile has one `backing` and optional `hostRoot`. The selected launch profile is
+`settings.mountProfile`, defaulting to `default`. Launch config and host config
+`mountProfiles` merge by profile name; launch config values override host
+profile keys. A host or launch `tools.<tool>.mountProfile` entry can use a
+different profile for that tool's managed mounts.
 
-- `state: private` (default) — the tool uses the private sandbox home; nothing
-  on the host is bind-mounted.
-- `state: host` — Toby bind-mounts the tool's known state paths from
-  `stateRoot`, which is treated like `$HOME` for that tool. If `stateRoot` is
-  omitted, host state uses the actual `$HOME`.
+- `backing: default` or omitted — use Toby's default, currently `provider`.
+- `backing: provider` (default) — the selected sandbox provider stores the
+  managed mount. Docker uses lazy volumes named
+  `toby.<mountProfile>.<type>.<name>.<purpose>`; Bubblewrap uses host directories
+  under `sandbox.runtime.bubblewrap.root` named by the same provider ID.
+- `backing: private` — the mount stays in the private sandbox home; no separate
+  managed mount is registered.
+- `backing: host` — Toby bind-mounts the managed mount from `hostRoot`, which is
+  treated like `$HOME` for the mount's known subpath. If `hostRoot` is omitted,
+  host backing uses the actual `$HOME`.
 
-The **Docker** tool is the exception: it defaults to `host` state (so it sees
-your real Docker config) unless `docker.state: private` is set. Its
-`/var/run/docker.sock` bind stays enabled even when its state is private.
+Runtime home is always provider-backed and uses provider ID
+`toby.<mountProfile>.runtime.home.<sandboxName>`. The **Docker** tool explicitly binds
+`/var/run/docker.sock` and `~/.docker`; it does not use managed mounts.
 
-Enabling host state for a **non-Docker** tool emits the suppressible
-`tool.host-state` warning, because concurrent sandboxes sharing one tool's
-state directory can corrupt that tool's databases.
+Enabling host backing for a managed tool mount emits the suppressible
+`mount.host-backing` warning, because concurrent sandboxes sharing one
+host-backed mount can corrupt that tool's databases.
 
-Example resolution: OpenCode with `stateRoot: ~/.config/toby/tool-state/opencode`
-uses `~/.config/toby/tool-state/opencode/.config/opencode` and
-`~/.config/toby/tool-state/opencode/.local/share/opencode` as host sources.
-Synthetic Toby config is generated in **both** private and host modes.
+Example resolution: OpenCode with `hostRoot: ~/.config/toby/mounts/opencode`
+uses `~/.config/toby/mounts/opencode/.config/opencode` and
+`~/.config/toby/mounts/opencode/.local/share/opencode` as host sources.
+Synthetic Toby config is generated in every backing mode.
 
 ## Warnings
 
-All warnings are suppressible via `sandbox.suppressWarnings`: set it to `true`
+All warnings are suppressible via `settings.suppressWarnings`: set it to `true`
 to suppress everything, or to a list of IDs.
 
 | ID | Meaning |
 | --- | --- |
-| `tool.host-state` | Host state enabled for a non-Docker tool. |
+| `mount.host-backing` | Host backing enabled for a managed tool mount. |
 | `opencode.model-discovery` | OpenCode provider model discovery failed. |
 | `project.autoload-disabled` | `.toby.yaml` present but autoload is off. |
 | `project.duplicate` | Duplicate configured project name skipped. |
@@ -243,7 +258,6 @@ tools, and working directory.
 ```yaml
 sandbox:
   name: foo              # optional; defaults to the first project name
-  autoUpgrade: true      # optional; defaults to false
   runtime:
     default: docker      # optional; defaults to highest-priority available runtime
     docker:
@@ -255,29 +269,35 @@ sandbox:
         dockerfile: Dockerfile.toby  # optional; relative to context, defaults to Dockerfile
     bubblewrap:
       root: .toby/sandboxes     # optional; relative to this config file
-  tools:
-    default:
-      state: private     # optional; private or host
-    claude:
-      state: host        # optional; overrides default for this tool
-      stateRoot: .toby/claude-state  # optional; relative to this config file
-  suppressWarnings: [tool.host-state]  # optional; true suppresses all warnings
+mountProfiles:
+  default:
+    backing: provider  # optional; default, provider, private, or host
+  host-state:
+    backing: host
+    hostRoot: .toby/tool-state  # optional; relative to this config file
+settings:
+  autoUpgrade: true      # optional; defaults to false
+  suppressWarnings: [mount.host-backing]  # optional; true suppresses all warnings
 workdir: ~/tmp           # optional; defaults to the primary project path in the sandbox
 projects:
-  - foo
-  - name: baz            # equivalent to `baz`; source defaults to $XDG_PROJECTS_DIR/baz
-  - name: bar
+  foo:
+    primary: true
+  baz:                   # source defaults to $XDG_PROJECTS_DIR/baz
+  bar:
     path: ../bar-source  # optional source; relative to this config file, leading ~ expands
 tools:
-  - name: opencode
-    params: ["--model", "anthropic/claude-sonnet-4-5"]  # only valid on the first tool
-  - uv
-  - npm
+  opencode:
+    primary: true
+    params: ["--model", "anthropic/claude-sonnet-4-5"]  # only valid on the primary tool
+    mountProfile: host-state  # optional; selects a mount profile for this tool
+  uv:
+  npm:
 ```
 
 ### `projects`
 
-Each entry is a string or `{name, path?}` object.
+`projects` is an object keyed by project name. A null value enables the project
+with defaults. An object can set `path` and `primary`.
 
 - The project appears inside the sandbox under the selected runtime's project
   root: `/toby/workspace/<name>` for Docker and `$XDG_PROJECTS_DIR/<name>` for
@@ -294,11 +314,13 @@ Each entry is a string or `{name, path?}` object.
 
 ### `tools`
 
-Each entry is a string or `{name, params?}` object. Names must be registered
-Toby tools (see [tools.md](tools.md)). `params` is only honored on the **first**
-tool in a config-owned launch. In a config-owned launch the first tool is the
-launch (foreground) tool and later tools are installed and made available in
-order.
+Host config `tools` entries are defaults only and currently support
+`mountProfile`. Launch config `tools` entries are enabled tools, keyed by tool
+name. A null value enables the tool with defaults. An object can set
+`mountProfile`, `primary`, and `params`. `params` is only honored when that tool
+is the resolved primary tool: either it has `primary: true` in a config-owned
+launch, it is the only configured tool, or it was selected on the CLI in an
+overlay launch.
 
 ### `workdir`
 
@@ -320,7 +342,7 @@ configured project's sandbox path.
 
 Toby parses all arguments before the first `--`; command arguments come after
 it. Everything after that first `--`, including later `--` tokens, is appended
-to the first tool's configured `params`:
+to the primary tool's configured `params`:
 
 ```sh
 toby --config foo.yaml -- --additional-param value
@@ -329,11 +351,13 @@ toby --config foo.yaml -- --additional-param value
 With `exec` as the first tool you can run arbitrary commands. For example:
 
 ```yaml
-projects: [foo]
+projects:
+  foo:
 tools:
-  - name: exec
+  exec:
+    primary: true
     params: ["npm", "test"]
-  - npm
+  npm:
 ```
 
 ```sh
@@ -345,7 +369,7 @@ runs `npm test -- --watch` in `/toby/workspace/foo` with Docker, or
 
 ## Autoload
 
-Set `sandbox.autoloadProjectConfig: true` in **host** config to make direct
+Set `settings.autoloadProjectConfig: true` in **host** config to make direct
 launches (e.g. `toby opencode my-app`) load `<project>/.toby.yaml` if present.
 In autoload mode the CLI tool and project remain foreground and primary, and the
 tools/projects from `.toby.yaml` are added (duplicate project names are skipped
@@ -362,5 +386,6 @@ sandbox:
       build:
         context: support/toby
 tools:
-  - docker
+  docker:
+    primary: true
 ```

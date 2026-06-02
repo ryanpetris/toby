@@ -17,6 +17,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/npm"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/tool"
@@ -58,9 +59,13 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 		fx.Invoke(func(params struct {
 			fx.In
 
-			OpenCode tool.Tool `name:"opencode"`
+			Tools []tool.Tool `group:"toby.tools"`
 		}) {
-			oc = params.OpenCode
+			for _, item := range params.Tools {
+				if item.Name() == tool.OpenCodeToolName {
+					oc = item
+				}
+			}
 		}),
 	)
 	app.RequireStart()
@@ -74,7 +79,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	}
 }
 
-func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
+func TestOpenCodeDeclaresNPMDependency(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
@@ -82,86 +87,57 @@ func TestOpenCodeCallsDependencyBeforeOwnContextSetup(t *testing.T) {
 	contextFiles.SetSandbox(sandbox)
 	oc := Provide(Params{
 		Paths:        paths,
-		NPM:          fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}, sandbox: sandbox},
 		Sandbox:      sandbox,
 		ContextFiles: contextFiles,
 	}).Service
 
-	if err := oc.SandboxContextSetup(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if sandbox.Env["NPM_CALLED"] != "1" {
-		t.Fatalf("dependency SandboxContextSetup was not called")
-	}
-	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
-	if sandbox.Env["OPENCODE_CONFIG_DIR"] != want {
-		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", sandbox.Env["OPENCODE_CONFIG_DIR"], want)
+	if got := oc.Dependencies(); len(got) != 1 || got[0] != tool.NpmToolName || oc.LifecyclePriority() != 100 {
+		t.Fatalf("dependency metadata = deps %#v priority %d", got, oc.LifecyclePriority())
 	}
 }
 
-func TestOpenCodePrivateStateDoesNotBindHostState(t *testing.T) {
+func TestOpenCodeHostInitRegistersManagedMounts(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
-	called := false
-	npm := hostInitNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}, called: &called, sandboxRoot: paths.SandboxRoot}
-	oc := Provide(Params{Paths: paths, NPM: npm, Sandbox: sandbox}).Service
+	oc := Provide(Params{Paths: paths, Sandbox: sandbox}).Service
 	if err := oc.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
-		t.Fatalf("dependency HostInit was not called")
-	}
-	for _, dir := range []string{
-		filepath.Join(home, ".config", "opencode"),
-		filepath.Join(home, ".local", "share", "opencode"),
-	} {
-		if _, err := os.Stat(dir); err == nil {
-			t.Fatalf("private state created host dir %s", dir)
-		} else if !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-	}
 	if len(sandbox.Binds) != 0 {
-		t.Fatalf("private state registered binds: %#v", sandbox.Binds)
+		t.Fatalf("managed mounts registered binds: %#v", sandbox.Binds)
+	}
+	want := []struct {
+		key    sandboxmount.Key
+		target string
+	}{
+		{sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}, filepath.Join(sandbox.Paths().Home, ".config", "opencode")},
+		{sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "data"}, filepath.Join(sandbox.Paths().Home, ".local", "share", "opencode")},
+	}
+	if len(sandbox.Mounts) != len(want) {
+		t.Fatalf("mounts = %#v", sandbox.Mounts)
+	}
+	for i, item := range want {
+		if sandbox.Mounts[i].Key != item.key || sandbox.Mounts[i].Target != item.target {
+			t.Fatalf("mount[%d] = %#v, want %#v", i, sandbox.Mounts[i], item)
+		}
 	}
 }
 
-func TestOpenCodeHostStateCreatesHostDirs(t *testing.T) {
+func TestOpenCodeHostInitOnce(t *testing.T) {
 	home := t.TempDir()
-	stateRoot := filepath.Join(home, "state-root")
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
-	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Sandbox: sandbox}).Service
-	opts := &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Default: tool.ToolStateConfig{StateRoot: home}, Tools: map[string]tool.ToolStateConfig{tool.OpenCodeToolName: {State: tool.ToolStateHost, StateRoot: stateRoot}}}}
+	oc := Provide(Params{Paths: paths, Sandbox: sandbox}).Service
+	opts := &tool.CommandOptions{}
 	if err := oc.HostInit(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{
-		filepath.Join(stateRoot, ".config", "opencode"),
-		filepath.Join(stateRoot, ".local", "share", "opencode"),
-	} {
-		info, err := os.Stat(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !info.IsDir() {
-			t.Fatalf("%s is not a directory", dir)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(stateRoot, ".opencode")); err == nil {
-		t.Fatal("opencode should not create .opencode")
-	} else if !os.IsNotExist(err) {
+	if err := oc.HostInit(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(stateRoot, ".config", "opencode"), filepath.Join(stateRoot, ".local", "share", "opencode")}
-	if len(sandbox.Binds) != len(want) {
-		t.Fatalf("binds = %#v", sandbox.Binds)
-	}
-	for i, bind := range sandbox.Binds {
-		if bind.HostPath != want[i] {
-			t.Fatalf("bind[%d] = %#v, want host %q", i, bind, want[i])
-		}
+	if len(sandbox.Mounts) != 2 {
+		t.Fatalf("mounts = %#v", sandbox.Mounts)
 	}
 }
 
@@ -173,7 +149,7 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 
 	home := t.TempDir()
 	cfgDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(fmt.Sprintf(`{"provider":{"local":{"type":"openai","baseURL":%q}}}`, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(fmt.Sprintf(`{"providers":{"local":{"type":"openai","baseURL":%q}}}`, server.URL)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := tobyconfig.Load(cfgDir, home)
@@ -190,7 +166,7 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 	sandbox.Env[control.EnvControlHost] = "127.0.0.1:12345"
 	service := contextfiles.NewService()
 	service.SetSandbox(sandbox)
-	oc := Provide(Params{Paths: paths, NPM: fakeNPM{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName}}}, Renderer: renderer, Config: cfg, Proxy: httpproxy.NewService(httpproxy.ServiceParams{}), Sandbox: sandbox, ContextFiles: service}).Service.(tool.ContextFileTool)
+	oc := Provide(Params{Paths: paths, Renderer: renderer, Config: cfg, Proxy: httpproxy.NewService(httpproxy.ServiceParams{}), Sandbox: sandbox, ContextFiles: service}).Service.(tool.ContextFileTool)
 
 	var stderr bytes.Buffer
 	if err := oc.RegisterContextFiles(context.Background(), tool.ContextOptions{Stderr: &stderr}); err != nil {
@@ -207,20 +183,4 @@ func TestOpenCodeModelDiscoveryWarningUsesIDAndSuppression(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("suppressed warning = %q", stderr.String())
 	}
-}
-
-type hostInitNPM struct {
-	tool.Base
-	called      *bool
-	sandboxRoot string
-}
-
-func (t hostInitNPM) HostInit(context.Context, *tool.CommandOptions) error {
-	if _, err := os.Stat(filepath.Join(t.sandboxRoot, ".config", "opencode")); err == nil {
-		return fmt.Errorf("opencode HostInit ran before dependency HostInit")
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	*t.called = true
-	return nil
 }

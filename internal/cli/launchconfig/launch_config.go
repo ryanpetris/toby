@@ -1,18 +1,23 @@
 package launchconfig
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -40,17 +45,22 @@ type ConfiguredLaunch struct {
 }
 
 type launchConfig struct {
-	Sandbox  launchSandboxConfig
-	Projects []tool.ProjectMount
-	Workdir  string
-	Tools    []launchToolConfig
+	MountProfiles sandboxmount.Profiles
+	Settings      launchSettingsConfig
+	Sandbox       launchSandboxConfig
+	Projects      []launchProjectConfig
+	Workdir       string
+	Tools         []launchToolConfig
 }
 
 type launchSandboxConfig struct {
-	Name             string
+	Name    string
+	Runtime launchRuntimeConfig
+}
+
+type launchSettingsConfig struct {
+	MountProfile     string
 	AutoUpgrade      bool
-	Runtime          launchRuntimeConfig
-	Tools            tool.ToolStateSettings
 	SuppressWarnings warning.Suppression
 }
 
@@ -72,8 +82,96 @@ type launchBubblewrapConfig struct {
 }
 
 type launchToolConfig struct {
-	Name   string
-	Params []string
+	Name         string
+	Label        string
+	MountProfile string
+	Params       []string
+	Primary      bool
+}
+
+type launchProjectConfig struct {
+	Mount   tool.ProjectMount
+	Label   string
+	Primary bool
+}
+
+type rawLaunchConfig struct {
+	MountProfiles map[string]*rawLaunchMountProfile `yaml:"mountProfiles" json:"mountProfiles"`
+	Settings      rawLaunchSettingsConfig           `yaml:"settings" json:"settings"`
+	Sandbox       rawLaunchSandboxConfig            `yaml:"sandbox" json:"sandbox"`
+	Projects      map[string]*rawLaunchProject      `yaml:"projects" json:"projects"`
+	Workdir       string                            `yaml:"workdir" json:"workdir"`
+	Tools         map[string]*rawLaunchTool         `yaml:"tools" json:"tools"`
+}
+
+type rawLaunchMountProfile struct {
+	Backing  string `yaml:"backing" json:"backing"`
+	HostRoot string `yaml:"hostRoot" json:"hostRoot"`
+}
+
+type rawLaunchSettingsConfig struct {
+	MountProfile     string               `yaml:"mountProfile" json:"mountProfile"`
+	AutoUpgrade      bool                 `yaml:"autoUpgrade" json:"autoUpgrade"`
+	SuppressWarnings rawLaunchSuppression `yaml:"suppressWarnings" json:"suppressWarnings"`
+}
+
+type rawLaunchSandboxConfig struct {
+	Name    string                 `yaml:"name" json:"name"`
+	Runtime rawLaunchRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawLaunchSandboxFields struct {
+	Name    string                 `yaml:"name" json:"name"`
+	Runtime rawLaunchRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawLaunchRuntimeConfig struct {
+	Default    string
+	Docker     rawLaunchDockerConfig
+	Bubblewrap rawLaunchBubblewrapConfig
+}
+
+type rawLaunchRuntimeFields struct {
+	Default    string                    `yaml:"default" json:"default"`
+	Docker     rawLaunchDockerConfig     `yaml:"docker" json:"docker"`
+	Bubblewrap rawLaunchBubblewrapConfig `yaml:"bubblewrap" json:"bubblewrap"`
+}
+
+type rawLaunchDockerConfig struct {
+	Image    string                `yaml:"image" json:"image"`
+	Home     string                `yaml:"home" json:"home"`
+	Projects string                `yaml:"projects" json:"projects"`
+	Build    *rawLaunchDockerBuild `yaml:"build" json:"build"`
+}
+
+type rawLaunchDockerBuild struct {
+	Context    rawLaunchString `yaml:"context" json:"context"`
+	Dockerfile rawLaunchString `yaml:"dockerfile" json:"dockerfile"`
+}
+
+type rawLaunchBubblewrapConfig struct {
+	Root string `yaml:"root" json:"root"`
+}
+
+type rawLaunchProject struct {
+	Path    rawLaunchString `yaml:"path" json:"path"`
+	Primary bool            `yaml:"primary" json:"primary"`
+}
+
+type rawLaunchTool struct {
+	MountProfile string   `yaml:"mountProfile" json:"mountProfile"`
+	Params       []string `yaml:"params" json:"params"`
+	Primary      bool     `yaml:"primary" json:"primary"`
+}
+
+type rawLaunchSuppression struct {
+	Set   bool
+	Value any
+}
+
+type rawLaunchString struct {
+	Set   bool
+	Value string
 }
 
 func BuildConfiguredLaunch(params Params, configPath string, extra []string) (ConfiguredLaunch, error) {
@@ -91,11 +189,26 @@ func BuildConfiguredLaunch(params Params, configPath string, extra []string) (Co
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
+	primaryTool, primaryToolConfig, err := resolvePrimaryConfiguredTool(params.Registry, cfg.Tools, "")
+	if err != nil {
+		return ConfiguredLaunch{}, err
+	}
+	primaryProject, err := primaryConfiguredProject(cfg.Projects)
+	if err != nil {
+		return ConfiguredLaunch{}, err
+	}
+	options := commandOptionsFromLaunchConfig(cfg)
+	options.Projects = orderedProjectMounts(cfg.Projects, primaryProject)
+	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
+	if err != nil {
+		return ConfiguredLaunch{}, err
+	}
+	options.ToolMountProfiles = profiles
 	return ConfiguredLaunch{
-		Options:        commandOptionsFromLaunchConfig(cfg),
-		Extra:          configuredLaunchExtra(cfg.Tools[0].Params, extra),
+		Options:        options,
+		Extra:          configuredLaunchExtra(primaryToolConfig.Params, extra),
 		RequestedTools: tools,
-		Primary:        tools[0],
+		Primary:        primaryTool,
 	}, nil
 }
 
@@ -108,7 +221,16 @@ func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed Direc
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
+	primaryParams, err := configuredParamsForPrimary(params.Registry, cfg.Tools, primary)
+	if err != nil {
+		return ConfiguredLaunch{}, err
+	}
 	options := commandOptionsFromLaunchConfig(cfg)
+	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
+	if err != nil {
+		return ConfiguredLaunch{}, err
+	}
+	options.ToolMountProfiles = profiles
 	if options.Env == "" {
 		options.Env = parsed.Options.Env
 	}
@@ -125,7 +247,7 @@ func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed Direc
 	}
 	return ConfiguredLaunch{
 		Options:        options,
-		Extra:          parsed.Extra,
+		Extra:          configuredLaunchExtra(primaryParams, parsed.Extra),
 		RequestedTools: requestedTools,
 		Primary:        primary,
 	}, nil
@@ -150,9 +272,9 @@ func MaybeAutoloadProjectConfig(params Params, parsed DirectLaunch, primary stri
 	if info.IsDir() {
 		return ConfiguredLaunch{}, false, fmt.Errorf("%s is a directory", configPath)
 	}
-	defaults := params.Config.Sandbox()
-	if !defaults.AutoloadProjectConfigEnabled() {
-		warning.Fprintf(params.Stderr, defaults.SuppressWarnings, warning.ProjectAutoloadDisabled, "found %s but sandbox.autoloadProjectConfig is not enabled; pass --config %s or enable sandbox.autoloadProjectConfig to load it automatically.", configPath, configPath)
+	settings := params.Config.Settings()
+	if !settings.AutoloadProjectConfigEnabled() {
+		warning.Fprintf(params.Stderr, settings.SuppressWarnings, warning.ProjectAutoloadDisabled, "found %s but settings.autoloadProjectConfig is not enabled; pass --config %s or enable settings.autoloadProjectConfig to load it automatically.", configPath, configPath)
 		return ConfiguredLaunch{}, false, nil
 	}
 	launch, err := BuildOverlayConfiguredLaunch(params, configPath, parsed, primary, project)
@@ -165,8 +287,8 @@ func MaybeAutoloadProjectConfig(params Params, parsed DirectLaunch, primary stri
 func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
 	return tool.CommandOptions{
 		Env:              cfg.Sandbox.Name,
-		Upgrade:          cfg.Sandbox.AutoUpgrade,
-		Projects:         cfg.Projects,
+		Upgrade:          cfg.Settings.AutoUpgrade,
+		Projects:         projectMounts(cfg.Projects),
 		Workdir:          cfg.Workdir,
 		SandboxRuntime:   cfg.Sandbox.Runtime.Default,
 		DockerImage:      cfg.Sandbox.Runtime.Docker.Image,
@@ -174,8 +296,9 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
 		DockerProjects:   cfg.Sandbox.Runtime.Docker.Projects,
 		DockerBuild:      cfg.Sandbox.Runtime.Docker.Build,
 		BubblewrapRoot:   cfg.Sandbox.Runtime.Bubblewrap.Root,
-		ToolStates:       cfg.Sandbox.Tools,
-		SuppressWarnings: cfg.Sandbox.SuppressWarnings,
+		MountProfile:     cfg.Settings.MountProfile,
+		MountProfiles:    cfg.MountProfiles,
+		SuppressWarnings: cfg.Settings.SuppressWarnings,
 	}
 }
 
@@ -195,7 +318,18 @@ func mergeDirectLaunchOptions(dst *tool.CommandOptions, src tool.CommandOptions)
 	if src.DockerBuild.IsSet() {
 		dst.DockerBuild = src.DockerBuild
 	}
-	dst.ToolStates.Merge(src.ToolStates)
+	dst.MountProfiles.Merge(src.MountProfiles)
+	if src.MountProfile != "" {
+		dst.MountProfile = src.MountProfile
+	}
+	if len(src.ToolMountProfiles) > 0 {
+		if dst.ToolMountProfiles == nil {
+			dst.ToolMountProfiles = map[string]string{}
+		}
+		for name, profile := range src.ToolMountProfiles {
+			dst.ToolMountProfiles[name] = profile
+		}
+	}
 }
 
 func configuredLaunchExtra(params, extra []string) []string {
@@ -225,8 +359,8 @@ func loadLaunchConfigWithPaths(path string, paths config.Paths) (launchConfig, e
 	if err != nil {
 		return launchConfig{}, err
 	}
-	raw, err := configfile.Decode(data, configfile.FormatYAML, "launch config")
-	if err != nil {
+	var raw rawLaunchConfig
+	if err := configfile.DecodeInto(data, configfile.FormatYAML, "launch config", &raw); err != nil {
 		return launchConfig{}, fmt.Errorf("%s: %w", abs, err)
 	}
 	cfg, err := parseLaunchConfigWithPaths(raw, filepath.Dir(abs), paths)
@@ -236,192 +370,137 @@ func loadLaunchConfigWithPaths(path string, paths config.Paths) (launchConfig, e
 	return cfg, nil
 }
 
-func parseLaunchConfig(raw map[string]any, dir, home string) (launchConfig, error) {
+func parseLaunchConfig(raw rawLaunchConfig, dir, home string) (launchConfig, error) {
 	return parseLaunchConfigWithPaths(raw, dir, config.Paths{Home: home})
 }
 
-func parseLaunchConfigWithPaths(raw map[string]any, dir string, paths config.Paths) (launchConfig, error) {
+func parseLaunchConfigWithPaths(raw rawLaunchConfig, dir string, paths config.Paths) (launchConfig, error) {
 	paths = launchConfigPaths(paths)
 	var cfg launchConfig
-	for key, value := range raw {
-		switch key {
-		case "sandbox":
-			sandbox, err := parseLaunchSandbox(value, dir, paths.Home)
-			if err != nil {
-				return launchConfig{}, err
-			}
-			cfg.Sandbox = sandbox
-		case "projects":
-			projects, err := parseLaunchProjectsWithPaths(value, dir, paths)
-			if err != nil {
-				return launchConfig{}, err
-			}
-			cfg.Projects = projects
-		case "workdir":
-			workdir, ok := value.(string)
-			if !ok {
-				return launchConfig{}, fmt.Errorf("workdir must be a string")
-			}
-			cfg.Workdir = workdir
-		case "tools":
-			tools, err := parseLaunchTools(value)
-			if err != nil {
-				return launchConfig{}, err
-			}
-			cfg.Tools = tools
-		default:
-			return launchConfig{}, fmt.Errorf("unsupported top-level key %q", key)
+	profiles, err := rawLaunchMountProfiles(raw.MountProfiles, dir, paths.Home)
+	if err != nil {
+		return launchConfig{}, err
+	}
+	cfg.MountProfiles = profiles
+	settings, err := raw.Settings.toSettings()
+	if err != nil {
+		return launchConfig{}, err
+	}
+	cfg.Settings = settings
+	sandbox, err := raw.Sandbox.toSandbox(dir, paths.Home)
+	if err != nil {
+		return launchConfig{}, err
+	}
+	cfg.Sandbox = sandbox
+	projects, err := rawLaunchProjects(raw.Projects, dir, paths)
+	if err != nil {
+		return launchConfig{}, err
+	}
+	cfg.Projects = projects
+	cfg.Workdir = raw.Workdir
+	tools, err := rawLaunchTools(raw.Tools)
+	if err != nil {
+		return launchConfig{}, err
+	}
+	cfg.Tools = tools
+	return cfg, nil
+}
+
+func rawLaunchMountProfiles(raw map[string]*rawLaunchMountProfile, dir, home string) (sandboxmount.Profiles, error) {
+	profiles := sandboxmount.Profiles{}
+	for rawName, rawProfile := range raw {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return nil, fmt.Errorf("mountProfiles keys must not be empty")
 		}
+		if rawProfile == nil {
+			return nil, fmt.Errorf("mountProfiles.%s must be an object", name)
+		}
+		profile, err := rawProfile.toMountProfile("mountProfiles."+name, dir, home)
+		if err != nil {
+			return nil, err
+		}
+		profiles[name] = profile
+	}
+	return profiles, nil
+}
+
+func (r rawLaunchMountProfile) toMountProfile(label string, dir, home string) (sandboxmount.BackingConfig, error) {
+	var cfg sandboxmount.BackingConfig
+	if r.Backing != "" {
+		backing, err := helpers.ParseMountBacking(r.Backing)
+		if err != nil {
+			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.backing: %w", label, err)
+		}
+		cfg.Backing = backing
+	}
+	if r.HostRoot != "" {
+		root, err := helpers.ResolveMountHostRoot(r.HostRoot, home, dir)
+		if err != nil {
+			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.hostRoot: %w", label, err)
+		}
+		cfg.HostRoot = root
 	}
 	return cfg, nil
 }
 
-func parseLaunchSandbox(raw any, dir, home string) (launchSandboxConfig, error) {
-	var cfg launchSandboxConfig
-	if raw == nil {
-		return cfg, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return launchSandboxConfig{}, fmt.Errorf("sandbox must be an object")
-	}
-	for key, value := range items {
-		switch key {
-		case "name":
-			name, ok := value.(string)
-			if !ok {
-				return launchSandboxConfig{}, fmt.Errorf("sandbox.name must be a string")
-			}
-			cfg.Name = strings.TrimSpace(name)
-		case "autoUpgrade":
-			autoUpgrade, ok := value.(bool)
-			if !ok {
-				return launchSandboxConfig{}, fmt.Errorf("sandbox.autoUpgrade must be a boolean")
-			}
-			cfg.AutoUpgrade = autoUpgrade
-		case "runtime":
-			runtime, err := parseLaunchRuntime(value, dir, home)
-			if err != nil {
-				return launchSandboxConfig{}, err
-			}
-			cfg.Runtime = runtime
-		case "tools":
-			tools, err := parseLaunchSandboxTools(value, dir, home)
-			if err != nil {
-				return launchSandboxConfig{}, err
-			}
-			cfg.Tools = tools
-		case "suppressWarnings":
-			suppression, err := warning.ParseSuppression(value, "sandbox.suppressWarnings")
-			if err != nil {
-				return launchSandboxConfig{}, err
-			}
-			cfg.SuppressWarnings = suppression
-		default:
-			return launchSandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
+func (r rawLaunchSettingsConfig) toSettings() (launchSettingsConfig, error) {
+	cfg := launchSettingsConfig{MountProfile: strings.TrimSpace(r.MountProfile), AutoUpgrade: r.AutoUpgrade}
+	if r.SuppressWarnings.Set {
+		suppression, err := warning.ParseSuppression(r.SuppressWarnings.Value, "settings.suppressWarnings")
+		if err != nil {
+			return launchSettingsConfig{}, err
 		}
+		cfg.SuppressWarnings = suppression
 	}
 	return cfg, nil
 }
 
-func parseLaunchRuntime(raw any, dir, home string) (launchRuntimeConfig, error) {
-	switch value := raw.(type) {
-	case string:
-		return launchRuntimeConfig{Default: strings.TrimSpace(value)}, nil
-	case map[string]any:
-		var cfg launchRuntimeConfig
-		for key, item := range value {
-			switch key {
-			case "default":
-				name, ok := item.(string)
-				if !ok {
-					return launchRuntimeConfig{}, fmt.Errorf("sandbox.runtime.default must be a string")
-				}
-				cfg.Default = strings.TrimSpace(name)
-			case "docker":
-				docker, err := parseLaunchDocker(item, dir, home)
-				if err != nil {
-					return launchRuntimeConfig{}, err
-				}
-				cfg.Docker = docker
-			case "bubblewrap":
-				bubblewrap, err := parseLaunchBubblewrap(item, dir, home)
-				if err != nil {
-					return launchRuntimeConfig{}, err
-				}
-				cfg.Bubblewrap = bubblewrap
-			default:
-				return launchRuntimeConfig{}, fmt.Errorf("unsupported sandbox.runtime key %q", key)
-			}
-		}
-		return cfg, nil
-	default:
-		return launchRuntimeConfig{}, fmt.Errorf("sandbox.runtime must be a string or object")
+func (r rawLaunchSandboxConfig) toSandbox(dir, home string) (launchSandboxConfig, error) {
+	runtime, err := r.Runtime.toRuntime(dir, home)
+	if err != nil {
+		return launchSandboxConfig{}, err
 	}
+	return launchSandboxConfig{Name: strings.TrimSpace(r.Name), Runtime: runtime}, nil
 }
 
-func parseLaunchDocker(raw any, dir, home string) (launchDockerConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker must be an object")
+func (r rawLaunchRuntimeConfig) toRuntime(dir, home string) (launchRuntimeConfig, error) {
+	docker, err := r.Docker.toDocker(dir, home)
+	if err != nil {
+		return launchRuntimeConfig{}, err
 	}
-	var cfg launchDockerConfig
-	for key, value := range items {
-		switch key {
-		case "image":
-			s, ok := value.(string)
-			if !ok {
-				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.image must be a string")
-			}
-			cfg.Image = strings.TrimSpace(s)
-		case "home":
-			s, ok := value.(string)
-			if !ok {
-				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.home must be a string")
-			}
-			cfg.Home = strings.TrimSpace(s)
-		case "projects":
-			s, ok := value.(string)
-			if !ok {
-				return launchDockerConfig{}, fmt.Errorf("sandbox.runtime.docker.projects must be a string")
-			}
-			cfg.Projects = strings.TrimSpace(s)
-		case "build":
-			build, err := parseLaunchDockerBuild(value, dir, home)
-			if err != nil {
-				return launchDockerConfig{}, err
-			}
-			cfg.Build = build
-		default:
-			return launchDockerConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker key %q", key)
+	bubblewrap, err := r.Bubblewrap.toBubblewrap(dir, home)
+	if err != nil {
+		return launchRuntimeConfig{}, err
+	}
+	return launchRuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker, Bubblewrap: bubblewrap}, nil
+}
+
+func (r rawLaunchDockerConfig) toDocker(dir, home string) (launchDockerConfig, error) {
+	cfg := launchDockerConfig{Image: strings.TrimSpace(r.Image), Home: strings.TrimSpace(r.Home), Projects: strings.TrimSpace(r.Projects)}
+	if r.Build != nil {
+		build, err := r.Build.toDockerBuild(dir, home)
+		if err != nil {
+			return launchDockerConfig{}, err
 		}
+		cfg.Build = build
 	}
 	return cfg, nil
 }
 
-func parseLaunchDockerBuild(raw any, dir, home string) (tool.DockerBuildConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build must be an object")
-	}
+func (r rawLaunchDockerBuild) toDockerBuild(dir, home string) (tool.DockerBuildConfig, error) {
 	contextValue := "."
+	if r.Context.Set {
+		contextValue = strings.TrimSpace(r.Context.Value)
+		if contextValue == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
+		}
+	}
 	dockerfileValue := "Dockerfile"
-	for key, value := range items {
-		item, ok := value.(string)
-		if !ok {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must be a string", key)
-		}
-		item = strings.TrimSpace(item)
-		if item == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must not be empty", key)
-		}
-		switch key {
-		case "context":
-			contextValue = item
-		case "dockerfile":
-			dockerfileValue = item
-		default:
-			return tool.DockerBuildConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker.build key %q", key)
+	if r.Dockerfile.Set {
+		dockerfileValue = strings.TrimSpace(r.Dockerfile.Value)
+		if dockerfileValue == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
 		}
 	}
 	contextDir, err := resolveLaunchConfigPath(contextValue, dir, home)
@@ -435,95 +514,222 @@ func parseLaunchDockerBuild(raw any, dir, home string) (tool.DockerBuildConfig, 
 	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
 }
 
-func parseLaunchSandboxTools(raw any, dir, home string) (tool.ToolStateSettings, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools must be an object")
+func (r rawLaunchBubblewrapConfig) toBubblewrap(dir, home string) (launchBubblewrapConfig, error) {
+	if strings.TrimSpace(r.Root) == "" {
+		return launchBubblewrapConfig{}, nil
 	}
-	settings := tool.ToolStateSettings{}
-	for name, rawTool := range items {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools keys must not be empty")
-		}
-		toolConfig, ok := rawTool.(map[string]any)
-		if !ok {
-			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools.%s must be an object", name)
-		}
-		cfg, err := parseLaunchSandboxTool(name, toolConfig, dir, home)
+	root, err := resolveLaunchConfigPath(r.Root, dir, home)
+	if err != nil {
+		return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
+	}
+	return launchBubblewrapConfig{Root: root}, nil
+}
+
+func rawLaunchProjects(raw map[string]*rawLaunchProject, dir string, paths config.Paths) ([]launchProjectConfig, error) {
+	paths = launchConfigPaths(paths)
+	projects := make([]launchProjectConfig, 0, len(raw))
+	for _, name := range sortedKeys(raw) {
+		project, err := raw[name].toProject("projects."+name, name, dir, paths)
 		if err != nil {
-			return tool.ToolStateSettings{}, err
+			return nil, err
 		}
-		if cfg.State == "" && cfg.StateRoot == "" {
-			continue
-		}
-		if name == "default" {
-			settings.Default = cfg
-			continue
-		}
-		if settings.Tools == nil {
-			settings.Tools = map[string]tool.ToolStateConfig{}
-		}
-		settings.Tools[name] = cfg
+		projects = append(projects, project)
 	}
-	return settings, nil
+	return projects, nil
 }
 
-func parseLaunchSandboxTool(name string, raw map[string]any, dir, home string) (tool.ToolStateConfig, error) {
-	var cfg tool.ToolStateConfig
-	for key, value := range raw {
-		switch key {
-		case "state":
-			rawState, ok := value.(string)
-			if !ok {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state must be a string", name)
-			}
-			parsed, err := helpers.ParseToolState(rawState)
-			if err != nil {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state: %w", name, err)
-			}
-			cfg.State = parsed
-		case "stateRoot":
-			rawRoot, ok := value.(string)
-			if !ok {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot must be a string", name)
-			}
-			root, err := helpers.ResolveStateRoot(rawRoot, home, dir)
-			if err != nil {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot: %w", name, err)
-			}
-			cfg.StateRoot = root
-		default:
-			return tool.ToolStateConfig{}, fmt.Errorf("unsupported sandbox.tools.%s key %q", name, key)
+func (r *rawLaunchProject) toProject(label, name string, dir string, paths config.Paths) (launchProjectConfig, error) {
+	paths = launchConfigPaths(paths)
+	path := ""
+	pathSet := false
+	primary := false
+	if r != nil {
+		path = r.Path.Value
+		pathSet = r.Path.Set
+		primary = r.Primary
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return launchProjectConfig{}, fmt.Errorf("%s key must not be empty", label)
+	}
+	source := resolveDefaultLaunchProjectPath(name, paths.ProjectRoot)
+	if pathSet {
+		var err error
+		source, err = resolveLaunchProjectPath(path, dir, paths.Home)
+		if err != nil {
+			return launchProjectConfig{}, fmt.Errorf("%s.path: %w", label, err)
 		}
 	}
-	return cfg, nil
+	return launchProjectConfig{Mount: tool.ProjectMount{Name: name, Source: source}, Label: label, Primary: primary}, nil
 }
 
-func parseLaunchBubblewrap(raw any, dir, home string) (launchBubblewrapConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap must be an object")
-	}
-	var cfg launchBubblewrapConfig
-	for key, value := range items {
-		s, ok := value.(string)
-		if !ok {
-			return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.%s must be a string", key)
+func rawLaunchTools(raw map[string]*rawLaunchTool) ([]launchToolConfig, error) {
+	tools := make([]launchToolConfig, 0, len(raw))
+	for _, name := range sortedKeys(raw) {
+		parsed, err := raw[name].toTool("tools."+name, name)
+		if err != nil {
+			return nil, err
 		}
-		s = strings.TrimSpace(s)
-		switch key {
-		case "root":
-			root, err := resolveLaunchConfigPath(s, dir, home)
-			if err != nil {
-				return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
-			}
-			cfg.Root = root
-		default:
-			return launchBubblewrapConfig{}, fmt.Errorf("unsupported sandbox.runtime.bubblewrap key %q", key)
+		tools = append(tools, parsed)
+	}
+	return tools, nil
+}
+
+func (r *rawLaunchTool) toTool(label, name string) (launchToolConfig, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return launchToolConfig{}, fmt.Errorf("%s key must not be empty", label)
+	}
+	if r == nil {
+		return launchToolConfig{Name: name, Label: label}, nil
+	}
+	params := append([]string(nil), r.Params...)
+	return launchToolConfig{Name: name, Label: label, MountProfile: strings.TrimSpace(r.MountProfile), Params: params, Primary: r.Primary}, nil
+}
+
+func (r *rawLaunchRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag != "!!str" {
+			return fmt.Errorf("sandbox.runtime must be a string or object")
+		}
+		r.Default = strings.TrimSpace(value.Value)
+		return nil
+	case yaml.MappingNode:
+		var fields rawLaunchRuntimeFields
+		if err := decodeLaunchYAMLNodeStrict(value, &fields); err != nil {
+			return err
+		}
+		r.Default = fields.Default
+		r.Docker = fields.Docker
+		r.Bubblewrap = fields.Bubblewrap
+		return nil
+	default:
+		return fmt.Errorf("sandbox.runtime must be a string or object")
+	}
+}
+
+func (r *rawLaunchSandboxConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("sandbox must be an object")
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		if key != "name" && key != "runtime" {
+			return fmt.Errorf("unsupported sandbox key %q", key)
 		}
 	}
-	return cfg, nil
+	var fields rawLaunchSandboxFields
+	if err := decodeLaunchYAMLNodeStrict(value, &fields); err != nil {
+		return err
+	}
+	r.Name = fields.Name
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawLaunchSandboxConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var items map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return fmt.Errorf("sandbox must be an object")
+	}
+	for key := range items {
+		if key != "name" && key != "runtime" {
+			return fmt.Errorf("unsupported sandbox key %q", key)
+		}
+	}
+	var fields rawLaunchSandboxFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Name = fields.Name
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawLaunchRuntimeConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return fmt.Errorf("sandbox.runtime must be a string or object")
+	}
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return err
+		}
+		r.Default = strings.TrimSpace(value)
+		return nil
+	}
+	var fields rawLaunchRuntimeFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Default = fields.Default
+	r.Docker = fields.Docker
+	r.Bubblewrap = fields.Bubblewrap
+	return nil
+}
+
+func (s *rawLaunchSuppression) UnmarshalYAML(value *yaml.Node) error {
+	s.Set = true
+	var decoded any
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	s.Value = decoded
+	return nil
+}
+
+func (s *rawLaunchSuppression) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	s.Value = decoded
+	return nil
+}
+
+func (s *rawLaunchString) UnmarshalYAML(value *yaml.Node) error {
+	s.Set = true
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+		return fmt.Errorf("must be a string")
+	}
+	s.Value = value.Value
+	return nil
+}
+
+func (s *rawLaunchString) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("must be a string")
+	}
+	return json.Unmarshal(data, &s.Value)
+}
+
+func decodeLaunchYAMLNodeStrict(value *yaml.Node, dest any) error {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	return decoder.Decode(dest)
 }
 
 func resolveLaunchConfigPath(path, dir, home string) (string, error) {
@@ -536,147 +742,6 @@ func resolveLaunchConfigPath(path, dir, home string) (string, error) {
 		return path, nil
 	}
 	return joinConfigRelativePath(dir, path), nil
-}
-
-func parseLaunchProjects(raw any, dir, home string) ([]tool.ProjectMount, error) {
-	return parseLaunchProjectsWithPaths(raw, dir, config.Paths{Home: home})
-}
-
-func parseLaunchProjectsWithPaths(raw any, dir string, paths config.Paths) ([]tool.ProjectMount, error) {
-	paths = launchConfigPaths(paths)
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("projects must be an array")
-	}
-	projects := make([]tool.ProjectMount, 0, len(items))
-	for i, item := range items {
-		project, err := parseLaunchProjectWithPaths(fmt.Sprintf("projects[%d]", i), item, dir, paths)
-		if err != nil {
-			return nil, err
-		}
-		projects = append(projects, project)
-	}
-	return projects, nil
-}
-
-func parseLaunchProject(label string, raw any, dir, home string) (tool.ProjectMount, error) {
-	return parseLaunchProjectWithPaths(label, raw, dir, config.Paths{Home: home})
-}
-
-func parseLaunchProjectWithPaths(label string, raw any, dir string, paths config.Paths) (tool.ProjectMount, error) {
-	paths = launchConfigPaths(paths)
-	name := ""
-	path := ""
-	pathSet := false
-	switch value := raw.(type) {
-	case string:
-		name = value
-	case map[string]any:
-		for key, item := range value {
-			switch key {
-			case "name":
-				nameValue, ok := item.(string)
-				if !ok {
-					return tool.ProjectMount{}, fmt.Errorf("%s.name must be a string", label)
-				}
-				name = nameValue
-			case "path":
-				pathValue, ok := item.(string)
-				if !ok {
-					return tool.ProjectMount{}, fmt.Errorf("%s.path must be a string", label)
-				}
-				path = pathValue
-				pathSet = true
-			default:
-				return tool.ProjectMount{}, fmt.Errorf("unsupported %s key %q", label, key)
-			}
-		}
-	default:
-		return tool.ProjectMount{}, fmt.Errorf("%s must be a string or object", label)
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return tool.ProjectMount{}, fmt.Errorf("%s.name must not be empty", label)
-	}
-	source := resolveDefaultLaunchProjectPath(name, paths.ProjectRoot)
-	if pathSet {
-		var err error
-		source, err = resolveLaunchProjectPath(path, dir, paths.Home)
-		if err != nil {
-			return tool.ProjectMount{}, fmt.Errorf("%s.path: %w", label, err)
-		}
-	}
-	return tool.ProjectMount{Name: name, Source: source}, nil
-}
-
-func parseLaunchTools(raw any) ([]launchToolConfig, error) {
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("tools must be an array")
-	}
-	tools := make([]launchToolConfig, 0, len(items))
-	for i, item := range items {
-		parsed, err := parseLaunchTool(fmt.Sprintf("tools[%d]", i), item, i == 0)
-		if err != nil {
-			return nil, err
-		}
-		tools = append(tools, parsed)
-	}
-	return tools, nil
-}
-
-func parseLaunchTool(label string, raw any, primary bool) (launchToolConfig, error) {
-	name := ""
-	var params []string
-	switch value := raw.(type) {
-	case string:
-		name = value
-	case map[string]any:
-		for key, item := range value {
-			switch key {
-			case "name":
-				nameValue, ok := item.(string)
-				if !ok {
-					return launchToolConfig{}, fmt.Errorf("%s.name must be a string", label)
-				}
-				name = nameValue
-			case "params":
-				if !primary {
-					return launchToolConfig{}, fmt.Errorf("%s.params is only supported on the primary tool", label)
-				}
-				parsed, err := parseLaunchToolParams(label+".params", item)
-				if err != nil {
-					return launchToolConfig{}, err
-				}
-				params = parsed
-			default:
-				return launchToolConfig{}, fmt.Errorf("unsupported %s key %q", label, key)
-			}
-		}
-	default:
-		return launchToolConfig{}, fmt.Errorf("%s must be a string or object", label)
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return launchToolConfig{}, fmt.Errorf("%s.name must not be empty", label)
-	}
-	return launchToolConfig{Name: name, Params: params}, nil
-}
-
-func parseLaunchToolParams(label string, raw any) ([]string, error) {
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an array", label)
-	}
-	params := make([]string, 0, len(items))
-	for i, item := range items {
-		value, ok := item.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s[%d] must be a string", label, i)
-		}
-		params = append(params, value)
-	}
-	return params, nil
 }
 
 func resolveLaunchProjectPath(path, dir, home string) (string, error) {
@@ -753,6 +818,58 @@ func joinConfigRelativePath(dir, path string) string {
 	return dir + separator + path
 }
 
+func sortedKeys[T any](items map[string]T) []string {
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func projectMounts(projects []launchProjectConfig) []tool.ProjectMount {
+	mounts := make([]tool.ProjectMount, 0, len(projects))
+	for _, project := range projects {
+		mounts = append(mounts, project.Mount)
+	}
+	return mounts
+}
+
+func orderedProjectMounts(projects []launchProjectConfig, primary launchProjectConfig) []tool.ProjectMount {
+	mounts := make([]tool.ProjectMount, 0, len(projects))
+	mounts = append(mounts, primary.Mount)
+	for _, project := range projects {
+		if project.Label == primary.Label {
+			continue
+		}
+		mounts = append(mounts, project.Mount)
+	}
+	return mounts
+}
+
+func primaryConfiguredProject(projects []launchProjectConfig) (launchProjectConfig, error) {
+	if len(projects) == 0 {
+		return launchProjectConfig{}, exitcode.New(2, "launch config projects must not be empty")
+	}
+	if len(projects) == 1 {
+		return projects[0], nil
+	}
+	var primary *launchProjectConfig
+	for i := range projects {
+		if !projects[i].Primary {
+			continue
+		}
+		if primary != nil {
+			return launchProjectConfig{}, exitcode.New(2, "launch config projects must have only one primary project")
+		}
+		primary = &projects[i]
+	}
+	if primary == nil {
+		return launchProjectConfig{}, exitcode.New(2, "launch config projects must set primary: true when multiple projects are configured")
+	}
+	return *primary, nil
+}
+
 func resolveConfiguredTools(registry *tool.Registry, configured []launchToolConfig) ([]string, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("tool registry is not configured")
@@ -766,6 +883,89 @@ func resolveConfiguredTools(registry *tool.Registry, configured []launchToolConf
 		resolved = append(resolved, toolName)
 	}
 	return resolved, nil
+}
+
+func resolvePrimaryConfiguredTool(registry *tool.Registry, configured []launchToolConfig, cliPrimary string) (string, launchToolConfig, error) {
+	if registry == nil {
+		return "", launchToolConfig{}, fmt.Errorf("tool registry is not configured")
+	}
+	if strings.TrimSpace(cliPrimary) != "" {
+		params, err := configuredParamsForPrimary(registry, configured, cliPrimary)
+		if err != nil {
+			return "", launchToolConfig{}, err
+		}
+		return cliPrimary, launchToolConfig{Name: cliPrimary, Params: params}, nil
+	}
+	if len(configured) == 0 {
+		return "", launchToolConfig{}, exitcode.New(2, "launch config tools must not be empty")
+	}
+	var primary *launchToolConfig
+	if len(configured) == 1 {
+		primary = &configured[0]
+	} else {
+		for i := range configured {
+			if !configured[i].Primary {
+				continue
+			}
+			if primary != nil {
+				return "", launchToolConfig{}, exitcode.New(2, "launch config tools must have only one primary tool")
+			}
+			primary = &configured[i]
+		}
+		if primary == nil {
+			return "", launchToolConfig{}, exitcode.New(2, "launch config tools must set primary: true when multiple tools are configured")
+		}
+	}
+	primaryName, err := resolveConfiguredTool(registry, primary.Name)
+	if err != nil {
+		return "", launchToolConfig{}, err
+	}
+	for _, item := range configured {
+		if len(item.Params) == 0 || item.Label == primary.Label {
+			continue
+		}
+		return "", launchToolConfig{}, fmt.Errorf("%s.params is only supported on the primary tool", item.Label)
+	}
+	return primaryName, *primary, nil
+}
+
+func configuredParamsForPrimary(registry *tool.Registry, configured []launchToolConfig, primary string) ([]string, error) {
+	if strings.TrimSpace(primary) == "" {
+		return nil, nil
+	}
+	var params []string
+	for _, item := range configured {
+		toolName, err := resolveConfiguredTool(registry, item.Name)
+		if err != nil {
+			return nil, err
+		}
+		if toolName == primary {
+			params = item.Params
+			continue
+		}
+		if len(item.Params) > 0 {
+			return nil, fmt.Errorf("%s.params is only supported on the primary tool", item.Label)
+		}
+	}
+	return params, nil
+}
+
+func resolveConfiguredToolMountProfiles(registry *tool.Registry, configured []launchToolConfig) (map[string]string, error) {
+	profiles := map[string]string{}
+	for _, item := range configured {
+		if strings.TrimSpace(item.MountProfile) == "" {
+			continue
+		}
+		toolName, err := resolveConfiguredTool(registry, item.Name)
+		if err != nil {
+			return nil, err
+		}
+		profiles[toolName] = strings.TrimSpace(item.MountProfile)
+	}
+	if len(profiles) == 0 {
+		return nil, nil
+	}
+	return profiles, nil
 }
 
 func resolveConfiguredTool(registry *tool.Registry, name string) (string, error) {

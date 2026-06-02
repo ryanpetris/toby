@@ -3,12 +3,15 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/hostmanager"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -20,14 +23,15 @@ type Service struct {
 	managerExit *ManagerExit
 	env         tool.Environment
 	mcpURL      string
-	binds       []tool.Bind
-	seenBinds   map[tool.Bind]bool
+	binds       []sandboxmount.Bind
+	seenBinds   map[sandboxmount.Bind]bool
+	mounts      *sandboxmount.Service
 	started     bool
 }
 
 type SandboxService = Service
 
-func newService() *Service { return &Service{} }
+func newService(mounts *sandboxmount.Service) *Service { return &Service{mounts: mounts} }
 
 var _ tool.SandboxService = (*Service)(nil)
 
@@ -45,14 +49,36 @@ func (s *Service) Prepare(instance Instance) {
 	s.mu.Unlock()
 }
 
-func (s *Service) AddBind(bind tool.Bind) error {
+func (s *Service) ConfigureMounts(opts *tool.CommandOptions) error {
+	s.mu.Lock()
+	instance := s.instance
+	mounts := s.mounts
+	s.mu.Unlock()
+	if instance == nil {
+		return fmt.Errorf("sandbox is not configured")
+	}
+	if mounts == nil {
+		return fmt.Errorf("mount service is not configured")
+	}
+	profiles := sandboxmount.Profiles{}
+	mountProfile := ""
+	toolProfiles := map[string]string(nil)
+	if opts != nil {
+		profiles = opts.MountProfiles
+		mountProfile = opts.MountProfile
+		toolProfiles = opts.ToolMountProfiles
+	}
+	return mounts.Configure(sandboxmount.Config{Profile: mountProfile, SandboxName: instance.Label(), Paths: instance.Paths(), Profiles: profiles, ToolProfiles: toolProfiles})
+}
+
+func (s *Service) AddBind(bind sandboxmount.Bind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started {
 		return fmt.Errorf("sandbox is already started")
 	}
 	if s.seenBinds == nil {
-		s.seenBinds = map[tool.Bind]bool{}
+		s.seenBinds = map[sandboxmount.Bind]bool{}
 	}
 	if s.seenBinds[bind] {
 		return nil
@@ -62,11 +88,53 @@ func (s *Service) AddBind(bind tool.Bind) error {
 	return nil
 }
 
-func (s *Service) StartBinds() []tool.Bind {
+func (s *Service) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return sandboxmount.Info{}, fmt.Errorf("sandbox is already started")
+	}
+	return s.mounts.Add(req)
+}
+
+func (s *Service) Mount(key sandboxmount.Key) (sandboxmount.Info, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mounts.Get(key)
+}
+
+func (s *Service) StartBinds() []sandboxmount.Bind {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.started = true
-	return append([]tool.Bind(nil), s.binds...)
+	return append([]sandboxmount.Bind(nil), s.binds...)
+}
+
+func (s *Service) RuntimeMounts() []sandboxmount.RuntimeMount {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mounts.RuntimeMounts()
+}
+
+func (s *Service) HostBackedManagedMounts() []sandboxmount.Info {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mounts.HostBackedManagedMounts()
+}
+
+func (s *Service) MountSetup(ctx context.Context) error {
+	mounts := s.RuntimeMounts()
+	argv := []string{"chown", "-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())}
+	for _, item := range mounts {
+		if item.Source.Kind == sandboxmount.SourceProvider && item.SetupPath != "" {
+			argv = append(argv, item.SetupPath)
+		}
+	}
+	if len(argv) == 3 {
+		return nil
+	}
+	_, err := s.Exec(ctx, argv, tool.ExecOptions{Root: true, HideOutput: true})
+	return err
 }
 
 func (s *Service) Connect(ctx context.Context, instance Instance, client *hostmanager.SandboxClient, exits *CommandExits, managerExit *ManagerExit) error {
@@ -103,12 +171,12 @@ func (s *Service) TobyMCPURL() string {
 	return s.mcpURL
 }
 
-func (s *Service) Paths() tool.SandboxPaths {
+func (s *Service) Paths() sandboxpath.Paths {
 	s.mu.Lock()
 	instance := s.instance
 	s.mu.Unlock()
 	if instance == nil {
-		return tool.SandboxPaths{}
+		return sandboxpath.Paths{}
 	}
 	return instance.Paths()
 }
@@ -261,7 +329,13 @@ func (s *Service) Exec(ctx context.Context, argv []string, options tool.ExecOpti
 		return 1, err
 	}
 	exitCh := exits.watch(commandID)
-	if err := client.CommandRun(ctx, control.CommandRunParams{CommandID: commandID, Argv: argv, Foreground: options.Foreground, HideOutput: options.HideOutput, UID: control.HostUser, GID: control.HostGroup}); err != nil {
+	uid := control.HostUser
+	gid := control.HostGroup
+	if options.Root {
+		uid = 0
+		gid = 0
+	}
+	if err := client.CommandRun(ctx, control.CommandRunParams{CommandID: commandID, Argv: argv, Foreground: options.Foreground, HideOutput: options.HideOutput, UID: uid, GID: gid}); err != nil {
 		exits.unwatch(commandID)
 		return 1, err
 	}

@@ -115,6 +115,19 @@ func TestCommandCredentialRejectsUnresolvedHostSentinels(t *testing.T) {
 	}
 }
 
+func TestCommandCredentialIgnoresCredentialChangesAsNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("non-root credential behavior")
+	}
+	credential, err := commandCredential(control.CommandRunParams{UID: 0, GID: 0, Groups: []int{0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential != nil {
+		t.Fatalf("credential = %#v, want nil", credential)
+	}
+}
+
 func TestCommandArgvUsesDefaultShellForForegroundEmptyArgv(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable bit test is Unix-specific")

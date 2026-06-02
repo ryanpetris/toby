@@ -31,7 +31,7 @@ func TestConfigArgsIncludeTobyMCPAndInstructions(t *testing.T) {
 
 func TestConfigArgsIncludeConfiguredHTTPMCPProxies(t *testing.T) {
 	cfg := testTobyConfig(t, []byte(`
-mcp:
+mcps:
   docs:
     type: remote
     url: https://example.com/mcp

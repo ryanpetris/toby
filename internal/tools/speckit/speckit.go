@@ -26,64 +26,45 @@ type Params struct {
 	fx.In
 
 	HTTP    *http.Client
-	UV      tool.Tool `name:"uv"`
 	Sandbox tool.SandboxService
 }
 
 type Result struct {
 	fx.Out
 
-	Service  tool.Tool `name:"speckit"`
-	Registry tool.Tool `group:"toby.tools"`
+	Service tool.Tool `group:"toby.tools"`
 }
 
 func Provide(params Params) Result {
 	svc := &speckitTool{
-		Base:    toolutil.Base(tool.SpeckitToolName, "Launch Spec Kit", tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
+		Base:    toolutil.DependentBase(tool.SpeckitToolName, "Launch Spec Kit", 100, []string{tool.UvToolName}, tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
 		http:    params.HTTP,
-		uv:      params.UV,
 		sandbox: params.Sandbox,
 	}
-	return Result{Service: svc, Registry: svc}
+	return Result{Service: svc}
 }
 
 type speckitTool struct {
 	tool.Base
 	http    *http.Client
-	uv      tool.Tool
 	sandbox tool.SandboxService
 }
 
-func (t *speckitTool) deps() []tool.Tool { return []tool.Tool{t.uv} }
+func (t *speckitTool) HostInit(context.Context, *tool.CommandOptions) error { return nil }
 
-func (t *speckitTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
-	return toolutil.HostInitDependencies(ctx, opts, t.uv)
-}
-
-func (t *speckitTool) SandboxContextSetup(ctx context.Context) error {
-	return toolutil.SandboxContextSetupDependencies(ctx, t.uv)
-}
+func (t *speckitTool) SandboxContextSetup(context.Context) error { return nil }
 
 func (t *speckitTool) SandboxInit(ctx context.Context) error {
 	return helpers.SandboxInitOnce(ctx, t.Name(), func() error {
-		if err := toolutil.SandboxInitDependencies(ctx, t.uv); err != nil {
-			return err
-		}
 		return t.Install(ctx)
 	})
 }
 
 func (t *speckitTool) Install(ctx context.Context) error {
-	if err := toolutil.InstallDependencies(ctx, t.uv); err != nil {
-		return err
-	}
 	return t.install(ctx, false)
 }
 
 func (t *speckitTool) Upgrade(ctx context.Context) error {
-	if err := toolutil.UpgradeDependencies(ctx, t.uv); err != nil {
-		return err
-	}
 	return t.install(ctx, true)
 }
 

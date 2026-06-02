@@ -44,6 +44,28 @@ type Result struct {
 	Tools             Registration `group:"toby.context.init"`
 }
 
+type HooksResult struct {
+	fx.Out
+
+	AgentInstructions tool.LifecycleHook `group:"toby.lifecycle.sandbox.context.init"`
+	TobyConfig        tool.LifecycleHook `group:"toby.lifecycle.sandbox.context.init"`
+}
+
+func NewLifecycleHooks(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) HooksResult {
+	return HooksResult{
+		AgentInstructions: tool.LifecycleHook{Name: "context.agent-instructions", Priority: -200, Run: func(ctx context.Context, _ tool.LifecycleContext) error {
+			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o644)
+			return err
+		}},
+		TobyConfig: tool.LifecycleHook{Name: "context.toby-config", Priority: -100, Run: func(ctx context.Context, _ tool.LifecycleContext) error {
+			if cfg == nil {
+				return nil
+			}
+			return cfg.RegisterContextFiles(ctx, contextFiles)
+		}},
+	}
+}
+
 func NewServices(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) Result {
 	return Result{
 		AgentInstructions: Registration{Name: "agent-instructions", Order: 10, Service: ServiceFunc(func(ctx context.Context, _ Params) error {

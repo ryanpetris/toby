@@ -2,7 +2,6 @@ package grok
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,26 +9,24 @@ import (
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	grokconfig "petris.dev/toby/internal/tools/grok/config"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
 )
 
-func TestGrokHostStateCreatesAndBindsStateRoot(t *testing.T) {
+func TestGrokHostInitRegistersManagedMount(t *testing.T) {
 	home := t.TempDir()
-	stateRoot := filepath.Join(home, "state-root")
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
 	gr := Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox}).Service
-	opts := &tool.CommandOptions{ToolStates: tool.ToolStateSettings{Tools: map[string]tool.ToolStateConfig{tool.GrokToolName: {State: tool.ToolStateHost, StateRoot: stateRoot}}}}
-	if err := gr.HostInit(context.Background(), opts); err != nil {
+	if err := gr.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(filepath.Join(stateRoot, ".grok")); err != nil || !info.IsDir() {
-		t.Fatalf("host state dir not created: info=%v err=%v", info, err)
-	}
-	if len(sandbox.Binds) != 1 || sandbox.Binds[0].HostPath != filepath.Join(stateRoot, ".grok") || sandbox.Binds[0].Target != helpers.HomeTarget(".grok") {
+	if len(sandbox.Binds) != 0 {
 		t.Fatalf("binds = %#v", sandbox.Binds)
+	}
+	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.GrokToolName, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(sandbox.Paths().Home, ".grok") || sandbox.Mounts[0].Subpath != ".grok" {
+		t.Fatalf("mounts = %#v", sandbox.Mounts)
 	}
 }
 

@@ -1,9 +1,11 @@
 package tobyconfig
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,10 +15,12 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
+	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -37,18 +41,28 @@ type Service struct {
 }
 
 type Config struct {
-	Instructions []string
-	MCP          map[string]MCPServer
-	Permission   PermissionConfig
-	Provider     map[string]ProviderConfig
-	Sandbox      SandboxConfig
+	Instructions  []string
+	MCP           map[string]MCPServer
+	Permission    PermissionConfig
+	Provider      map[string]ProviderConfig
+	MountProfiles sandboxmount.Profiles
+	Settings      SettingsConfig
+	Tools         map[string]ToolConfig
+	Sandbox       SandboxConfig
 }
 
 type SandboxConfig struct {
-	Runtime               RuntimeConfig
-	Tools                 tool.ToolStateSettings
+	Runtime RuntimeConfig
+}
+
+type SettingsConfig struct {
+	MountProfile          string
 	SuppressWarnings      warning.Suppression
 	AutoloadProjectConfig *bool
+}
+
+type ToolConfig struct {
+	MountProfile string
 }
 
 type RuntimeConfig struct {
@@ -92,18 +106,96 @@ type sourceFile struct {
 	format configfile.Format
 }
 
+type rawConfig struct {
+	Instructions  []string                      `yaml:"instructions" json:"instructions"`
+	MCP           map[string]map[string]any     `yaml:"mcps" json:"mcps"`
+	Permission    rawPermissionConfig           `yaml:"permissions" json:"permissions"`
+	Provider      map[string]*rawProviderConfig `yaml:"providers" json:"providers"`
+	MountProfiles map[string]*rawMountProfile   `yaml:"mountProfiles" json:"mountProfiles"`
+	Settings      rawSettingsConfig             `yaml:"settings" json:"settings"`
+	Tools         map[string]*rawToolConfig     `yaml:"tools" json:"tools"`
+	Sandbox       rawSandboxConfig              `yaml:"sandbox" json:"sandbox"`
+}
+
+type rawPermissionConfig struct {
+	Paths map[string]string `yaml:"paths" json:"paths"`
+}
+
+type rawProviderConfig struct {
+	Type    string            `yaml:"type" json:"type"`
+	Name    string            `yaml:"name" json:"name"`
+	BaseURL string            `yaml:"baseURL" json:"baseURL"`
+	Headers map[string]string `yaml:"headers" json:"headers"`
+	Models  *map[string]any   `yaml:"models" json:"models"`
+}
+
+type rawMountProfile struct {
+	Backing  string `yaml:"backing" json:"backing"`
+	HostRoot string `yaml:"hostRoot" json:"hostRoot"`
+}
+
+type rawSettingsConfig struct {
+	MountProfile          string         `yaml:"mountProfile" json:"mountProfile"`
+	SuppressWarnings      rawSuppression `yaml:"suppressWarnings" json:"suppressWarnings"`
+	AutoloadProjectConfig *bool          `yaml:"autoloadProjectConfig" json:"autoloadProjectConfig"`
+}
+
+type rawToolConfig struct {
+	MountProfile string `yaml:"mountProfile" json:"mountProfile"`
+}
+
+type rawSandboxConfig struct {
+	Runtime rawRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawSandboxFields struct {
+	Runtime rawRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawRuntimeConfig struct {
+	Default    string
+	Docker     rawDockerSandboxConfig
+	Bubblewrap rawBubblewrapSandboxConfig
+}
+
+type rawRuntimeFields struct {
+	Default    string                     `yaml:"default" json:"default"`
+	Docker     rawDockerSandboxConfig     `yaml:"docker" json:"docker"`
+	Bubblewrap rawBubblewrapSandboxConfig `yaml:"bubblewrap" json:"bubblewrap"`
+}
+
+type rawDockerSandboxConfig struct {
+	Image    string                `yaml:"image" json:"image"`
+	Home     string                `yaml:"home" json:"home"`
+	Projects string                `yaml:"projects" json:"projects"`
+	Build    *rawDockerBuildConfig `yaml:"build" json:"build"`
+}
+
+type rawDockerBuildConfig struct {
+	Context    rawString `yaml:"context" json:"context"`
+	Dockerfile rawString `yaml:"dockerfile" json:"dockerfile"`
+}
+
+type rawBubblewrapSandboxConfig struct {
+	Root string `yaml:"root" json:"root"`
+}
+
+type rawSuppression struct {
+	Set   bool
+	Value any
+}
+
+type rawString struct {
+	Set   bool
+	Value string
+}
+
 func New(paths config.Paths) (*Service, error) {
 	return Load(paths.TobyConfigDir(), paths.Home)
 }
 
 func Load(dir, home string) (*Service, error) {
-	merged := Config{
-		MCP:      map[string]MCPServer{},
-		Provider: map[string]ProviderConfig{},
-		Permission: PermissionConfig{
-			Paths: map[string]string{},
-		},
-	}
+	merged := emptyConfig()
 	for _, source := range sourceFiles() {
 		path := filepath.Join(dir, source.name)
 		if _, err := os.Stat(path); err != nil {
@@ -119,8 +211,8 @@ func Load(dir, home string) (*Service, error) {
 		if len(strings.TrimSpace(string(data))) == 0 {
 			continue
 		}
-		raw, err := configfile.Decode(data, source.format, "toby config")
-		if err != nil {
+		var raw rawConfig
+		if err := configfile.DecodeInto(data, source.format, "toby config", &raw); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		parsed, err := parseConfig(raw, filepath.Dir(path), home)
@@ -144,53 +236,389 @@ func sourceFiles() []sourceFile {
 	}
 }
 
-func parseConfig(raw map[string]any, dir, home string) (Config, error) {
-	result := Config{
+func emptyConfig() Config {
+	return Config{
 		MCP:      map[string]MCPServer{},
 		Provider: map[string]ProviderConfig{},
 		Permission: PermissionConfig{
 			Paths: map[string]string{},
 		},
+		MountProfiles: sandboxmount.Profiles{},
+		Tools:         map[string]ToolConfig{},
 	}
-	for key, value := range raw {
-		switch key {
-		case "instructions":
-			instructions, err := parseStringList("instructions", value)
-			if err != nil {
-				return Config{}, err
-			}
-			result.Instructions = instructions
-		case "mcp":
-			mcp, err := parseObjectMap("mcp", value)
-			if err != nil {
-				return Config{}, err
-			}
-			for name, server := range mcp {
-				result.MCP[name] = MCPServer{raw: server}
-			}
-		case "permission":
-			permission, err := parsePermission(value, home)
-			if err != nil {
-				return Config{}, err
-			}
-			result.Permission = permission
-		case "provider":
-			providers, err := parseProviderMap(value)
-			if err != nil {
-				return Config{}, err
-			}
-			result.Provider = providers
-		case "sandbox":
-			sandbox, err := parseSandbox(value, dir, home)
-			if err != nil {
-				return Config{}, err
-			}
-			result.Sandbox = sandbox
-		default:
-			return Config{}, fmt.Errorf("unsupported top-level key %q", key)
+}
+
+func parseConfig(raw rawConfig, dir, home string) (Config, error) {
+	result := emptyConfig()
+	result.Instructions = append([]string(nil), raw.Instructions...)
+
+	for name, server := range raw.MCP {
+		if server == nil {
+			return Config{}, fmt.Errorf("mcps.%s must be an object", name)
+		}
+		result.MCP[name] = MCPServer{raw: configfile.CloneMap(server)}
+	}
+
+	result.Permission = raw.Permission.toPermission(home)
+
+	providers, err := rawProviderMap(raw.Provider)
+	if err != nil {
+		return Config{}, err
+	}
+	result.Provider = providers
+
+	profiles, err := rawMountProfiles(raw.MountProfiles, dir, home)
+	if err != nil {
+		return Config{}, err
+	}
+	result.MountProfiles = profiles
+
+	settings, err := raw.Settings.toSettings()
+	if err != nil {
+		return Config{}, err
+	}
+	result.Settings = settings
+
+	tools, err := rawToolMap(raw.Tools)
+	if err != nil {
+		return Config{}, err
+	}
+	result.Tools = tools
+
+	sandbox, err := raw.Sandbox.toSandbox(dir, home)
+	if err != nil {
+		return Config{}, err
+	}
+	result.Sandbox = sandbox
+
+	return result, nil
+}
+
+func (r rawPermissionConfig) toPermission(home string) PermissionConfig {
+	permission := PermissionConfig{Paths: map[string]string{}}
+	for pattern, mode := range r.Paths {
+		permission.Paths[config.ExpandHome(pattern, home)] = mode
+	}
+	return permission
+}
+
+func rawProviderMap(raw map[string]*rawProviderConfig) (map[string]ProviderConfig, error) {
+	providers := make(map[string]ProviderConfig, len(raw))
+	for name, rawProvider := range raw {
+		if rawProvider == nil {
+			return nil, fmt.Errorf("providers.%s must be an object", name)
+		}
+		provider, err := rawProvider.toProvider(name)
+		if err != nil {
+			return nil, err
+		}
+		providers[name] = provider
+	}
+	return providers, nil
+}
+
+func (r rawProviderConfig) toProvider(name string) (ProviderConfig, error) {
+	cfg := ProviderConfig{
+		Type:    strings.TrimSpace(r.Type),
+		Name:    r.Name,
+		BaseURL: strings.TrimSpace(r.BaseURL),
+	}
+	if len(r.Headers) > 0 {
+		cfg.Headers = make(map[string]string, len(r.Headers))
+		for key, value := range r.Headers {
+			cfg.Headers[key] = value
 		}
 	}
-	return result, nil
+	if r.Models != nil {
+		cfg.Models = configfile.CloneMap(*r.Models)
+		cfg.modelsSet = true
+	}
+	if cfg.Type != "" && !providerTypeSupported(cfg.Type) {
+		return ProviderConfig{}, fmt.Errorf("providers.%s.type is unsupported", name)
+	}
+	return cfg, nil
+}
+
+func rawMountProfiles(raw map[string]*rawMountProfile, dir, home string) (sandboxmount.Profiles, error) {
+	profiles := sandboxmount.Profiles{}
+	for rawName, rawProfile := range raw {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return nil, fmt.Errorf("mountProfiles keys must not be empty")
+		}
+		if rawProfile == nil {
+			return nil, fmt.Errorf("mountProfiles.%s must be an object", name)
+		}
+		profile, err := rawProfile.toMountProfile("mountProfiles."+name, dir, home)
+		if err != nil {
+			return nil, err
+		}
+		profiles[name] = profile
+	}
+	return profiles, nil
+}
+
+func (r rawMountProfile) toMountProfile(label string, dir, home string) (sandboxmount.BackingConfig, error) {
+	var cfg sandboxmount.BackingConfig
+	if r.Backing != "" {
+		backing, err := helpers.ParseMountBacking(r.Backing)
+		if err != nil {
+			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.backing: %w", label, err)
+		}
+		cfg.Backing = backing
+	}
+	if r.HostRoot != "" {
+		root, err := helpers.ResolveMountHostRoot(r.HostRoot, home, dir)
+		if err != nil {
+			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.hostRoot: %w", label, err)
+		}
+		cfg.HostRoot = root
+	}
+	return cfg, nil
+}
+
+func (r rawSettingsConfig) toSettings() (SettingsConfig, error) {
+	cfg := SettingsConfig{MountProfile: strings.TrimSpace(r.MountProfile)}
+	if r.SuppressWarnings.Set {
+		suppression, err := warning.ParseSuppression(r.SuppressWarnings.Value, "settings.suppressWarnings")
+		if err != nil {
+			return SettingsConfig{}, err
+		}
+		cfg.SuppressWarnings = suppression
+	}
+	if r.AutoloadProjectConfig != nil {
+		autoload := *r.AutoloadProjectConfig
+		cfg.AutoloadProjectConfig = &autoload
+	}
+	return cfg, nil
+}
+
+func rawToolMap(raw map[string]*rawToolConfig) (map[string]ToolConfig, error) {
+	tools := map[string]ToolConfig{}
+	for rawName, rawTool := range raw {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return nil, fmt.Errorf("tools keys must not be empty")
+		}
+		if rawTool == nil {
+			tools[name] = ToolConfig{}
+			continue
+		}
+		tools[name] = ToolConfig{MountProfile: strings.TrimSpace(rawTool.MountProfile)}
+	}
+	return tools, nil
+}
+
+func (r rawSandboxConfig) toSandbox(dir, home string) (SandboxConfig, error) {
+	runtime, err := r.Runtime.toRuntime(dir, home)
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	return SandboxConfig{Runtime: runtime}, nil
+}
+
+func (r rawRuntimeConfig) toRuntime(dir, home string) (RuntimeConfig, error) {
+	docker, err := r.Docker.toDocker(dir, home)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	bubblewrap, err := r.Bubblewrap.toBubblewrap(dir, home)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	return RuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker, Bubblewrap: bubblewrap}, nil
+}
+
+func (r rawDockerSandboxConfig) toDocker(dir, home string) (DockerSandboxConfig, error) {
+	cfg := DockerSandboxConfig{Image: strings.TrimSpace(r.Image), Home: strings.TrimSpace(r.Home), Projects: strings.TrimSpace(r.Projects)}
+	if r.Build != nil {
+		build, err := r.Build.toDockerBuild(dir, home)
+		if err != nil {
+			return DockerSandboxConfig{}, err
+		}
+		cfg.Build = build
+	}
+	return cfg, nil
+}
+
+func (r rawDockerBuildConfig) toDockerBuild(dir, home string) (tool.DockerBuildConfig, error) {
+	contextValue := "."
+	if r.Context.Set {
+		contextValue = strings.TrimSpace(r.Context.Value)
+		if contextValue == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
+		}
+	}
+	dockerfileValue := "Dockerfile"
+	if r.Dockerfile.Set {
+		dockerfileValue = strings.TrimSpace(r.Dockerfile.Value)
+		if dockerfileValue == "" {
+			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
+		}
+	}
+	contextDir, err := resolveConfigPath(contextValue, dir, home)
+	if err != nil {
+		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
+	}
+	dockerfile := config.ExpandHome(dockerfileValue, home)
+	if !filepath.IsAbs(dockerfile) {
+		dockerfile = filepath.Join(contextDir, dockerfile)
+	}
+	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
+}
+
+func (r rawBubblewrapSandboxConfig) toBubblewrap(dir, home string) (BubblewrapSandboxConfig, error) {
+	if strings.TrimSpace(r.Root) == "" {
+		return BubblewrapSandboxConfig{}, nil
+	}
+	root, err := resolveConfigPath(r.Root, dir, home)
+	if err != nil {
+		return BubblewrapSandboxConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
+	}
+	return BubblewrapSandboxConfig{Root: root}, nil
+}
+
+func (r *rawRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag != "!!str" {
+			return fmt.Errorf("sandbox.runtime must be a string or object")
+		}
+		r.Default = strings.TrimSpace(value.Value)
+		return nil
+	case yaml.MappingNode:
+		var fields rawRuntimeFields
+		if err := decodeYAMLNodeStrict(value, &fields); err != nil {
+			return err
+		}
+		r.Default = fields.Default
+		r.Docker = fields.Docker
+		r.Bubblewrap = fields.Bubblewrap
+		return nil
+	default:
+		return fmt.Errorf("sandbox.runtime must be a string or object")
+	}
+}
+
+func (r *rawSandboxConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("sandbox must be an object")
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		if key != "runtime" {
+			return fmt.Errorf("unsupported sandbox key %q", key)
+		}
+	}
+	var fields rawSandboxFields
+	if err := decodeYAMLNodeStrict(value, &fields); err != nil {
+		return err
+	}
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawSandboxConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var items map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return fmt.Errorf("sandbox must be an object")
+	}
+	for key := range items {
+		if key != "runtime" {
+			return fmt.Errorf("unsupported sandbox key %q", key)
+		}
+	}
+	var fields rawSandboxFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawRuntimeConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return fmt.Errorf("sandbox.runtime must be a string or object")
+	}
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return err
+		}
+		r.Default = strings.TrimSpace(value)
+		return nil
+	}
+	var fields rawRuntimeFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Default = fields.Default
+	r.Docker = fields.Docker
+	r.Bubblewrap = fields.Bubblewrap
+	return nil
+}
+
+func (s *rawSuppression) UnmarshalYAML(value *yaml.Node) error {
+	s.Set = true
+	var decoded any
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	s.Value = decoded
+	return nil
+}
+
+func (s *rawSuppression) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	s.Value = decoded
+	return nil
+}
+
+func (s *rawString) UnmarshalYAML(value *yaml.Node) error {
+	s.Set = true
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+		return fmt.Errorf("must be a string")
+	}
+	s.Value = value.Value
+	return nil
+}
+
+func (s *rawString) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("must be a string")
+	}
+	return json.Unmarshal(data, &s.Value)
+}
+
+func decodeYAMLNodeStrict(value *yaml.Node, dest any) error {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	return decoder.Decode(dest)
 }
 
 func (c *Config) Merge(src Config) {
@@ -225,6 +653,16 @@ func (c *Config) Merge(src Config) {
 		c.Permission.Paths[pattern] = mode
 	}
 	c.Sandbox.Merge(src.Sandbox)
+	c.MountProfiles.Merge(src.MountProfiles)
+	c.Settings.Merge(src.Settings)
+	if c.Tools == nil {
+		c.Tools = map[string]ToolConfig{}
+	}
+	for name, tool := range src.Tools {
+		existing := c.Tools[name]
+		existing.Merge(tool)
+		c.Tools[name] = existing
+	}
 }
 
 func (c Config) Validate() error {
@@ -232,18 +670,18 @@ func (c Config) Validate() error {
 		typ, _ := server.raw["type"].(string)
 		typ = strings.TrimSpace(typ)
 		if typ != "" && typ != "local" && typ != "remote" {
-			return fmt.Errorf("mcp.%s.type is unsupported", name)
+			return fmt.Errorf("mcps.%s.type is unsupported", name)
 		}
 	}
 	for name, provider := range c.Provider {
 		if provider.Type == "" {
-			return fmt.Errorf("provider.%s.type is required", name)
+			return fmt.Errorf("providers.%s.type is required", name)
 		}
 		if !providerTypeSupported(provider.Type) {
-			return fmt.Errorf("provider.%s.type is unsupported", name)
+			return fmt.Errorf("providers.%s.type is unsupported", name)
 		}
 		if provider.BaseURL == "" {
-			return fmt.Errorf("provider.%s.baseURL is required", name)
+			return fmt.Errorf("providers.%s.baseURL is required", name)
 		}
 	}
 	return nil
@@ -251,7 +689,12 @@ func (c Config) Validate() error {
 
 func (c *SandboxConfig) Merge(src SandboxConfig) {
 	c.Runtime.Merge(src.Runtime)
-	c.Tools.Merge(src.Tools)
+}
+
+func (c *SettingsConfig) Merge(src SettingsConfig) {
+	if src.MountProfile != "" {
+		c.MountProfile = src.MountProfile
+	}
 	c.SuppressWarnings.Merge(src.SuppressWarnings)
 	if src.AutoloadProjectConfig != nil {
 		autoload := *src.AutoloadProjectConfig
@@ -259,7 +702,13 @@ func (c *SandboxConfig) Merge(src SandboxConfig) {
 	}
 }
 
-func (c SandboxConfig) AutoloadProjectConfigEnabled() bool {
+func (c *ToolConfig) Merge(src ToolConfig) {
+	if src.MountProfile != "" {
+		c.MountProfile = src.MountProfile
+	}
+}
+
+func (c SettingsConfig) AutoloadProjectConfigEnabled() bool {
 	return c.AutoloadProjectConfig != nil && *c.AutoloadProjectConfig
 }
 
@@ -365,6 +814,33 @@ func (s *Service) Permission() PermissionConfig {
 		permission.Paths[pattern] = mode
 	}
 	return permission
+}
+
+func (s *Service) MountProfiles() sandboxmount.Profiles {
+	if s == nil {
+		return nil
+	}
+	return s.config.MountProfiles.Clone()
+}
+
+func (s *Service) ToolMountProfiles() map[string]string {
+	profiles := map[string]string{}
+	if s == nil {
+		return profiles
+	}
+	for name, cfg := range s.config.Tools {
+		if strings.TrimSpace(cfg.MountProfile) != "" {
+			profiles[name] = strings.TrimSpace(cfg.MountProfile)
+		}
+	}
+	return profiles
+}
+
+func (s *Service) Settings() SettingsConfig {
+	if s == nil {
+		return SettingsConfig{}
+	}
+	return s.config.Settings
 }
 
 func (s *Service) Sandbox() SandboxConfig {
@@ -555,112 +1031,6 @@ func (p ProviderConfig) HasModels() bool {
 	return p.modelsSet
 }
 
-func parseStringList(label string, raw any) ([]string, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an array", label)
-	}
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		value, ok := item.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s entries must be strings", label)
-		}
-		result = append(result, value)
-	}
-	return result, nil
-}
-
-func parseObjectMap(label string, raw any) (map[string]map[string]any, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an object", label)
-	}
-	result := make(map[string]map[string]any, len(items))
-	for name, rawItem := range items {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("%s.%s must be an object", label, name)
-		}
-		result[name] = configfile.CloneMap(item)
-	}
-	return result, nil
-}
-
-func parseProviderMap(raw any) (map[string]ProviderConfig, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("provider must be an object")
-	}
-	providers := make(map[string]ProviderConfig, len(items))
-	for name, rawProvider := range items {
-		provider, ok := rawProvider.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("provider.%s must be an object", name)
-		}
-		parsed, err := parseProviderConfig(name, provider)
-		if err != nil {
-			return nil, err
-		}
-		providers[name] = parsed
-	}
-	return providers, nil
-}
-
-func parseProviderConfig(name string, raw map[string]any) (ProviderConfig, error) {
-	var cfg ProviderConfig
-	for key, value := range raw {
-		switch key {
-		case "type":
-			typ, ok := value.(string)
-			if !ok {
-				return ProviderConfig{}, fmt.Errorf("provider.%s.type must be a string", name)
-			}
-			cfg.Type = strings.TrimSpace(typ)
-		case "name":
-			text, ok := value.(string)
-			if !ok {
-				return ProviderConfig{}, fmt.Errorf("provider.%s.name must be a string", name)
-			}
-			cfg.Name = text
-		case "baseURL":
-			text, ok := value.(string)
-			if !ok {
-				return ProviderConfig{}, fmt.Errorf("provider.%s.baseURL must be a string", name)
-			}
-			cfg.BaseURL = strings.TrimSpace(text)
-		case "headers":
-			headers, err := parseProviderHeaders(name, value)
-			if err != nil {
-				return ProviderConfig{}, err
-			}
-			cfg.Headers = headers
-		case "models":
-			models, ok := value.(map[string]any)
-			if !ok {
-				return ProviderConfig{}, fmt.Errorf("provider.%s.models must be an object", name)
-			}
-			cfg.Models = configfile.CloneMap(models)
-			cfg.modelsSet = true
-		default:
-			return ProviderConfig{}, fmt.Errorf("unsupported provider.%s key %q", name, key)
-		}
-	}
-	if cfg.Type != "" && !providerTypeSupported(cfg.Type) {
-		return ProviderConfig{}, fmt.Errorf("provider.%s.type is unsupported", name)
-	}
-	return cfg, nil
-}
-
 func providerTypeSupported(typ string) bool {
 	switch typ {
 	case ProviderTypeAnthropic, ProviderTypeOpenAI:
@@ -668,25 +1038,6 @@ func providerTypeSupported(typ string) bool {
 	default:
 		return false
 	}
-}
-
-func parseProviderHeaders(name string, raw any) (map[string]string, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("provider.%s.headers must be an object", name)
-	}
-	headers := make(map[string]string, len(items))
-	for key, rawValue := range items {
-		value, ok := rawValue.(string)
-		if !ok {
-			return nil, fmt.Errorf("provider.%s.headers.%s must be a string", name, key)
-		}
-		headers[key] = value
-	}
-	return headers, nil
 }
 
 func resolveString(value string, configDirs []string, home string) (string, error) {
@@ -741,213 +1092,6 @@ func readSubstitutionFile(path string, configDirs []string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func parsePermission(raw any, home string) (PermissionConfig, error) {
-	permission := PermissionConfig{Paths: map[string]string{}}
-	if raw == nil {
-		return permission, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return PermissionConfig{}, fmt.Errorf("permission must be an object")
-	}
-	for key, value := range items {
-		if key != "paths" {
-			return PermissionConfig{}, fmt.Errorf("unsupported permission key %q", key)
-		}
-		paths, ok := value.(map[string]any)
-		if !ok {
-			return PermissionConfig{}, fmt.Errorf("permission.paths must be an object")
-		}
-		for pattern, rawMode := range paths {
-			mode, ok := rawMode.(string)
-			if !ok {
-				return PermissionConfig{}, fmt.Errorf("permission.paths[%q] must be a string", pattern)
-			}
-			permission.Paths[config.ExpandHome(pattern, home)] = mode
-		}
-	}
-	return permission, nil
-}
-
-func parseSandbox(raw any, dir, home string) (SandboxConfig, error) {
-	if raw == nil {
-		return SandboxConfig{}, nil
-	}
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return SandboxConfig{}, fmt.Errorf("sandbox must be an object")
-	}
-	var cfg SandboxConfig
-	for key, value := range items {
-		switch key {
-		case "runtime":
-			runtime, err := parseRuntime(value, dir, home)
-			if err != nil {
-				return SandboxConfig{}, err
-			}
-			cfg.Runtime = runtime
-		case "tools":
-			tools, err := parseSandboxTools(value, dir, home)
-			if err != nil {
-				return SandboxConfig{}, err
-			}
-			cfg.Tools = tools
-		case "suppressWarnings":
-			suppression, err := warning.ParseSuppression(value, "sandbox.suppressWarnings")
-			if err != nil {
-				return SandboxConfig{}, err
-			}
-			cfg.SuppressWarnings = suppression
-		case "autoloadProjectConfig":
-			autoload, ok := value.(bool)
-			if !ok {
-				return SandboxConfig{}, fmt.Errorf("sandbox.autoloadProjectConfig must be a boolean")
-			}
-			cfg.AutoloadProjectConfig = &autoload
-		default:
-			return SandboxConfig{}, fmt.Errorf("unsupported sandbox key %q", key)
-		}
-	}
-	return cfg, nil
-}
-
-func parseRuntime(raw any, dir, home string) (RuntimeConfig, error) {
-	switch value := raw.(type) {
-	case string:
-		return RuntimeConfig{Default: strings.TrimSpace(value)}, nil
-	case map[string]any:
-		var cfg RuntimeConfig
-		for key, item := range value {
-			switch key {
-			case "default":
-				name, ok := item.(string)
-				if !ok {
-					return RuntimeConfig{}, fmt.Errorf("sandbox.runtime.default must be a string")
-				}
-				cfg.Default = strings.TrimSpace(name)
-			case "docker":
-				docker, err := parseDockerSandbox(item, dir, home)
-				if err != nil {
-					return RuntimeConfig{}, err
-				}
-				cfg.Docker = docker
-			case "bubblewrap":
-				bubblewrap, err := parseBubblewrapSandbox(item, dir, home)
-				if err != nil {
-					return RuntimeConfig{}, err
-				}
-				cfg.Bubblewrap = bubblewrap
-			default:
-				return RuntimeConfig{}, fmt.Errorf("unsupported sandbox.runtime key %q", key)
-			}
-		}
-		return cfg, nil
-	default:
-		return RuntimeConfig{}, fmt.Errorf("sandbox.runtime must be a string or object")
-	}
-}
-
-func parseDockerSandbox(raw any, dir, home string) (DockerSandboxConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker must be an object")
-	}
-	var cfg DockerSandboxConfig
-	for key, value := range items {
-		switch key {
-		case "image":
-			item, ok := value.(string)
-			if !ok {
-				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.image must be a string")
-			}
-			cfg.Image = strings.TrimSpace(item)
-		case "home":
-			item, ok := value.(string)
-			if !ok {
-				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.home must be a string")
-			}
-			cfg.Home = strings.TrimSpace(item)
-		case "projects":
-			item, ok := value.(string)
-			if !ok {
-				return DockerSandboxConfig{}, fmt.Errorf("sandbox.runtime.docker.projects must be a string")
-			}
-			cfg.Projects = strings.TrimSpace(item)
-		case "build":
-			build, err := parseDockerBuild(value, dir, home)
-			if err != nil {
-				return DockerSandboxConfig{}, err
-			}
-			cfg.Build = build
-		default:
-			return DockerSandboxConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker key %q", key)
-		}
-	}
-	return cfg, nil
-}
-
-func parseDockerBuild(raw any, dir, home string) (tool.DockerBuildConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build must be an object")
-	}
-	contextValue := "."
-	dockerfileValue := "Dockerfile"
-	for key, value := range items {
-		item, ok := value.(string)
-		if !ok {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must be a string", key)
-		}
-		item = strings.TrimSpace(item)
-		if item == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.%s must not be empty", key)
-		}
-		switch key {
-		case "context":
-			contextValue = item
-		case "dockerfile":
-			dockerfileValue = item
-		default:
-			return tool.DockerBuildConfig{}, fmt.Errorf("unsupported sandbox.runtime.docker.build key %q", key)
-		}
-	}
-	contextDir, err := resolveConfigPath(contextValue, dir, home)
-	if err != nil {
-		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
-	}
-	dockerfile := config.ExpandHome(dockerfileValue, home)
-	if !filepath.IsAbs(dockerfile) {
-		dockerfile = filepath.Join(contextDir, dockerfile)
-	}
-	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
-}
-
-func parseBubblewrapSandbox(raw any, dir, home string) (BubblewrapSandboxConfig, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return BubblewrapSandboxConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap must be an object")
-	}
-	var cfg BubblewrapSandboxConfig
-	for key, value := range items {
-		item, ok := value.(string)
-		if !ok {
-			return BubblewrapSandboxConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.%s must be a string", key)
-		}
-		item = strings.TrimSpace(item)
-		switch key {
-		case "root":
-			root, err := resolveConfigPath(item, dir, home)
-			if err != nil {
-				return BubblewrapSandboxConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
-			}
-			cfg.Root = root
-		default:
-			return BubblewrapSandboxConfig{}, fmt.Errorf("unsupported sandbox.runtime.bubblewrap key %q", key)
-		}
-	}
-	return cfg, nil
-}
-
 func resolveConfigPath(value, dir, home string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		return "", fmt.Errorf("must not be empty")
@@ -957,71 +1101,6 @@ func resolveConfigPath(value, dir, home string) (string, error) {
 		return value, nil
 	}
 	return filepath.Join(dir, value), nil
-}
-
-func parseSandboxTools(raw any, dir, home string) (tool.ToolStateSettings, error) {
-	items, ok := raw.(map[string]any)
-	if !ok {
-		return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools must be an object")
-	}
-	settings := tool.ToolStateSettings{}
-	for name, rawTool := range items {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools keys must not be empty")
-		}
-		toolConfig, ok := rawTool.(map[string]any)
-		if !ok {
-			return tool.ToolStateSettings{}, fmt.Errorf("sandbox.tools.%s must be an object", name)
-		}
-		cfg, err := parseSandboxTool(name, toolConfig, dir, home)
-		if err != nil {
-			return tool.ToolStateSettings{}, err
-		}
-		if cfg.State == "" && cfg.StateRoot == "" {
-			continue
-		}
-		if name == "default" {
-			settings.Default = cfg
-			continue
-		}
-		if settings.Tools == nil {
-			settings.Tools = map[string]tool.ToolStateConfig{}
-		}
-		settings.Tools[name] = cfg
-	}
-	return settings, nil
-}
-
-func parseSandboxTool(name string, raw map[string]any, dir, home string) (tool.ToolStateConfig, error) {
-	var cfg tool.ToolStateConfig
-	for key, value := range raw {
-		switch key {
-		case "state":
-			rawState, ok := value.(string)
-			if !ok {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state must be a string", name)
-			}
-			parsed, err := helpers.ParseToolState(rawState)
-			if err != nil {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.state: %w", name, err)
-			}
-			cfg.State = parsed
-		case "stateRoot":
-			rawRoot, ok := value.(string)
-			if !ok {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot must be a string", name)
-			}
-			root, err := helpers.ResolveStateRoot(rawRoot, home, dir)
-			if err != nil {
-				return tool.ToolStateConfig{}, fmt.Errorf("sandbox.tools.%s.stateRoot: %w", name, err)
-			}
-			cfg.StateRoot = root
-		default:
-			return tool.ToolStateConfig{}, fmt.Errorf("unsupported sandbox.tools.%s key %q", name, key)
-		}
-	}
-	return cfg, nil
 }
 
 func appendDedupeStrings(dst, src []string) []string {
