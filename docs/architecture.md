@@ -169,7 +169,7 @@ priority 0 and Bubblewrap priority 1, so Docker is preferred when present. The
 runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
 
 - **Docker** (`internal/sandbox/docker`): `docker run --rm --init --user 0:0` with the configured image
-  (default `node:lts-bookworm`). `$HOME` (`/toby/home` by default) is backed by
+  (default `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`). `$HOME` (`/toby/home` by default) is backed by
   a named Docker volume (e.g. `toby.<profile>.runtime.home.default`) so private
   home state persists across runs; provider-backed managed mounts use lazy
   volumes named `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host

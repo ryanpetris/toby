@@ -152,7 +152,7 @@ sandbox:
   runtime:
     default: docker
     docker:
-      image: node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
       home: /home/toby
       projects: /workspace
       build:
@@ -175,7 +175,7 @@ settings:
 		t.Fatal(err)
 	}
 	sandbox := cfg.Sandbox()
-	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:lts-bookworm" || sandbox.Runtime.Docker.Home != "/home/toby" || sandbox.Runtime.Docker.Projects != "/workspace" {
+	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm" || sandbox.Runtime.Docker.Home != "/home/toby" || sandbox.Runtime.Docker.Projects != "/workspace" {
 		t.Fatalf("sandbox = %#v", sandbox)
 	}
 	if sandbox.Runtime.Docker.Build.Context != filepath.Join(dir, "docker", "context") || sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {

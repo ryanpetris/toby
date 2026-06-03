@@ -86,7 +86,7 @@ sandbox:
   runtime:
     default: docker
     docker:
-      image: node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
 projects:
   app:
     primary: true

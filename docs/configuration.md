@@ -174,7 +174,7 @@ sandbox:
   runtime:
     default: docker          # docker | bubblewrap; defaults to highest-priority available
     docker:
-      image: node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
       build:
         context: ~/docker/toby
     bubblewrap:
@@ -261,7 +261,7 @@ sandbox:
   runtime:
     default: docker      # optional; defaults to highest-priority available runtime
     docker:
-      image: node:lts-bookworm  # optional; defaults to node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm  # optional; defaults to mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
       home: /toby/home          # optional; defaults to /toby/home
       projects: /toby/workspace # optional; defaults to /toby/workspace
       build:                    # optional; build an image before launch

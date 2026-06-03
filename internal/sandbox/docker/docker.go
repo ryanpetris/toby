@@ -27,7 +27,7 @@ import (
 	"go.uber.org/fx"
 )
 
-const defaultDockerImage = "node:lts-bookworm"
+const defaultDockerImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm"
 
 type environment struct {
 	paths     config.Paths

@@ -28,7 +28,7 @@ sandbox:
   runtime:
     default: docker
     docker:
-      image: node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
       build:
         context: .
         dockerfile: Dockerfile.toby
@@ -101,7 +101,7 @@ The host manager runs registered context init services after `context.init`. Ser
 
 ### Docker Runtime
 
-Docker-backed sandboxes use `docker run --rm --init --user 0:0` with the selected image, so Dockerfile `USER` lines do not prevent the sandbox manager from owning setup work. The default image is `node:lts-bookworm`. Docker mounts a named volume at `$HOME`, which defaults to `/toby/home`; projects default to `/toby/workspace`. These paths can be overridden in launch config with `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects`, but they must stay under `/toby`.
+Docker-backed sandboxes use `docker run --rm --init --user 0:0` with the selected image, so Dockerfile `USER` lines do not prevent the sandbox manager from owning setup work. The default image is `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`. Docker mounts a named volume at `$HOME`, which defaults to `/toby/home`; projects default to `/toby/workspace`. These paths can be overridden in launch config with `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects`, but they must stay under `/toby`.
 
 Docker `$HOME` is backed by a named Docker volume such as `toby.default.runtime.home.my-app`, based on the selected mount profile and sandbox name, so private home state persists across runs without bind mounting the host home contents. Other Toby runtime paths such as `/toby/bin` and `/toby/context` are not persisted by that volume.
 
@@ -162,7 +162,7 @@ sandbox:
   runtime:
     default: docker
     docker:
-      image: node:lts-bookworm
+      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
 ```
 
 ## MCP
