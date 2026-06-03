@@ -11,6 +11,7 @@ import (
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	grokconfig "petris.dev/toby/internal/tools/grok/config"
 	"petris.dev/toby/internal/tools/helpers"
@@ -35,6 +36,7 @@ type Params struct {
 	Paths        config.Paths
 	Config       *tobyconfig.Service `optional:"true"`
 	Proxy        *httpproxy.Service  `optional:"true"`
+	MCPProxy     *mcpproxy.Service   `optional:"true"`
 	Sandbox      tool.SandboxService
 	ContextFiles *contextfiles.Service
 }
@@ -52,7 +54,7 @@ func Provide(params Params) Result {
 		RootDir:        params.Paths.SandboxRoot,
 		HostSubpath:    []string{".grok"},
 		SandboxSubpath: []string{".grok"},
-	}, config: params.Config, contextFiles: params.ContextFiles}
+	}, config: params.Config, mcpProxy: params.MCPProxy, contextFiles: params.ContextFiles}
 	svc.proxy = params.Proxy
 	return Result{Service: svc}
 }
@@ -61,6 +63,7 @@ type grokTool struct {
 	*tool.Simple
 	config       *tobyconfig.Service
 	proxy        *httpproxy.Service
+	mcpProxy     *mcpproxy.Service
 	contextFiles *contextfiles.Service
 }
 
@@ -74,7 +77,7 @@ func (t *grokTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOptio
 			return err
 		}
 		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
-		return grokconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy)
+		return grokconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy, t.mcpProxy)
 	})
 }
 

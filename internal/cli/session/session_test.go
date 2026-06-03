@@ -144,6 +144,52 @@ settings:
 	}
 }
 
+func TestApplySandboxDefaultsMergesDebugWithExplicitOverride(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+settings:
+  debug: true
+`))
+	cfg, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
+	if !got.DebugEnabled() {
+		t.Fatalf("debug = %#v", got.Debug)
+	}
+	debug := false
+	got = ApplySandboxDefaults(&tool.CommandOptions{Debug: &debug}, cfg)
+	if got.Debug == nil || got.DebugEnabled() {
+		t.Fatalf("debug override = %#v", got.Debug)
+	}
+}
+
+func TestApplySandboxDefaultsMergesYoloWithExplicitOverride(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	writeTobyConfig(t, dir, []byte(`
+settings:
+  yolo: true
+`))
+	cfg, err := tobyconfig.Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
+	if !got.YoloEnabled() {
+		t.Fatalf("yolo = %#v", got.Yolo)
+	}
+	yolo := false
+	got = ApplySandboxDefaults(&tool.CommandOptions{Yolo: &yolo}, cfg)
+	if got.Yolo == nil || got.YoloEnabled() {
+		t.Fatalf("yolo override = %#v", got.Yolo)
+	}
+}
+
 func TestWarnHostBackedMounts(t *testing.T) {
 	mounts := []sandboxmount.Info{{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}}}
 	var stderr bytes.Buffer

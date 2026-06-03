@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestRegisterContextFilesWritesCopilotFiles(t *testing.T) {
 	home := t.TempDir()
 	cp, sandbox, service := newTestCopilot(t, filepath.Join(home, "context"))
 	registrar := cp.(tool.ContextFileTool)
-	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	if _, err := service.AddInstruction(context.Background(), "user-instructions.md", []byte("# user instructions\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,6 +64,44 @@ func TestLaunchAddsAdditionalMCPConfig(t *testing.T) {
 	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.Paths().Context), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestLaunchYoloAppendsAllowAllTools(t *testing.T) {
+	home := t.TempDir()
+	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"))
+	var got []string
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+
+	yes := true
+	if err := cp.HostInit(context.Background(), &tool.CommandOptions{Yolo: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Launch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.Paths().Context), "--allow-all-tools"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+
+	got = nil
+	plain, plainSandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime2", "toby", "context"))
+	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+	if err := plain.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Launch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got, "--allow-all-tools") {
+		t.Fatalf("argv = %#v, unexpected --allow-all-tools", got)
 	}
 }
 

@@ -116,6 +116,40 @@ func (s *Service) RuntimeMounts() []sandboxmount.RuntimeMount {
 	return s.mounts.RuntimeMounts()
 }
 
+func (s *Service) MountInfos() []sandboxmount.Info {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mounts == nil {
+		return nil
+	}
+	return s.mounts.Infos()
+}
+
+func (s *Service) ProjectMounts() []ProjectMount {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider, ok := s.instance.(interface{ ProjectMounts() []ProjectMount })
+	if !ok {
+		return nil
+	}
+	return provider.ProjectMounts()
+}
+
+func (s *Service) StartBindSnapshot() []sandboxmount.Bind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sandboxmount.Bind(nil), s.binds...)
+}
+
+func (s *Service) RuntimeInfo(debug bool) RuntimeInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.instance == nil {
+		return RuntimeInfo{}
+	}
+	return s.instance.RuntimeInfo(debug)
+}
+
 func (s *Service) HostBackedManagedMounts() []sandboxmount.Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()

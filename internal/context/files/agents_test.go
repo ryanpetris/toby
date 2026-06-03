@@ -3,34 +3,30 @@ package contextfiles
 import (
 	"bytes"
 	"testing"
-
-	"go.uber.org/fx"
-	"go.uber.org/fx/fxtest"
 )
 
-func TestAgentFilesExposeSharedGuidance(t *testing.T) {
-	service := testService(t)
-	builder := service.NewBuilder()
+func TestAgentFilesExposeSandboxGuidance(t *testing.T) {
+	builder := NewService().NewBuilder()
 	if err := RegisterAgentFiles(builder); err != nil {
 		t.Fatal(err)
 	}
 	files := builder.Files()
-	if len(files) != 1 || files[0].Path != GitAgentsPath {
-		t.Fatalf("files = %#v, want git guidance only", files)
+	if len(files) != 1 || files[0].Path != TobyAgentsPath {
+		t.Fatalf("files = %#v, want Toby sandbox guidance only", files)
 	}
-	if !bytes.Contains(files[0].Data, []byte("Toby Git")) {
-		t.Fatalf("git guidance missing")
+	for _, want := range []string{"Toby Sandbox", "git.commit", "toby://docs/git", "mcp.start"} {
+		if !bytes.Contains(files[0].Data, []byte(want)) {
+			t.Fatalf("guidance missing %q", want)
+		}
 	}
 }
 
-func testService(t *testing.T) *Service {
-	t.Helper()
-	var service *Service
-	app := fxtest.New(t,
-		fx.Provide(NewService),
-		fx.Populate(&service),
-	)
-	app.RequireStart()
-	t.Cleanup(app.RequireStop)
-	return service
+func TestAgentContentsReturnsInstruction(t *testing.T) {
+	contents, err := AgentContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contents) != 1 || !bytes.Contains(contents[0], []byte("Toby Sandbox")) {
+		t.Fatalf("contents = %#v, want Toby sandbox guidance", contents)
+	}
 }

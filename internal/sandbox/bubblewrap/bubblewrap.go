@@ -146,6 +146,15 @@ func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
 	return s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
 }
 
+func (s *instance) RuntimeInfo(debug bool) sandbox.RuntimeInfo {
+	info := map[string]any{}
+	if debug {
+		info["providerRoot"] = s.providerRoot
+		info["runtimeHostPath"] = s.runtimeHostPath
+	}
+	return sandbox.RuntimeInfo{Runtime: sandbox.RuntimeBubblewrap, Info: info}
+}
+
 func (s *instance) prepareHostDirs(mounts []sandboxmount.RuntimeMount) error {
 	dirs := []string{
 		s.providerRoot,

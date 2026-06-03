@@ -52,6 +52,53 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	}
 }
 
+func TestLaunchYoloAppendsSkipPermissions(t *testing.T) {
+	home := t.TempDir()
+	claude, sandbox := newTestClaude(t, filepath.Join(home, "runtime", "toby", "context"))
+	var got []string
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+
+	yes := true
+	if err := claude.HostInit(context.Background(), &tool.CommandOptions{Yolo: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if err := claude.Launch(context.Background(), []string{"--model", "opus"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, "--dangerously-skip-permissions") {
+		t.Fatalf("argv = %#v, missing --dangerously-skip-permissions", got)
+	}
+
+	got = nil
+	plain, plainSandbox := newTestClaude(t, filepath.Join(home, "runtime2", "toby", "context"))
+	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+	if err := plain.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Launch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got, "--dangerously-skip-permissions") {
+		t.Fatalf("argv = %#v, unexpected --dangerously-skip-permissions", got)
+	}
+}
+
+func newTestClaude(t *testing.T, contextDir string) (tool.Tool, *tooltest.Sandbox) {
+	t.Helper()
+	home := t.TempDir()
+	sandbox := tooltest.NewSandbox(contextDir)
+	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
+	contextFiles := contextfiles.NewService()
+	contextFiles.SetSandbox(sandbox)
+	return Provide(Params{Paths: config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}, Sandbox: sandbox, ContextFiles: contextFiles}).Service, sandbox
+}
+
 func TestContextFlags(t *testing.T) {
 	contextDir := "/run/user/1000/toby/context"
 	base := filepath.Join(contextDir, "claude")

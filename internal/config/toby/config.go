@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,7 @@ import (
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
 	sandboxmount "petris.dev/toby/internal/sandbox/mount"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
@@ -30,6 +32,17 @@ const InstructionsDir = "instructions"
 const (
 	ProviderTypeAnthropic = "anthropic"
 	ProviderTypeOpenAI    = "openai"
+)
+
+const (
+	MCPTypeLocal  = "local"
+	MCPTypeRemote = "remote"
+
+	MCPTransportStdio = "stdio"
+	MCPTransportHTTP  = "http"
+
+	MCPRuntimeDocker     = "docker"
+	MCPRuntimeBubblewrap = "bubblewrap"
 )
 
 var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
@@ -53,12 +66,19 @@ type Config struct {
 
 type SandboxConfig struct {
 	Runtime RuntimeConfig
+	MCP     MCPSandboxConfig
+}
+
+type MCPSandboxConfig struct {
+	Runtime MCPRuntimeConfig
 }
 
 type SettingsConfig struct {
 	MountProfile          string
 	SuppressWarnings      warning.Suppression
 	AutoloadProjectConfig *bool
+	Debug                 *bool
+	Yolo                  *bool
 }
 
 type ToolConfig struct {
@@ -69,6 +89,15 @@ type RuntimeConfig struct {
 	Default    string
 	Docker     DockerSandboxConfig
 	Bubblewrap BubblewrapSandboxConfig
+}
+
+type MCPRuntimeConfig struct {
+	Type   string
+	Docker MCPDockerRuntimeConfig
+}
+
+type MCPDockerRuntimeConfig struct {
+	Image string
 }
 
 type DockerSandboxConfig struct {
@@ -138,6 +167,8 @@ type rawSettingsConfig struct {
 	MountProfile          string         `yaml:"mountProfile" json:"mountProfile"`
 	SuppressWarnings      rawSuppression `yaml:"suppressWarnings" json:"suppressWarnings"`
 	AutoloadProjectConfig *bool          `yaml:"autoloadProjectConfig" json:"autoloadProjectConfig"`
+	Debug                 *bool          `yaml:"debug" json:"debug"`
+	Yolo                  *bool          `yaml:"yolo" json:"yolo"`
 }
 
 type rawToolConfig struct {
@@ -145,11 +176,13 @@ type rawToolConfig struct {
 }
 
 type rawSandboxConfig struct {
-	Runtime rawRuntimeConfig `yaml:"runtime" json:"runtime"`
+	Runtime rawRuntimeConfig    `yaml:"runtime" json:"runtime"`
+	MCP     rawMCPSandboxConfig `yaml:"mcp" json:"mcp"`
 }
 
 type rawSandboxFields struct {
-	Runtime rawRuntimeConfig `yaml:"runtime" json:"runtime"`
+	Runtime rawRuntimeConfig    `yaml:"runtime" json:"runtime"`
+	MCP     rawMCPSandboxConfig `yaml:"mcp" json:"mcp"`
 }
 
 type rawRuntimeConfig struct {
@@ -178,6 +211,28 @@ type rawDockerBuildConfig struct {
 
 type rawBubblewrapSandboxConfig struct {
 	Root string `yaml:"root" json:"root"`
+}
+
+type rawMCPSandboxConfig struct {
+	Runtime rawMCPRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawMCPSandboxFields struct {
+	Runtime rawMCPRuntimeConfig `yaml:"runtime" json:"runtime"`
+}
+
+type rawMCPRuntimeConfig struct {
+	Type   string
+	Docker rawMCPDockerRuntimeConfig
+}
+
+type rawMCPRuntimeFields struct {
+	Type   string                    `yaml:"type" json:"type"`
+	Docker rawMCPDockerRuntimeConfig `yaml:"docker" json:"docker"`
+}
+
+type rawMCPDockerRuntimeConfig struct {
+	Image string `yaml:"image" json:"image"`
 }
 
 type rawSuppression struct {
@@ -390,6 +445,14 @@ func (r rawSettingsConfig) toSettings() (SettingsConfig, error) {
 		autoload := *r.AutoloadProjectConfig
 		cfg.AutoloadProjectConfig = &autoload
 	}
+	if r.Debug != nil {
+		debug := *r.Debug
+		cfg.Debug = &debug
+	}
+	if r.Yolo != nil {
+		yolo := *r.Yolo
+		cfg.Yolo = &yolo
+	}
 	return cfg, nil
 }
 
@@ -414,7 +477,11 @@ func (r rawSandboxConfig) toSandbox(dir, home string) (SandboxConfig, error) {
 	if err != nil {
 		return SandboxConfig{}, err
 	}
-	return SandboxConfig{Runtime: runtime}, nil
+	mcp, err := r.MCP.toMCPSandbox()
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	return SandboxConfig{Runtime: runtime, MCP: mcp}, nil
 }
 
 func (r rawRuntimeConfig) toRuntime(dir, home string) (RuntimeConfig, error) {
@@ -478,6 +545,19 @@ func (r rawBubblewrapSandboxConfig) toBubblewrap(dir, home string) (BubblewrapSa
 	return BubblewrapSandboxConfig{Root: root}, nil
 }
 
+func (r rawMCPSandboxConfig) toMCPSandbox() (MCPSandboxConfig, error) {
+	runtime, err := r.Runtime.toMCPRuntime()
+	if err != nil {
+		return MCPSandboxConfig{}, err
+	}
+	return MCPSandboxConfig{Runtime: runtime}, nil
+}
+
+func (r rawMCPRuntimeConfig) toMCPRuntime() (MCPRuntimeConfig, error) {
+	typ := strings.TrimSpace(r.Type)
+	return MCPRuntimeConfig{Type: typ, Docker: MCPDockerRuntimeConfig{Image: strings.TrimSpace(r.Docker.Image)}}, nil
+}
+
 func (r *rawRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
 	case yaml.ScalarNode:
@@ -509,7 +589,7 @@ func (r *rawSandboxConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		key := value.Content[i].Value
-		if key != "runtime" {
+		if key != "runtime" && key != "mcp" {
 			return fmt.Errorf("unsupported sandbox key %q", key)
 		}
 	}
@@ -518,6 +598,7 @@ func (r *rawSandboxConfig) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	r.Runtime = fields.Runtime
+	r.MCP = fields.MCP
 	return nil
 }
 
@@ -531,7 +612,7 @@ func (r *rawSandboxConfig) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("sandbox must be an object")
 	}
 	for key := range items {
-		if key != "runtime" {
+		if key != "runtime" && key != "mcp" {
 			return fmt.Errorf("unsupported sandbox key %q", key)
 		}
 	}
@@ -543,6 +624,7 @@ func (r *rawSandboxConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.Runtime = fields.Runtime
+	r.MCP = fields.MCP
 	return nil
 }
 
@@ -569,6 +651,100 @@ func (r *rawRuntimeConfig) UnmarshalJSON(data []byte) error {
 	r.Default = fields.Default
 	r.Docker = fields.Docker
 	r.Bubblewrap = fields.Bubblewrap
+	return nil
+}
+
+func (r *rawMCPSandboxConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("sandbox.mcp must be an object")
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		if key != "runtime" {
+			return fmt.Errorf("unsupported sandbox.mcp key %q", key)
+		}
+	}
+	var fields rawMCPSandboxFields
+	if err := decodeYAMLNodeStrict(value, &fields); err != nil {
+		return err
+	}
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawMCPSandboxConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var items map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return fmt.Errorf("sandbox.mcp must be an object")
+	}
+	for key := range items {
+		if key != "runtime" {
+			return fmt.Errorf("unsupported sandbox.mcp key %q", key)
+		}
+	}
+	var fields rawMCPSandboxFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Runtime = fields.Runtime
+	return nil
+}
+
+func (r *rawMCPRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag != "!!str" {
+			return fmt.Errorf("sandbox.mcp.runtime must be a string or object")
+		}
+		r.Type = strings.TrimSpace(value.Value)
+		return nil
+	case yaml.MappingNode:
+		var fields rawMCPRuntimeFields
+		if err := decodeYAMLNodeStrict(value, &fields); err != nil {
+			return err
+		}
+		r.Type = fields.Type
+		r.Docker = fields.Docker
+		return nil
+	case 0:
+		return nil
+	default:
+		return fmt.Errorf("sandbox.mcp.runtime must be a string or object")
+	}
+}
+
+func (r *rawMCPRuntimeConfig) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return err
+		}
+		r.Type = strings.TrimSpace(value)
+		return nil
+	}
+	var fields rawMCPRuntimeFields
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	r.Type = fields.Type
+	r.Docker = fields.Docker
 	return nil
 }
 
@@ -667,10 +843,21 @@ func (c *Config) Merge(src Config) {
 
 func (c Config) Validate() error {
 	for name, server := range c.MCP {
-		typ, _ := server.raw["type"].(string)
-		typ = strings.TrimSpace(typ)
-		if typ != "" && typ != "local" && typ != "remote" {
+		typ := server.Type()
+		if typ != "" && typ != MCPTypeLocal && typ != MCPTypeRemote {
 			return fmt.Errorf("mcps.%s.type is unsupported", name)
+		}
+		if server.Local() {
+			transport := server.Transport()
+			if transport != MCPTransportStdio && transport != MCPTransportHTTP {
+				return fmt.Errorf("mcps.%s.transport is unsupported", name)
+			}
+			if _, err := server.CommandParts(); err != nil {
+				return err
+			}
+			if transport == MCPTransportHTTP && server.Port() <= 0 {
+				return fmt.Errorf("mcps.%s.port is required for http transport", name)
+			}
 		}
 	}
 	for name, provider := range c.Provider {
@@ -689,6 +876,11 @@ func (c Config) Validate() error {
 
 func (c *SandboxConfig) Merge(src SandboxConfig) {
 	c.Runtime.Merge(src.Runtime)
+	c.MCP.Merge(src.MCP)
+}
+
+func (c *MCPSandboxConfig) Merge(src MCPSandboxConfig) {
+	c.Runtime.Merge(src.Runtime)
 }
 
 func (c *SettingsConfig) Merge(src SettingsConfig) {
@@ -700,6 +892,14 @@ func (c *SettingsConfig) Merge(src SettingsConfig) {
 		autoload := *src.AutoloadProjectConfig
 		c.AutoloadProjectConfig = &autoload
 	}
+	if src.Debug != nil {
+		debug := *src.Debug
+		c.Debug = &debug
+	}
+	if src.Yolo != nil {
+		yolo := *src.Yolo
+		c.Yolo = &yolo
+	}
 }
 
 func (c *ToolConfig) Merge(src ToolConfig) {
@@ -710,6 +910,14 @@ func (c *ToolConfig) Merge(src ToolConfig) {
 
 func (c SettingsConfig) AutoloadProjectConfigEnabled() bool {
 	return c.AutoloadProjectConfig != nil && *c.AutoloadProjectConfig
+}
+
+func (c SettingsConfig) DebugEnabled() bool {
+	return c.Debug != nil && *c.Debug
+}
+
+func (c SettingsConfig) YoloEnabled() bool {
+	return c.Yolo != nil && *c.Yolo
 }
 
 func (c *RuntimeConfig) Merge(src RuntimeConfig) {
@@ -730,6 +938,15 @@ func (c *RuntimeConfig) Merge(src RuntimeConfig) {
 	}
 	if src.Bubblewrap.Root != "" {
 		c.Bubblewrap.Root = src.Bubblewrap.Root
+	}
+}
+
+func (c *MCPRuntimeConfig) Merge(src MCPRuntimeConfig) {
+	if src.Type != "" {
+		c.Type = src.Type
+	}
+	if src.Docker.Image != "" {
+		c.Docker.Image = src.Docker.Image
 	}
 }
 
@@ -816,6 +1033,45 @@ func (s *Service) Permission() PermissionConfig {
 	return permission
 }
 
+// defaultPermissionMode is the mode applied to the paths Toby injects by default.
+const defaultPermissionMode = "allow"
+
+// defaultPermissionPaths returns the permission paths Toby injects into supported
+// tool configs by default. They grant access to the sandbox projects root, /tmp,
+// and the common home cache/state directories used by development tooling such as
+// Go, npm, and pip. Each directory is paired with a recursive glob so tools that
+// match on patterns cover the subtree. The projects root itself is added, not the
+// individual mounted project paths.
+func defaultPermissionPaths(paths sandboxpath.Paths) map[string]string {
+	dirs := []string{"/tmp", paths.Workspace}
+	if paths.Home != "" {
+		dirs = append(dirs, filepath.Join(paths.Home, "go"), filepath.Join(paths.Home, ".cache"))
+	}
+	result := map[string]string{}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		result[dir] = defaultPermissionMode
+		result[dir+"/**"] = defaultPermissionMode
+	}
+	return result
+}
+
+// PermissionPaths returns the permission paths for supported tool configs: Toby's
+// default injected paths merged with the user-configured permissions.paths.
+// User entries override defaults for the same path.
+func (s *Service) PermissionPaths(paths sandboxpath.Paths) map[string]string {
+	result := defaultPermissionPaths(paths)
+	if s == nil {
+		return result
+	}
+	for pattern, mode := range s.config.Permission.Paths {
+		result[pattern] = mode
+	}
+	return result
+}
+
 func (s *Service) MountProfiles() sandboxmount.Profiles {
 	if s == nil {
 		return nil
@@ -848,6 +1104,13 @@ func (s *Service) Sandbox() SandboxConfig {
 		return SandboxConfig{}
 	}
 	return s.config.Sandbox
+}
+
+func (s *Service) MCPSandbox() MCPSandboxConfig {
+	if s == nil {
+		return MCPSandboxConfig{}
+	}
+	return s.config.Sandbox.MCP
 }
 
 func (s *Service) RegisterContextFiles(ctx context.Context, service *contextfiles.Service) error {
@@ -887,6 +1150,89 @@ func (s MCPServer) Enabled() bool {
 	return true
 }
 
+func (s MCPServer) Type() string {
+	typ, _ := s.raw["type"].(string)
+	typ = strings.TrimSpace(typ)
+	if typ != "" {
+		return typ
+	}
+	if strings.TrimSpace(s.URL()) != "" {
+		return MCPTypeRemote
+	}
+	if _, ok := s.raw["command"]; ok {
+		return MCPTypeLocal
+	}
+	return ""
+}
+
+func (s MCPServer) Local() bool {
+	return s.Type() == MCPTypeLocal
+}
+
+func (s MCPServer) Remote() bool {
+	return s.Type() == MCPTypeRemote
+}
+
+func (s MCPServer) Transport() string {
+	transport, _ := s.raw["transport"].(string)
+	transport = strings.TrimSpace(transport)
+	if transport == "" && s.Local() {
+		return MCPTransportStdio
+	}
+	return transport
+}
+
+func (s MCPServer) Runtime() MCPRuntimeConfig {
+	return rawMCPRuntimeFromAny(s.raw["runtime"])
+}
+
+func (s MCPServer) CommandParts() ([]string, error) {
+	return mcpCommandParts("mcp server", s.raw["command"])
+}
+
+func (s MCPServer) Port() int {
+	return intFromAny(s.raw["port"])
+}
+
+func (s MCPServer) Path() string {
+	path, _ := s.raw["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
+func (s MCPServer) Environment() (map[string]string, error) {
+	raw, ok := s.raw["env"]
+	if !ok {
+		raw, ok = s.raw["environment"]
+	}
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("env must be an object")
+	}
+	env := make(map[string]string, len(values))
+	for name, rawValue := range values {
+		value, ok := rawValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("env.%s must be a string", name)
+		}
+		resolved, err := resolveString(value, s.configDirs, s.home)
+		if err != nil {
+			return nil, fmt.Errorf("env.%s: %w", name, err)
+		}
+		env[name] = resolved
+	}
+	return env, nil
+}
+
 func (s MCPServer) HTTPProxyable() bool {
 	return MCPServerHTTPProxyable(s.raw)
 }
@@ -916,11 +1262,11 @@ func MCPServerHTTPProxyable(server map[string]any) bool {
 	typ, _ := server["type"].(string)
 	typ = strings.TrimSpace(typ)
 	switch typ {
-	case "remote":
+	case MCPTypeRemote, MCPTypeLocal:
 		return true
 	case "":
 		if _, ok := server["command"]; ok {
-			return false
+			return true
 		}
 		url, _ := server["url"].(string)
 		return strings.TrimSpace(url) != ""
@@ -932,6 +1278,81 @@ func MCPServerHTTPProxyable(server map[string]any) bool {
 func MCPServerURL(server map[string]any) string {
 	url, _ := server["url"].(string)
 	return strings.TrimSpace(url)
+}
+
+func rawMCPRuntimeFromAny(raw any) MCPRuntimeConfig {
+	switch value := raw.(type) {
+	case string:
+		return MCPRuntimeConfig{Type: strings.TrimSpace(value)}
+	case map[string]any:
+		runtime := MCPRuntimeConfig{}
+		if typ, ok := value["type"].(string); ok {
+			runtime.Type = strings.TrimSpace(typ)
+		}
+		if docker, ok := value["docker"].(map[string]any); ok {
+			if image, ok := docker["image"].(string); ok {
+				runtime.Docker.Image = strings.TrimSpace(image)
+			}
+		}
+		return runtime
+	default:
+		return MCPRuntimeConfig{}
+	}
+}
+
+func mcpCommandParts(label string, raw any) ([]string, error) {
+	switch command := raw.(type) {
+	case string:
+		command = strings.TrimSpace(command)
+		if command == "" {
+			return nil, fmt.Errorf("%s command is empty", label)
+		}
+		return []string{command}, nil
+	case []any:
+		if len(command) == 0 {
+			return nil, fmt.Errorf("%s command is empty", label)
+		}
+		parts := make([]string, 0, len(command))
+		for i, item := range command {
+			part, ok := item.(string)
+			if !ok || part == "" {
+				if i == 0 {
+					return nil, fmt.Errorf("%s command must start with a string", label)
+				}
+				return nil, fmt.Errorf("%s command arguments must be strings", label)
+			}
+			parts = append(parts, part)
+		}
+		return parts, nil
+	default:
+		return nil, fmt.Errorf("%s command is required", label)
+	}
+}
+
+func intFromAny(raw any) int {
+	switch value := raw.(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, err := strconv.Atoi(value.String())
+		if err == nil {
+			return parsed
+		}
+		floatValue, err := strconv.ParseFloat(value.String(), 64)
+		if err == nil {
+			return int(floatValue)
+		}
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func mergeHeaderMap(headers http.Header, raw any) error {

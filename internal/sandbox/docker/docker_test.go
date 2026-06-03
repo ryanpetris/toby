@@ -96,6 +96,36 @@ func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
 	assertContainsSequence(t, primeCmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
 }
 
+func TestDockerCommandsPassHostTerm(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*instance)
+	spec := sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())}
+
+	primeCmd := docker.BuildPrimeCommand(spec)
+	assertContainsSequence(t, primeCmd, []string{"--env", "TERM=xterm-256color"})
+	setupCmd, err := docker.BuildSetupCommand(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsSequence(t, setupCmd, []string{"--env", "TERM=xterm-256color"})
+	runCmd, err := docker.BuildCommand(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsSequence(t, runCmd, []string{"--env", "TERM=xterm-256color"})
+}
+
 func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
@@ -121,6 +151,38 @@ func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
 	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
 	assertContainsSequence(t, runner.commands[0], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
 	assertContainsSequence(t, runner.commands[1], []string{"docker", "run", "--rm", "--init", "-i"})
+}
+
+func TestDockerDebugCommandsPersistContainersWithPhaseNames(t *testing.T) {
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	factory := testFactory(paths, fakeRunner{})
+	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := sbx.(*instance)
+	spec := sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir()), Debug: true}
+
+	primeCmd := docker.BuildPrimeCommand(spec)
+	assertNotContainsSequence(t, primeCmd, []string{"--rm"})
+	assertContainsSequence(t, primeCmd, []string{"--name", docker.containerName + "-prime"})
+	setupCmd, err := docker.BuildSetupCommand(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNotContainsSequence(t, setupCmd, []string{"--rm"})
+	assertContainsSequence(t, setupCmd, []string{"--name", docker.containerName + "-setup"})
+	runCmd, err := docker.BuildCommand(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNotContainsSequence(t, runCmd, []string{"--rm"})
+	assertContainsSequence(t, runCmd, []string{"--name", docker.containerName + "-run"})
 }
 
 func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {

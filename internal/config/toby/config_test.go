@@ -39,7 +39,9 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
   "settings": {
     "mountProfile": "default",
     "suppressWarnings": true,
-    "autoloadProjectConfig": true
+    "autoloadProjectConfig": true,
+    "debug": true,
+    "yolo": false
   },
   "tools": {
     "opencode": { "mountProfile": "default" }
@@ -71,6 +73,8 @@ settings:
   suppressWarnings:
     - mount.host-backing
   autoloadProjectConfig: false
+  debug: false
+  yolo: true
 tools:
   opencode:
     mountProfile: shared
@@ -142,6 +146,12 @@ sandbox:
 	if settings.AutoloadProjectConfigEnabled() {
 		t.Fatalf("autoloadProjectConfig = %#v", settings.AutoloadProjectConfig)
 	}
+	if settings.Debug == nil || settings.DebugEnabled() {
+		t.Fatalf("debug = %#v", settings.Debug)
+	}
+	if settings.Yolo == nil || !settings.YoloEnabled() {
+		t.Fatalf("yolo = %#v", settings.Yolo)
+	}
 }
 
 func TestLoadParsesSandboxDefaults(t *testing.T) {
@@ -168,6 +178,8 @@ settings:
   suppressWarnings:
     - opencode.model-discovery
   autoloadProjectConfig: true
+  debug: true
+  yolo: true
 `))
 
 	cfg, err := Load(dir, home)
@@ -184,6 +196,9 @@ settings:
 	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(home, "sandboxes") {
 		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
 	}
+	if sandbox.MCP.Runtime.Type != "" || sandbox.MCP.Runtime.Docker.Image != "" {
+		t.Fatalf("mcp sandbox = %#v", sandbox.MCP)
+	}
 	mounts := cfg.MountProfiles().Config("default")
 	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
 		t.Fatalf("mounts = %#v", mounts)
@@ -197,6 +212,62 @@ settings:
 	}
 	if !settings.AutoloadProjectConfigEnabled() {
 		t.Fatalf("autoloadProjectConfig = %#v", settings.AutoloadProjectConfig)
+	}
+	if !settings.DebugEnabled() {
+		t.Fatalf("debug = %#v", settings.Debug)
+	}
+	if !settings.YoloEnabled() {
+		t.Fatalf("yolo = %#v", settings.Yolo)
+	}
+}
+
+func TestLoadParsesMCPSandboxRuntime(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.json"), []byte(`{
+  "sandbox": { "mcp": { "runtime": "bubblewrap" } }
+}`))
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+sandbox:
+  mcp:
+    runtime:
+      type: docker
+      docker:
+        image: ghcr.io/acme/mcp:latest
+mcps:
+  docs:
+    type: local
+    transport: http
+    runtime:
+      docker:
+        image: ghcr.io/acme/docs:latest
+    command: [docs-mcp, --port, "3000"]
+    port: 3000
+    path: mcp
+`))
+
+	cfg, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := cfg.MCPSandbox()
+	if mcp.Runtime.Type != MCPRuntimeDocker || mcp.Runtime.Docker.Image != "ghcr.io/acme/mcp:latest" {
+		t.Fatalf("mcp sandbox = %#v", mcp)
+	}
+	docs := cfg.MCPServers()["docs"]
+	runtime := docs.Runtime()
+	if runtime.Type != "" || runtime.Docker.Image != "ghcr.io/acme/docs:latest" {
+		t.Fatalf("docs runtime = %#v", runtime)
+	}
+	if docs.Transport() != MCPTransportHTTP || docs.Port() != 3000 || docs.Path() != "/mcp" {
+		t.Fatalf("docs transport = %q port=%d path=%q", docs.Transport(), docs.Port(), docs.Path())
+	}
+	command, err := docs.CommandParts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(command, []string{"docs-mcp", "--port", "3000"}) {
+		t.Fatalf("command = %#v", command)
 	}
 }
 
@@ -345,8 +416,8 @@ func TestMCPServerHTTPProxyableCases(t *testing.T) {
 	}{
 		{name: "remote", raw: map[string]any{"type": "remote", "command": "ignored"}, want: true},
 		{name: "implicit url", raw: map[string]any{"url": " https://example.com/mcp "}, want: true},
-		{name: "implicit command", raw: map[string]any{"command": "mcp"}, want: false},
-		{name: "local", raw: map[string]any{"type": "local", "url": "https://example.com/mcp"}, want: false},
+		{name: "implicit command", raw: map[string]any{"command": "mcp"}, want: true},
+		{name: "local", raw: map[string]any{"type": "local", "command": "mcp"}, want: true},
 		{name: "blank", raw: map[string]any{"url": " "}, want: false},
 	}
 	for _, tt := range tests {

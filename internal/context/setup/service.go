@@ -54,7 +54,7 @@ type HooksResult struct {
 func NewLifecycleHooks(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) HooksResult {
 	return HooksResult{
 		AgentInstructions: tool.LifecycleHook{Name: "context.agent-instructions", Priority: -200, Run: func(ctx context.Context, _ tool.LifecycleContext) error {
-			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o644)
+			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.TobyAgentsPath, contextfiles.AgentFiles(), contextfiles.TobyAgentsPath, 0o644)
 			return err
 		}},
 		TobyConfig: tool.LifecycleHook{Name: "context.toby-config", Priority: -100, Run: func(ctx context.Context, _ tool.LifecycleContext) error {
@@ -69,7 +69,7 @@ func NewLifecycleHooks(cfg *tobyconfig.Service, contextFiles *contextfiles.Servi
 func NewServices(cfg *tobyconfig.Service, contextFiles *contextfiles.Service) Result {
 	return Result{
 		AgentInstructions: Registration{Name: "agent-instructions", Order: 10, Service: ServiceFunc(func(ctx context.Context, _ Params) error {
-			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.GitAgentsPath, contextfiles.AgentFiles(), contextfiles.GitAgentsPath, 0o644)
+			_, err := contextFiles.AddInstructionFS(ctx, contextfiles.TobyAgentsPath, contextfiles.AgentFiles(), contextfiles.TobyAgentsPath, 0o644)
 			return err
 		})},
 		TobyConfig: Registration{Name: "toby-config", Order: 20, Service: ServiceFunc(func(ctx context.Context, _ Params) error {

@@ -24,6 +24,8 @@ func NewRootCommand(params Params) *cobra.Command {
 		stderr = os.Stderr
 	}
 	var configPath string
+	var debug bool
+	var yolo bool
 	cmd := &cobra.Command{
 		Use:              "toby",
 		Short:            "Run Toby Sandbox development environments.",
@@ -47,6 +49,8 @@ func NewRootCommand(params Params) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			applyDebugFlag(cmd, &launch.Options)
+			applyYoloFlag(cmd, &launch.Options)
 			return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
 		},
 	}
@@ -55,6 +59,8 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.SetArgs(params.Args)
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
+	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable Toby debug mode for this launch.")
+	cmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Launch the tool with its permission-bypass flag for this launch.")
 
 	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {

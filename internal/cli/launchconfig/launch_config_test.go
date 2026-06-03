@@ -41,6 +41,8 @@ mountProfiles:
 settings:
   mountProfile: review
   autoUpgrade: true
+  debug: true
+  yolo: true
   suppressWarnings: true
 workdir: ~/literal-workdir/../raw
 projects:
@@ -65,7 +67,7 @@ tools:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sandbox.Name != "" || !cfg.Settings.AutoUpgrade || cfg.Settings.MountProfile != "review" {
+	if cfg.Sandbox.Name != "" || !cfg.Settings.AutoUpgrade || cfg.Settings.MountProfile != "review" || cfg.Settings.Debug == nil || !*cfg.Settings.Debug || cfg.Settings.Yolo == nil || !*cfg.Settings.Yolo {
 		t.Fatalf("settings/sandbox = %#v %#v", cfg.Settings, cfg.Sandbox)
 	}
 	wantWorkdir := "~/literal-workdir/../raw"
@@ -142,6 +144,8 @@ mountProfiles:
     hostRoot: ./claude-state
 settings:
   mountProfile: shared
+  debug: false
+  yolo: true
   suppressWarnings:
     - opencode.model-discovery
 tools:
@@ -171,6 +175,12 @@ tools:
 	}
 	if launch.Options.Env != "" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
 		t.Fatalf("options = %#v", launch.Options)
+	}
+	if launch.Options.Debug == nil || launch.Options.DebugEnabled() {
+		t.Fatalf("debug = %#v", launch.Options.Debug)
+	}
+	if launch.Options.Yolo == nil || !launch.Options.YoloEnabled() {
+		t.Fatalf("yolo = %#v", launch.Options.Yolo)
 	}
 	mounts := launch.Options.MountProfiles.Config("shared")
 	if launch.Options.MountProfile != "shared" || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "claude", Purpose: "state"}) != sandboxmount.BackingHost {

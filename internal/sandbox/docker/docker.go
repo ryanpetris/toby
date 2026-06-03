@@ -27,7 +27,9 @@ import (
 	"go.uber.org/fx"
 )
 
-const defaultDockerImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm"
+const DefaultDockerImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm"
+
+const defaultDockerImage = DefaultDockerImage
 
 type environment struct {
 	paths     config.Paths
@@ -77,7 +79,7 @@ func (e *environment) Available() error { return e.available }
 func (e *environment) NewInstance(spec sandbox.Spec) (sandbox.Instance, error) {
 	image := spec.DockerImage
 	if image == "" && !spec.DockerBuild.IsSet() {
-		image = defaultDockerImage
+		image = DefaultDockerImage
 	}
 	sandboxPaths := sandboxpath.Defaults()
 	if spec.DockerHome != "" {
@@ -170,8 +172,9 @@ func (s *instance) Setup(ctx context.Context, spec sandbox.RunSpec) (int, error)
 		return 1, err
 	}
 	code, runErr := s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
-	if ctx.Err() != nil && s.containerName != "" {
-		_ = exec.Command(s.docker, "rm", "-f", s.containerName).Run()
+	containerName := s.phaseContainerName("setup", spec.Debug)
+	if ctx.Err() != nil && containerName != "" {
+		_ = s.cleanupContainer(containerName, spec.Debug)
 	}
 	return code, runErr
 }
@@ -185,8 +188,9 @@ func (s *instance) Run(ctx context.Context, spec sandbox.RunSpec) (int, error) {
 		return 1, err
 	}
 	code, runErr := s.runner.Run(ctx, cmd, nil, executil.Options{HideOutput: spec.ExecOptions.HideOutput})
-	if ctx.Err() != nil && s.containerName != "" {
-		_ = exec.Command(s.docker, "rm", "-f", s.containerName).Run()
+	containerName := s.phaseContainerName("run", spec.Debug)
+	if ctx.Err() != nil && containerName != "" {
+		_ = s.cleanupContainer(containerName, spec.Debug)
 	}
 	return code, runErr
 }
@@ -258,26 +262,51 @@ func (s *instance) BuildUntaggedImageBuildCommand(iidFile string) []string {
 	return []string{s.docker, "build", "--iidfile", iidFile, "-f", s.build.Dockerfile, s.build.Context}
 }
 
-func (s *instance) BuildPrimeCommand(spec sandbox.RunSpec) []string {
-	args := []string{
-		s.docker, "run", "--rm",
-		"--user", "0:0",
-		"--entrypoint", "/bin/sh",
+func (s *instance) RuntimeInfo(debug bool) sandbox.RuntimeInfo {
+	info := map[string]any{
+		"image": s.image,
 	}
+	if debug && s.build.IsSet() {
+		info["build"] = map[string]any{"context": s.build.Context, "dockerfile": s.build.Dockerfile}
+	}
+	if debug && s.containerName != "" {
+		info["container"] = map[string]any{
+			"baseName": s.containerName,
+			"prime":    s.phaseContainerName("prime", true),
+			"setup":    s.phaseContainerName("setup", true),
+			"run":      s.phaseContainerName("run", true),
+		}
+	}
+	return sandbox.RuntimeInfo{Runtime: sandbox.RuntimeDocker, Info: info}
+}
+
+func (s *instance) BuildPrimeCommand(spec sandbox.RunSpec) []string {
+	args := []string{s.docker, "run"}
+	if !spec.Debug {
+		args = append(args, "--rm")
+	} else if name := s.phaseContainerName("prime", true); name != "" {
+		args = append(args, "--name", name)
+	}
+	args = append(args, "--user", "0:0", "--entrypoint", "/bin/sh")
 	for _, mount := range s.finalMounts(spec.Binds, spec.Mounts) {
 		args = append(args, "--mount", mount)
 	}
+	args = appendHostTermEnv(args)
 	args = append(args, "--workdir", s.ChdirDir(), s.image, "-c", "exit")
 	return args
 }
 
 func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
-	args := []string{s.docker, "run", "--rm", "--init", "-i"}
+	args := []string{s.docker, "run"}
+	if !spec.Debug {
+		args = append(args, "--rm")
+	}
+	args = append(args, "--init", "-i")
 	if stdinIsTerminal() && stdoutIsTerminal() {
 		args = append(args, "-t")
 	}
 	args = append(args,
-		"--name", s.containerName,
+		"--name", s.phaseContainerName("run", spec.Debug),
 		"--user", "0:0",
 	)
 	if runtime.GOOS != "darwin" {
@@ -295,15 +324,20 @@ func (s *instance) BuildCommand(spec sandbox.RunSpec) ([]string, error) {
 	for _, item := range dockerControlEnv(spec.Env) {
 		args = append(args, "--env", item)
 	}
+	args = appendHostTermEnv(args)
 	args = append(args, "--workdir", s.ChdirDir(), s.image)
 	args = append(args, spec.Argv...)
 	return args, nil
 }
 
 func (s *instance) BuildSetupCommand(spec sandbox.RunSpec) ([]string, error) {
-	args := []string{s.docker, "run", "--rm", "--init", "-i"}
+	args := []string{s.docker, "run"}
+	if !spec.Debug {
+		args = append(args, "--rm")
+	}
+	args = append(args, "--init", "-i")
 	args = append(args,
-		"--name", s.containerName,
+		"--name", s.phaseContainerName("setup", spec.Debug),
 		"--user", "0:0",
 	)
 	if runtime.GOOS != "darwin" {
@@ -315,6 +349,7 @@ func (s *instance) BuildSetupCommand(spec sandbox.RunSpec) ([]string, error) {
 	for _, item := range dockerControlEnv(spec.Env) {
 		args = append(args, "--env", item)
 	}
+	args = appendHostTermEnv(args)
 	args = append(args, "--workdir", "/", s.image)
 	args = append(args, spec.Argv...)
 	return args, nil
@@ -368,6 +403,20 @@ func (s *instance) setupMounts(resolved []sandboxmount.RuntimeMount) []string {
 	return mounts
 }
 
+func (s *instance) phaseContainerName(phase string, debug bool) string {
+	if !debug || phase == "" {
+		return s.containerName
+	}
+	return s.containerName + "-" + phase
+}
+
+func (s *instance) cleanupContainer(name string, debug bool) error {
+	if debug {
+		return exec.Command(s.docker, "stop", name).Run()
+	}
+	return exec.Command(s.docker, "rm", "-f", name).Run()
+}
+
 func dockerBind(source, target string, readonly bool) string {
 	value := "type=bind,source=" + source + ",target=" + target
 	if readonly {
@@ -400,6 +449,13 @@ func dockerControlEnv(env tool.Environment) []string {
 		}
 	}
 	return dockerEnv(controlEnv)
+}
+
+func appendHostTermEnv(args []string) []string {
+	if term, ok := os.LookupEnv("TERM"); ok && term != "" {
+		args = append(args, "--env", "TERM="+term)
+	}
+	return args
 }
 
 func stdinIsTerminal() bool { return isCharDevice(os.Stdin) }

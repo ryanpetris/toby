@@ -34,8 +34,9 @@ helper binary, and `/toby/context` contains generated configuration and
 instructions. Bubblewrap keeps `$HOME` and `$XDG_PROJECTS_DIR` at their normal
 paths and stores Toby internals under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
 Toby does not construct startup environment variables from host values. It sets
-calculated `HOME` for the selected sandbox paths and otherwise lets the runtime
-supply the sandbox environment.
+calculated `HOME` for the selected sandbox paths, passes host `TERM` to Docker
+containers when it is set, and otherwise lets the runtime supply the sandbox
+environment.
 
 The sandbox bootstrap and manager also receive `TOBY_CONTROL_HOST=host:port` and
 `TOBY_CONTROL_TOKEN` to reach the host control server. Launched sandbox commands
@@ -88,15 +89,20 @@ instructions:
 
 ### `mcps`
 
-A map of MCP server name to definition. Entries are rendered into supported
-synthetic tool configs under the generated context directory; Toby's own MCP server is
-always injected as `toby` after host config is merged.
+A map of MCP server name to definition. Entries are Toby-managed proxy targets
+rendered into supported synthetic tool configs under the generated context
+directory; Toby's own MCP server is always injected as `toby` after host config
+is merged. Configure non-proxied tool-native MCPs in the tool's own config.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `type` | `local` \| `remote` | Selects local-command vs remote-URL. |
+| `type` | `local` \| `remote` | Selects local sidecar vs remote URL. |
 | `enabled` | bool | Defaults to `true`. |
 | `command` | string \| array | For `type: local`. First element is the command. |
+| `transport` | `stdio` \| `http` | For `type: local`; defaults to `stdio`. |
+| `runtime` | string \| object | For `type: local`; `docker` or `bubblewrap`. Object form supports `type` and `docker.image`. Defaults to `sandbox.mcp.runtime`, then `docker`. |
+| `port` | number | Required for local `transport: http`; container port for Docker, host port for Bubblewrap. |
+| `path` | string | URL path for local HTTP MCPs; defaults to `/`. |
 | `url` | string | For `type: remote`. The upstream MCP URL. |
 | `headers` | object | Headers for remote servers. Values are a string or string array and may use `{env:VAR}` / `{file:path}` substitution (resolved on the host). |
 
@@ -104,8 +110,8 @@ Remote entries are exposed to tools through a per-run
 `http://<control-host>/proxy/<uuid>` URL; Toby opens the upstream connection
 from the host, resolves any `{env:VAR}` / `{file:path}` substitutions in
 `headers`, and applies the resolved headers there, so the upstream URL and
-credentials stay on the host. Local entries are rendered as local commands for
-tools that support them.
+credentials stay on the host. Local entries are started asynchronously as
+managerless sidecars and exposed through the same proxy URL shape.
 
 ```yaml
 mcps:
@@ -116,13 +122,29 @@ mcps:
       Authorization: "Bearer {env:DOCS_TOKEN}"
   local-fs:
     type: local
+    transport: stdio
+    runtime:
+      type: docker
+      docker:
+        image: ghcr.io/acme/mcp-node:latest
     command: ["my-mcp-server", "--root", "/srv"]
+  local-http:
+    type: local
+    transport: http
+    command: ["my-http-mcp", "--host", "0.0.0.0", "--port", "3000"]
+    port: 3000
+    path: /mcp
 ```
 
 ### `permissions`
 
-`permissions.paths` maps host path patterns to permission modes (e.g. `allow`)
+`permissions.paths` maps path patterns to permission modes (e.g. `allow`)
 rendered into supported tool configs. A leading `~` expands to the host home.
+
+Toby injects default permissions for the sandbox projects root, `/tmp`, and the
+common sandbox `$HOME` cache/state directories used by Go, npm, and pip (`~/go`
+and `~/.cache`). Configured entries override the generated defaults for the same
+path, so an explicit `deny` removes an injected default.
 
 ```yaml
 permissions:
@@ -179,6 +201,11 @@ sandbox:
         context: ~/docker/toby
     bubblewrap:
       root: ~/.cache/toby/sandboxes
+  mcp:
+    runtime:
+      type: docker           # docker | bubblewrap; defaults to docker
+      docker:
+        image: ghcr.io/acme/toby-mcp-base:latest
 mountProfiles:
   default:
     backing: provider        # default | provider | private | host
@@ -189,6 +216,8 @@ settings:
   suppressWarnings:
     - mount.host-backing
   autoloadProjectConfig: true
+  debug: false
+  yolo: false
 tools:
   opencode:
     mountProfile: host-state
@@ -200,8 +229,29 @@ tools:
   sandbox-visible paths; if set, they must stay under `/toby`.
 - `sandbox.runtime.bubblewrap.root` and relative `hostRoot` values in host
   config resolve from the Toby config file directory.
+- `sandbox.mcp.runtime` may be a string shorthand (`runtime: docker`) or an
+  object with `type` and `docker.image`. Local MCP entries can override it with
+  `mcps.<name>.runtime` using the same shape. Docker MCP image precedence is
+  per-MCP `runtime.docker.image`, then `sandbox.mcp.runtime.docker.image`, then
+  the effective main Docker image, then Toby's built-in Docker image.
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
+- `settings.debug: true` enables debug mode. In Docker-backed sandboxes and
+  Docker-backed local MCP sidecars, Toby omits Docker `--rm` so containers remain
+  after exit for inspection; containers are still created fresh and never reused.
+  Toby's MCP `toby://session/...` resources include host paths, Docker volume
+  names, container names, and local MCP host ports only in debug mode. Provider
+  and MCP headers, URLs, commands, argv, and environment values are never
+  exposed, even in debug mode. A project `.toby.yaml` with `settings.debug: false` overrides a
+  global `settings.debug: true`; `--debug` overrides config for the launch.
+- `settings.yolo: true` launches the AI tool with its permission-bypass flag so it
+  no longer prompts to approve actions: Claude with `--dangerously-skip-permissions`,
+  Copilot with `--allow-all-tools`, and Codex with
+  `--dangerously-bypass-approvals-and-sandbox`. Grok, OpenCode, and Spec Kit have no
+  equivalent flag and are unaffected. Defaults to `false`. A project `.toby.yaml`
+  with `settings.yolo: false` overrides a global `settings.yolo: true`, mirroring
+  `settings.debug` precedence. The `--yolo` launch flag overrides config for a
+  single launch, the same way `--debug` does.
 
 ## Managed Mounts
 

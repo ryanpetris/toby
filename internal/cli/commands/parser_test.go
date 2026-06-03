@@ -18,12 +18,18 @@ func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch Node Package Manager"}}},
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
-	parsed, err := executeTestLaunchParser(t, []string{"proj", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--", "foo", "--", "bar"}, ctxTools)
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--debug", "--yolo", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--", "foo", "--", "bar"}, ctxTools)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
 		t.Fatalf("parsed options = %#v", parsed.Options)
+	}
+	if !parsed.Options.DebugEnabled() {
+		t.Fatalf("debug = %#v", parsed.Options.Debug)
+	}
+	if !parsed.Options.YoloEnabled() {
+		t.Fatalf("yolo = %#v", parsed.Options.Yolo)
 	}
 	if got, want := parsed.RequestedTools, []string{tool.GitHubCliToolName, tool.OpenCodeToolName}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("requested = %#v, want %#v", got, want)
@@ -118,6 +124,8 @@ func executeTestLaunchParser(t *testing.T, args []string, contextTools []tool.To
 		},
 	}
 	addSandboxFlags(cmd)
+	cmd.PersistentFlags().Bool("debug", false, "")
+	cmd.PersistentFlags().Bool("yolo", false, "")
 	cmd.Flags().Bool("install", false, "")
 	cmd.Flags().Bool("upgrade", false, "")
 	addContextFlags(cmd, primary, contextTools)

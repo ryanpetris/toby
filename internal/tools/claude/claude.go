@@ -9,6 +9,7 @@ import (
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	claudeconfig "petris.dev/toby/internal/tools/claude/config"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
@@ -25,6 +26,7 @@ type Params struct {
 	Paths        config.Paths
 	Config       *tobyconfig.Service `optional:"true"`
 	Proxy        *httpproxy.Service  `optional:"true"`
+	MCPProxy     *mcpproxy.Service   `optional:"true"`
 	Sandbox      tool.SandboxService
 	ContextFiles *contextfiles.Service
 }
@@ -40,7 +42,7 @@ func Provide(params Params) Result {
 		Simple: toolutil.Simple(
 			params.Paths,
 			params.Sandbox,
-			toolutil.DependentBase(tool.ClaudeToolName, "Launch Claude", 100, []string{tool.NpmToolName}, tool.GroupSystem, tool.GroupVCS),
+			toolutil.DependentBase(tool.ClaudeToolName, "Launch Claude", 100, []string{tool.NpmToolName}, tool.GroupAI, tool.GroupSystem, tool.GroupVCS),
 			[]string{".config", "claude"},
 			[]string{".config", "claude"},
 			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
@@ -49,6 +51,7 @@ func Provide(params Params) Result {
 		paths:        params.Paths,
 		config:       params.Config,
 		proxy:        params.Proxy,
+		mcpProxy:     params.MCPProxy,
 		contextFiles: params.ContextFiles,
 	}
 	return Result{Service: svc}
@@ -59,10 +62,15 @@ type claudeTool struct {
 	paths        config.Paths
 	config       *tobyconfig.Service
 	proxy        *httpproxy.Service
+	mcpProxy     *mcpproxy.Service
 	contextFiles *contextfiles.Service
+	yolo         bool
 }
 
 func (t *claudeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) error {
+	if opts != nil {
+		t.yolo = opts.YoloEnabled()
+	}
 	return t.Simple.HostInit(ctx, opts)
 }
 
@@ -80,7 +88,7 @@ func (t *claudeTool) SandboxInit(ctx context.Context) error {
 func (t *claudeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
 	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
-		return claudeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.Sandbox.Paths().Workspace, t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy)
+		return claudeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.Sandbox.Paths(), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy, t.mcpProxy)
 	})
 }
 
@@ -96,6 +104,9 @@ func (t *claudeTool) Upgrade(ctx context.Context) error {
 // launch flags while Claude keeps its normal writable config directory.
 func (t *claudeTool) Launch(ctx context.Context, extra []string) error {
 	argv := append([]string{"claude"}, contextFlags(t.Sandbox.Paths().Context)...)
+	if t.yolo {
+		argv = append(argv, "--dangerously-skip-permissions")
+	}
 	argv = append(argv, extra...)
 	_, err := t.Sandbox.Exec(ctx, argv, tool.ExecOptions{Foreground: true})
 	return err

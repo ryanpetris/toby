@@ -58,6 +58,12 @@ type RunSpec struct {
 	Binds       []sandboxmount.Bind
 	Mounts      []sandboxmount.RuntimeMount
 	ExecOptions tool.ExecOptions
+	Debug       bool
+}
+
+type RuntimeInfo struct {
+	Runtime string
+	Info    map[string]any
 }
 
 type Instance interface {
@@ -67,12 +73,12 @@ type Instance interface {
 	ProjectPath(string) (string, bool)
 	TobyBinDir() string
 	TobyBinaryPath() string
-	TobyGitAgentsPath() string
 	HostControlEndpoint() control.Endpoint
 	SetupControlEndpoint(tool.Environment, control.Endpoint)
 	Prime(context.Context, RunSpec) (int, error)
 	Setup(context.Context, RunSpec) (int, error)
 	Run(context.Context, RunSpec) (int, error)
+	RuntimeInfo(bool) RuntimeInfo
 	Cleanup() error
 	VisibleHostPath(string) (string, error)
 }
@@ -463,10 +469,6 @@ func (s *BaseInstance) TobyBinDir() string {
 
 func (s *BaseInstance) TobyBinaryPath() string {
 	return filepath.Join(s.TobyBinDir(), "toby")
-}
-
-func (s *BaseInstance) TobyGitAgentsPath() string {
-	return filepath.Join(s.TobyContextDir(), "GIT_AGENTS.md")
 }
 
 func (s *BaseInstance) TobyOpenCodeConfigDir() string {

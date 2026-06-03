@@ -62,6 +62,8 @@ type launchSettingsConfig struct {
 	MountProfile     string
 	AutoUpgrade      bool
 	SuppressWarnings warning.Suppression
+	Debug            *bool
+	Yolo             *bool
 }
 
 type launchRuntimeConfig struct {
@@ -113,6 +115,8 @@ type rawLaunchSettingsConfig struct {
 	MountProfile     string               `yaml:"mountProfile" json:"mountProfile"`
 	AutoUpgrade      bool                 `yaml:"autoUpgrade" json:"autoUpgrade"`
 	SuppressWarnings rawLaunchSuppression `yaml:"suppressWarnings" json:"suppressWarnings"`
+	Debug            *bool                `yaml:"debug" json:"debug"`
+	Yolo             *bool                `yaml:"yolo" json:"yolo"`
 }
 
 type rawLaunchSandboxConfig struct {
@@ -299,6 +303,8 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
 		MountProfile:     cfg.Settings.MountProfile,
 		MountProfiles:    cfg.MountProfiles,
 		SuppressWarnings: cfg.Settings.SuppressWarnings,
+		Debug:            cloneBool(cfg.Settings.Debug),
+		Yolo:             cloneBool(cfg.Settings.Yolo),
 	}
 }
 
@@ -329,6 +335,14 @@ func mergeDirectLaunchOptions(dst *tool.CommandOptions, src tool.CommandOptions)
 		for name, profile := range src.ToolMountProfiles {
 			dst.ToolMountProfiles[name] = profile
 		}
+	}
+	if src.Debug != nil {
+		debug := *src.Debug
+		dst.Debug = &debug
+	}
+	if src.Yolo != nil {
+		yolo := *src.Yolo
+		dst.Yolo = &yolo
 	}
 }
 
@@ -445,7 +459,7 @@ func (r rawLaunchMountProfile) toMountProfile(label string, dir, home string) (s
 }
 
 func (r rawLaunchSettingsConfig) toSettings() (launchSettingsConfig, error) {
-	cfg := launchSettingsConfig{MountProfile: strings.TrimSpace(r.MountProfile), AutoUpgrade: r.AutoUpgrade}
+	cfg := launchSettingsConfig{MountProfile: strings.TrimSpace(r.MountProfile), AutoUpgrade: r.AutoUpgrade, Debug: cloneBool(r.Debug), Yolo: cloneBool(r.Yolo)}
 	if r.SuppressWarnings.Set {
 		suppression, err := warning.ParseSuppression(r.SuppressWarnings.Value, "settings.suppressWarnings")
 		if err != nil {
@@ -454,6 +468,14 @@ func (r rawLaunchSettingsConfig) toSettings() (launchSettingsConfig, error) {
 		cfg.SuppressWarnings = suppression
 	}
 	return cfg, nil
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func (r rawLaunchSandboxConfig) toSandbox(dir, home string) (launchSandboxConfig, error) {

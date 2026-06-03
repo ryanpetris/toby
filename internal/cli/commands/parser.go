@@ -49,6 +49,8 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 		return result, err
 	}
 	result.Options.DockerImage = dockerImage
+	applyDebugFlag(cmd, &result.Options)
+	applyYoloFlag(cmd, &result.Options)
 	for _, item := range contextTools {
 		if item.Name() == primary {
 			continue
@@ -65,6 +67,28 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 		result.RequestedTools = appendIfMissing(result.RequestedTools, primary)
 	}
 	return result, nil
+}
+
+func applyDebugFlag(cmd *cobra.Command, opts *tool.CommandOptions) {
+	if cmd == nil || opts == nil || !flagChanged(cmd, "debug") {
+		return
+	}
+	debug, err := cmd.Flags().GetBool("debug")
+	if err != nil {
+		return
+	}
+	opts.Debug = &debug
+}
+
+func applyYoloFlag(cmd *cobra.Command, opts *tool.CommandOptions) {
+	if cmd == nil || opts == nil || !flagChanged(cmd, "yolo") {
+		return
+	}
+	yolo, err := cmd.Flags().GetBool("yolo")
+	if err != nil {
+		return
+	}
+	opts.Yolo = &yolo
 }
 
 func launchCommandArgs(args []string, argsLenAtDash int) (string, []string, error) {

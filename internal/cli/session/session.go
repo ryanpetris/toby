@@ -15,6 +15,7 @@ import (
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/hostmanager"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/control/mcpserver"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
@@ -31,6 +32,7 @@ type Params struct {
 	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	HostManager    *hostmanager.HostManager
+	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *tobyconfig.Service
 	Stderr         io.Writer
@@ -109,15 +111,22 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	}
 	defer server.Close()
 	sbx.SetupControlEndpoint(env, server.Endpoint)
-	mcpURL, err := registerTobyMCPProxy(params, manager, env[control.EnvControlHost])
+	mcpURL, err := registerTobyMCPProxy(params, manager, env[control.EnvControlHost], opts, activeTools, primary)
 	if err != nil {
 		return err
 	}
 	params.SandboxService.SetTobyMCPURL(mcpURL)
+	if params.MCPProxy != nil {
+		if err := params.MCPProxy.Configure(ctx, env[control.EnvControlHost], params.TobyConfig, mcpDefaults(opts, params.TobyConfig)); err != nil {
+			return err
+		}
+		params.MCPProxy.StartAll(ctx)
+		defer params.MCPProxy.StopAll(context.Background())
+	}
 
 	mounts := params.SandboxService.RuntimeMounts()
 	binds := params.SandboxService.StartBinds()
-	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts}
+	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts, Debug: opts.DebugEnabled()}
 	primeCode, primeErr := sbx.Prime(ctx, runSpec)
 	if primeErr != nil {
 		return primeErr
@@ -145,6 +154,22 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	return runErr
 }
 
+func mcpDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) mcpproxy.Defaults {
+	var defaults mcpproxy.Defaults
+	if config != nil {
+		defaults.Runtime = config.MCPSandbox().Runtime
+		sandboxDefaults := config.Sandbox()
+		defaults.EffectiveDockerImage = sandboxDefaults.Runtime.Docker.Image
+	}
+	if opts != nil && strings.TrimSpace(opts.DockerImage) != "" {
+		defaults.EffectiveDockerImage = strings.TrimSpace(opts.DockerImage)
+	}
+	if opts != nil {
+		defaults.Debug = opts.DebugEnabled()
+	}
+	return defaults
+}
+
 func ApplySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) tool.CommandOptions {
 	if opts == nil {
 		opts = &tool.CommandOptions{}
@@ -156,6 +181,14 @@ func ApplySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 	result.MountProfiles.Merge(opts.MountProfiles)
 	if result.MountProfile == "" {
 		result.MountProfile = settings.MountProfile
+	}
+	if result.Debug == nil && settings.Debug != nil {
+		debug := *settings.Debug
+		result.Debug = &debug
+	}
+	if result.Yolo == nil && settings.Yolo != nil {
+		yolo := *settings.Yolo
+		result.Yolo = &yolo
 	}
 	result.ToolMountProfiles = config.ToolMountProfiles()
 	mergeStringMap(result.ToolMountProfiles, opts.ToolMountProfiles)
@@ -386,7 +419,7 @@ func launchTool(ctx context.Context, params Params, toolset *tool.Toolset, opts 
 	return primary.Launch(ctx, extra)
 }
 
-func registerTobyMCPProxy(params Params, manager *hostmanager.HostManager, controlHost string) (string, error) {
+func registerTobyMCPProxy(params Params, manager *hostmanager.HostManager, controlHost string, opts *tool.CommandOptions, activeTools []string, primary string) (string, error) {
 	if params.MCPServer == nil {
 		return "", fmt.Errorf("mcp server runner is not configured")
 	}
@@ -396,7 +429,11 @@ func registerTobyMCPProxy(params Params, manager *hostmanager.HostManager, contr
 	if strings.TrimSpace(controlHost) == "" {
 		return "", fmt.Errorf("%s is required", control.EnvControlHost)
 	}
-	id, err := manager.HTTPProxy.Register(httpproxy.Target{Handler: params.MCPServer.Handler(mcpserver.NewHostManagerGitClient(manager))})
+	state := mcpserver.SessionState{Debug: opts != nil && opts.DebugEnabled(), Paths: params.Paths, Sandbox: params.SandboxService, MCPProxy: params.MCPProxy, Config: params.TobyConfig, Registry: params.Registry, ActiveTools: activeTools, PrimaryTool: primary}
+	if opts != nil {
+		state.Options = *opts
+	}
+	id, err := manager.HTTPProxy.Register(httpproxy.Target{Handler: params.MCPServer.Handler(mcpserver.NewHostManagerGitClient(manager), state)})
 	if err != nil {
 		return "", err
 	}

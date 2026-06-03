@@ -6,9 +6,18 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 )
 
-func MCPURL(controlHost string, proxy *httpproxy.Service, server tobyconfig.MCPServer) (string, error) {
+func MCPURL(controlHost string, proxy *httpproxy.Service, manager *mcpproxy.Service, name string, server tobyconfig.MCPServer) (string, error) {
+	if manager != nil {
+		if url, ok := manager.URL(name); ok {
+			return url, nil
+		}
+	}
+	if server.Local() {
+		return "", fmt.Errorf("local MCP requires mcp proxy service")
+	}
 	if controlHost == "" {
 		return "", fmt.Errorf("remote MCP requires %s", control.EnvControlHost)
 	}

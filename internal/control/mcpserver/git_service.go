@@ -51,3 +51,16 @@ func (GitService) Tools() []Tool {
 		},
 	}
 }
+
+func (GitService) Resources() []Resource {
+	return []Resource{
+		{
+			URI:         "toby://docs/git",
+			Name:        "toby.docs.git",
+			Title:       "Toby Git",
+			Description: "Guidance for using Toby host Git MCP tools.",
+			FS:          resourceDocs,
+			FilePath:    "resources/git.md",
+		},
+	}
+}

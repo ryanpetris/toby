@@ -10,6 +10,7 @@ import (
 	"petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/tools/toolconfig"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
@@ -19,7 +20,7 @@ const TobyServerName = "toby"
 // ConfigArgs returns Codex CLI config overrides for Toby's per-session
 // synthetic context. Codex has no flag for an arbitrary config file, so use
 // -c overrides and avoid writing profile files into CODEX_HOME.
-func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) ([]string, error) {
+func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]string, error) {
 	overrides := []string{}
 	if strings.TrimSpace(tobyMCPURL) == "" {
 		return nil, fmt.Errorf("toby MCP proxy URL is required")
@@ -28,7 +29,7 @@ func ConfigArgs(instructions [][]byte, cfg *tobyconfig.Service, controlHost, tob
 		{key: "mcp_servers." + TobyServerName + ".url", value: strings.TrimSpace(tobyMCPURL)},
 		{key: "mcp_servers." + TobyServerName + ".enabled", value: true},
 	}
-	configured, err := configuredMCPItems(cfg, controlHost, proxy)
+	configured, err := configuredMCPItems(cfg, controlHost, proxy, mcpProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +60,7 @@ type configItem struct {
 	value any
 }
 
-func configuredMCPItems(cfg *tobyconfig.Service, controlHost string, proxy *httpproxy.Service) ([]configItem, error) {
+func configuredMCPItems(cfg *tobyconfig.Service, controlHost string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]configItem, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -75,7 +76,7 @@ func configuredMCPItems(cfg *tobyconfig.Service, controlHost string, proxy *http
 	items := []configItem{}
 	for _, name := range names {
 		server := servers[name]
-		serverItems, err := mcpServerItems(name, server, controlHost, proxy)
+		serverItems, err := mcpServerItems(name, server, controlHost, proxy, mcpProxy)
 		if err != nil {
 			return nil, err
 		}
@@ -84,9 +85,9 @@ func configuredMCPItems(cfg *tobyconfig.Service, controlHost string, proxy *http
 	return items, nil
 }
 
-func mcpServerItems(name string, server tobyconfig.MCPServer, controlHost string, proxy *httpproxy.Service) ([]configItem, error) {
+func mcpServerItems(name string, server tobyconfig.MCPServer, controlHost string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]configItem, error) {
 	if server.HTTPProxyable() {
-		url, err := proxyconfig.MCPURL(controlHost, proxy, server)
+		url, err := proxyconfig.MCPURL(controlHost, proxy, mcpProxy, name, server)
 		if err != nil {
 			return nil, fmt.Errorf("mcp.%s: %w", name, err)
 		}

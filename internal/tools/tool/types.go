@@ -60,6 +60,8 @@ type CommandOptions struct {
 	MountProfiles     sandboxmount.Profiles
 	ToolMountProfiles map[string]string
 	SuppressWarnings  warning.Suppression
+	Debug             *bool
+	Yolo              *bool
 	Install           bool
 	Upgrade           bool
 	lifecycle         map[string]bool
@@ -72,6 +74,14 @@ type DockerBuildConfig struct {
 
 func (c DockerBuildConfig) IsSet() bool {
 	return c.Context != ""
+}
+
+func (o CommandOptions) DebugEnabled() bool {
+	return o.Debug != nil && *o.Debug
+}
+
+func (o CommandOptions) YoloEnabled() bool {
+	return o.Yolo != nil && *o.Yolo
 }
 
 type ProjectMount struct {

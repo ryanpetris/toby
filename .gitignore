@@ -14,3 +14,13 @@
 *.out
 coverage.out
 *.coverprofile
+
+# AI coding tool state and config directories
+.claude/
+.codex/
+.copilot/
+.grok/
+.opencode/
+.specify/
+.gemini/
+.aider*

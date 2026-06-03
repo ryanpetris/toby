@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"sync"
 
@@ -15,6 +16,7 @@ import (
 
 type Server struct {
 	client GitClient
+	state  SessionState
 	mu     sync.Mutex
 }
 
@@ -30,11 +32,23 @@ const FxServiceGroup = "toby.sandbox.mcp.services"
 
 type Service interface {
 	Tools() []Tool
+	Resources() []Resource
 }
 
 type Tool struct {
 	Name     string
 	Register func(*mcp.Server, *Server)
+}
+
+type Resource struct {
+	URI         string
+	Name        string
+	Title       string
+	Description string
+	MIMEType    string
+	FS          fs.FS
+	FilePath    string
+	Text        func(context.Context, *Server) (string, error)
 }
 
 type RunnerParams struct {
@@ -44,12 +58,15 @@ type RunnerParams struct {
 }
 
 type Runner struct {
-	tools []Tool
+	tools     []Tool
+	resources []Resource
 }
 
 func NewRunner(params RunnerParams) (*Runner, error) {
-	seen := map[string]bool{}
+	seenTools := map[string]bool{}
+	seenResources := map[string]bool{}
 	var tools []Tool
+	var resources []Resource
 	for _, service := range params.Services {
 		if service == nil {
 			continue
@@ -61,20 +78,51 @@ func NewRunner(params RunnerParams) (*Runner, error) {
 			if tool.Register == nil {
 				return nil, fmt.Errorf("mcp tool %s must define a register function", tool.Name)
 			}
-			if seen[tool.Name] {
+			if seenTools[tool.Name] {
 				return nil, fmt.Errorf("duplicate mcp tool: %s", tool.Name)
 			}
-			seen[tool.Name] = true
+			seenTools[tool.Name] = true
 			tools = append(tools, tool)
 		}
+		for _, resource := range service.Resources() {
+			if err := validateResource(resource); err != nil {
+				return nil, err
+			}
+			if seenResources[resource.URI] {
+				return nil, fmt.Errorf("duplicate mcp resource: %s", resource.URI)
+			}
+			seenResources[resource.URI] = true
+			resources = append(resources, resource)
+		}
 	}
-	return &Runner{tools: tools}, nil
+	return &Runner{tools: tools, resources: resources}, nil
+}
+
+func validateResource(resource Resource) error {
+	if resource.URI == "" {
+		return fmt.Errorf("mcp resource must define a uri")
+	}
+	if resource.Name == "" {
+		return fmt.Errorf("mcp resource %s must define a name", resource.URI)
+	}
+	static := resource.FS != nil || resource.FilePath != ""
+	dynamic := resource.Text != nil
+	if static && dynamic {
+		return fmt.Errorf("mcp resource %s must define either a static file or text function", resource.URI)
+	}
+	if !static && !dynamic {
+		return fmt.Errorf("mcp resource %s must define a static file or text function", resource.URI)
+	}
+	if static && (resource.FS == nil || resource.FilePath == "") {
+		return fmt.Errorf("mcp resource %s static file requires fs and path", resource.URI)
+	}
+	return nil
 }
 
 func Module() fx.Option {
 	return fx.Module(
 		"mcpserver",
-		fx.Provide(NewGitService, NewRunner),
+		fx.Provide(NewGitService, NewTobyService, NewRunner),
 	)
 }
 
@@ -85,7 +133,18 @@ type GitRebaseInput = control.GitRebaseParams
 type GitTagInput = control.GitTagParams
 type GitOutput = control.GitResult
 
-const gitServerInstructions = "Toby MCP tools: git.commit, git.fetch, git.push, git.rebase, and git.tag run host Git for repositories visible in the sandbox."
+const serverInstructions = `Toby runs development tools inside private-home sandboxes and exposes this MCP server for host-side operations and Toby session context.
+
+Read Toby MCP resources when you need guidance or current session details:
+- toby://docs/git explains host Git tools and default Git workflow expectations.
+- toby://docs/mcps explains Toby-managed MCP sidecars and lifecycle tools.
+- toby://docs/introspection explains the session resources and redaction behavior.
+- toby://session/runtime returns the current Toby version, debug mode, sandbox runtime, and runtime paths.
+- toby://session/mcps returns configured MCP status and redacted runtime details.
+- toby://session/tools returns active and available Toby tools plus provider summaries.
+- toby://session/projects returns visible projects, binds, and managed mounts.
+
+Use Git tools for repositories visible in the sandbox when host Git config, SSH agents, GPG signing, or credential helpers are needed. Use MCP lifecycle tools only for Toby-managed local MCP sidecars. Toby introspection never exposes provider or MCP URLs, headers, commands, argv, or environment values.`
 
 const gitCommitDescription = "Commit staged files in a visible repository using host Git."
 
@@ -97,8 +156,8 @@ const gitRebaseDescription = "Start, continue, or abort a rebase in a visible re
 
 const gitTagDescription = "Create an annotated tag in a visible repository using host Git."
 
-func (r *Runner) Handler(client GitClient) http.Handler {
-	server := &Server{client: client}
+func (r *Runner) Handler(client GitClient, state SessionState) http.Handler {
+	server := &Server{client: client, state: state.Clone()}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return r.server(server)
 	}, nil)
@@ -106,12 +165,40 @@ func (r *Runner) Handler(client GitClient) http.Handler {
 
 func (r *Runner) server(server *Server) *mcp.Server {
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "toby", Version: version.String()}, &mcp.ServerOptions{
-		Instructions: gitServerInstructions,
+		Instructions: serverInstructions,
 	})
 	for _, tool := range r.tools {
 		tool.Register(mcpServer, server)
 	}
+	for _, resource := range r.resources {
+		resource.Register(mcpServer, server)
+	}
 	return mcpServer
+}
+
+func (r Resource) Register(mcpServer *mcp.Server, toby *Server) {
+	mimeType := r.MIMEType
+	if mimeType == "" {
+		mimeType = "text/markdown; charset=utf-8"
+	}
+	mcpServer.AddResource(&mcp.Resource{URI: r.URI, Name: r.Name, Title: r.Title, Description: r.Description, MIMEType: mimeType}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		text, err := r.Read(ctx, toby)
+		if err != nil {
+			return nil, err
+		}
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.URI, MIMEType: mimeType, Text: text}}}, nil
+	})
+}
+
+func (r Resource) Read(ctx context.Context, toby *Server) (string, error) {
+	if r.Text != nil {
+		return r.Text(ctx, toby)
+	}
+	data, err := fs.ReadFile(r.FS, r.FilePath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func (s *Server) gitCommit(ctx context.Context, _ *mcp.CallToolRequest, input GitCommitInput) (*mcp.CallToolResult, GitOutput, error) {

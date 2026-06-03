@@ -13,14 +13,17 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
 
-var testInstructions = []string{"/run/user/1000/toby/context/GIT_AGENTS.md"}
+var testInstructions = []string{"/run/user/1000/toby/context/user-instructions.md"}
 var testControlHost = "127.0.0.1:12345"
 var testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
+
+const testHome = "/toby/home"
 
 func TestNewRendererRequiresHTTPClient(t *testing.T) {
 	if _, err := NewRenderer(nil); err == nil {
@@ -41,6 +44,51 @@ func TestGeneratedConfigIncludesTobySettings(t *testing.T) {
 	instructions := config["instructions"].([]any)
 	if len(instructions) != 1 || instructions[0] != testInstructions[0] {
 		t.Fatalf("instructions = %#v", instructions)
+	}
+}
+
+func TestGeneratedConfigIncludesDefaultPermissionPaths(t *testing.T) {
+	projectRoot := "/toby/workspace"
+	config := readGeneratedConfig(t, &http.Client{}, projectRoot, testInstructions)
+
+	external := config["permission"].(map[string]any)["external_directory"].(map[string]any)
+	for _, pattern := range []string{
+		projectRoot, projectRoot + "/**",
+		"/tmp", "/tmp/**",
+		testHome + "/go", testHome + "/go/**",
+		testHome + "/.cache", testHome + "/.cache/**",
+	} {
+		if external[pattern] != "allow" {
+			t.Fatalf("external_directory[%q] = %#v, want allow", pattern, external[pattern])
+		}
+	}
+}
+
+func TestGeneratedConfigPermissionUserOverride(t *testing.T) {
+	cfgDir := t.TempDir()
+	writeJSON(t, filepath.Join(cfgDir, "config.json"), map[string]any{
+		"permissions": map[string]any{
+			"paths": map[string]any{
+				"/tmp":    "deny",
+				"/custom": "allow",
+			},
+		},
+	})
+	cfg, err := tobyconfig.Load(cfgDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := readGeneratedConfigWithTobyConfig(t, &http.Client{}, "/toby/workspace", testInstructions, cfg)
+
+	external := config["permission"].(map[string]any)["external_directory"].(map[string]any)
+	if external["/tmp"] != "deny" {
+		t.Fatalf("user override external_directory[/tmp] = %#v, want deny", external["/tmp"])
+	}
+	if external["/custom"] != "allow" {
+		t.Fatalf("external_directory[/custom] = %#v, want allow", external["/custom"])
+	}
+	if external["/toby/workspace"] != "allow" {
+		t.Fatalf("default external_directory[/toby/workspace] = %#v, want allow", external["/toby/workspace"])
 	}
 }
 
@@ -232,7 +280,8 @@ func contextFilesWithTobyConfig(t *testing.T, client *http.Client, projectRoot s
 	t.Helper()
 	renderer, service, proxy := testDeps(t, client)
 	builder := service.NewBuilder()
-	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, projectRoot, testControlHost, testTobyMCPURL, instructions, cfg, proxy)
+	paths := sandboxpath.Paths{Home: testHome, Workspace: projectRoot}
+	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, paths, testControlHost, testTobyMCPURL, instructions, cfg, proxy, nil)
 	if err != nil {
 		return nil, warnings, err
 	}

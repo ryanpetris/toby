@@ -10,6 +10,7 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -59,7 +60,7 @@ mcps:
 		t.Fatal(err)
 	}
 	data := string(fileByPath(t, files, StaticMCPPath).Data)
-	for _, want := range []string{`"docs"`, `"command": "npx"`, `"-y"`, `"docs-mcp"`, `"TOKEN": "abc"`, `"tools": [`, `"remote"`, `"type": "http"`, `"url": "http://127.0.0.1:12345/proxy/`} {
+	for _, want := range []string{`"docs"`, `"tools": [`, `"remote"`, `"type": "http"`, `"url": "http://127.0.0.1:12345/proxy/`} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("config missing %q:\n%s", want, data)
 		}
@@ -79,7 +80,17 @@ func renderContextFiles(t *testing.T, instructions [][]byte, cfg *tobyconfig.Ser
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
-	if err := RegisterContextFiles(builder, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{})); err != nil {
+	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	if err != nil {
+		return nil, err
+	}
+	if cfg != nil {
+		if err := mcpProxy.Configure(t.Context(), "127.0.0.1:12345", cfg, mcpproxy.Defaults{}); err != nil {
+			return nil, err
+		}
+	}
+	if err := RegisterContextFiles(builder, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, proxy, mcpProxy); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

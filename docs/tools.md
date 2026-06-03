@@ -62,6 +62,13 @@ How each coding tool receives Toby's MCP server, providers, permissions, and
 instructions. The full generated artifacts are documented in
 [sandbox.md](sandbox.md); this is the summary.
 
+Toby's built-in MCP server includes host Git tools, MCP lifecycle tools
+(`mcp.start`, `mcp.stop`, `mcp.restart`) for Toby-managed local MCP sidecars,
+and `toby://docs/...` plus `toby://session/...` resources. Session resources
+never include provider or MCP headers, URLs, commands, argv, or environment
+values. Host paths, Docker volumes, container names, and local MCP host ports
+are included only when debug mode is enabled.
+
 ### OpenCode
 
 Toby sets `OPENCODE_CONFIG_DIR` to the generated OpenCode context directory. The generated
@@ -77,8 +84,7 @@ state live under the configured managed mount backing) and injects context
 through launch flags rather than the config directory:
 
 - `--mcp-config .../claude/mcp.json` — the Toby MCP server.
-- `--append-system-prompt-file .../claude/instructions.md` — `GIT_AGENTS.md`
-  plus configured instructions.
+- `--append-system-prompt-file .../claude/instructions.md` — configured instructions.
 - `--settings .../claude/settings.json` — generated settings.
 
 ### Codex

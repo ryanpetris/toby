@@ -10,6 +10,7 @@ import (
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
 	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	sandboxpath "petris.dev/toby/internal/sandbox/path"
@@ -30,6 +31,7 @@ type Params struct {
 	Renderer     *opencodeconfig.Renderer `optional:"true"`
 	Config       *tobyconfig.Service      `optional:"true"`
 	Proxy        *httpproxy.Service       `optional:"true"`
+	MCPProxy     *mcpproxy.Service        `optional:"true"`
 	Sandbox      tool.SandboxService
 	ContextFiles *contextfiles.Service
 }
@@ -46,6 +48,7 @@ func Provide(params Params) Result {
 		renderer:     params.Renderer,
 		config:       params.Config,
 		proxy:        params.Proxy,
+		mcpProxy:     params.MCPProxy,
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
 	}
@@ -57,6 +60,7 @@ type openCodeTool struct {
 	renderer     *opencodeconfig.Renderer
 	config       *tobyconfig.Service
 	proxy        *httpproxy.Service
+	mcpProxy     *mcpproxy.Service
 	sandbox      tool.SandboxService
 	contextFiles *contextfiles.Service
 }
@@ -94,7 +98,7 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, opts tool.Conte
 			return fmt.Errorf("opencode renderer is not configured")
 		}
 		controlHost, _ := t.sandbox.GetEnvironment(control.EnvControlHost)
-		warnings, err := t.renderer.RegisterContextFiles(ctx, t.contextFiles.Registrar(ctx), t.sandbox.Paths().Workspace, controlHost, t.sandbox.TobyMCPURL(), t.contextFiles.InstructionPaths(), t.config, t.proxy)
+		warnings, err := t.renderer.RegisterContextFiles(ctx, t.contextFiles.Registrar(ctx), t.sandbox.Paths(), controlHost, t.sandbox.TobyMCPURL(), t.contextFiles.InstructionPaths(), t.config, t.proxy, t.mcpProxy)
 		if err != nil {
 			return err
 		}

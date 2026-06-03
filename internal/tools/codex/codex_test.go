@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"petris.dev/toby/internal/config"
@@ -17,7 +18,7 @@ type fakeNPM struct{ tool.Base }
 func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	home := t.TempDir()
 	cdx, sandbox, service := newTestCodex(t, filepath.Join(home, "context"))
-	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	if _, err := service.AddInstruction(context.Background(), "user-instructions.md", []byte("# user instructions\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -33,7 +34,7 @@ func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 		"codex",
 		"-c", `mcp_servers.toby.url='http://127.0.0.1:12345/proxy/toby'`,
 		"-c", `mcp_servers.toby.enabled=true`,
-		"-c", `developer_instructions="# git\n"`,
+		"-c", `developer_instructions="# user instructions\n"`,
 		"--model", "gpt-5",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -55,6 +56,43 @@ func TestSandboxInitDoesNotLinkProfile(t *testing.T) {
 	}
 	if called {
 		t.Fatalf("SandboxInit should not write or link Codex profile files")
+	}
+}
+
+func TestLaunchYoloBypassesApprovals(t *testing.T) {
+	home := t.TempDir()
+	cdx, sandbox, _ := newTestCodex(t, filepath.Join(home, "context"))
+	var got []string
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+
+	yes := true
+	if err := cdx.HostInit(context.Background(), &tool.CommandOptions{Yolo: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cdx.Launch(context.Background(), []string{"--model", "gpt-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("argv = %#v, missing --dangerously-bypass-approvals-and-sandbox", got)
+	}
+
+	got = nil
+	plain, plainSandbox, _ := newTestCodex(t, filepath.Join(home, "context2"))
+	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ tool.ExecOptions) (int, error) {
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+	if err := plain.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Launch(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("argv = %#v, unexpected --dangerously-bypass-approvals-and-sandbox", got)
 	}
 }
 

@@ -10,10 +10,14 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 )
+
+const testHome = "/toby/home"
 
 const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
 
@@ -70,12 +74,11 @@ mcps:
 	mcp := decode(t, fileByPath(t, files, StaticMcpPath).Data)
 	servers := mcp["mcpServers"].(map[string]any)
 	docs := servers["docs"].(map[string]any)
-	if docs["type"] != "stdio" || docs["command"] != "npx" {
+	if docs["type"] != "http" {
 		t.Fatalf("docs mcp = %#v", docs)
 	}
-	args := docs["args"].([]any)
-	if len(args) != 2 || args[0] != "-y" || args[1] != "docs-mcp" {
-		t.Fatalf("docs args = %#v", args)
+	if url, _ := docs["url"].(string); !strings.HasPrefix(url, "http://127.0.0.1:12345/proxy/") {
+		t.Fatalf("docs url = %#v", docs["url"])
 	}
 	remote := servers["remote"].(map[string]any)
 	if remote["type"] != "http" {
@@ -83,6 +86,57 @@ mcps:
 	}
 	if url, _ := remote["url"].(string); !strings.HasPrefix(url, "http://127.0.0.1:12345/proxy/") {
 		t.Fatalf("remote url = %#v", remote["url"])
+	}
+}
+
+func TestContextFilesIncludesPermissionDirectories(t *testing.T) {
+	projectRoot := "/toby/workspace"
+	files, err := renderContextFiles(t, projectRoot, [][]byte{[]byte("# git")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := decode(t, fileByPath(t, files, StaticSettingsPath).Data)
+	dirs := settings["permissions"].(map[string]any)["additionalDirectories"].([]any)
+	got := map[string]bool{}
+	for _, dir := range dirs {
+		got[dir.(string)] = true
+	}
+	for _, want := range []string{projectRoot, "/tmp", testHome + "/go", testHome + "/.cache"} {
+		if !got[want] {
+			t.Fatalf("additionalDirectories missing %q: %#v", want, dirs)
+		}
+	}
+	for _, dir := range dirs {
+		if strings.Contains(dir.(string), "*") {
+			t.Fatalf("additionalDirectories should not contain glob patterns: %q", dir)
+		}
+	}
+}
+
+func TestContextFilesPermissionUserOverride(t *testing.T) {
+	cfg := testTobyConfig(t, []byte(`
+permissions:
+  paths:
+    /tmp: deny
+    /custom: allow
+`))
+	files, err := renderContextFilesWithConfig(t, "/toby/workspace", [][]byte{[]byte("# git")}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := decode(t, fileByPath(t, files, StaticSettingsPath).Data)
+	dirs := settings["permissions"].(map[string]any)["additionalDirectories"].([]any)
+	got := map[string]bool{}
+	for _, dir := range dirs {
+		got[dir.(string)] = true
+	}
+	if got["/tmp"] {
+		t.Fatalf("user deny should drop /tmp from additionalDirectories: %#v", dirs)
+	}
+	if !got["/custom"] {
+		t.Fatalf("user-configured /custom missing: %#v", dirs)
 	}
 }
 
@@ -123,7 +177,18 @@ func renderContextFilesWithConfig(t *testing.T, projectRoot string, instructions
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
-	if err := RegisterContextFiles(builder, projectRoot, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{})); err != nil {
+	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	if err != nil {
+		return nil, err
+	}
+	if cfg != nil {
+		if err := mcpProxy.Configure(t.Context(), "127.0.0.1:12345", cfg, mcpproxy.Defaults{}); err != nil {
+			return nil, err
+		}
+	}
+	paths := sandboxpath.Paths{Home: testHome, Workspace: projectRoot}
+	if err := RegisterContextFiles(builder, paths, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, proxy, mcpProxy); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

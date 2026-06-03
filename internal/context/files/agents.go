@@ -6,24 +6,20 @@ import (
 )
 
 const (
-	GitAgentsPath = "GIT_AGENTS.md"
+	TobyAgentsPath = "TOBY_AGENTS.md"
 )
 
-//go:embed GIT_AGENTS.md
+//go:embed TOBY_AGENTS.md
 var agentFiles embed.FS
 
 func AgentFiles() fs.FS { return agentFiles }
 
 func RegisterAgentFiles(registrar Registrar) error {
-	return registrar.AddFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o644)
-}
-
-func RegisterAgentInstructions(session *Session) error {
-	return session.AddInstructionFS(GitAgentsPath, agentFiles, GitAgentsPath, 0o644)
+	return registrar.AddFS(TobyAgentsPath, agentFiles, TobyAgentsPath, 0o644)
 }
 
 func AgentContents() ([][]byte, error) {
-	paths := []string{GitAgentsPath}
+	paths := []string{TobyAgentsPath}
 	contents := make([][]byte, 0, len(paths))
 	for _, path := range paths {
 		data, err := fs.ReadFile(agentFiles, path)

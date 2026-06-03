@@ -294,6 +294,14 @@ func (s *Service) RuntimeMounts() []RuntimeMount {
 	return result
 }
 
+func (s *Service) Infos() []Info {
+	result := make([]Info, 0, len(s.ordered))
+	for _, key := range s.ordered {
+		result = append(result, s.mounts[key])
+	}
+	return result
+}
+
 func (s *Service) HostBackedManagedMounts() []Info {
 	var result []Info
 	for _, key := range s.ordered {

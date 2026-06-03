@@ -13,8 +13,10 @@ import (
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/providers/anthropic"
 	"petris.dev/toby/internal/providers/openai"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
 
@@ -26,12 +28,13 @@ const (
 var opencodeGitignore = []byte("*\n")
 
 type Mount struct {
-	projectRoot   string
+	paths         sandboxpath.Paths
 	controlHost   string
 	tobyMCPURL    string
 	instructions  []string
 	tobyConfig    *tobyconfig.Service
 	proxy         *httpproxy.Service
+	mcpProxy      *mcpproxy.Service
 	http          *http.Client
 	modelWarnings []error
 }
@@ -47,15 +50,15 @@ func NewRenderer(client *http.Client) (*Renderer, error) {
 	return &Renderer{http: client}, nil
 }
 
-func (r *Renderer) newMount(projectRoot, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service) (*Mount, error) {
+func (r *Renderer) newMount(paths sandboxpath.Paths, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) (*Mount, error) {
 	if r == nil || r.http == nil {
 		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
-	return &Mount{projectRoot: projectRoot, controlHost: controlHost, tobyMCPURL: tobyMCPURL, instructions: append([]string(nil), instructions...), tobyConfig: cfg, proxy: proxy, http: r.http}, nil
+	return &Mount{paths: paths, controlHost: controlHost, tobyMCPURL: tobyMCPURL, instructions: append([]string(nil), instructions...), tobyConfig: cfg, proxy: proxy, mcpProxy: mcpProxy, http: r.http}, nil
 }
 
-func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, projectRoot, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service) ([]error, error) {
-	mount, err := r.newMount(projectRoot, controlHost, tobyMCPURL, instructions, cfg, proxy)
+func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, paths sandboxpath.Paths, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]error, error) {
+	mount, err := r.newMount(paths, controlHost, tobyMCPURL, instructions, cfg, proxy, mcpProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -106,14 +109,6 @@ func (m *Mount) tobySyntheticConfig(ctx context.Context) (map[string]any, error)
 	}
 	if len(mcp) > 0 {
 		config["mcp"] = mcp
-	}
-	permission := m.tobyConfig.Permission()
-	if len(permission.Paths) > 0 {
-		external := map[string]any{}
-		for pattern, mode := range permission.Paths {
-			external[pattern] = mode
-		}
-		config["permission"] = map[string]any{"external_directory": external}
 	}
 	providers := map[string]any{}
 	for name, provider := range m.tobyConfig.Providers() {
@@ -258,7 +253,23 @@ func (m *Mount) addSynthetic(config map[string]any) error {
 	}
 	mcp["toby"] = toby
 	addInstructions(config, m.instructions)
+	addPermissionPaths(config, m.tobyConfig.PermissionPaths(m.paths))
 	return nil
+}
+
+func addPermissionPaths(config map[string]any, paths map[string]string) {
+	if len(paths) == 0 {
+		return
+	}
+	permission := objectAt(config, "permission")
+	external, ok := permission["external_directory"].(map[string]any)
+	if !ok {
+		external = map[string]any{}
+		permission["external_directory"] = external
+	}
+	for pattern, mode := range paths {
+		external[pattern] = mode
+	}
 }
 
 func addInstructions(config map[string]any, paths []string) {
@@ -306,7 +317,7 @@ func syntheticMCP(url string) (map[string]any, error) {
 }
 
 func (m *Mount) syntheticProxyMCP(name string, server tobyconfig.MCPServer) (map[string]any, error) {
-	proxyURL, err := proxyconfig.MCPURL(m.controlHost, m.proxy, server)
+	proxyURL, err := proxyconfig.MCPURL(m.controlHost, m.proxy, m.mcpProxy, name, server)
 	if err != nil {
 		return nil, fmt.Errorf("mcp.%s: %w", name, err)
 	}

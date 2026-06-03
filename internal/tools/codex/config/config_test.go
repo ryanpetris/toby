@@ -9,12 +9,13 @@ import (
 
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 )
 
 const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"
 
 func TestConfigArgsIncludeTobyMCPAndInstructions(t *testing.T) {
-	args, err := ConfigArgs([][]byte{[]byte("# git\n"), []byte("# extra\n")}, nil, "", testTobyMCPURL, nil)
+	args, err := ConfigArgs([][]byte{[]byte("# git\n"), []byte("# extra\n")}, nil, "", testTobyMCPURL, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,12 +46,19 @@ mcps:
     url: https://off.example.com/mcp
     enabled: false
 `))
-	args, err := ConfigArgs(nil, cfg, "127.0.0.1:12345", testTobyMCPURL, httpproxy.NewService(httpproxy.ServiceParams{}))
+	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mcpProxy.Configure(t.Context(), "127.0.0.1:12345", cfg, mcpproxy.Defaults{}); err != nil {
+		t.Fatal(err)
+	}
+	args, err := ConfigArgs(nil, cfg, "127.0.0.1:12345", testTobyMCPURL, proxy, mcpProxy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`mcp_servers.local.command='local-mcp'`,
 		`mcp_servers.local.enabled=true`,
 		`mcp_servers.docs.enabled=true`,
 	} {
@@ -60,6 +68,9 @@ mcps:
 	}
 	if !containsConfigOverridePrefix(args, `mcp_servers.docs.url='http://127.0.0.1:12345/proxy/`) {
 		t.Fatalf("args missing proxied docs URL: %#v", args)
+	}
+	if !containsConfigOverridePrefix(args, `mcp_servers.local.url='http://127.0.0.1:12345/proxy/`) {
+		t.Fatalf("args missing proxied local URL: %#v", args)
 	}
 }
 

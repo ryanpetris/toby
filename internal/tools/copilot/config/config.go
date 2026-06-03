@@ -9,6 +9,7 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/tools/toolconfig"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
@@ -18,8 +19,8 @@ const (
 	StaticInstructionsPath = "copilot/AGENTS.md"
 )
 
-func RegisterContextFiles(registrar contextfiles.Registrar, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) error {
-	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy)
+func RegisterContextFiles(registrar contextfiles.Registrar, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) error {
+	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy, mcpProxy)
 	if err != nil {
 		return err
 	}
@@ -41,7 +42,7 @@ func InstructionsDir(contextDir string) string {
 	return filepath.Join(contextDir, "copilot")
 }
 
-func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) (map[string]any, error) {
+func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) (map[string]any, error) {
 	servers := map[string]any{}
 	if cfg != nil {
 		for name, configured := range cfg.MCPServers() {
@@ -49,7 +50,7 @@ func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy
 				continue
 			}
 			if configured.HTTPProxyable() {
-				converted, err := syntheticProxyMCP(controlHost, proxy, name, configured)
+				converted, err := syntheticProxyMCP(controlHost, proxy, mcpProxy, name, configured)
 				if err != nil {
 					return nil, err
 				}
@@ -83,8 +84,8 @@ func syntheticTobyMCP(url string) (map[string]any, error) {
 	}, nil
 }
 
-func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
-	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, server)
+func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
+	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, mcpProxy, name, server)
 	if err != nil {
 		return nil, fmt.Errorf("mcp.%s: %w", name, err)
 	}

@@ -53,6 +53,8 @@ func (i *testInstance) Prime(context.Context, RunSpec) (int, error) { return 0, 
 
 func (i *testInstance) Setup(context.Context, RunSpec) (int, error) { return 0, nil }
 
+func (i *testInstance) RuntimeInfo(bool) RuntimeInfo { return RuntimeInfo{Runtime: i.Label()} }
+
 func TestProjectOutsideHomeRejected(t *testing.T) {
 	home := t.TempDir()
 	outside := t.TempDir()
@@ -298,8 +300,8 @@ func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
 	if path, ok := instance.ProjectPath(" app "); !ok || path != filepath.Join(sandboxpath.DefaultWorkspace, "app") {
 		t.Fatalf("ProjectPath = %q, %v", path, ok)
 	}
-	if instance.TobyBinaryPath() != filepath.Join(sandboxpath.DefaultBin, "toby") || instance.TobyGitAgentsPath() != filepath.Join(sandboxpath.DefaultContext, "GIT_AGENTS.md") {
-		t.Fatalf("runtime paths: bin=%q git=%q", instance.TobyBinaryPath(), instance.TobyGitAgentsPath())
+	if instance.TobyBinaryPath() != filepath.Join(sandboxpath.DefaultBin, "toby") {
+		t.Fatalf("runtime binary path = %q", instance.TobyBinaryPath())
 	}
 	if got := instance.sandboxHost("127.0.0.1:1234"); got != "host.docker.internal:1234" {
 		t.Fatalf("sandboxHost ipv4 = %q", got)

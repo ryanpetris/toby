@@ -34,7 +34,7 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 	home := t.TempDir()
 	gr, sandbox, service := newTestGrok(t, filepath.Join(home, "context"))
 	registrar := gr.(tool.ContextFileTool)
-	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	if _, err := service.AddInstruction(context.Background(), "user-instructions.md", []byte("# user instructions\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestSandboxInitLinksManagedConfig(t *testing.T) {
 func TestLaunchAddsRules(t *testing.T) {
 	home := t.TempDir()
 	gr, sandbox, service := newTestGrok(t, filepath.Join(home, "context"))
-	if _, err := service.AddInstruction(context.Background(), "GIT_AGENTS.md", []byte("# git\n"), 0); err != nil {
+	if _, err := service.AddInstruction(context.Background(), "user-instructions.md", []byte("# user instructions\n"), 0); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -90,7 +90,7 @@ func TestLaunchAddsRules(t *testing.T) {
 	if err := gr.Launch(context.Background(), []string{"--model", "grok-code-fast-1"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"grok", "--rules", "# git\n", "--model", "grok-code-fast-1"}
+	want := []string{"grok", "--rules", "# user instructions\n", "--model", "grok-code-fast-1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}

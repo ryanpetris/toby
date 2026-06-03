@@ -10,11 +10,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
+	"petris.dev/toby/internal/control/mcpproxy"
+	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/toolconfig"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
@@ -33,8 +36,8 @@ const (
 // instructions is the content of Toby's instruction files; they are concatenated
 // into a single file so the launcher can pass exactly one
 // --append-system-prompt-file.
-func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) error {
-	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy)
+func RegisterContextFiles(registrar contextfiles.Registrar, paths sandboxpath.Paths, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) error {
+	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy, mcpProxy)
 	if err != nil {
 		return err
 	}
@@ -42,7 +45,7 @@ func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, 
 	if err != nil {
 		return err
 	}
-	settings, err := marshalJSON(syntheticSettings())
+	settings, err := marshalJSON(syntheticSettings(cfg, paths))
 	if err != nil {
 		return err
 	}
@@ -58,7 +61,7 @@ func RegisterContextFiles(registrar contextfiles.Registrar, projectRoot string, 
 	return nil
 }
 
-func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service) (map[string]any, error) {
+func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) (map[string]any, error) {
 	servers := map[string]any{}
 	if cfg != nil {
 		for name, configured := range cfg.MCPServers() {
@@ -66,7 +69,7 @@ func syntheticMCP(cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy
 				continue
 			}
 			if configured.HTTPProxyable() {
-				converted, err := syntheticProxyMCP(controlHost, proxy, name, configured)
+				converted, err := syntheticProxyMCP(controlHost, proxy, mcpProxy, name, configured)
 				if err != nil {
 					return nil, err
 				}
@@ -99,8 +102,8 @@ func syntheticTobyMCP(url string) (map[string]any, error) {
 	}, nil
 }
 
-func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
-	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, server)
+func syntheticProxyMCP(controlHost string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service, name string, server tobyconfig.MCPServer) (map[string]any, error) {
+	proxyURL, err := proxyconfig.MCPURL(controlHost, proxy, mcpProxy, name, server)
 	if err != nil {
 		return nil, fmt.Errorf("mcp.%s: %w", name, err)
 	}
@@ -154,8 +157,39 @@ func convertRemoteMCPServer(server map[string]any) map[string]any {
 	return converted
 }
 
-func syntheticSettings() map[string]any {
-	return map[string]any{}
+// syntheticSettings renders Claude's permission settings from Toby's shared
+// permission paths. Claude's permissions.additionalDirectories takes directory
+// paths rather than glob patterns, so glob entries are dropped and only the
+// "allow" directories are listed.
+func syntheticSettings(cfg *tobyconfig.Service, paths sandboxpath.Paths) map[string]any {
+	dirs := allowedDirectories(cfg.PermissionPaths(paths))
+	if len(dirs) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"permissions": map[string]any{
+			"additionalDirectories": dirs,
+		},
+	}
+}
+
+func allowedDirectories(permissions map[string]string) []any {
+	dirs := make([]string, 0, len(permissions))
+	for pattern, mode := range permissions {
+		if mode != "allow" {
+			continue
+		}
+		if strings.ContainsAny(pattern, "*?[") {
+			continue
+		}
+		dirs = append(dirs, pattern)
+	}
+	sort.Strings(dirs)
+	result := make([]any, len(dirs))
+	for i, dir := range dirs {
+		result[i] = dir
+	}
+	return result
 }
 
 func marshalJSON(value any) ([]byte, error) {

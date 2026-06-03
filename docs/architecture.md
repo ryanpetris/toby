@@ -79,13 +79,13 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `internal/config` | XDG paths (`paths.go`). |
 | `internal/config/file` | Config file discovery, format parsing (JSON/JSONC/YAML), deep merge. |
 | `internal/config/toby` | Host config schema, validation, and context-file rendering. |
-| `internal/context/files` | Context file session/builder, embedded `GIT_AGENTS.md`. |
-| `internal/context/setup` | Context lifecycle hooks for agent instructions and host config. |
+| `internal/context/files` | Context file session/builder for generated config and configured instructions. |
+| `internal/context/setup` | Context lifecycle hooks for host config and tool context files. |
 | `internal/control` | Control transport: WebSocket, JSON-RPC peer, server, proxy, MCP. |
 | `internal/control/hostmanager` | Host-side RPC handlers, host Git execution. |
 | `internal/control/sandboxmanager` | Sandbox-side RPC handlers, command execution. |
 | `internal/control/httpproxy` | `/proxy/<uuid>` reverse proxy for MCP and providers. |
-| `internal/control/mcpserver` | Built-in Toby MCP server exposing host Git tools. |
+| `internal/control/mcpserver` | Built-in Toby MCP server exposing host Git tools, MCP lifecycle tools, and `toby://` resources. |
 | `internal/sandbox` | Runtime selection, shared sandbox service/types, helper binary delivery. |
 | `internal/sandbox/docker` | Docker sandbox runtime implementation and Fx module. |
 | `internal/sandbox/bubblewrap` | Bubblewrap sandbox runtime implementation and Fx module. |
@@ -135,10 +135,10 @@ The host manager accepts a sandbox connection, requires the first message to be
 `context.init`, then runs the registered context lifecycle hooks to populate the
 sandbox before handing control to the launched tool. It services
 `command.exit` notifications (to track foreground completion) and the `git.*`
-methods. Git execution lives in `git.go`/`git_service.go`: repository names are
-validated (relative to the projects root, no empty/`.`/`..` segments, must be
-visible through the project bind), arguments are checked, and `git` runs on the
-host so host config, SSH agent, GPG signing, and credential helpers all apply.
+methods. Git execution lives in `git.go`/`git_service.go`: repository names and
+arguments are validated on the host, repositories must be visible through the
+project bind, and `git` runs on the host so host config, SSH agent, GPG signing,
+and credential helpers all apply.
 
 ### Sandbox side (`internal/control/sandboxmanager`)
 
@@ -155,12 +155,39 @@ then SIGKILL after a short grace period).
 
 ### HTTP proxy (`internal/control/httpproxy`)
 
-Remote MCP servers, model providers, and the built-in Toby MCP server are each
-registered as a proxy target keyed by a random UUID and exposed at
-`http://<control-host>/proxy/<uuid>`. The host applies upstream URLs and
-credential headers when forwarding, so secrets never enter the sandbox. The
+Remote MCP servers, local MCP sidecars, model providers, and the built-in Toby
+MCP server are each registered as a proxy target keyed by a random UUID and
+exposed at `http://<control-host>/proxy/<uuid>`. The host applies upstream URLs
+and credential headers when forwarding, so secrets never enter the sandbox. The
 built-in Toby MCP target dispatches to the in-process MCP handler instead of an
-upstream URL.
+upstream URL. Local stdio MCP sidecars also dispatch to an in-process handler:
+Toby connects to the sidecar command over stdin/stdout and bridges tools,
+prompts, and resources to streamable HTTP. The built-in Toby MCP server exposes
+host Git tools, MCP lifecycle tools, and `toby://docs/...` plus
+`toby://session/...` text resources. Session resources redact provider and MCP
+URLs, headers, commands, argv, and environment values regardless of debug mode.
+Runtime details are returned as runtime-defined `runtimeInfo` maps. Generic MCP
+and sandbox orchestration code passes those maps through without interpreting
+Docker, Bubblewrap, or future-runtime fields.
+
+### MCP sidecars
+
+Configured `type: local` MCP entries are owned by the host session, not by the
+tool running inside the main sandbox. During session startup Toby registers
+their proxy URLs synchronously, starts the sidecar processes asynchronously, and
+does not wait for MCP readiness before starting the main sandbox manager. Docker
+is the default MCP runtime independent of the main sandbox runtime; Bubblewrap
+can be selected globally or per MCP. Sidecars do not use `toby sandbox manager`,
+do not run setup hooks, and do not mount project, context, or managed-state
+paths. Docker MCP sidecars use the selected image defaults for user, home, and
+working directory. Bubblewrap sidecars run as the invoking user with regular
+system mounts and tmpfs home.
+When debug mode is enabled, Docker MCP sidecars omit `--rm` so stopped
+containers remain available for inspection. Restarts always create fresh
+container names and never reuse previous containers. Each MCP sidecar runtime
+implementation owns its own startup, HTTP preparation, cleanup, and
+introspection behavior; adding another runtime should only require registering a
+new runtime implementation with Fx.
 
 ## Sandbox runtimes
 
@@ -174,7 +201,10 @@ runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
   home state persists across runs; provider-backed managed mounts use lazy
   volumes named `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host
   under `/toby/workspace`. The image can be built from
-  `sandbox.runtime.docker.build`.
+  `sandbox.runtime.docker.build`. With `settings.debug: true` or `--debug`,
+  Docker `--rm` is omitted for prime/setup/run containers so they remain after
+  exit. Phase-specific names prevent setup and run containers from colliding;
+  persisted containers are never reused.
 - **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts
   provider-backed directories from `sandbox.runtime.bubblewrap.root` by provider
   ID, keeps projects under `$XDG_PROJECTS_DIR`, and stores Toby internals under
@@ -183,7 +213,9 @@ runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
 The selected runtime provides `sandboxpath.Paths`. The host-side
 `sandbox.SandboxService` exposes those paths and centralizes sandbox file and
 command operations for tool setup; it does not decide Docker or Bubblewrap path
-policy.
+policy. Runtime-specific introspection is provided by the selected runtime as an
+opaque `runtimeInfo` map, so the shared sandbox service does not know about
+Docker, Bubblewrap, or future-runtime-specific fields.
 
 In both runtimes, host secrets such as `~/.ssh` and `~/.gnupg` are not mounted.
 
@@ -211,7 +243,8 @@ runner and `internal/cli/session/session.go`:
 3. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
    `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
    set calculated `HOME` plus `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the
-   sandbox manager startup environment.
+   sandbox manager startup environment. Docker launch commands also pass host
+   `TERM` when it is set.
 4. **Prepare mounts.** Docker primes volumes in their final locations, then runs
    a setup sandbox with home and provider volumes mounted at isolated
    `/toby/mounts/<random>` paths so runtime and `toby.lifecycle.sandbox.mount.init`

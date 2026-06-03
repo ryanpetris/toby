@@ -12,6 +12,7 @@ import (
 	contextfiles "petris.dev/toby/internal/context/files"
 	contextinit "petris.dev/toby/internal/context/setup"
 	"petris.dev/toby/internal/control/hostmanager"
+	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/control/mcpserver"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/platform/executil"
@@ -64,6 +65,7 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tool.CommandOpti
 		fx.NopLogger,
 		fx.Supply(r.paths, r.config),
 		hostmanager.Module(),
+		mcpproxy.Module(),
 		mcpserver.Module(),
 		sandbox.Module(),
 		runtimeModule,
@@ -119,6 +121,7 @@ type executionSessionParams struct {
 	Paths          config.Paths
 	ContextFiles   *contextfiles.Service
 	HostManager    *hostmanager.HostManager
+	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *tobyconfig.Service
 
@@ -140,6 +143,7 @@ func newExecutionSessionParams(stderr io.Writer) func(executionSessionParams) se
 			Paths:             params.Paths,
 			ContextFiles:      params.ContextFiles,
 			HostManager:       params.HostManager,
+			MCPProxy:          params.MCPProxy,
 			MCPServer:         params.MCPServer,
 			TobyConfig:        params.TobyConfig,
 			Stderr:            stderr,
