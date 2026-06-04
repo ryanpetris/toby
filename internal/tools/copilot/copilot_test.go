@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
 	copilotconfig "petris.dev/toby/internal/tools/copilot/config"
@@ -25,7 +26,7 @@ func TestSandboxContextSetupAddsCustomInstructionsDir(t *testing.T) {
 	if err := cp.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := copilotconfig.InstructionsDir(sandbox.Paths().Context) + ","
+	wantPrefix := copilotconfig.InstructionsDir(layout.Context) + ","
 	got := sandbox.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]
 	if !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "/existing") {
 		t.Fatalf("COPILOT_CUSTOM_INSTRUCTIONS_DIRS = %q", got)
@@ -61,7 +62,7 @@ func TestLaunchAddsAdditionalMCPConfig(t *testing.T) {
 	if err := cp.Launch(context.Background(), []string{"--allow-all-tools"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.Paths().Context), "--allow-all-tools"}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(layout.Context), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -83,7 +84,7 @@ func TestLaunchYoloAppendsAllowAllTools(t *testing.T) {
 	if err := cp.Launch(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(sandbox.Paths().Context), "--allow-all-tools"}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(layout.Context), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}

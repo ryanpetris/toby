@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/npm"
@@ -18,10 +19,8 @@ import (
 
 func TestClaudeSetsConfigDir(t *testing.T) {
 	home := t.TempDir()
-	sandboxHome := filepath.Join(home, "sandbox-home")
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "toby", "context"))
-	sandbox.PathsValue.Home = sandboxHome
 	var claude tool.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
@@ -46,7 +45,7 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	if err := claude.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(sandboxHome, ".config", "claude")
+	want := filepath.Join(layout.Home, ".config", "claude")
 	if sandbox.Env["CLAUDE_CONFIG_DIR"] != want {
 		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", sandbox.Env["CLAUDE_CONFIG_DIR"], want)
 	}

@@ -3,15 +3,13 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/hostmanager"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -23,15 +21,20 @@ type Service struct {
 	managerExit *ManagerExit
 	env         tool.Environment
 	mcpURL      string
-	binds       []sandboxmount.Bind
-	seenBinds   map[sandboxmount.Bind]bool
-	mounts      *sandboxmount.Service
+	mounts      *mount.Service
 	started     bool
 }
 
 type SandboxService = Service
 
-func newService(mounts *sandboxmount.Service) *Service { return &Service{mounts: mounts} }
+func newService(mounts *mount.Service) *Service { return &Service{mounts: mounts} }
+
+// mountRunner adapts the sandbox service to mount.Runner for setup hooks.
+type mountRunner struct{ s *Service }
+
+func (r mountRunner) Exec(ctx context.Context, argv []string, root bool) (int, error) {
+	return r.s.Exec(ctx, argv, tool.ExecOptions{Root: root, HideOutput: true})
+}
 
 var _ tool.SandboxService = (*Service)(nil)
 
@@ -43,8 +46,6 @@ func (s *Service) Prepare(instance Instance) {
 	s.managerExit = nil
 	s.env = nil
 	s.mcpURL = ""
-	s.binds = nil
-	s.seenBinds = nil
 	s.started = false
 	s.mu.Unlock()
 }
@@ -60,69 +61,67 @@ func (s *Service) ConfigureMounts(opts *tool.CommandOptions) error {
 	if mounts == nil {
 		return fmt.Errorf("mount service is not configured")
 	}
-	profiles := sandboxmount.Profiles{}
 	mountProfile := ""
 	toolProfiles := map[string]string(nil)
 	if opts != nil {
-		profiles = opts.MountProfiles
 		mountProfile = opts.MountProfile
 		toolProfiles = opts.ToolMountProfiles
 	}
-	return mounts.Configure(sandboxmount.Config{Profile: mountProfile, SandboxName: instance.Label(), Paths: instance.Paths(), Profiles: profiles, ToolProfiles: toolProfiles})
+	return mounts.Configure(mount.Config{Profile: mountProfile, SandboxName: instance.Label(), ToolProfiles: toolProfiles})
 }
 
-func (s *Service) AddBind(bind sandboxmount.Bind) error {
+func (s *Service) AddBind(bind mount.Bind) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.started {
+	started := s.started
+	mounts := s.mounts
+	s.mu.Unlock()
+	if started {
 		return fmt.Errorf("sandbox is already started")
 	}
-	if s.seenBinds == nil {
-		s.seenBinds = map[sandboxmount.Bind]bool{}
-	}
-	if s.seenBinds[bind] {
-		return nil
-	}
-	s.seenBinds[bind] = true
-	s.binds = append(s.binds, bind)
-	return nil
+	return mounts.AddBind(bind)
 }
 
-func (s *Service) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
+func (s *Service) AddMount(req mount.Request) (mount.Mount, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.started {
-		return sandboxmount.Info{}, fmt.Errorf("sandbox is already started")
+	started := s.started
+	mounts := s.mounts
+	s.mu.Unlock()
+	if started {
+		return mount.Mount{}, fmt.Errorf("sandbox is already started")
 	}
-	return s.mounts.Add(req)
+	return mounts.AddMount(req)
 }
 
-func (s *Service) Mount(key sandboxmount.Key) (sandboxmount.Info, bool) {
+func (s *Service) Mount(key mount.Key) (mount.Mount, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mounts.Get(key)
+	mounts := s.mounts
+	s.mu.Unlock()
+	return mounts.Mount(key)
 }
 
-func (s *Service) StartBinds() []sandboxmount.Bind {
+func (s *Service) StartBinds() []mount.Bind {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.started = true
-	return append([]sandboxmount.Bind(nil), s.binds...)
+	mounts := s.mounts
+	s.mu.Unlock()
+	return mounts.Binds()
 }
 
-func (s *Service) RuntimeMounts() []sandboxmount.RuntimeMount {
+func (s *Service) RuntimeMounts() []mount.Mount {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mounts.RuntimeMounts()
+	mounts := s.mounts
+	s.mu.Unlock()
+	return mounts.Volumes()
 }
 
-func (s *Service) MountInfos() []sandboxmount.Info {
+func (s *Service) MountInfos() []mount.Mount {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mounts == nil {
+	mounts := s.mounts
+	s.mu.Unlock()
+	if mounts == nil {
 		return nil
 	}
-	return s.mounts.Infos()
+	return mounts.Mounts()
 }
 
 func (s *Service) ProjectMounts() []ProjectMount {
@@ -135,10 +134,14 @@ func (s *Service) ProjectMounts() []ProjectMount {
 	return provider.ProjectMounts()
 }
 
-func (s *Service) StartBindSnapshot() []sandboxmount.Bind {
+func (s *Service) StartBindSnapshot() []mount.Bind {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]sandboxmount.Bind(nil), s.binds...)
+	mounts := s.mounts
+	s.mu.Unlock()
+	if mounts == nil {
+		return nil
+	}
+	return mounts.Binds()
 }
 
 func (s *Service) RuntimeInfo(debug bool) RuntimeInfo {
@@ -150,25 +153,14 @@ func (s *Service) RuntimeInfo(debug bool) RuntimeInfo {
 	return s.instance.RuntimeInfo(debug)
 }
 
-func (s *Service) HostBackedManagedMounts() []sandboxmount.Info {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mounts.HostBackedManagedMounts()
-}
-
 func (s *Service) MountSetup(ctx context.Context) error {
-	mounts := s.RuntimeMounts()
-	argv := []string{"chown", "-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())}
-	for _, item := range mounts {
-		if item.Source.Kind == sandboxmount.SourceProvider && item.SetupPath != "" {
-			argv = append(argv, item.SetupPath)
-		}
-	}
-	if len(argv) == 3 {
+	s.mu.Lock()
+	mounts := s.mounts
+	s.mu.Unlock()
+	if mounts == nil {
 		return nil
 	}
-	_, err := s.Exec(ctx, argv, tool.ExecOptions{Root: true, HideOutput: true})
-	return err
+	return mounts.RunSetup(ctx, mountRunner{s})
 }
 
 func (s *Service) Connect(ctx context.Context, instance Instance, client *hostmanager.SandboxClient, exits *CommandExits, managerExit *ManagerExit) error {
@@ -203,16 +195,6 @@ func (s *Service) TobyMCPURL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.mcpURL
-}
-
-func (s *Service) Paths() sandboxpath.Paths {
-	s.mu.Lock()
-	instance := s.instance
-	s.mu.Unlock()
-	if instance == nil {
-		return sandboxpath.Paths{}
-	}
-	return instance.Paths()
 }
 
 func (s *Service) ProjectPath(name string) (string, bool) {

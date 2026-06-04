@@ -6,10 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -26,16 +25,10 @@ func (e testEnvironment) Priority() int { return e.priority }
 func (e testEnvironment) Available() error { return nil }
 
 func (e testEnvironment) NewInstance(spec Spec) (Instance, error) {
-	sandboxPaths := sandboxpath.Defaults()
 	base, err := NewBaseInstance(BaseInstanceParams{
-		Paths:       e.paths,
-		Label:       spec.Label,
-		PathSet:     sandboxPaths,
-		HomeDir:     sandboxPaths.Home,
-		ProjectsDir: sandboxPaths.Workspace,
-		RuntimeDir:  sandboxPaths.Root,
-		Workdir:     spec.Workdir,
-		Projects:    spec.Projects,
+		Label:    spec.Label,
+		Workdir:  spec.Workdir,
+		Projects: spec.Projects,
 	})
 	if err != nil {
 		return nil, err
@@ -78,7 +71,7 @@ func TestProjectUnderProjectRootAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	visible, ok := sbx.ProjectPath("demo")
-	if !ok || visible != filepath.Join(sandboxpath.DefaultWorkspace, "demo") {
+	if !ok || visible != filepath.Join(layout.Workspace, "demo") {
 		t.Fatalf("project path = %q, %v", visible, ok)
 	}
 	hostPath, err := sbx.VisibleHostPath("demo")
@@ -223,30 +216,6 @@ func TestVisibleHostPathRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestFactoryResolvesRelativeMountHostRootFromPrimaryProject(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths)
-	opts := &tool.CommandOptions{
-		Env:            "demo",
-		SandboxRuntime: RuntimeBubblewrap,
-		MountProfiles: sandboxmount.Profiles{"default": {
-			Backing:  sandboxmount.BackingHost,
-			HostRoot: "state/root",
-		}},
-	}
-	if _, err := factory.FromOptions(opts); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := opts.MountProfiles.Config("default").HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}), filepath.Join(projectDir, "state", "root"); got != want {
-		t.Fatalf("host root = %q, want %q", got, want)
-	}
-}
-
 func TestFactoryIgnoresDormantDockerProviderConfig(t *testing.T) {
 	home := t.TempDir()
 	paths := testPaths(home)
@@ -257,11 +226,9 @@ func TestFactoryIgnoresDormantDockerProviderConfig(t *testing.T) {
 	factory := testFactory(paths)
 	_, err := factory.FromOptions(&tool.CommandOptions{
 		Env:            "demo",
-		SandboxRuntime: RuntimeBubblewrap,
-		DockerImage:    "node:test",
-		DockerHome:     "/home/docker",
-		DockerProjects: "/workspace/docker",
-		DockerBuild:    tool.DockerBuildConfig{Context: home, Dockerfile: filepath.Join(home, "Dockerfile")},
+		SandboxRuntime: "alt",
+		Image:          "node:test",
+		Build:          tool.BuildConfig{Context: home, Dockerfile: filepath.Join(home, "Dockerfile")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -285,22 +252,16 @@ func TestSandboxAndProjectNamesRejectSlashes(t *testing.T) {
 }
 
 func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
-	paths := testPaths(t.TempDir())
 	instance := &BaseInstance{
-		paths:              paths,
 		label:              "demo",
-		sandboxPaths:       sandboxpath.Defaults(),
-		homeDir:            sandboxpath.DefaultHome,
-		projectsDir:        sandboxpath.DefaultWorkspace,
-		runtimeDir:         sandboxpath.DefaultRoot,
 		controlToken:       "host-token",
 		sandboxControlHost: "host.docker.internal",
-		projects:           newProjectMounts([]Project{{Name: "app", HostPath: "/host/app"}}, sandboxpath.DefaultWorkspace),
+		projects:           newProjectMounts([]Project{{Name: "app", HostPath: "/host/app"}}),
 	}
-	if path, ok := instance.ProjectPath(" app "); !ok || path != filepath.Join(sandboxpath.DefaultWorkspace, "app") {
+	if path, ok := instance.ProjectPath(" app "); !ok || path != filepath.Join(layout.Workspace, "app") {
 		t.Fatalf("ProjectPath = %q, %v", path, ok)
 	}
-	if instance.TobyBinaryPath() != filepath.Join(sandboxpath.DefaultBin, "toby") {
+	if instance.TobyBinaryPath() != filepath.Join(layout.Bin, "toby") {
 		t.Fatalf("runtime binary path = %q", instance.TobyBinaryPath())
 	}
 	if got := instance.sandboxHost("127.0.0.1:1234"); got != "host.docker.internal:1234" {
@@ -318,11 +279,11 @@ func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
 		t.Fatalf("control env = %#v", env)
 	}
 	instance.workdir = "~/work"
-	if got := instance.ChdirDir(); got != filepath.Join(sandboxpath.DefaultHome, "work") {
+	if got := instance.ChdirDir(); got != filepath.Join(layout.Home, "work") {
 		t.Fatalf("chdir workdir = %q", got)
 	}
 	instance.workdir = ""
-	if got := instance.ChdirDir(); got != filepath.Join(sandboxpath.DefaultWorkspace, "app") {
+	if got := instance.ChdirDir(); got != filepath.Join(layout.Workspace, "app") {
 		t.Fatalf("chdir project = %q", got)
 	}
 }
@@ -368,7 +329,7 @@ func testPaths(home string) config.Paths {
 func testFactory(paths config.Paths) Factory {
 	factory, err := NewFactory(paths, []Environment{
 		testEnvironment{name: RuntimeDocker, paths: paths},
-		testEnvironment{name: RuntimeBubblewrap, priority: 1, paths: paths},
+		testEnvironment{name: "alt", priority: 1, paths: paths},
 	})
 	if err != nil {
 		panic(err)

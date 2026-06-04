@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 	"strings"
 
 	"petris.dev/toby/internal/config"
@@ -61,7 +62,7 @@ type uvTool struct {
 
 func (t *uvTool) SandboxContextSetup(ctx context.Context) error {
 	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		shared := filepath.Join(t.sandbox.Paths().Home, ".local", "share", "toby", "uv")
+		shared := filepath.Join(layout.Home, ".local", "share", "toby", "uv")
 		for key, value := range map[string]string{
 			"UV_TOOL_DIR":     filepath.Join(shared, "tools"),
 			"UV_TOOL_BIN_DIR": filepath.Join(shared, "bin"),
@@ -132,7 +133,7 @@ func (t *uvTool) install(ctx context.Context, force bool) error {
 }
 
 func (t *uvTool) contextPath(path string) string {
-	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
+	return filepath.Join(layout.Context, filepath.FromSlash(path))
 }
 
 func (t *uvTool) Launch(ctx context.Context, extra []string) error {

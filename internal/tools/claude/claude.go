@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
@@ -78,7 +79,7 @@ func (t *claudeTool) SandboxContextSetup(ctx context.Context) error {
 	if err := t.Simple.SandboxContextSetup(ctx); err != nil {
 		return err
 	}
-	return t.Sandbox.SetEnvironment(ctx, "CLAUDE_CONFIG_DIR", filepath.Join(t.Sandbox.Paths().Home, ".config", "claude"))
+	return t.Sandbox.SetEnvironment(ctx, "CLAUDE_CONFIG_DIR", filepath.Join(layout.Home, ".config", "claude"))
 }
 
 func (t *claudeTool) SandboxInit(ctx context.Context) error {
@@ -88,7 +89,7 @@ func (t *claudeTool) SandboxInit(ctx context.Context) error {
 func (t *claudeTool) RegisterContextFiles(ctx context.Context, opts tool.ContextOptions) error {
 	return helpers.RegisterContextFilesOnce(ctx, t.Name(), func() error {
 		controlHost, _ := t.Sandbox.GetEnvironment(control.EnvControlHost)
-		return claudeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.Sandbox.Paths(), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy, t.mcpProxy)
+		return claudeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.contextFiles.InstructionContents(), t.config, controlHost, t.Sandbox.TobyMCPURL(), t.proxy, t.mcpProxy)
 	})
 }
 
@@ -103,7 +104,7 @@ func (t *claudeTool) Upgrade(ctx context.Context) error {
 // Launch starts Claude Code, injecting Toby's generated context files through
 // launch flags while Claude keeps its normal writable config directory.
 func (t *claudeTool) Launch(ctx context.Context, extra []string) error {
-	argv := append([]string{"claude"}, contextFlags(t.Sandbox.Paths().Context)...)
+	argv := append([]string{"claude"}, contextFlags(layout.Context)...)
 	if t.yolo {
 		argv = append(argv, "--dangerously-skip-permissions")
 	}

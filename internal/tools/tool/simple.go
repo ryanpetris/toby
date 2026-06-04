@@ -3,10 +3,9 @@ package tool
 import (
 	"context"
 	"errors"
-	"path/filepath"
+	pathpkg "path"
 
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
+	"petris.dev/toby/container/mount"
 )
 
 type Simple struct {
@@ -15,7 +14,7 @@ type Simple struct {
 	RootDir             string
 	HostSubpath         []string
 	SandboxSubpath      []string
-	Access              sandboxmount.Access
+	Access              mount.Access
 	InstallCommand      []string
 	InstallCheckCommand string
 	SandboxEnv          map[string]string
@@ -24,20 +23,20 @@ type Simple struct {
 
 func (t *Simple) HostInit(_ context.Context, opts *CommandOptions) error {
 	return hostInitOnce(opts, t.Name(), func() error {
-		mount, ok := t.mountRequest()
+		req, ok := t.mountRequest()
 		if !ok {
 			return nil
 		}
-		_, err := t.Sandbox.AddMount(mount)
+		_, err := t.Sandbox.AddMount(req)
 		return err
 	})
 }
 
 func (t *Simple) UsesManagedMounts() bool { return len(t.HostSubpath) > 0 }
 
-func (t *Simple) mountRequest() (sandboxmount.Request, bool) {
+func (t *Simple) mountRequest() (mount.Request, bool) {
 	if len(t.HostSubpath) == 0 {
-		return sandboxmount.Request{}, false
+		return mount.Request{}, false
 	}
 	sandboxParts := t.SandboxSubpath
 	if len(sandboxParts) == 0 {
@@ -45,13 +44,12 @@ func (t *Simple) mountRequest() (sandboxmount.Request, bool) {
 	}
 	access := t.Access
 	if access == "" {
-		access = sandboxmount.AccessRegular
+		access = mount.AccessRegular
 	}
-	return sandboxmount.Request{
-		Key:     sandboxmount.Key{Type: sandboxmount.TypeTool, Name: t.Name(), Purpose: "state"},
-		Target:  sandboxpath.HomePath(sandboxParts...),
-		Subpath: filepath.ToSlash(filepath.Join(sandboxParts...)),
-		Access:  access,
+	return mount.Request{
+		Key:    mount.Key{Type: mount.TypeTool, Name: t.Name(), Purpose: "state"},
+		Target: "~/" + pathpkg.Join(sandboxParts...),
+		Access: access,
 	}, true
 }
 

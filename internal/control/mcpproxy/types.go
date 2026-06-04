@@ -9,13 +9,10 @@ import (
 	"petris.dev/toby/internal/sandbox/docker"
 )
 
-const sidecarHome = "/toby/home"
-
 type RuntimeType string
 
 const (
-	RuntimeDocker     RuntimeType = tobyconfig.MCPRuntimeDocker
-	RuntimeBubblewrap RuntimeType = tobyconfig.MCPRuntimeBubblewrap
+	RuntimeDocker RuntimeType = tobyconfig.MCPRuntimeDocker
 )
 
 type TransportType string
@@ -37,25 +34,21 @@ const (
 )
 
 type Defaults struct {
-	Runtime              tobyconfig.MCPRuntimeConfig
-	EffectiveDockerImage string
-	Debug                bool
+	Runtime        tobyconfig.MCPRuntimeConfig
+	EffectiveImage string
+	Debug          bool
 }
 
 type SidecarSpec struct {
-	Name          string
-	Runtime       RuntimeType
-	Transport     TransportType
-	Command       []string
-	Env           map[string]string
-	Home          string
-	Workdir       string
-	DockerImage   string
-	ContainerName string
-	HTTPPort      int
-	HTTPPath      string
-	HostPort      int
-	Debug         bool
+	Name      string
+	Runtime   RuntimeType
+	Transport TransportType
+	Command   []string
+	Env       map[string]string
+	Image     string
+	HTTPPort  int
+	HTTPPath  string
+	Debug     bool
 }
 
 type StatusSnapshot struct {
@@ -92,19 +85,15 @@ func sidecarSpec(name string, server tobyconfig.MCPServer, defaults Defaults) (S
 	}
 	transport := server.Transport()
 	spec := SidecarSpec{
-		Name:        name,
-		Runtime:     RuntimeType(runtime.Type),
-		Transport:   TransportType(transport),
-		Command:     command,
-		Env:         env,
-		DockerImage: dockerImage(runtime, defaults),
-		HTTPPort:    server.Port(),
-		HTTPPath:    server.Path(),
-		Debug:       defaults.Debug,
-	}
-	if spec.Runtime == RuntimeBubblewrap {
-		spec.Home = sidecarHome
-		spec.Workdir = sidecarHome
+		Name:      name,
+		Runtime:   RuntimeType(runtime.Type),
+		Transport: TransportType(transport),
+		Command:   command,
+		Env:       env,
+		Image:     dockerImage(runtime, defaults),
+		HTTPPort:  server.Port(),
+		HTTPPath:  server.Path(),
+		Debug:     defaults.Debug,
 	}
 	if spec.Transport == TransportHTTP && spec.HTTPPort <= 0 {
 		return SidecarSpec{}, fmt.Errorf("mcp.%s.port is required for http transport", name)
@@ -116,10 +105,10 @@ func dockerImage(runtime tobyconfig.MCPRuntimeConfig, defaults Defaults) string 
 	if strings.TrimSpace(runtime.Docker.Image) != "" {
 		return strings.TrimSpace(runtime.Docker.Image)
 	}
-	if strings.TrimSpace(defaults.EffectiveDockerImage) != "" {
-		return strings.TrimSpace(defaults.EffectiveDockerImage)
+	if strings.TrimSpace(defaults.EffectiveImage) != "" {
+		return strings.TrimSpace(defaults.EffectiveImage)
 	}
-	return docker.DefaultDockerImage
+	return docker.DefaultImage
 }
 
 func containerName(name string) string {

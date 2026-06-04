@@ -9,6 +9,8 @@ Session resources:
 - `toby://session/tools`: primary tool, active tools, available Toby tools, tool groups, and provider summaries.
 - `toby://session/projects`: visible projects, additional binds, and managed mount summaries.
 
-Normal mode returns sandbox-visible paths and safe summaries. Debug mode may include host paths, provider IDs, setup paths, container names, and local MCP host ports when those details help diagnose a session.
+If your MCP client cannot read resources directly, the `resources.read` tool returns the same content: pass `uris` with one or more of the URIs above, or omit `uris` to read every available resource.
+
+Normal mode returns sandbox-visible paths and safe summaries. Debug mode may include host paths, Docker volume names, setup paths, container names, and local MCP host ports when those details help diagnose a session.
 
 Toby introspection never exposes configured provider or MCP URLs, headers, commands, argv, or environment values, even in debug mode.

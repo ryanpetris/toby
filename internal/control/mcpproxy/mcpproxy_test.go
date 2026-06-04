@@ -9,74 +9,58 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/manager"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/httpproxy"
+
+	dcontainer "github.com/moby/moby/api/types/container"
 )
 
-func TestDockerBuildCommandUsesContainerDefaults(t *testing.T) {
+func TestStdioRequestKeepsStdinOpenWithoutTTY(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
-	runner := &DockerRunner{docker: "docker"}
-	spec := SidecarSpec{
-		Name:          "docs",
-		Runtime:       RuntimeDocker,
-		Transport:     TransportStdio,
-		Command:       []string{"docs-mcp", "--stdio"},
-		Env:           map[string]string{"TOKEN": "abc"},
-		DockerImage:   "docs:latest",
-		ContainerName: "toby-mcp-docs",
-	}
+	runner := NewDockerRunner(manager.New())
+	req := runner.stdioRequest(SidecarSpec{
+		Name:      "docs",
+		Transport: TransportStdio,
+		Command:   []string{"docs-mcp", "--stdio"},
+		Env:       map[string]string{"TOKEN": "abc"},
+		Image:     "docs:latest",
+	})
 
-	cmd := runner.BuildCommand(spec)
-	assertSequence(t, cmd, []string{"docker", "run", "--rm", "-i"})
-	assertSequence(t, cmd, []string{"--name", "toby-mcp-docs"})
-	assertSequence(t, cmd, []string{"--env", "TOKEN=abc"})
-	assertSequence(t, cmd, []string{"--env", "TERM=xterm-256color"})
-	assertSequence(t, cmd, []string{"docs:latest", "docs-mcp", "--stdio"})
-	for _, forbidden := range []string{"--mount", "--tmpfs", "--workdir", "--group-add", "--user"} {
-		if slices.Contains(cmd, forbidden) {
-			t.Fatalf("docker MCP command must not include %s: %#v", forbidden, cmd)
-		}
+	if req.Image != "docs:latest" {
+		t.Fatalf("image = %q", req.Image)
 	}
-	for _, value := range cmd {
-		if strings.HasPrefix(value, "HOME=") {
-			t.Fatalf("docker MCP command must not set HOME: %#v", cmd)
-		}
+	if !slices.Equal(req.Cmd, []string{"docs-mcp", "--stdio"}) {
+		t.Fatalf("cmd = %#v", req.Cmd)
 	}
-}
-
-func TestDockerHTTPBuildCommandPublishesLoopbackPort(t *testing.T) {
-	runner := &DockerRunner{docker: "docker"}
-	cmd := runner.BuildCommand(SidecarSpec{Runtime: RuntimeDocker, Transport: TransportHTTP, Command: []string{"docs-mcp"}, DockerImage: "docs:latest", HTTPPort: 3000, HostPort: 41000})
-
-	assertSequence(t, cmd, []string{"--publish", "127.0.0.1:41000:3000"})
-	if slices.Contains(cmd, "-i") {
-		t.Fatalf("http MCP command should not keep stdin open: %#v", cmd)
+	if req.Env["TOKEN"] != "abc" || req.Env["TERM"] != "xterm-256color" {
+		t.Fatalf("env = %#v", req.Env)
+	}
+	if req.Started {
+		t.Fatal("stdio request must be created unstarted so we can attach before output")
+	}
+	c := &dcontainer.Config{}
+	req.ConfigModifier(c)
+	if !c.OpenStdin || c.Tty {
+		t.Fatalf("stdio config must keep stdin open without a TTY: %#v", c)
 	}
 }
 
-func TestDockerDebugBuildCommandOmitsRemove(t *testing.T) {
-	runner := &DockerRunner{docker: "docker"}
-	cmd := runner.BuildCommand(SidecarSpec{Runtime: RuntimeDocker, Transport: TransportHTTP, Command: []string{"docs-mcp"}, DockerImage: "docs:latest", ContainerName: "toby-mcp-docs", Debug: true})
+func TestHTTPRequestExposesContainerPort(t *testing.T) {
+	runner := NewDockerRunner(manager.New())
+	req := runner.httpRequest(SidecarSpec{
+		Name:      "docs",
+		Transport: TransportHTTP,
+		Command:   []string{"docs-mcp"},
+		Image:     "docs:latest",
+		HTTPPort:  3000,
+	})
 
-	if slices.Contains(cmd, "--rm") {
-		t.Fatalf("debug MCP command should not remove container: %#v", cmd)
+	if !slices.Equal(req.ExposedPorts, []string{"3000/tcp"}) {
+		t.Fatalf("exposed ports = %#v", req.ExposedPorts)
 	}
-	assertSequence(t, cmd, []string{"--name", "toby-mcp-docs"})
-}
-
-func TestBubblewrapBuildCommandUsesTmpfsHomeWithoutProjectMounts(t *testing.T) {
-	runner := &BubblewrapRunner{bwrap: "bwrap"}
-	cmd := runner.BuildCommand(SidecarSpec{Runtime: RuntimeBubblewrap, Transport: TransportStdio, Command: []string{"docs-mcp"}, Env: map[string]string{"TOKEN": "abc"}, Home: sidecarHome, Workdir: sidecarHome})
-
-	assertSequence(t, cmd, []string{"bwrap", "--die-with-parent", "--unshare-pid"})
-	assertSequence(t, cmd, []string{"--tmpfs", sidecarHome})
-	assertSequence(t, cmd, []string{"--setenv", "HOME", sidecarHome})
-	assertSequence(t, cmd, []string{"--setenv", "TOKEN", "abc"})
-	assertSequence(t, cmd, []string{"--chdir", sidecarHome, "docs-mcp"})
-	for _, value := range cmd {
-		if strings.Contains(value, "/workspace") || strings.Contains(value, "/context") {
-			t.Fatalf("bubblewrap MCP command must not include project/context mounts: %#v", cmd)
-		}
+	if !req.Started {
+		t.Fatal("http request must start so the mapped port can be read")
 	}
 }
 
@@ -151,7 +135,7 @@ mcps:
 	}
 }
 
-func TestSidecarSpecDockerImagePrecedence(t *testing.T) {
+func TestSidecarSpecImagePrecedence(t *testing.T) {
 	cfg := testConfig(t, []byte(`
 sandbox:
   mcp:
@@ -170,26 +154,26 @@ mcps:
     command: fallback-mcp
 `))
 	servers := cfg.MCPServers()
-	defaults := Defaults{Runtime: cfg.MCPSandbox().Runtime, EffectiveDockerImage: "main:latest"}
+	defaults := Defaults{Runtime: cfg.MCPSandbox().Runtime, EffectiveImage: "main:latest"}
 
 	docs, err := sidecarSpec("docs", servers["docs"], defaults)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if docs.DockerImage != "docs:latest" {
-		t.Fatalf("docs image = %q", docs.DockerImage)
+	if docs.Image != "docs:latest" {
+		t.Fatalf("docs image = %q", docs.Image)
 	}
 	fallback, err := sidecarSpec("fallback", servers["fallback"], defaults)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fallback.DockerImage != "default-mcp:latest" {
-		t.Fatalf("fallback image = %q", fallback.DockerImage)
+	if fallback.Image != "default-mcp:latest" {
+		t.Fatalf("fallback image = %q", fallback.Image)
 	}
 }
 
 func testRuntimes() []Runtime {
-	return []Runtime{&DockerRunner{docker: "docker"}, &BubblewrapRunner{bwrap: "bwrap"}}
+	return []Runtime{NewDockerRunner(manager.New())}
 }
 
 func testConfig(t *testing.T, data []byte) *tobyconfig.Service {
@@ -248,14 +232,4 @@ func captureConsole(t *testing.T) (func(), func() (string, string)) {
 		return string(stdout), string(stderr)
 	}
 	return restore, readCaptured
-}
-
-func assertSequence(t *testing.T, values, sequence []string) {
-	t.Helper()
-	for i := 0; i+len(sequence) <= len(values); i++ {
-		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			return
-		}
-	}
-	t.Fatalf("sequence %#v not found in %#v", sequence, values)
 }

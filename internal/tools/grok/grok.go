@@ -5,6 +5,7 @@ import (
 	"embed"
 	"log"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
@@ -86,7 +87,7 @@ func (t *grokTool) SandboxContextSetup(ctx context.Context) error {
 		return err
 	}
 	return helpers.SandboxContextSetupOnce(ctx, t.Name()+".path", func() error {
-		return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(t.Sandbox.Paths().Home, ".grok", "bin"), ":")
+		return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".grok", "bin"), ":")
 	})
 }
 
@@ -95,8 +96,8 @@ func (t *grokTool) SandboxInit(ctx context.Context) error {
 		return err
 	}
 	return helpers.SandboxInitOnce(ctx, t.Name()+".managed-config", func() error {
-		contextDir := t.Sandbox.Paths().Context
-		home := t.Sandbox.Paths().Home
+		contextDir := layout.Context
+		home := layout.Home
 		grokHome := filepath.Join(home, ".grok")
 		if err := t.Sandbox.MkdirOwned(ctx, grokHome, 0o755, control.HostUser, control.HostGroup); err != nil {
 			return err
@@ -136,7 +137,7 @@ func (t *grokTool) install(ctx context.Context, force bool) error {
 }
 
 func (t *grokTool) contextPath(path string) string {
-	return filepath.Join(t.Sandbox.Paths().Context, filepath.FromSlash(path))
+	return filepath.Join(layout.Context, filepath.FromSlash(path))
 }
 
 func (t *grokTool) Launch(ctx context.Context, extra []string) error {

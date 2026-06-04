@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"petris.dev/toby/container/manager"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/httpproxy"
@@ -113,6 +114,43 @@ func TestDynamicRuntimeResourceIncludesVersion(t *testing.T) {
 	}
 }
 
+func TestResourcesReadReturnsRequestedAndReportsUnknown(t *testing.T) {
+	server := &Server{state: SessionState{Debug: false}, resources: []Resource{
+		{URI: "toby://docs/git", Name: "toby.docs.git", Title: "Toby Git", FS: resourceDocs, FilePath: "resources/git.md"},
+		{URI: "toby://session/runtime", Name: "toby.session.runtime", Title: "Toby Session Runtime", Text: func(ctx context.Context, toby *Server) (string, error) { return toby.runtimeResource(ctx) }},
+	}}
+
+	result, out, err := server.resourcesRead(context.Background(), nil, ResourcesReadInput{URIs: []string{"toby://session/runtime", "toby://does/not/exist"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("an unknown uri should mark the result as an error: %#v", result)
+	}
+	if len(out.Resources) != 2 {
+		t.Fatalf("resources = %#v", out.Resources)
+	}
+	if out.Resources[0].URI != "toby://session/runtime" || !strings.Contains(out.Resources[0].Text, `"version"`) {
+		t.Fatalf("runtime read = %#v", out.Resources[0])
+	}
+	if out.Resources[1].Error == "" {
+		t.Fatalf("unknown uri should report an error: %#v", out.Resources[1])
+	}
+
+	_, all, err := server.resourcesRead(context.Background(), nil, ResourcesReadInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Resources) != 2 {
+		t.Fatalf("read-all resources = %#v", all.Resources)
+	}
+	for _, r := range all.Resources {
+		if r.Text == "" || r.Error != "" {
+			t.Fatalf("read-all entry = %#v", r)
+		}
+	}
+}
+
 func TestGitToolResultMarksNonzeroExitAsError(t *testing.T) {
 	if result := gitToolResult(GitOutput{}); result != nil {
 		t.Fatalf("zero exit result = %#v", result)
@@ -142,7 +180,7 @@ mcps:
       Authorization: Bearer secret-mcp-token
 `))
 	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(manager.New())}})
 	if err != nil {
 		t.Fatal(err)
 	}

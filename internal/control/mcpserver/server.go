@@ -15,9 +15,10 @@ import (
 )
 
 type Server struct {
-	client GitClient
-	state  SessionState
-	mu     sync.Mutex
+	client    GitClient
+	state     SessionState
+	resources []Resource
+	mu        sync.Mutex
 }
 
 type GitClient interface {
@@ -144,6 +145,8 @@ Read Toby MCP resources when you need guidance or current session details:
 - toby://session/tools returns active and available Toby tools plus provider summaries.
 - toby://session/projects returns visible projects, binds, and managed mounts.
 
+If your client cannot read MCP resources directly, call the resources.read tool with the resource URIs (or no arguments to read them all) to get the same content.
+
 Use Git tools for repositories visible in the sandbox when host Git config, SSH agents, GPG signing, or credential helpers are needed. Use MCP lifecycle tools only for Toby-managed local MCP sidecars. Toby introspection never exposes provider or MCP URLs, headers, commands, argv, or environment values.`
 
 const gitCommitDescription = "Commit staged files in a visible repository using host Git."
@@ -157,7 +160,7 @@ const gitRebaseDescription = "Start, continue, or abort a rebase in a visible re
 const gitTagDescription = "Create an annotated tag in a visible repository using host Git."
 
 func (r *Runner) Handler(client GitClient, state SessionState) http.Handler {
-	server := &Server{client: client, state: state.Clone()}
+	server := &Server{client: client, state: state.Clone(), resources: r.resources}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return r.server(server)
 	}, nil)

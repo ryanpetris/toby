@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 	"reflect"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestInstallLaunchPathUsesSandboxContext(t *testing.T) {
 	sandbox := tooltest.NewSandbox(contextDir)
 	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service.(*emdashTool)
 	path := svc.contextPath(emdashInstallPath)
-	if want := filepath.Join(contextDir, filepath.FromSlash(emdashInstallPath)); path != want {
+	if want := filepath.Join(layout.Context, filepath.FromSlash(emdashInstallPath)); path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
 }
@@ -71,7 +72,7 @@ func TestUpgradeRunsInstallerWithoutInstallCheck(t *testing.T) {
 	if err := svc.Upgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{filepath.Join(contextDir, filepath.FromSlash(emdashInstallPath)), appImageURL}}
+	want := [][]string{{filepath.Join(layout.Context, filepath.FromSlash(emdashInstallPath)), appImageURL}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}

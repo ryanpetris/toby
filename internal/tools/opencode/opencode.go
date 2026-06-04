@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	contextfiles "petris.dev/toby/internal/context/files"
@@ -12,8 +14,6 @@ import (
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/helpers"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/tool"
@@ -75,16 +75,16 @@ func (t *openCodeTool) HostInit(ctx context.Context, opts *tool.CommandOptions) 
 		return nil
 	})
 }
-func (t *openCodeTool) mounts() []sandboxmount.Request {
-	return []sandboxmount.Request{
-		{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: t.Name(), Purpose: "config"}, Target: sandboxpath.HomePath(".config", "opencode")},
-		{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: t.Name(), Purpose: "data"}, Target: sandboxpath.HomePath(".local", "share", "opencode")},
+func (t *openCodeTool) mounts() []mount.Request {
+	return []mount.Request{
+		{Key: mount.Key{Type: mount.TypeTool, Name: t.Name(), Purpose: "config"}, Target: "~/.config/opencode"},
+		{Key: mount.Key{Type: mount.TypeTool, Name: t.Name(), Purpose: "data"}, Target: "~/.local/share/opencode"},
 	}
 }
 
 func (t *openCodeTool) SandboxContextSetup(ctx context.Context) error {
 	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", filepath.Join(t.sandbox.Paths().Context, "opencode"))
+		return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", filepath.Join(layout.Context, "opencode"))
 	})
 }
 
@@ -98,7 +98,7 @@ func (t *openCodeTool) RegisterContextFiles(ctx context.Context, opts tool.Conte
 			return fmt.Errorf("opencode renderer is not configured")
 		}
 		controlHost, _ := t.sandbox.GetEnvironment(control.EnvControlHost)
-		warnings, err := t.renderer.RegisterContextFiles(ctx, t.contextFiles.Registrar(ctx), t.sandbox.Paths(), controlHost, t.sandbox.TobyMCPURL(), t.contextFiles.InstructionPaths(), t.config, t.proxy, t.mcpProxy)
+		warnings, err := t.renderer.RegisterContextFiles(ctx, t.contextFiles.Registrar(ctx), controlHost, t.sandbox.TobyMCPURL(), t.contextFiles.InstructionPaths(), t.config, t.proxy, t.mcpProxy)
 		if err != nil {
 			return err
 		}

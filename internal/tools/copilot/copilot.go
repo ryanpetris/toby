@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"context"
+	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
@@ -76,7 +77,7 @@ func (t *copilotTool) SandboxContextSetup(ctx context.Context) error {
 		return err
 	}
 	return helpers.SandboxContextSetupOnce(ctx, t.Name()+".context", func() error {
-		contextDir := copilotconfig.InstructionsDir(t.Sandbox.Paths().Context)
+		contextDir := copilotconfig.InstructionsDir(layout.Context)
 		return t.Sandbox.PrependEnvironment(ctx, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", contextDir, ",")
 	})
 }
@@ -101,7 +102,7 @@ func (t *copilotTool) Upgrade(ctx context.Context) error {
 }
 
 func (t *copilotTool) Launch(ctx context.Context, extra []string) error {
-	argv := append([]string{"copilot"}, contextFlags(t.Sandbox.Paths().Context)...)
+	argv := append([]string{"copilot"}, contextFlags(layout.Context)...)
 	if t.yolo {
 		argv = append(argv, "--allow-all-tools")
 	}

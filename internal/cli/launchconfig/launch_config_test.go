@@ -11,7 +11,6 @@ import (
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -27,17 +26,9 @@ sandbox:
     default: docker
     docker:
       image: custom-node
-      home: /home/custom
-      projects: /workspace/custom
       build:
         context: docker/context
         dockerfile: ../Dockerfile.toby
-    bubblewrap:
-      root: sandboxes/review
-mountProfiles:
-  review:
-    backing: host
-    hostRoot: state/opencode
 settings:
   mountProfile: review
   autoUpgrade: true
@@ -74,21 +65,11 @@ tools:
 	if cfg.Workdir != wantWorkdir {
 		t.Fatalf("workdir = %q", cfg.Workdir)
 	}
-	if cfg.Sandbox.Runtime.Default != "docker" || cfg.Sandbox.Runtime.Docker.Image != "custom-node" || cfg.Sandbox.Runtime.Docker.Home != "/home/custom" || cfg.Sandbox.Runtime.Docker.Projects != "/workspace/custom" {
+	if cfg.Sandbox.Runtime.Default != "docker" || cfg.Sandbox.Runtime.Docker.Image != "custom-node" {
 		t.Fatalf("sandbox docker config = %#v", cfg.Sandbox)
 	}
 	if cfg.Sandbox.Runtime.Docker.Build.Context != filepath.Join(dir, "docker", "context") || cfg.Sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
 		t.Fatalf("sandbox docker build config = %#v", cfg.Sandbox)
-	}
-	if cfg.Sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "review") {
-		t.Fatalf("sandbox bubblewrap config = %#v", cfg.Sandbox)
-	}
-	mounts := cfg.MountProfiles.Config("review")
-	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
-		t.Fatalf("mounts = %#v", mounts)
-	}
-	if mounts.HostRoot != filepath.Join(dir, "state", "opencode") || mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != filepath.Join(dir, "state", "opencode") {
-		t.Fatalf("mount roots = %#v", mounts)
 	}
 	if !cfg.Settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || !cfg.Settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", cfg.Settings.SuppressWarnings)
@@ -114,7 +95,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	configPath := filepath.Join(home, "toby.json")
-	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"bubblewrap"},"projects":{"foo":null},"tools":{"opencode":null}}`))
+	writeTestFile(t, configPath, []byte(`{"sandbox":{"name":"json-env","runtime":"docker"},"projects":{"foo":null},"tools":{"opencode":null}}`))
 
 	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
@@ -123,7 +104,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	if cfg.Sandbox.Name != "json-env" {
 		t.Fatalf("sandbox name = %q", cfg.Sandbox.Name)
 	}
-	if cfg.Sandbox.Runtime.Default != "bubblewrap" {
+	if cfg.Sandbox.Runtime.Default != "docker" {
 		t.Fatalf("runtime = %#v", cfg.Sandbox.Runtime)
 	}
 	if got, want := cfg.Projects[0].Mount.Source, filepath.Join(projectRoot, "foo"); got != want {
@@ -138,10 +119,6 @@ func TestBuildConfiguredLaunchResolvesCommandNames(t *testing.T) {
 projects:
   foo:
 workdir: /tmp/work
-mountProfiles:
-  shared:
-    backing: host
-    hostRoot: ./claude-state
 settings:
   mountProfile: shared
   debug: false
@@ -182,15 +159,11 @@ tools:
 	if launch.Options.Yolo == nil || !launch.Options.YoloEnabled() {
 		t.Fatalf("yolo = %#v", launch.Options.Yolo)
 	}
-	mounts := launch.Options.MountProfiles.Config("shared")
-	if launch.Options.MountProfile != "shared" || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "claude", Purpose: "state"}) != sandboxmount.BackingHost {
-		t.Fatalf("mount backing = profile %q mounts %#v", launch.Options.MountProfile, mounts)
+	if launch.Options.MountProfile != "shared" {
+		t.Fatalf("mount profile = %q", launch.Options.MountProfile)
 	}
 	if !launch.Options.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
-	}
-	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "claude", Purpose: "state"}) != filepath.Join(home, "claude-state") {
-		t.Fatalf("mount roots = %#v", mounts)
 	}
 	if launch.Options.ToolMountProfiles[tool.NpmToolName] != "shared" {
 		t.Fatalf("tool mount profiles = %#v", launch.Options.ToolMountProfiles)

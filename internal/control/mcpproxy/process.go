@@ -3,7 +3,6 @@ package mcpproxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -12,23 +11,26 @@ import (
 	"time"
 )
 
+// ProcessHandle abstracts a running MCP sidecar — either a local child process
+// (startProcess, used by tests) or a container (DockerRunner). The lifecycle and
+// stdio bridge only depend on Stdin/Stdout/Wait/Stop/PID.
 type ProcessHandle struct {
-	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	wait   chan ProcessResult
 	stop   func(context.Context) error
+	pid    int
 	once   sync.Once
 }
 
-func startProcess(ctx context.Context, argv []string, env map[string]string, stdio bool, stop func(context.Context) error) (*ProcessHandle, error) {
+func startProcess(ctx context.Context, argv []string, env map[string]string, stdio bool, externalStop func(context.Context) error) (*ProcessHandle, error) {
 	if len(argv) == 0 {
-		return nil, fmt.Errorf("missing command")
+		return nil, errors.New("missing command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = envList(env)
 	cmd.Stderr = io.Discard
-	handle := &ProcessHandle{cmd: cmd, wait: make(chan ProcessResult, 1), stop: stop}
+	handle := &ProcessHandle{wait: make(chan ProcessResult, 1)}
 	if stdio {
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
@@ -46,6 +48,28 @@ func startProcess(ctx context.Context, argv []string, env map[string]string, std
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	if cmd.Process != nil {
+		handle.pid = cmd.Process.Pid
+	}
+	handle.stop = func(ctx context.Context) error {
+		var err error
+		if externalStop != nil {
+			err = externalStop(ctx)
+		}
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
+		select {
+		case <-handle.wait:
+		case <-time.After(2 * time.Second):
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		return err
+	}
 	go func() {
 		handle.wait <- processResult(cmd.Wait())
 		close(handle.wait)
@@ -61,18 +85,6 @@ func (h *ProcessHandle) Stop(ctx context.Context) error {
 	h.once.Do(func() {
 		if h.stop != nil {
 			err = h.stop(ctx)
-		}
-		if h.cmd != nil && h.cmd.Process != nil {
-			_ = h.cmd.Process.Signal(syscall.SIGTERM)
-		}
-		select {
-		case <-h.wait:
-		case <-time.After(2 * time.Second):
-			if h.cmd != nil && h.cmd.Process != nil {
-				_ = h.cmd.Process.Kill()
-			}
-		case <-ctx.Done():
-			err = ctx.Err()
 		}
 	})
 	return err
@@ -102,10 +114,10 @@ func (h *ProcessHandle) Stdout() io.ReadCloser {
 }
 
 func (h *ProcessHandle) PID() int {
-	if h == nil || h.cmd == nil || h.cmd.Process == nil {
+	if h == nil {
 		return 0
 	}
-	return h.cmd.Process.Pid
+	return h.pid
 }
 
 func processResult(err error) ProcessResult {
@@ -131,13 +143,4 @@ func envList(env map[string]string) []string {
 		values = append(values, name+"="+value)
 	}
 	return values
-}
-
-func sidecarEnv(spec SidecarSpec) map[string]string {
-	env := make(map[string]string, len(spec.Env)+1)
-	for name, value := range spec.Env {
-		env[name] = value
-	}
-	env["HOME"] = spec.Home
-	return env
 }

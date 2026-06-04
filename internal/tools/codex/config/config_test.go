@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/manager"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
@@ -47,7 +48,7 @@ mcps:
     enabled: false
 `))
 	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(manager.New())}})
 	if err != nil {
 		t.Fatal(err)
 	}

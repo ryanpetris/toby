@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 	"reflect"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestLaunchRunsContextWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{filepath.Join(contextDir, filepath.FromSlash(t3WrapperPath)), "--foo", "bar"}
+	want := []string{filepath.Join(layout.Context, filepath.FromSlash(t3WrapperPath)), "--foo", "bar"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}

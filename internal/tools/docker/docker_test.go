@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
 )
@@ -24,9 +24,9 @@ func TestProvideMetadataAndHostInitBinds(t *testing.T) {
 	if err := svc.HostInit(context.Background(), &tool.CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []sandboxmount.Bind{
-		{HostPath: filepath.Join(home, ".docker"), Target: helpers.HomeTarget(".docker"), Access: sandboxmount.AccessReadOnly, Optional: true},
-		{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Access: sandboxmount.AccessDev, Optional: true},
+	want := []mount.Bind{
+		{HostPath: filepath.Join(home, ".docker"), Target: filepath.Join(layout.Home, ".docker"), Access: mount.AccessReadOnly, Optional: true},
+		{HostPath: layout.DockerSocket, Target: layout.DockerSocket, Access: mount.AccessDev, Optional: true},
 	}
 	if !reflect.DeepEqual(sandbox.Binds, want) {
 		t.Fatalf("Binds = %#v, want %#v", sandbox.Binds, want)

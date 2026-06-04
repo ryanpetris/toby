@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
@@ -19,12 +20,11 @@ import (
 func TestSandboxContextSetupConfiguresEnvironment(t *testing.T) {
 	home := t.TempDir()
 	sandbox := tooltest.NewSandbox(filepath.Join(home, "runtime", "context"))
-	sandbox.PathsValue.Home = home
 	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 	if err := svc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	shared := filepath.Join(home, ".local", "share", "toby", "uv")
+	shared := filepath.Join(layout.Home, ".local", "share", "toby", "uv")
 	wantEnv := map[string]string{
 		"UV_TOOL_DIR":     filepath.Join(shared, "tools"),
 		"UV_TOOL_BIN_DIR": filepath.Join(shared, "bin"),
@@ -128,7 +128,7 @@ func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
 	if err := svc.Upgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{filepath.Join(contextDir, filepath.FromSlash(uvInstallPath)), archiveURL}}
+	want := [][]string{{filepath.Join(layout.Context, filepath.FromSlash(uvInstallPath)), archiveURL}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}

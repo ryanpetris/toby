@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -135,11 +136,7 @@ func (s *Service) addFile(ctx context.Context, path string, data []byte, mode ui
 	if sandbox == nil {
 		return "", fmt.Errorf("sandbox service is not configured")
 	}
-	contextDir := sandbox.Paths().Context
-	if contextDir == "" {
-		return "", fmt.Errorf("sandbox context directory is not configured")
-	}
-	target := filepath.Join(contextDir, filepath.FromSlash(path))
+	target := filepath.Join(layout.Context, filepath.FromSlash(path))
 	if err := sandbox.AddFile(ctx, target, data, mode); err != nil {
 		return "", err
 	}

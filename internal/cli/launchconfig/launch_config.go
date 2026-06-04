@@ -17,8 +17,6 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -45,12 +43,11 @@ type ConfiguredLaunch struct {
 }
 
 type launchConfig struct {
-	MountProfiles sandboxmount.Profiles
-	Settings      launchSettingsConfig
-	Sandbox       launchSandboxConfig
-	Projects      []launchProjectConfig
-	Workdir       string
-	Tools         []launchToolConfig
+	Settings launchSettingsConfig
+	Sandbox  launchSandboxConfig
+	Projects []launchProjectConfig
+	Workdir  string
+	Tools    []launchToolConfig
 }
 
 type launchSandboxConfig struct {
@@ -67,20 +64,13 @@ type launchSettingsConfig struct {
 }
 
 type launchRuntimeConfig struct {
-	Default    string
-	Docker     launchDockerConfig
-	Bubblewrap launchBubblewrapConfig
+	Default string
+	Docker  launchDockerConfig
 }
 
 type launchDockerConfig struct {
-	Image    string
-	Home     string
-	Projects string
-	Build    tool.DockerBuildConfig
-}
-
-type launchBubblewrapConfig struct {
-	Root string
+	Image string
+	Build tool.BuildConfig
 }
 
 type launchToolConfig struct {
@@ -98,17 +88,11 @@ type launchProjectConfig struct {
 }
 
 type rawLaunchConfig struct {
-	MountProfiles map[string]*rawLaunchMountProfile `yaml:"mountProfiles" json:"mountProfiles"`
-	Settings      rawLaunchSettingsConfig           `yaml:"settings" json:"settings"`
-	Sandbox       rawLaunchSandboxConfig            `yaml:"sandbox" json:"sandbox"`
-	Projects      map[string]*rawLaunchProject      `yaml:"projects" json:"projects"`
-	Workdir       string                            `yaml:"workdir" json:"workdir"`
-	Tools         map[string]*rawLaunchTool         `yaml:"tools" json:"tools"`
-}
-
-type rawLaunchMountProfile struct {
-	Backing  string `yaml:"backing" json:"backing"`
-	HostRoot string `yaml:"hostRoot" json:"hostRoot"`
+	Settings rawLaunchSettingsConfig      `yaml:"settings" json:"settings"`
+	Sandbox  rawLaunchSandboxConfig       `yaml:"sandbox" json:"sandbox"`
+	Projects map[string]*rawLaunchProject `yaml:"projects" json:"projects"`
+	Workdir  string                       `yaml:"workdir" json:"workdir"`
+	Tools    map[string]*rawLaunchTool    `yaml:"tools" json:"tools"`
 }
 
 type rawLaunchSettingsConfig struct {
@@ -130,31 +114,23 @@ type rawLaunchSandboxFields struct {
 }
 
 type rawLaunchRuntimeConfig struct {
-	Default    string
-	Docker     rawLaunchDockerConfig
-	Bubblewrap rawLaunchBubblewrapConfig
+	Default string
+	Docker  rawLaunchDockerConfig
 }
 
 type rawLaunchRuntimeFields struct {
-	Default    string                    `yaml:"default" json:"default"`
-	Docker     rawLaunchDockerConfig     `yaml:"docker" json:"docker"`
-	Bubblewrap rawLaunchBubblewrapConfig `yaml:"bubblewrap" json:"bubblewrap"`
+	Default string                `yaml:"default" json:"default"`
+	Docker  rawLaunchDockerConfig `yaml:"docker" json:"docker"`
 }
 
 type rawLaunchDockerConfig struct {
-	Image    string                `yaml:"image" json:"image"`
-	Home     string                `yaml:"home" json:"home"`
-	Projects string                `yaml:"projects" json:"projects"`
-	Build    *rawLaunchDockerBuild `yaml:"build" json:"build"`
+	Image string          `yaml:"image" json:"image"`
+	Build *rawLaunchBuild `yaml:"build" json:"build"`
 }
 
-type rawLaunchDockerBuild struct {
+type rawLaunchBuild struct {
 	Context    rawLaunchString `yaml:"context" json:"context"`
 	Dockerfile rawLaunchString `yaml:"dockerfile" json:"dockerfile"`
-}
-
-type rawLaunchBubblewrapConfig struct {
-	Root string `yaml:"root" json:"root"`
 }
 
 type rawLaunchProject struct {
@@ -295,13 +271,9 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tool.CommandOptions {
 		Projects:         projectMounts(cfg.Projects),
 		Workdir:          cfg.Workdir,
 		SandboxRuntime:   cfg.Sandbox.Runtime.Default,
-		DockerImage:      cfg.Sandbox.Runtime.Docker.Image,
-		DockerHome:       cfg.Sandbox.Runtime.Docker.Home,
-		DockerProjects:   cfg.Sandbox.Runtime.Docker.Projects,
-		DockerBuild:      cfg.Sandbox.Runtime.Docker.Build,
-		BubblewrapRoot:   cfg.Sandbox.Runtime.Bubblewrap.Root,
+		Image:            cfg.Sandbox.Runtime.Docker.Image,
+		Build:            cfg.Sandbox.Runtime.Docker.Build,
 		MountProfile:     cfg.Settings.MountProfile,
-		MountProfiles:    cfg.MountProfiles,
 		SuppressWarnings: cfg.Settings.SuppressWarnings,
 		Debug:            cloneBool(cfg.Settings.Debug),
 		Yolo:             cloneBool(cfg.Settings.Yolo),
@@ -312,19 +284,12 @@ func mergeDirectLaunchOptions(dst *tool.CommandOptions, src tool.CommandOptions)
 	if src.SandboxRuntime != "" {
 		dst.SandboxRuntime = src.SandboxRuntime
 	}
-	if src.DockerImage != "" {
-		dst.DockerImage = src.DockerImage
+	if src.Image != "" {
+		dst.Image = src.Image
 	}
-	if src.DockerHome != "" {
-		dst.DockerHome = src.DockerHome
+	if src.Build.IsSet() {
+		dst.Build = src.Build
 	}
-	if src.DockerProjects != "" {
-		dst.DockerProjects = src.DockerProjects
-	}
-	if src.DockerBuild.IsSet() {
-		dst.DockerBuild = src.DockerBuild
-	}
-	dst.MountProfiles.Merge(src.MountProfiles)
 	if src.MountProfile != "" {
 		dst.MountProfile = src.MountProfile
 	}
@@ -391,11 +356,6 @@ func parseLaunchConfig(raw rawLaunchConfig, dir, home string) (launchConfig, err
 func parseLaunchConfigWithPaths(raw rawLaunchConfig, dir string, paths config.Paths) (launchConfig, error) {
 	paths = launchConfigPaths(paths)
 	var cfg launchConfig
-	profiles, err := rawLaunchMountProfiles(raw.MountProfiles, dir, paths.Home)
-	if err != nil {
-		return launchConfig{}, err
-	}
-	cfg.MountProfiles = profiles
 	settings, err := raw.Settings.toSettings()
 	if err != nil {
 		return launchConfig{}, err
@@ -417,44 +377,6 @@ func parseLaunchConfigWithPaths(raw rawLaunchConfig, dir string, paths config.Pa
 		return launchConfig{}, err
 	}
 	cfg.Tools = tools
-	return cfg, nil
-}
-
-func rawLaunchMountProfiles(raw map[string]*rawLaunchMountProfile, dir, home string) (sandboxmount.Profiles, error) {
-	profiles := sandboxmount.Profiles{}
-	for rawName, rawProfile := range raw {
-		name := strings.TrimSpace(rawName)
-		if name == "" {
-			return nil, fmt.Errorf("mountProfiles keys must not be empty")
-		}
-		if rawProfile == nil {
-			return nil, fmt.Errorf("mountProfiles.%s must be an object", name)
-		}
-		profile, err := rawProfile.toMountProfile("mountProfiles."+name, dir, home)
-		if err != nil {
-			return nil, err
-		}
-		profiles[name] = profile
-	}
-	return profiles, nil
-}
-
-func (r rawLaunchMountProfile) toMountProfile(label string, dir, home string) (sandboxmount.BackingConfig, error) {
-	var cfg sandboxmount.BackingConfig
-	if r.Backing != "" {
-		backing, err := helpers.ParseMountBacking(r.Backing)
-		if err != nil {
-			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.backing: %w", label, err)
-		}
-		cfg.Backing = backing
-	}
-	if r.HostRoot != "" {
-		root, err := helpers.ResolveMountHostRoot(r.HostRoot, home, dir)
-		if err != nil {
-			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.hostRoot: %w", label, err)
-		}
-		cfg.HostRoot = root
-	}
 	return cfg, nil
 }
 
@@ -491,17 +413,13 @@ func (r rawLaunchRuntimeConfig) toRuntime(dir, home string) (launchRuntimeConfig
 	if err != nil {
 		return launchRuntimeConfig{}, err
 	}
-	bubblewrap, err := r.Bubblewrap.toBubblewrap(dir, home)
-	if err != nil {
-		return launchRuntimeConfig{}, err
-	}
-	return launchRuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker, Bubblewrap: bubblewrap}, nil
+	return launchRuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker}, nil
 }
 
 func (r rawLaunchDockerConfig) toDocker(dir, home string) (launchDockerConfig, error) {
-	cfg := launchDockerConfig{Image: strings.TrimSpace(r.Image), Home: strings.TrimSpace(r.Home), Projects: strings.TrimSpace(r.Projects)}
+	cfg := launchDockerConfig{Image: strings.TrimSpace(r.Image)}
 	if r.Build != nil {
-		build, err := r.Build.toDockerBuild(dir, home)
+		build, err := r.Build.toBuild(dir, home)
 		if err != nil {
 			return launchDockerConfig{}, err
 		}
@@ -510,41 +428,30 @@ func (r rawLaunchDockerConfig) toDocker(dir, home string) (launchDockerConfig, e
 	return cfg, nil
 }
 
-func (r rawLaunchDockerBuild) toDockerBuild(dir, home string) (tool.DockerBuildConfig, error) {
+func (r rawLaunchBuild) toBuild(dir, home string) (tool.BuildConfig, error) {
 	contextValue := "."
 	if r.Context.Set {
 		contextValue = strings.TrimSpace(r.Context.Value)
 		if contextValue == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
+			return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
 		}
 	}
 	dockerfileValue := "Dockerfile"
 	if r.Dockerfile.Set {
 		dockerfileValue = strings.TrimSpace(r.Dockerfile.Value)
 		if dockerfileValue == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
+			return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
 		}
 	}
 	contextDir, err := resolveLaunchConfigPath(contextValue, dir, home)
 	if err != nil {
-		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
+		return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
 	}
 	dockerfile := config.ExpandHome(dockerfileValue, home)
 	if !filepath.IsAbs(dockerfile) {
 		dockerfile = filepath.Join(contextDir, dockerfile)
 	}
-	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
-}
-
-func (r rawLaunchBubblewrapConfig) toBubblewrap(dir, home string) (launchBubblewrapConfig, error) {
-	if strings.TrimSpace(r.Root) == "" {
-		return launchBubblewrapConfig{}, nil
-	}
-	root, err := resolveLaunchConfigPath(r.Root, dir, home)
-	if err != nil {
-		return launchBubblewrapConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
-	}
-	return launchBubblewrapConfig{Root: root}, nil
+	return tool.BuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
 }
 
 func rawLaunchProjects(raw map[string]*rawLaunchProject, dir string, paths config.Paths) ([]launchProjectConfig, error) {
@@ -624,7 +531,6 @@ func (r *rawLaunchRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
 		}
 		r.Default = fields.Default
 		r.Docker = fields.Docker
-		r.Bubblewrap = fields.Bubblewrap
 		return nil
 	default:
 		return fmt.Errorf("sandbox.runtime must be a string or object")
@@ -701,7 +607,6 @@ func (r *rawLaunchRuntimeConfig) UnmarshalJSON(data []byte) error {
 	}
 	r.Default = fields.Default
 	r.Docker = fields.Docker
-	r.Bubblewrap = fields.Bubblewrap
 	return nil
 }
 

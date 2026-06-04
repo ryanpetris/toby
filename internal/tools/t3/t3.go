@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
@@ -90,7 +91,7 @@ func (t *t3Tool) Upgrade(ctx context.Context) error {
 }
 
 func (t *t3Tool) Launch(ctx context.Context, extra []string) error {
-	path := filepath.Join(t.Sandbox.Paths().Context, filepath.FromSlash(t3WrapperPath))
+	path := filepath.Join(layout.Context, filepath.FromSlash(t3WrapperPath))
 	_, err := t.Sandbox.Exec(ctx, append([]string{path}, extra...), tool.ExecOptions{Foreground: true})
 	return err
 }

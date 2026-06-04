@@ -15,6 +15,25 @@ Other references: [docs/configuration.md](docs/configuration.md),
 [docs/sandbox.md](docs/sandbox.md), and the control protocol schema in
 [docs/toby-control-openapi.yaml](docs/toby-control-openapi.yaml).
 
+## Temporary rules — pre-1.0 only
+
+> **These rules apply only while Toby is pre-1.0** (`internal/version.Version`
+> below `v1.0.0`). They trade backward compatibility for a clean codebase while
+> the API is still unstable, and **must be removed when Toby reaches `v1.0.0`.**
+> If Toby has already reached `v1.0.0` and this section still exists, stop and
+> tell the user that these rules are still here before making any change that
+> relies on them.
+
+- **Refactors and removals delete the old code completely** — as if it never
+  existed. No compatibility shims, deprecation aliases, or fallbacks; no
+  regression tests guarding removed behavior; no "is the old thing gone?"
+  checks. Leave no trace or reference of the removed code anywhere — code,
+  tests, or docs.
+- **Freely change on-disk and interface shapes** to fit the functionality being
+  added or changed: config file layout and keys, CLI flags and signatures, MCP
+  tools and resources, and the like. Migration paths and backward-compatible
+  fallbacks are not required.
+
 ## Build, test, and run
 
 ```sh
@@ -62,6 +81,23 @@ repository's own `.toby.yaml`.
 - **Warnings** must use a registered ID in `internal/diagnostic/warning` so they
   remain suppressible via `settings.suppressWarnings`.
 - Match the surrounding code style; keep tests alongside the code they cover.
+- **Group statements by concern.** Inside a function, separate logically
+  distinct steps with a blank line so each group reads as one unit, instead of
+  letting unrelated lines run together. A group is the set of lines that work
+  toward one thing — usually centered on one variable or one operation. Rules of
+  thumb:
+  - Lines that work with the same variable belong together: its value, the error
+    check, any later uses or assertions on it, and the `return` that yields it.
+    Don't split those apart.
+  - An assignment plus the `if` that consumes it is one group.
+  - A `mu.Lock()` and its paired `defer mu.Unlock()` stay together as a group.
+  - Consecutive plain assignments or declarations may share a group.
+  - A bare terminal `return nil` / `return err` (one that doesn't yield a value
+    the group above just built) may stand as its own group.
+
+  Insert a blank line when the next lines move to a different variable or
+  operation; keep the lines within a group together (no blank line inside it).
+  Prefer fewer, meaningful groups over splitting every statement.
 
 ## Documentation sync rules
 

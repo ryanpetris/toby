@@ -17,13 +17,11 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -41,8 +39,7 @@ const (
 	MCPTransportStdio = "stdio"
 	MCPTransportHTTP  = "http"
 
-	MCPRuntimeDocker     = "docker"
-	MCPRuntimeBubblewrap = "bubblewrap"
+	MCPRuntimeDocker = "docker"
 )
 
 var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
@@ -54,14 +51,13 @@ type Service struct {
 }
 
 type Config struct {
-	Instructions  []string
-	MCP           map[string]MCPServer
-	Permission    PermissionConfig
-	Provider      map[string]ProviderConfig
-	MountProfiles sandboxmount.Profiles
-	Settings      SettingsConfig
-	Tools         map[string]ToolConfig
-	Sandbox       SandboxConfig
+	Instructions []string
+	MCP          map[string]MCPServer
+	Permission   PermissionConfig
+	Provider     map[string]ProviderConfig
+	Settings     SettingsConfig
+	Tools        map[string]ToolConfig
+	Sandbox      SandboxConfig
 }
 
 type SandboxConfig struct {
@@ -86,9 +82,8 @@ type ToolConfig struct {
 }
 
 type RuntimeConfig struct {
-	Default    string
-	Docker     DockerSandboxConfig
-	Bubblewrap BubblewrapSandboxConfig
+	Default string
+	Docker  DockerSandboxConfig
 }
 
 type MCPRuntimeConfig struct {
@@ -101,14 +96,8 @@ type MCPDockerRuntimeConfig struct {
 }
 
 type DockerSandboxConfig struct {
-	Image    string
-	Home     string
-	Projects string
-	Build    tool.DockerBuildConfig
-}
-
-type BubblewrapSandboxConfig struct {
-	Root string
+	Image string
+	Build tool.BuildConfig
 }
 
 type MCPServer struct {
@@ -136,14 +125,13 @@ type sourceFile struct {
 }
 
 type rawConfig struct {
-	Instructions  []string                      `yaml:"instructions" json:"instructions"`
-	MCP           map[string]map[string]any     `yaml:"mcps" json:"mcps"`
-	Permission    rawPermissionConfig           `yaml:"permissions" json:"permissions"`
-	Provider      map[string]*rawProviderConfig `yaml:"providers" json:"providers"`
-	MountProfiles map[string]*rawMountProfile   `yaml:"mountProfiles" json:"mountProfiles"`
-	Settings      rawSettingsConfig             `yaml:"settings" json:"settings"`
-	Tools         map[string]*rawToolConfig     `yaml:"tools" json:"tools"`
-	Sandbox       rawSandboxConfig              `yaml:"sandbox" json:"sandbox"`
+	Instructions []string                      `yaml:"instructions" json:"instructions"`
+	MCP          map[string]map[string]any     `yaml:"mcps" json:"mcps"`
+	Permission   rawPermissionConfig           `yaml:"permissions" json:"permissions"`
+	Provider     map[string]*rawProviderConfig `yaml:"providers" json:"providers"`
+	Settings     rawSettingsConfig             `yaml:"settings" json:"settings"`
+	Tools        map[string]*rawToolConfig     `yaml:"tools" json:"tools"`
+	Sandbox      rawSandboxConfig              `yaml:"sandbox" json:"sandbox"`
 }
 
 type rawPermissionConfig struct {
@@ -156,11 +144,6 @@ type rawProviderConfig struct {
 	BaseURL string            `yaml:"baseURL" json:"baseURL"`
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	Models  *map[string]any   `yaml:"models" json:"models"`
-}
-
-type rawMountProfile struct {
-	Backing  string `yaml:"backing" json:"backing"`
-	HostRoot string `yaml:"hostRoot" json:"hostRoot"`
 }
 
 type rawSettingsConfig struct {
@@ -186,31 +169,23 @@ type rawSandboxFields struct {
 }
 
 type rawRuntimeConfig struct {
-	Default    string
-	Docker     rawDockerSandboxConfig
-	Bubblewrap rawBubblewrapSandboxConfig
+	Default string
+	Docker  rawDockerSandboxConfig
 }
 
 type rawRuntimeFields struct {
-	Default    string                     `yaml:"default" json:"default"`
-	Docker     rawDockerSandboxConfig     `yaml:"docker" json:"docker"`
-	Bubblewrap rawBubblewrapSandboxConfig `yaml:"bubblewrap" json:"bubblewrap"`
+	Default string                 `yaml:"default" json:"default"`
+	Docker  rawDockerSandboxConfig `yaml:"docker" json:"docker"`
 }
 
 type rawDockerSandboxConfig struct {
-	Image    string                `yaml:"image" json:"image"`
-	Home     string                `yaml:"home" json:"home"`
-	Projects string                `yaml:"projects" json:"projects"`
-	Build    *rawDockerBuildConfig `yaml:"build" json:"build"`
+	Image string          `yaml:"image" json:"image"`
+	Build *rawBuildConfig `yaml:"build" json:"build"`
 }
 
-type rawDockerBuildConfig struct {
+type rawBuildConfig struct {
 	Context    rawString `yaml:"context" json:"context"`
 	Dockerfile rawString `yaml:"dockerfile" json:"dockerfile"`
-}
-
-type rawBubblewrapSandboxConfig struct {
-	Root string `yaml:"root" json:"root"`
 }
 
 type rawMCPSandboxConfig struct {
@@ -298,8 +273,7 @@ func emptyConfig() Config {
 		Permission: PermissionConfig{
 			Paths: map[string]string{},
 		},
-		MountProfiles: sandboxmount.Profiles{},
-		Tools:         map[string]ToolConfig{},
+		Tools: map[string]ToolConfig{},
 	}
 }
 
@@ -321,12 +295,6 @@ func parseConfig(raw rawConfig, dir, home string) (Config, error) {
 		return Config{}, err
 	}
 	result.Provider = providers
-
-	profiles, err := rawMountProfiles(raw.MountProfiles, dir, home)
-	if err != nil {
-		return Config{}, err
-	}
-	result.MountProfiles = profiles
 
 	settings, err := raw.Settings.toSettings()
 	if err != nil {
@@ -394,44 +362,6 @@ func (r rawProviderConfig) toProvider(name string) (ProviderConfig, error) {
 	return cfg, nil
 }
 
-func rawMountProfiles(raw map[string]*rawMountProfile, dir, home string) (sandboxmount.Profiles, error) {
-	profiles := sandboxmount.Profiles{}
-	for rawName, rawProfile := range raw {
-		name := strings.TrimSpace(rawName)
-		if name == "" {
-			return nil, fmt.Errorf("mountProfiles keys must not be empty")
-		}
-		if rawProfile == nil {
-			return nil, fmt.Errorf("mountProfiles.%s must be an object", name)
-		}
-		profile, err := rawProfile.toMountProfile("mountProfiles."+name, dir, home)
-		if err != nil {
-			return nil, err
-		}
-		profiles[name] = profile
-	}
-	return profiles, nil
-}
-
-func (r rawMountProfile) toMountProfile(label string, dir, home string) (sandboxmount.BackingConfig, error) {
-	var cfg sandboxmount.BackingConfig
-	if r.Backing != "" {
-		backing, err := helpers.ParseMountBacking(r.Backing)
-		if err != nil {
-			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.backing: %w", label, err)
-		}
-		cfg.Backing = backing
-	}
-	if r.HostRoot != "" {
-		root, err := helpers.ResolveMountHostRoot(r.HostRoot, home, dir)
-		if err != nil {
-			return sandboxmount.BackingConfig{}, fmt.Errorf("%s.hostRoot: %w", label, err)
-		}
-		cfg.HostRoot = root
-	}
-	return cfg, nil
-}
-
 func (r rawSettingsConfig) toSettings() (SettingsConfig, error) {
 	cfg := SettingsConfig{MountProfile: strings.TrimSpace(r.MountProfile)}
 	if r.SuppressWarnings.Set {
@@ -489,17 +419,13 @@ func (r rawRuntimeConfig) toRuntime(dir, home string) (RuntimeConfig, error) {
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
-	bubblewrap, err := r.Bubblewrap.toBubblewrap(dir, home)
-	if err != nil {
-		return RuntimeConfig{}, err
-	}
-	return RuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker, Bubblewrap: bubblewrap}, nil
+	return RuntimeConfig{Default: strings.TrimSpace(r.Default), Docker: docker}, nil
 }
 
 func (r rawDockerSandboxConfig) toDocker(dir, home string) (DockerSandboxConfig, error) {
-	cfg := DockerSandboxConfig{Image: strings.TrimSpace(r.Image), Home: strings.TrimSpace(r.Home), Projects: strings.TrimSpace(r.Projects)}
+	cfg := DockerSandboxConfig{Image: strings.TrimSpace(r.Image)}
 	if r.Build != nil {
-		build, err := r.Build.toDockerBuild(dir, home)
+		build, err := r.Build.toBuild(dir, home)
 		if err != nil {
 			return DockerSandboxConfig{}, err
 		}
@@ -508,41 +434,30 @@ func (r rawDockerSandboxConfig) toDocker(dir, home string) (DockerSandboxConfig,
 	return cfg, nil
 }
 
-func (r rawDockerBuildConfig) toDockerBuild(dir, home string) (tool.DockerBuildConfig, error) {
+func (r rawBuildConfig) toBuild(dir, home string) (tool.BuildConfig, error) {
 	contextValue := "."
 	if r.Context.Set {
 		contextValue = strings.TrimSpace(r.Context.Value)
 		if contextValue == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
+			return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context must not be empty")
 		}
 	}
 	dockerfileValue := "Dockerfile"
 	if r.Dockerfile.Set {
 		dockerfileValue = strings.TrimSpace(r.Dockerfile.Value)
 		if dockerfileValue == "" {
-			return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
+			return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.dockerfile must not be empty")
 		}
 	}
 	contextDir, err := resolveConfigPath(contextValue, dir, home)
 	if err != nil {
-		return tool.DockerBuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
+		return tool.BuildConfig{}, fmt.Errorf("sandbox.runtime.docker.build.context: %w", err)
 	}
 	dockerfile := config.ExpandHome(dockerfileValue, home)
 	if !filepath.IsAbs(dockerfile) {
 		dockerfile = filepath.Join(contextDir, dockerfile)
 	}
-	return tool.DockerBuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
-}
-
-func (r rawBubblewrapSandboxConfig) toBubblewrap(dir, home string) (BubblewrapSandboxConfig, error) {
-	if strings.TrimSpace(r.Root) == "" {
-		return BubblewrapSandboxConfig{}, nil
-	}
-	root, err := resolveConfigPath(r.Root, dir, home)
-	if err != nil {
-		return BubblewrapSandboxConfig{}, fmt.Errorf("sandbox.runtime.bubblewrap.root: %w", err)
-	}
-	return BubblewrapSandboxConfig{Root: root}, nil
+	return tool.BuildConfig{Context: contextDir, Dockerfile: dockerfile}, nil
 }
 
 func (r rawMCPSandboxConfig) toMCPSandbox() (MCPSandboxConfig, error) {
@@ -573,7 +488,6 @@ func (r *rawRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
 		}
 		r.Default = fields.Default
 		r.Docker = fields.Docker
-		r.Bubblewrap = fields.Bubblewrap
 		return nil
 	default:
 		return fmt.Errorf("sandbox.runtime must be a string or object")
@@ -650,7 +564,6 @@ func (r *rawRuntimeConfig) UnmarshalJSON(data []byte) error {
 	}
 	r.Default = fields.Default
 	r.Docker = fields.Docker
-	r.Bubblewrap = fields.Bubblewrap
 	return nil
 }
 
@@ -829,7 +742,6 @@ func (c *Config) Merge(src Config) {
 		c.Permission.Paths[pattern] = mode
 	}
 	c.Sandbox.Merge(src.Sandbox)
-	c.MountProfiles.Merge(src.MountProfiles)
 	c.Settings.Merge(src.Settings)
 	if c.Tools == nil {
 		c.Tools = map[string]ToolConfig{}
@@ -927,17 +839,8 @@ func (c *RuntimeConfig) Merge(src RuntimeConfig) {
 	if src.Docker.Image != "" {
 		c.Docker.Image = src.Docker.Image
 	}
-	if src.Docker.Home != "" {
-		c.Docker.Home = src.Docker.Home
-	}
-	if src.Docker.Projects != "" {
-		c.Docker.Projects = src.Docker.Projects
-	}
 	if src.Docker.Build.IsSet() {
 		c.Docker.Build = src.Docker.Build
-	}
-	if src.Bubblewrap.Root != "" {
-		c.Bubblewrap.Root = src.Bubblewrap.Root
 	}
 }
 
@@ -1042,11 +945,8 @@ const defaultPermissionMode = "allow"
 // Go, npm, and pip. Each directory is paired with a recursive glob so tools that
 // match on patterns cover the subtree. The projects root itself is added, not the
 // individual mounted project paths.
-func defaultPermissionPaths(paths sandboxpath.Paths) map[string]string {
-	dirs := []string{"/tmp", paths.Workspace}
-	if paths.Home != "" {
-		dirs = append(dirs, filepath.Join(paths.Home, "go"), filepath.Join(paths.Home, ".cache"))
-	}
+func defaultPermissionPaths() map[string]string {
+	dirs := []string{"/tmp", layout.Workspace, filepath.Join(layout.Home, "go"), filepath.Join(layout.Home, ".cache")}
 	result := map[string]string{}
 	for _, dir := range dirs {
 		if dir == "" {
@@ -1061,8 +961,8 @@ func defaultPermissionPaths(paths sandboxpath.Paths) map[string]string {
 // PermissionPaths returns the permission paths for supported tool configs: Toby's
 // default injected paths merged with the user-configured permissions.paths.
 // User entries override defaults for the same path.
-func (s *Service) PermissionPaths(paths sandboxpath.Paths) map[string]string {
-	result := defaultPermissionPaths(paths)
+func (s *Service) PermissionPaths() map[string]string {
+	result := defaultPermissionPaths()
 	if s == nil {
 		return result
 	}
@@ -1070,13 +970,6 @@ func (s *Service) PermissionPaths(paths sandboxpath.Paths) map[string]string {
 		result[pattern] = mode
 	}
 	return result
-}
-
-func (s *Service) MountProfiles() sandboxmount.Profiles {
-	if s == nil {
-		return nil
-	}
-	return s.config.MountProfiles.Clone()
 }
 
 func (s *Service) ToolMountProfiles() map[string]string {

@@ -4,8 +4,9 @@ import (
 	"context"
 	"path/filepath"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/toolutil"
@@ -38,10 +39,10 @@ type dockerTool struct {
 
 func (t *dockerTool) HostInit(_ context.Context, opts *tool.CommandOptions) error {
 	return helpers.HostInitOnce(opts, t.Name(), func() error {
-		if err := t.sandbox.AddBind(sandboxmount.Bind{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: helpers.HomeTarget(".docker"), Access: sandboxmount.AccessReadOnly, Optional: true}); err != nil {
+		if err := t.sandbox.AddBind(mount.Bind{HostPath: filepath.Join(t.paths.Home, ".docker"), Target: "~/.docker", Access: mount.AccessReadOnly, Optional: true}); err != nil {
 			return err
 		}
-		return t.sandbox.AddBind(sandboxmount.Bind{HostPath: "/var/run/docker.sock", Target: helpers.AbsoluteTarget("/var/run/docker.sock"), Access: sandboxmount.AccessDev, Optional: true})
+		return t.sandbox.AddBind(mount.Bind{HostPath: layout.DockerSocket, Target: layout.DockerSocket, Access: mount.AccessDev, Optional: true})
 	})
 }
 

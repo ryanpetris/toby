@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 
+	"petris.dev/toby/container/manager"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/cli/session"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
@@ -17,7 +19,6 @@ import (
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
-	sandboxbubblewrap "petris.dev/toby/internal/sandbox/bubblewrap"
 	sandboxdocker "petris.dev/toby/internal/sandbox/docker"
 	"petris.dev/toby/internal/tools"
 	"petris.dev/toby/internal/tools/tool"
@@ -65,6 +66,8 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tool.CommandOpti
 		fx.NopLogger,
 		fx.Supply(r.paths, r.config),
 		hostmanager.Module(),
+		manager.Module(),
+		mount.Module(),
 		mcpproxy.Module(),
 		mcpserver.Module(),
 		sandbox.Module(),
@@ -101,12 +104,8 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tool.CommandOpti
 
 func executionRuntimeModule(runtime string) (fx.Option, error) {
 	switch runtime {
-	case "":
-		return fx.Options(sandboxdocker.Module(), sandboxbubblewrap.Module()), nil
-	case sandbox.RuntimeDocker:
+	case "", sandbox.RuntimeDocker:
 		return sandboxdocker.Module(), nil
-	case sandbox.RuntimeBubblewrap:
-		return sandboxbubblewrap.Module(), nil
 	default:
 		return nil, exitcode.New(2, "unknown sandbox runtime: %s", runtime)
 	}

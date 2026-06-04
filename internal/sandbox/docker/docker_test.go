@@ -1,451 +1,21 @@
 package docker
 
 import (
-	"context"
-	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/manager"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
-	"petris.dev/toby/internal/platform/executil"
 	"petris.dev/toby/internal/sandbox"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/tool"
+
+	dcontainer "github.com/moby/moby/api/types/container"
+	dmount "github.com/moby/moby/api/types/mount"
+	"github.com/testcontainers/testcontainers-go"
 )
-
-type fakeRunner struct{}
-
-func (fakeRunner) Run(context.Context, []string, map[string]string, executil.Options) (int, error) {
-	return 0, nil
-}
-
-type recordingRunner struct {
-	commands  [][]string
-	envs      []map[string]string
-	exitCodes []int
-	iidImage  string
-}
-
-func (r *recordingRunner) Run(_ context.Context, argv []string, env map[string]string, _ executil.Options) (int, error) {
-	r.commands = append(r.commands, append([]string(nil), argv...))
-	r.envs = append(r.envs, cloneTestEnv(env))
-	if r.iidImage != "" {
-		for i, arg := range argv {
-			if arg == "--iidfile" && i+1 < len(argv) {
-				if err := os.WriteFile(argv[i+1], []byte(r.iidImage), 0o600); err != nil {
-					return 1, err
-				}
-			}
-		}
-	}
-	if index := len(r.commands) - 1; index < len(r.exitCodes) {
-		return r.exitCodes[index], nil
-	}
-	return 0, nil
-}
-
-func cloneTestEnv(env map[string]string) map[string]string {
-	if env == nil {
-		return nil
-	}
-	clone := make(map[string]string, len(env))
-	for name, value := range env {
-		clone[name] = value
-	}
-	return clone
-}
-
-func TestDockerBuildCommandMountsHomeProjectsAndUsesDefaultImage(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": docker.HomeDir()}
-	mounts := dockerHomeMount(docker.HomeDir())
-	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: env, Mounts: mounts})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--init", "-i"})
-	assertContainsSequence(t, cmd, []string{"--user", "0:0"})
-	assertContainsSequence(t, cmd, []string{"--network", "host"})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
-	assertContainsSequence(t, cmd, []string{"--env", "TOBY_CONTROL_HOST=127.0.0.1:1234"})
-	assertContainsSequence(t, cmd, []string{"--env", "TOBY_CONTROL_TOKEN=secret"})
-	assertContainsSequence(t, cmd, []string{"--env", "HOME=" + sandboxpath.DefaultHome})
-	assertNoDockerEnv(t, cmd, "PATH")
-	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage})
-	assertContainsSequence(t, cmd, []string{docker.TobyBinaryPath(), "sandbox", "manager"})
-	primeCmd := docker.BuildPrimeCommand(sandbox.RunSpec{Mounts: mounts})
-	assertContainsSequence(t, primeCmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
-	assertContainsSequence(t, primeCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
-	assertContainsSequence(t, primeCmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
-}
-
-func TestDockerCommandsPassHostTerm(t *testing.T) {
-	t.Setenv("TERM", "xterm-256color")
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	spec := sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())}
-
-	primeCmd := docker.BuildPrimeCommand(spec)
-	assertContainsSequence(t, primeCmd, []string{"--env", "TERM=xterm-256color"})
-	setupCmd, err := docker.BuildSetupCommand(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, setupCmd, []string{"--env", "TERM=xterm-256color"})
-	runCmd, err := docker.BuildCommand(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, runCmd, []string{"--env", "TERM=xterm-256color"})
-}
-
-func TestDockerRunInitializesHomeVolumeBeforeManager(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingRunner{}
-	factory := testFactory(paths, runner)
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{docker.TobyBinaryPath(), "sandbox", "manager"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil || code != 0 {
-		t.Fatalf("Run = %d, %v", code, err)
-	}
-	if len(runner.commands) != 2 {
-		t.Fatalf("commands = %#v", runner.commands)
-	}
-	assertContainsSequence(t, runner.commands[0], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[0], []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
-	assertContainsSequence(t, runner.commands[0], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
-	assertContainsSequence(t, runner.commands[1], []string{"docker", "run", "--rm", "--init", "-i"})
-}
-
-func TestDockerDebugCommandsPersistContainersWithPhaseNames(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	spec := sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir()), Debug: true}
-
-	primeCmd := docker.BuildPrimeCommand(spec)
-	assertNotContainsSequence(t, primeCmd, []string{"--rm"})
-	assertContainsSequence(t, primeCmd, []string{"--name", docker.containerName + "-prime"})
-	setupCmd, err := docker.BuildSetupCommand(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertNotContainsSequence(t, setupCmd, []string{"--rm"})
-	assertContainsSequence(t, setupCmd, []string{"--name", docker.containerName + "-setup"})
-	runCmd, err := docker.BuildCommand(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertNotContainsSequence(t, runCmd, []string{"--rm"})
-	assertContainsSequence(t, runCmd, []string{"--name", docker.containerName + "-run"})
-}
-
-func TestDockerRunBuildsTaggedImageWhenMissing(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contextDir := filepath.Join(home, "docker")
-	if err := os.MkdirAll(contextDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingRunner{exitCodes: []int{1, 0, 0, 0}}
-	factory := testFactory(paths, runner)
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerImage: "custom:dev", DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile.toby")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil || code != 0 {
-		t.Fatalf("Run = %d, %v", code, err)
-	}
-	if len(runner.commands) != 4 {
-		t.Fatalf("commands = %#v", runner.commands)
-	}
-	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
-	assertContainsSequence(t, runner.commands[1], []string{"docker", "build", "-t", "custom:dev", "-f", filepath.Join(contextDir, "Dockerfile.toby"), contextDir})
-	assertContainsSequence(t, runner.commands[2], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[3], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "custom:dev"})
-}
-
-func TestDockerRunSkipsBuildWhenTaggedImageExists(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contextDir := filepath.Join(home, "docker")
-	if err := os.MkdirAll(contextDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingRunner{}
-	factory := testFactory(paths, runner)
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerImage: "custom:dev", DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil || code != 0 {
-		t.Fatalf("Run = %d, %v", code, err)
-	}
-	if len(runner.commands) != 3 {
-		t.Fatalf("commands = %#v", runner.commands)
-	}
-	assertContainsSequence(t, runner.commands[0], []string{"docker", "image", "inspect", "custom:dev"})
-	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "custom:dev"})
-}
-
-func TestDockerRunBuildsUntaggedImageEveryTime(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contextDir := filepath.Join(home, "docker")
-	if err := os.MkdirAll(contextDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingRunner{iidImage: "sha256:built"}
-	factory := testFactory(paths, runner)
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil || code != 0 {
-		t.Fatalf("Run = %d, %v", code, err)
-	}
-	if len(runner.commands) != 3 {
-		t.Fatalf("commands = %#v", runner.commands)
-	}
-	assertContainsSequence(t, runner.commands[0], []string{"docker", "build", "--iidfile"})
-	assertContainsSequence(t, runner.commands[0], []string{"-f", filepath.Join(contextDir, "Dockerfile"), contextDir})
-	assertContainsSequence(t, runner.commands[1], []string{"--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, runner.commands[2], []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), "sha256:built"})
-}
-
-func TestDockerRunUsesHostEnvironmentForDockerCLI(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contextDir := filepath.Join(home, "docker")
-	if err := os.MkdirAll(contextDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingRunner{iidImage: "sha256:built"}
-	factory := testFactory(paths, runner)
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerBuild: tool.DockerBuildConfig{Context: contextDir, Dockerfile: filepath.Join(contextDir, "Dockerfile")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": sandboxpath.DefaultHome}
-	code, err := docker.Run(context.Background(), sandbox.RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil || code != 0 {
-		t.Fatalf("Run = %d, %v", code, err)
-	}
-	if len(runner.envs) != len(runner.commands) {
-		t.Fatalf("envs = %#v, commands = %#v", runner.envs, runner.commands)
-	}
-	for i, got := range runner.envs {
-		if got != nil {
-			t.Fatalf("docker command %d env = %#v, want host env", i, got)
-		}
-	}
-	assertContainsSequence(t, runner.commands[0], []string{"docker", "build", "--iidfile"})
-	finalCommand := runner.commands[len(runner.commands)-1]
-	assertContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTROL_HOST=127.0.0.1:1234"})
-	assertContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTROL_TOKEN=secret"})
-	assertContainsSequence(t, finalCommand, []string{"--env", "HOME=" + sandboxpath.DefaultHome})
-	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_BIN_DIR=" + sandboxpath.DefaultBin})
-	assertNotContainsSequence(t, finalCommand, []string{"--env", "TOBY_CONTEXT_DIR=" + sandboxpath.DefaultContext})
-}
-
-func TestDockerPrimeCommandUsesFinalMountsAndWorkdir(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	binds := []sandboxmount.Bind{{HostPath: "/host/opencode", Target: helpers.HomeTarget(".local", "share", "opencode"), Access: sandboxmount.AccessRegular}}
-	cmd := docker.BuildPrimeCommand(sandbox.RunSpec{Binds: binds, Mounts: dockerHomeMount(docker.HomeDir())})
-	assertContainsSequence(t, cmd, []string{"docker", "run", "--rm", "--user", "0:0", "--entrypoint", "/bin/sh"})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
-	assertContainsSequence(t, cmd, []string{"--mount", dockerBind("/host/opencode", filepath.Join(sandboxpath.DefaultHome, ".local", "share", "opencode"), false)})
-	assertSequenceBefore(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)}, []string{"--mount", dockerBind("/host/opencode", filepath.Join(sandboxpath.DefaultHome, ".local", "share", "opencode"), false)})
-	assertSequenceBefore(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", sandboxpath.DefaultHome)}, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
-	assertContainsSequence(t, cmd, []string{"--workdir", filepath.Join(sandboxpath.DefaultWorkspace, "demo"), defaultDockerImage, "-c", "exit"})
-}
-
-func TestDockerManagedMountsUseFinalAndSetupTargets(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	mount := sandboxmount.RuntimeMount{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}, ProviderID: "toby.demo.tool.opencode.config", Source: sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: "toby.demo.tool.opencode.config"}, Target: filepath.Join(sandboxpath.DefaultHome, ".config", "opencode"), SetupPath: filepath.Join(sandboxpath.DefaultRoot, "mounts", "opencode-config")}
-	primeCmd := docker.BuildPrimeCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}})
-	assertContainsSequence(t, primeCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.Target)})
-	setupCmd, err := docker.BuildSetupCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}, Env: tool.Environment{"HOME": sandboxpath.DefaultHome}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, setupCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.SetupPath)})
-	assertNotContainsSequence(t, setupCmd, []string{"--mount", dockerBind(projectDir, filepath.Join(sandboxpath.DefaultWorkspace, "demo"), false)})
-	runCmd, err := docker.BuildCommand(sandbox.RunSpec{Mounts: []sandboxmount.RuntimeMount{mount}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, runCmd, []string{"--mount", dockerVolume("toby.demo.tool.opencode.config", mount.Target)})
-}
-
-func TestDockerOptionsOverrideHomeProjectsAndImage(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	sbx, err := factory.FromOptions(&tool.CommandOptions{
-		Env:            "demo",
-		SandboxRuntime: sandbox.RuntimeDocker,
-		DockerImage:    "custom:latest",
-		DockerHome:     "/toby/custom-home",
-		DockerProjects: "~/workspace",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	docker := sbx.(*instance)
-	if docker.HomeDir() != "/toby/custom-home" {
-		t.Fatalf("HomeDir = %q", docker.HomeDir())
-	}
-	if docker.Projects() != "/toby/custom-home/workspace" {
-		t.Fatalf("Projects = %q", docker.Projects())
-	}
-	cmd, err := docker.BuildCommand(sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(docker.HomeDir())})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertContainsSequence(t, cmd, []string{"--mount", dockerVolume("toby.default.runtime.home.demo", "/toby/custom-home")})
-	assertContainsSequence(t, cmd, []string{"--workdir", "/toby/custom-home/workspace/demo", "custom:latest"})
-}
-
-func TestDockerOptionsRejectPathsOutsideSandboxRoot(t *testing.T) {
-	home := t.TempDir()
-	paths := testPaths(home)
-	projectDir := filepath.Join(paths.ProjectRoot, "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	factory := testFactory(paths, fakeRunner{})
-	for _, opts := range []tool.CommandOptions{
-		{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerHome: "/home/toby"},
-		{Env: "demo", SandboxRuntime: sandbox.RuntimeDocker, DockerProjects: "/toby/../workspace"},
-	} {
-		if _, err := factory.FromOptions(&opts); err == nil {
-			t.Fatalf("expected %#v to fail", opts)
-		}
-	}
-}
-
-func TestDockerHelpersFormatAndSortValues(t *testing.T) {
-	if got, want := dockerBind("/host", "/target", false), "type=bind,source=/host,target=/target"; got != want {
-		t.Fatalf("dockerBind = %q, want %q", got, want)
-	}
-	if got, want := dockerBind("/host", "/target", true), "type=bind,source=/host,target=/target,readonly"; got != want {
-		t.Fatalf("readonly dockerBind = %q, want %q", got, want)
-	}
-	if got, want := dockerVolume("home", "/home/demo"), "type=volume,source=home,target=/home/demo"; got != want {
-		t.Fatalf("dockerVolume = %q, want %q", got, want)
-	}
-	if got, want := dockerEnv(tool.Environment{"B": "2", "A": "1"}), []string{"A=1", "B=2"}; !slices.Equal(got, want) {
-		t.Fatalf("dockerEnv = %#v, want %#v", got, want)
-	}
-}
-
-func dockerHomeMount(target string) []sandboxmount.RuntimeMount {
-	homeKey := sandboxmount.RuntimeHomeKey("demo")
-	providerID := sandboxmount.ProviderID("default", homeKey)
-	return []sandboxmount.RuntimeMount{{
-		Key:        homeKey,
-		ProviderID: providerID,
-		Source:     sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: providerID},
-		Target:     target,
-	}}
-}
 
 func testPaths(home string) config.Paths {
 	return config.Paths{
@@ -455,61 +25,256 @@ func testPaths(home string) config.Paths {
 	}
 }
 
-func testFactory(paths config.Paths, runner executil.Runner) sandbox.Factory {
-	factory, err := sandbox.NewFactory(paths, []sandbox.Environment{
-		newDockerEnvironment(paths, runner, "docker", nil),
-	})
+// dockerInstance builds an *instance directly via NewInstance (which needs no
+// Docker daemon) so the pure containerRequest builder can be unit-tested.
+func dockerInstance(t *testing.T, mutate func(*sandbox.Spec)) (*instance, string) {
+	t.Helper()
+	home := t.TempDir()
+	paths := testPaths(home)
+	projectDir := filepath.Join(paths.ProjectRoot, "demo")
+	spec := sandbox.Spec{Label: "demo", Projects: []sandbox.Project{{Name: "demo", HostPath: projectDir}}}
+	if mutate != nil {
+		mutate(&spec)
+	}
+	inst, err := newEnvironment(paths, manager.New()).NewInstance(spec)
 	if err != nil {
-		panic(err)
+		t.Fatalf("NewInstance: %v", err)
 	}
-	return factory
+	return inst.(*instance), projectDir
 }
 
-func assertContainsSequence(t *testing.T, values, sequence []string) {
-	t.Helper()
-	if indexOfSequence(values, sequence) >= 0 {
-		return
-	}
-	t.Fatalf("%#v does not contain sequence %#v", values, sequence)
+func dockerHomeMount(target string) []mount.Mount {
+	homeKey := mount.RuntimeHomeKey("demo")
+	return []mount.Mount{{
+		Key:    homeKey,
+		Volume: mount.Volume("default", homeKey),
+		Target: target,
+	}}
 }
 
-func assertSequenceBefore(t *testing.T, values, first, second []string) {
-	t.Helper()
-	firstIndex := indexOfSequence(values, first)
-	if firstIndex < 0 {
-		t.Fatalf("%#v does not contain first sequence %#v", values, first)
+func applyConfig(req testcontainers.GenericContainerRequest) *dcontainer.Config {
+	c := &dcontainer.Config{}
+	if req.ConfigModifier != nil {
+		req.ConfigModifier(c)
 	}
-	secondIndex := indexOfSequence(values, second)
-	if secondIndex < 0 {
-		t.Fatalf("%#v does not contain second sequence %#v", values, second)
-	}
-	if firstIndex >= secondIndex {
-		t.Fatalf("%#v contains %#v at %d after %#v at %d", values, first, firstIndex, second, secondIndex)
-	}
+	return c
 }
 
-func assertNotContainsSequence(t *testing.T, values, sequence []string) {
-	t.Helper()
-	if indexOfSequence(values, sequence) >= 0 {
-		t.Fatalf("%#v contains sequence %#v", values, sequence)
+func applyHostConfig(req testcontainers.GenericContainerRequest) *dcontainer.HostConfig {
+	h := &dcontainer.HostConfig{}
+	if req.HostConfigModifier != nil {
+		req.HostConfigModifier(h)
 	}
+	return h
 }
 
-func indexOfSequence(values, sequence []string) int {
-	for i := 0; i+len(sequence) <= len(values); i++ {
-		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			return i
+func findMount(mounts []dmount.Mount, target string) (dmount.Mount, bool) {
+	for _, m := range mounts {
+		if m.Target == target {
+			return m, true
 		}
 	}
-	return -1
+	return dmount.Mount{}, false
 }
 
-func assertNoDockerEnv(t *testing.T, values []string, name string) {
-	t.Helper()
-	prefix := name + "="
-	for i := 0; i+1 < len(values); i++ {
-		if values[i] == "--env" && strings.HasPrefix(values[i+1], prefix) {
-			t.Fatalf("%#v contains docker env %s", values, name)
+func TestContainerRequestRunMountsEnvAndHostNetwork(t *testing.T) {
+	inst, projectDir := dockerInstance(t, nil)
+	home := inst.HomeDir()
+	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": home}
+	mounts := dockerHomeMount(home)
+	bindTarget := filepath.Join(home, ".local", "share", "opencode")
+	binds := []mount.Bind{{HostPath: "/host/opencode", Target: bindTarget, Access: mount.AccessRegular}}
+	argv := []string{inst.TobyBinaryPath(), "sandbox", "manager"}
+
+	req := inst.containerRequest(sandbox.RunSpec{Argv: argv, Env: env, Binds: binds, Mounts: mounts}, phaseRun, manager.DaemonLocalUnix)
+
+	if req.Image != DefaultImage {
+		t.Fatalf("image = %q, want %q", req.Image, DefaultImage)
+	}
+	if !slices.Equal(req.Cmd, argv) {
+		t.Fatalf("cmd = %#v", req.Cmd)
+	}
+	if req.Env["TOBY_CONTROL_HOST"] != "127.0.0.1:1234" {
+		t.Fatalf("control host = %q (local should be unchanged)", req.Env["TOBY_CONTROL_HOST"])
+	}
+	if req.Env["TOBY_CONTROL_TOKEN"] != "secret" || req.Env["HOME"] != home {
+		t.Fatalf("env = %#v", req.Env)
+	}
+	if req.HostAccessPorts != nil {
+		t.Fatalf("local daemon should not use host-access tunnel: %#v", req.HostAccessPorts)
+	}
+
+	cfg := applyConfig(req)
+	if cfg.User != "0:0" {
+		t.Fatalf("user = %q", cfg.User)
+	}
+	if !cfg.OpenStdin || !cfg.AttachStdin {
+		t.Fatalf("run config should keep stdin open: %#v", cfg)
+	}
+
+	hc := applyHostConfig(req)
+	if hc.NetworkMode != "host" {
+		t.Fatalf("network mode = %q, want host", hc.NetworkMode)
+	}
+	if v, ok := findMount(hc.Mounts, home); !ok || v.Type != dmount.TypeVolume || v.Source != mounts[0].Volume {
+		t.Fatalf("home volume mount = %#v ok=%v", v, ok)
+	}
+	projectTarget := inst.ProjectMounts()[0].SandboxPath
+	if b, ok := findMount(hc.Mounts, projectTarget); !ok || b.Type != dmount.TypeBind || b.Source != projectDir {
+		t.Fatalf("project bind = %#v ok=%v", b, ok)
+	}
+	if b, ok := findMount(hc.Mounts, bindTarget); !ok || b.Source != "/host/opencode" {
+		t.Fatalf("explicit bind = %#v ok=%v", b, ok)
+	}
+}
+
+func TestContainerRequestPrimeEntrypointAndMounts(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	home := inst.HomeDir()
+	req := inst.containerRequest(sandbox.RunSpec{Mounts: dockerHomeMount(home)}, phasePrime, manager.DaemonLocalUnix)
+
+	if !slices.Equal(req.Cmd, []string{"-c", "exit"}) {
+		t.Fatalf("cmd = %#v", req.Cmd)
+	}
+	cfg := applyConfig(req)
+	if !slices.Equal(cfg.Entrypoint, []string{"/bin/sh"}) {
+		t.Fatalf("entrypoint = %#v", cfg.Entrypoint)
+	}
+	hc := applyHostConfig(req)
+	if hc.Init != nil {
+		t.Fatal("prime should not request an init process")
+	}
+	if hc.NetworkMode != "" {
+		t.Fatalf("prime should not set a network mode: %q", hc.NetworkMode)
+	}
+	if _, ok := findMount(hc.Mounts, home); !ok {
+		t.Fatal("prime must seed the home volume at its final target")
+	}
+}
+
+func TestContainerRequestSetupUsesSetupPathAndInit(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	home := inst.HomeDir()
+	m := mount.Mount{
+		Volume:    "toby.demo.tool.opencode.config",
+		Target:    filepath.Join(home, ".config", "opencode"),
+		SetupPath: filepath.Join(layout.Root, "mounts", "opencode-config"),
+	}
+	argv := []string{inst.TobyBinaryPath(), "sandbox", "manager"}
+	req := inst.containerRequest(sandbox.RunSpec{Argv: argv, Env: tool.Environment{"HOME": home}, Mounts: []mount.Mount{m}}, phaseSetup, manager.DaemonLocalUnix)
+
+	if !slices.Equal(req.Cmd, argv) {
+		t.Fatalf("cmd = %#v", req.Cmd)
+	}
+	if cfg := applyConfig(req); cfg.WorkingDir != "/" {
+		t.Fatalf("setup workdir = %q", cfg.WorkingDir)
+	}
+	hc := applyHostConfig(req)
+	if hc.Init == nil || !*hc.Init {
+		t.Fatal("setup should request an init process")
+	}
+	if v, ok := findMount(hc.Mounts, m.SetupPath); !ok || v.Source != m.Volume {
+		t.Fatalf("setup should mount the provider volume at its setup path: %#v ok=%v", v, ok)
+	}
+	if _, ok := findMount(hc.Mounts, m.Target); ok {
+		t.Fatal("setup must not mount the final target")
+	}
+}
+
+func TestRewriteControlHost(t *testing.T) {
+	cases := []struct {
+		class manager.DaemonClass
+		want  string
+	}{
+		{manager.DaemonLocalUnix, "127.0.0.1:1234"},
+		{manager.DaemonDesktop, "host.docker.internal:1234"},
+		{manager.DaemonRemote, "host.testcontainers.internal:1234"},
+	}
+	for _, c := range cases {
+		if got := rewriteControlHost("127.0.0.1:1234", c.class); got != c.want {
+			t.Fatalf("class %d => %q, want %q", c.class, got, c.want)
 		}
+	}
+}
+
+func TestContainerRequestRemoteUsesHostAccessTunnel(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "HOME": inst.HomeDir()}
+	req := inst.containerRequest(sandbox.RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(inst.HomeDir())}, phaseRun, manager.DaemonRemote)
+
+	if !slices.Equal(req.HostAccessPorts, []int{1234}) {
+		t.Fatalf("host access ports = %#v", req.HostAccessPorts)
+	}
+	if req.Env["TOBY_CONTROL_HOST"] != "host.testcontainers.internal:1234" {
+		t.Fatalf("control host = %q", req.Env["TOBY_CONTROL_HOST"])
+	}
+	if hc := applyHostConfig(req); hc.NetworkMode == "host" {
+		t.Fatal("remote daemon must not use host networking")
+	}
+}
+
+func TestContainerRequestDesktopUsesHostDockerInternal(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	env := tool.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "HOME": inst.HomeDir()}
+	req := inst.containerRequest(sandbox.RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(inst.HomeDir())}, phaseRun, manager.DaemonDesktop)
+
+	if req.Env["TOBY_CONTROL_HOST"] != "host.docker.internal:1234" {
+		t.Fatalf("control host = %q", req.Env["TOBY_CONTROL_HOST"])
+	}
+	if req.HostAccessPorts != nil {
+		t.Fatalf("desktop should not use host-access tunnel: %#v", req.HostAccessPorts)
+	}
+	if hc := applyHostConfig(req); hc.NetworkMode == "host" {
+		t.Fatal("desktop must not use host networking")
+	}
+}
+
+func TestContainerRequestDebugNamesContainers(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	spec := sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}, Mounts: dockerHomeMount(inst.HomeDir()), Debug: true}
+	for phase, suffix := range map[phaseKind]string{phasePrime: "-prime", phaseSetup: "-setup", phaseRun: "-run"} {
+		if got := inst.containerRequest(spec, phase, manager.DaemonLocalUnix).Name; got != inst.containerName+suffix {
+			t.Fatalf("%s name = %q, want %q", phase, got, inst.containerName+suffix)
+		}
+	}
+	if got := inst.containerRequest(sandbox.RunSpec{Argv: []string{"true"}, Env: tool.Environment{}}, phaseRun, manager.DaemonLocalUnix).Name; got != "" {
+		t.Fatalf("non-debug name = %q, want empty", got)
+	}
+}
+
+func TestNewInstanceAppliesImage(t *testing.T) {
+	inst, _ := dockerInstance(t, func(s *sandbox.Spec) {
+		s.Image = "custom:latest"
+	})
+	if inst.HomeDir() != layout.Home {
+		t.Fatalf("HomeDir = %q", inst.HomeDir())
+	}
+	if inst.Projects() != layout.Workspace {
+		t.Fatalf("Projects = %q", inst.Projects())
+	}
+	if inst.image != "custom:latest" {
+		t.Fatalf("image = %q", inst.image)
+	}
+}
+
+func TestMountHelpers(t *testing.T) {
+	b := bindMount("/host", "/target", true)
+	if b.Type != dmount.TypeBind || b.Source != "/host" || b.Target != "/target" || !b.ReadOnly {
+		t.Fatalf("bindMount = %#v", b)
+	}
+	v := volumeMount("vol", "/target")
+	if v.Type != dmount.TypeVolume || v.Source != "vol" || v.Target != "/target" || v.ReadOnly {
+		t.Fatalf("volumeMount = %#v", v)
+	}
+}
+
+func TestControlEnvIncludesTermAndControlVars(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	env := controlEnv(tool.Environment{"HOME": "/h", "TOBY_CONTROL_HOST": "127.0.0.1:9", "TOBY_CONTROL_TOKEN": "tok"}, manager.DaemonLocalUnix)
+	if env["TERM"] != "xterm-256color" {
+		t.Fatalf("TERM = %q", env["TERM"])
+	}
+	if env["HOME"] != "/h" || env["TOBY_CONTROL_TOKEN"] != "tok" {
+		t.Fatalf("controlEnv = %#v", env)
 	}
 }

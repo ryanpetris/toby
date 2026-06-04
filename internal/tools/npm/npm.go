@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
@@ -54,7 +55,7 @@ type npmTool struct {
 
 func (t *npmTool) SandboxContextSetup(ctx context.Context) error {
 	return helpers.SandboxContextSetupOnce(ctx, t.Name(), func() error {
-		home := t.sandbox.Paths().Home
+		home := layout.Home
 		prefix := filepath.Join(home, ".local", "npm-global")
 		cache := filepath.Join(home, ".cache", "npm")
 		for key, value := range map[string]string{
@@ -90,7 +91,7 @@ func (t *npmTool) RegisterContextFiles(ctx context.Context, _ tool.ContextOption
 }
 
 func (t *npmTool) contextPath(path string) string {
-	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
+	return filepath.Join(layout.Context, filepath.FromSlash(path))
 }
 
 func (t *npmTool) Launch(ctx context.Context, extra []string) error {

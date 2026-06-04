@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/manager"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
@@ -78,7 +79,7 @@ func renderContextFiles(t *testing.T, instructions [][]byte, cfg *tobyconfig.Ser
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
 	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(manager.New())}})
 	if err != nil {
 		return nil, err
 	}

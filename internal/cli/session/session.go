@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
@@ -21,7 +22,6 @@ import (
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/binary"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -84,7 +84,6 @@ func Run(ctx context.Context, params Params, opts *tool.CommandOptions, extra, r
 	if err := tool.RunLifecycle(ctx, params.HostInitHooks, activeTools, lifecycleCtx); err != nil {
 		return err
 	}
-	warnHostBackedMounts(params.Stderr, opts.SuppressWarnings, params.SandboxService.HostBackedManagedMounts())
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
@@ -159,10 +158,10 @@ func mcpDefaults(opts *tool.CommandOptions, config *tobyconfig.Service) mcpproxy
 	if config != nil {
 		defaults.Runtime = config.MCPSandbox().Runtime
 		sandboxDefaults := config.Sandbox()
-		defaults.EffectiveDockerImage = sandboxDefaults.Runtime.Docker.Image
+		defaults.EffectiveImage = sandboxDefaults.Runtime.Docker.Image
 	}
-	if opts != nil && strings.TrimSpace(opts.DockerImage) != "" {
-		defaults.EffectiveDockerImage = strings.TrimSpace(opts.DockerImage)
+	if opts != nil && strings.TrimSpace(opts.Image) != "" {
+		defaults.EffectiveImage = strings.TrimSpace(opts.Image)
 	}
 	if opts != nil {
 		defaults.Debug = opts.DebugEnabled()
@@ -177,8 +176,6 @@ func ApplySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 	result := *opts
 	defaults := config.Sandbox()
 	settings := config.Settings()
-	result.MountProfiles = config.MountProfiles()
-	result.MountProfiles.Merge(opts.MountProfiles)
 	if result.MountProfile == "" {
 		result.MountProfile = settings.MountProfile
 	}
@@ -194,26 +191,17 @@ func ApplySandboxDefaults(opts *tool.CommandOptions, config *tobyconfig.Service)
 	mergeStringMap(result.ToolMountProfiles, opts.ToolMountProfiles)
 	result.SuppressWarnings = settings.SuppressWarnings.Clone()
 	result.SuppressWarnings.Merge(opts.SuppressWarnings)
-	if result.BubblewrapRoot == "" {
-		result.BubblewrapRoot = defaults.Runtime.Bubblewrap.Root
-	}
 	if result.SandboxRuntime == "" {
 		result.SandboxRuntime = defaults.Runtime.Default
 	}
-	if result.SandboxRuntime != "docker" {
+	if result.SandboxRuntime != sandbox.RuntimeDocker {
 		return result
 	}
-	if result.DockerImage == "" {
-		result.DockerImage = defaults.Runtime.Docker.Image
+	if result.Image == "" {
+		result.Image = defaults.Runtime.Docker.Image
 	}
-	if result.DockerHome == "" {
-		result.DockerHome = defaults.Runtime.Docker.Home
-	}
-	if result.DockerProjects == "" {
-		result.DockerProjects = defaults.Runtime.Docker.Projects
-	}
-	if !result.DockerBuild.IsSet() {
-		result.DockerBuild = defaults.Runtime.Docker.Build
+	if !result.Build.IsSet() {
+		result.Build = defaults.Runtime.Docker.Build
 	}
 	return result
 }
@@ -285,17 +273,6 @@ func resolveConfiguredProjectSource(project tool.ProjectMount, home string) (too
 		return tool.ProjectMount{Name: name, Source: abs}, false, nil
 	}
 	return tool.ProjectMount{Name: name, Source: abs}, true, nil
-}
-
-func warnHostBackedMounts(stderr io.Writer, suppression warning.Suppression, mounts []sandboxmount.Info) {
-	if len(mounts) == 0 {
-		return
-	}
-	names := make([]string, 0, len(mounts))
-	for _, item := range mounts {
-		names = append(names, item.Key.String())
-	}
-	warning.Fprintf(stderr, suppression, warning.MountHostBacking, "using host-backed managed mounts for %s; running multiple sandbox instances with the same host-backed mounts can corrupt tool databases.", strings.Join(names, ", "))
 }
 
 func sandboxManagerArgv(sbx sandbox.Instance) []string {
@@ -391,7 +368,7 @@ func initSandboxContext(ctx context.Context, params Params, opts *tool.CommandOp
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
-	contextDir := params.SandboxService.Paths().Context
+	contextDir := layout.Context
 	if err := params.SandboxService.DeletePath(ctx, contextDir, true); err != nil {
 		return err
 	}

@@ -11,20 +11,19 @@ import (
 	"sort"
 	"strings"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 
 	"go.uber.org/fx"
 )
 
 const (
-	RuntimeBubblewrap = "bubblewrap"
-	RuntimeDocker     = "docker"
-	RuntimeDir        = "/tmp/toby"
+	RuntimeDocker = "docker"
+	RuntimeDir    = "/tmp/toby"
 
 	FxEnvironmentGroup = "toby.sandbox.environments"
 )
@@ -37,14 +36,11 @@ type Environment interface {
 }
 
 type Spec struct {
-	Label          string
-	Projects       []Project
-	Workdir        string
-	DockerImage    string
-	DockerHome     string
-	DockerProjects string
-	DockerBuild    tool.DockerBuildConfig
-	BubblewrapRoot string
+	Label    string
+	Projects []Project
+	Workdir  string
+	Image    string
+	Build    tool.BuildConfig
 }
 
 type Project struct {
@@ -55,8 +51,8 @@ type Project struct {
 type RunSpec struct {
 	Argv        []string
 	Env         tool.Environment
-	Binds       []sandboxmount.Bind
-	Mounts      []sandboxmount.RuntimeMount
+	Binds       []mount.Bind
+	Mounts      []mount.Mount
 	ExecOptions tool.ExecOptions
 	Debug       bool
 }
@@ -188,22 +184,10 @@ func (f Factory) specFromOptions(opts *tool.CommandOptions) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
-	hostRootBase := f.paths.ProjectRoot
-	if len(spec.Projects) > 0 {
-		hostRootBase = spec.Projects[0].HostPath
-	}
-	mounts, err := opts.MountProfiles.ResolveHostRoots(f.paths.Home, hostRootBase)
-	if err != nil {
-		return Spec{}, exitcode.New(2, "%s", err)
-	}
-	opts.MountProfiles = mounts
 	if opts.SandboxRuntime == RuntimeDocker {
-		spec.DockerImage = strings.TrimSpace(opts.DockerImage)
-		spec.DockerHome = strings.TrimSpace(opts.DockerHome)
-		spec.DockerProjects = strings.TrimSpace(opts.DockerProjects)
-		spec.DockerBuild = opts.DockerBuild
+		spec.Image = strings.TrimSpace(opts.Image)
+		spec.Build = opts.Build
 	}
-	spec.BubblewrapRoot = strings.TrimSpace(opts.BubblewrapRoot)
 	return spec, nil
 }
 
@@ -355,12 +339,7 @@ type ProjectMount struct {
 }
 
 type BaseInstance struct {
-	paths              config.Paths
 	label              string
-	sandboxPaths       sandboxpath.Paths
-	homeDir            string
-	projectsDir        string
-	runtimeDir         string
 	controlToken       string
 	sandboxControlHost string
 	workdir            string
@@ -368,12 +347,7 @@ type BaseInstance struct {
 }
 
 type BaseInstanceParams struct {
-	Paths              config.Paths
 	Label              string
-	PathSet            sandboxpath.Paths
-	HomeDir            string
-	ProjectsDir        string
-	RuntimeDir         string
 	ControlToken       string
 	SandboxControlHost string
 	Workdir            string
@@ -390,26 +364,21 @@ func NewBaseInstance(params BaseInstanceParams) (BaseInstance, error) {
 		}
 	}
 	return BaseInstance{
-		paths:              params.Paths,
 		label:              params.Label,
-		sandboxPaths:       params.PathSet,
-		homeDir:            params.HomeDir,
-		projectsDir:        params.ProjectsDir,
-		runtimeDir:         params.RuntimeDir,
 		controlToken:       controlToken,
 		sandboxControlHost: params.SandboxControlHost,
 		workdir:            params.Workdir,
-		projects:           newProjectMounts(params.Projects, params.ProjectsDir),
+		projects:           newProjectMounts(params.Projects),
 	}, nil
 }
 
-func newProjectMounts(projects []Project, projectsDir string) []ProjectMount {
+func newProjectMounts(projects []Project) []ProjectMount {
 	mounts := make([]ProjectMount, 0, len(projects))
 	for _, project := range projects {
 		mounts = append(mounts, ProjectMount{
 			Name:        project.Name,
 			HostPath:    project.HostPath,
-			SandboxPath: filepath.Join(projectsDir, filepath.FromSlash(project.Name)),
+			SandboxPath: filepath.Join(layout.Workspace, filepath.FromSlash(project.Name)),
 		})
 	}
 	return mounts
@@ -419,31 +388,11 @@ func (s *BaseInstance) ProjectMounts() []ProjectMount {
 	return append([]ProjectMount(nil), s.projects...)
 }
 
-func (s *BaseInstance) Paths() sandboxpath.Paths {
-	paths := s.sandboxPaths
-	if paths.Root == "" {
-		paths.Root = s.runtimeDir
-	}
-	if paths.Home == "" {
-		paths.Home = s.homeDir
-	}
-	if paths.Context == "" && paths.Root != "" {
-		paths.Context = filepath.Join(paths.Root, "context")
-	}
-	if paths.Bin == "" && paths.Root != "" {
-		paths.Bin = filepath.Join(paths.Root, "bin")
-	}
-	if paths.Workspace == "" {
-		paths.Workspace = s.projectsDir
-	}
-	return paths
-}
-
-func (s *BaseInstance) HomeDir() string { return s.Paths().Home }
+func (s *BaseInstance) HomeDir() string { return layout.Home }
 
 func (s *BaseInstance) Label() string { return s.label }
 
-func (s *BaseInstance) Projects() string { return s.Paths().Workspace }
+func (s *BaseInstance) Projects() string { return layout.Workspace }
 
 func (s *BaseInstance) ProjectPath(name string) (string, bool) {
 	name = filepath.ToSlash(strings.TrimSpace(name))
@@ -456,23 +405,23 @@ func (s *BaseInstance) ProjectPath(name string) (string, bool) {
 }
 
 func (s *BaseInstance) TobyRuntimeDir() string {
-	return s.Paths().Root
+	return layout.Root
 }
 
 func (s *BaseInstance) TobyContextDir() string {
-	return s.Paths().Context
+	return layout.Context
 }
 
 func (s *BaseInstance) TobyBinDir() string {
-	return s.Paths().Bin
+	return layout.Bin
 }
 
 func (s *BaseInstance) TobyBinaryPath() string {
-	return filepath.Join(s.TobyBinDir(), "toby")
+	return filepath.Join(layout.Bin, "toby")
 }
 
 func (s *BaseInstance) TobyOpenCodeConfigDir() string {
-	return filepath.Join(s.TobyContextDir(), "opencode")
+	return filepath.Join(layout.Context, "opencode")
 }
 
 func (s *BaseInstance) HostControlEndpoint() control.Endpoint {
@@ -505,22 +454,12 @@ func (s *BaseInstance) Cleanup() error {
 
 func (s *BaseInstance) ChdirDir() string {
 	if s.workdir != "" {
-		return expandSandboxHome(s.workdir, s.HomeDir())
+		return layout.Expand(s.workdir)
 	}
 	if len(s.projects) > 0 {
 		return s.projects[0].SandboxPath
 	}
-	return s.Projects()
-}
-
-func expandSandboxHome(value, home string) string {
-	if value == "~" {
-		return home
-	}
-	if strings.HasPrefix(value, "~/") {
-		return filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(value, "~/")))
-	}
-	return value
+	return layout.Workspace
 }
 
 func (s *BaseInstance) VisibleHostPath(repository string) (string, error) {

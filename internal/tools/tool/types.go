@@ -4,9 +4,8 @@ import (
 	"context"
 	"io"
 
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 
 	"github.com/spf13/cobra"
 )
@@ -51,13 +50,9 @@ type CommandOptions struct {
 	Projects          []ProjectMount
 	Workdir           string
 	SandboxRuntime    string
-	DockerImage       string
-	DockerHome        string
-	DockerProjects    string
-	DockerBuild       DockerBuildConfig
-	BubblewrapRoot    string
+	Image             string
+	Build             BuildConfig
 	MountProfile      string
-	MountProfiles     sandboxmount.Profiles
 	ToolMountProfiles map[string]string
 	SuppressWarnings  warning.Suppression
 	Debug             *bool
@@ -67,12 +62,12 @@ type CommandOptions struct {
 	lifecycle         map[string]bool
 }
 
-type DockerBuildConfig struct {
+type BuildConfig struct {
 	Context    string
 	Dockerfile string
 }
 
-func (c DockerBuildConfig) IsSet() bool {
+func (c BuildConfig) IsSet() bool {
 	return c.Context != ""
 }
 
@@ -96,16 +91,15 @@ type ExecOptions struct {
 }
 
 type SandboxService interface {
-	Paths() sandboxpath.Paths
 	ProjectPath(string) (string, bool)
 	VisibleHostPath(string) (string, error)
 	GetEnvironment(string) (string, bool)
 	SetEnvironment(context.Context, string, string) error
 	PrependEnvironment(context.Context, string, string, string) error
 	AppendEnvironment(context.Context, string, string, string) error
-	AddBind(sandboxmount.Bind) error
-	AddMount(sandboxmount.Request) (sandboxmount.Info, error)
-	Mount(sandboxmount.Key) (sandboxmount.Info, bool)
+	AddBind(mount.Bind) error
+	AddMount(mount.Request) (mount.Mount, error)
+	Mount(mount.Key) (mount.Mount, bool)
 	AddFile(context.Context, string, []byte, uint32) error
 	AddFileOwned(context.Context, string, []byte, uint32, int, int) error
 	DeletePath(context.Context, string, bool) error
@@ -118,7 +112,6 @@ type SandboxService interface {
 }
 
 type Sandbox interface {
-	Paths() sandboxpath.Paths
 	HomeDir() string
 	Projects() string
 	TobyRuntimeDir() string

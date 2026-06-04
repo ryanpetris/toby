@@ -10,12 +10,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/fx"
+	"petris.dev/toby/container/layout"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/sandbox"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/version"
 )
@@ -25,6 +24,8 @@ const mcpStartDescription = "Start a configured local Toby-managed MCP sidecar."
 const mcpStopDescription = "Stop a configured local Toby-managed MCP sidecar."
 
 const mcpRestartDescription = "Restart a configured local Toby-managed MCP sidecar."
+
+const resourcesReadDescription = "Read one or more Toby resources by URI (for example toby://session/runtime or toby://docs/introspection). Pass uris to select specific resources; omit uris to read every available resource. Use this when the MCP client cannot read MCP resources directly."
 
 type TobyServiceResult struct {
 	fx.Out
@@ -49,7 +50,71 @@ func (TobyService) Tools() []Tool {
 		{Name: "mcp.restart", Register: func(server *mcp.Server, toby *Server) {
 			mcp.AddTool(server, &mcp.Tool{Name: "mcp.restart", Description: mcpRestartDescription}, toby.mcpRestart)
 		}},
+		{Name: "resources.read", Register: func(server *mcp.Server, toby *Server) {
+			mcp.AddTool(server, &mcp.Tool{Name: "resources.read", Description: resourcesReadDescription}, toby.resourcesRead)
+		}},
 	}
+}
+
+// ResourcesReadInput selects which Toby resources to read. An empty URIs slice
+// reads every available resource.
+type ResourcesReadInput struct {
+	URIs []string `json:"uris,omitempty" jsonschema:"toby:// resource URIs to read; omit to read every available resource"`
+}
+
+// ReadResourceContent is one resource's contents (or the error reading it).
+type ReadResourceContent struct {
+	URI      string `json:"uri" jsonschema:"the resource URI"`
+	Title    string `json:"title,omitempty" jsonschema:"the resource title"`
+	MIMEType string `json:"mimeType,omitempty" jsonschema:"the resource MIME type"`
+	Text     string `json:"text,omitempty" jsonschema:"the resource contents"`
+	Error    string `json:"error,omitempty" jsonschema:"why the resource could not be read"`
+}
+
+type ResourcesReadOutput struct {
+	Resources []ReadResourceContent `json:"resources" jsonschema:"the requested resources, in request order"`
+}
+
+// resourcesRead returns the contents of the named toby:// resources, mirroring
+// the MCP resources/read path for clients that do not surface resources as
+// readable. Unknown or failing URIs are reported per item.
+func (s *Server) resourcesRead(ctx context.Context, _ *mcp.CallToolRequest, input ResourcesReadInput) (*mcp.CallToolResult, ResourcesReadOutput, error) {
+	byURI := make(map[string]Resource, len(s.resources))
+	all := make([]string, 0, len(s.resources))
+	for _, resource := range s.resources {
+		byURI[resource.URI] = resource
+		all = append(all, resource.URI)
+	}
+	wanted := input.URIs
+	if len(wanted) == 0 {
+		wanted = all
+	}
+	out := ResourcesReadOutput{Resources: make([]ReadResourceContent, 0, len(wanted))}
+	failed := false
+	for _, uri := range wanted {
+		resource, ok := byURI[uri]
+		if !ok {
+			failed = true
+			out.Resources = append(out.Resources, ReadResourceContent{URI: uri, Error: "unknown resource"})
+			continue
+		}
+		text, err := resource.Read(ctx, s)
+		if err != nil {
+			failed = true
+			out.Resources = append(out.Resources, ReadResourceContent{URI: uri, Error: err.Error()})
+			continue
+		}
+		mimeType := resource.MIMEType
+		if mimeType == "" {
+			mimeType = "text/markdown; charset=utf-8"
+		}
+		out.Resources = append(out.Resources, ReadResourceContent{URI: uri, Title: resource.Title, MIMEType: mimeType, Text: text})
+	}
+	var result *mcp.CallToolResult
+	if failed {
+		result = &mcp.CallToolResult{IsError: true}
+	}
+	return result, out, nil
 }
 
 func (TobyService) Resources() []Resource {
@@ -174,18 +239,13 @@ type EnvironmentProject struct {
 }
 
 type EnvironmentMount struct {
-	Key        string `json:"key" jsonschema:"managed mount key"`
-	Profile    string `json:"profile,omitempty" jsonschema:"mount profile name"`
-	Backing    string `json:"backing,omitempty" jsonschema:"mount backing kind"`
-	Target     string `json:"target" jsonschema:"sandbox target path"`
-	Subpath    string `json:"subpath,omitempty" jsonschema:"managed mount subpath"`
-	Active     bool   `json:"active" jsonschema:"whether the mount is active"`
-	SourceKind string `json:"sourceKind,omitempty" jsonschema:"mount source kind"`
-	Access     string `json:"access,omitempty" jsonschema:"mount access mode"`
-	Optional   bool   `json:"optional,omitempty" jsonschema:"whether the mount is optional"`
-	ProviderID string `json:"providerID,omitempty" jsonschema:"Docker volume/provider id; present only when debug mode is enabled"`
-	HostPath   string `json:"hostPath,omitempty" jsonschema:"host path backing the mount; present only when debug mode is enabled"`
-	SetupPath  string `json:"setupPath,omitempty" jsonschema:"isolated setup path; present only when debug mode is enabled"`
+	Key       string `json:"key" jsonschema:"managed mount key"`
+	Profile   string `json:"profile,omitempty" jsonschema:"mount profile name"`
+	Target    string `json:"target" jsonschema:"sandbox target path"`
+	Access    string `json:"access,omitempty" jsonschema:"mount access mode"`
+	Optional  bool   `json:"optional,omitempty" jsonschema:"whether the mount is optional"`
+	Volume    string `json:"volume,omitempty" jsonschema:"Docker volume name; present only when debug mode is enabled"`
+	SetupPath string `json:"setupPath,omitempty" jsonschema:"isolated setup path; present only when debug mode is enabled"`
 }
 
 type EnvironmentBind struct {
@@ -302,15 +362,11 @@ func (s *Server) mcpLifecycle(ctx context.Context, action, name string) (*mcp.Ca
 }
 
 func (s SessionState) environmentSandbox() EnvironmentSandbox {
-	paths := sandboxpath.Paths{}
-	if s.Sandbox != nil {
-		paths = s.Sandbox.Paths()
-	}
 	runtime := sandbox.RuntimeInfo{}
 	if s.Sandbox != nil {
 		runtime = s.Sandbox.RuntimeInfo(s.Debug)
 	}
-	info := EnvironmentSandbox{Name: s.Options.Env, Runtime: runtime.Runtime, RuntimeInfo: sanitizeRuntimeInfo(runtime.Info), Home: paths.Home, Workspace: paths.Workspace, Root: paths.Root, Context: paths.Context, Bin: paths.Bin, Workdir: s.Options.Workdir, Environment: map[string]string{}}
+	info := EnvironmentSandbox{Name: s.Options.Env, Runtime: runtime.Runtime, RuntimeInfo: sanitizeRuntimeInfo(runtime.Info), Home: layout.Home, Workspace: layout.Workspace, Root: layout.Root, Context: layout.Context, Bin: layout.Bin, Workdir: s.Options.Workdir, Environment: map[string]string{}}
 	if s.Sandbox != nil {
 		for _, name := range []string{"HOME"} {
 			if value, ok := s.Sandbox.GetEnvironment(name); ok {
@@ -366,14 +422,11 @@ func (s SessionState) environmentMounts() []EnvironmentMount {
 	}
 	mounts := s.Sandbox.MountInfos()
 	result := make([]EnvironmentMount, 0, len(mounts))
-	for _, mount := range mounts {
-		item := EnvironmentMount{Key: mount.Key.String(), Profile: mount.Profile, Backing: string(mount.Backing), Target: mount.Target, Subpath: mount.Subpath, Active: mount.Active, SourceKind: string(mount.Source.Kind), Access: string(mount.Access), Optional: mount.Optional}
+	for _, m := range mounts {
+		item := EnvironmentMount{Key: m.Key.String(), Profile: m.Profile, Target: m.Target, Access: string(m.Access), Optional: m.Optional}
 		if s.Debug {
-			item.ProviderID = mount.ProviderID
-			item.SetupPath = mount.SetupPath
-			if mount.Source.Kind == sandboxmount.SourceHostPath {
-				item.HostPath = mount.Source.Value
-			}
+			item.Volume = m.Volume
+			item.SetupPath = m.SetupPath
 		}
 		result = append(result, item)
 	}
@@ -384,11 +437,10 @@ func (s SessionState) environmentBinds() []EnvironmentBind {
 	if s.Sandbox == nil {
 		return nil
 	}
-	paths := s.Sandbox.Paths()
 	binds := s.Sandbox.StartBindSnapshot()
 	result := make([]EnvironmentBind, 0, len(binds))
 	for _, bind := range binds {
-		item := EnvironmentBind{Target: sandboxpath.Resolve(bind.Target, paths), Access: string(bind.Access), Optional: bind.Optional}
+		item := EnvironmentBind{Target: bind.Target, Access: string(bind.Access), Optional: bind.Optional}
 		if s.Debug {
 			item.HostPath = bind.HostPath
 		}

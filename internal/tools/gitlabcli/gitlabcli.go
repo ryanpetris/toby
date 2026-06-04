@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 	"strings"
 
 	contextfiles "petris.dev/toby/internal/context/files"
@@ -104,7 +105,7 @@ func (t *gitlabCLITool) install(ctx context.Context, force bool) error {
 }
 
 func (t *gitlabCLITool) contextPath(path string) string {
-	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
+	return filepath.Join(layout.Context, filepath.FromSlash(path))
 }
 
 func (t *gitlabCLITool) Launch(ctx context.Context, extra []string) error {

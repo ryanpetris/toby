@@ -13,7 +13,6 @@ import (
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -280,8 +279,7 @@ func contextFilesWithTobyConfig(t *testing.T, client *http.Client, projectRoot s
 	t.Helper()
 	renderer, service, proxy := testDeps(t, client)
 	builder := service.NewBuilder()
-	paths := sandboxpath.Paths{Home: testHome, Workspace: projectRoot}
-	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, paths, testControlHost, testTobyMCPURL, instructions, cfg, proxy, nil)
+	warnings, err := renderer.RegisterContextFiles(context.Background(), builder, testControlHost, testTobyMCPURL, instructions, cfg, proxy, nil)
 	if err != nil {
 		return nil, warnings, err
 	}

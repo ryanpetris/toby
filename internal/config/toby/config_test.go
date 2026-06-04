@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -35,7 +35,6 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
       "~/allowed/**": "allow"
     }
   },
-  "mountProfiles": { "default": { "backing": "host", "hostRoot": "~/state/default" } },
   "settings": {
     "mountProfile": "default",
     "suppressWarnings": true,
@@ -48,9 +47,8 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
   },
   "sandbox": {
     "runtime": {
-      "default": "bubblewrap",
-      "docker": { "image": "node:base", "home": "/home/base" },
-      "bubblewrap": { "root": "sandboxes/base" }
+      "default": "docker",
+      "docker": { "image": "node:base" }
     }
   },
 }`))
@@ -66,9 +64,6 @@ providers:
 permissions:
   paths:
     /tmp/shared: allow
-mountProfiles:
-  default:
-    hostRoot: state/default
 settings:
   suppressWarnings:
     - mount.host-backing
@@ -85,7 +80,6 @@ sandbox:
     default: docker
     docker:
       image: node:custom
-      projects: /workspace/custom
       build: {}
 `))
 
@@ -116,21 +110,11 @@ sandbox:
 		}
 	}
 	sandbox := cfg.Sandbox()
-	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" || sandbox.Runtime.Docker.Home != "/home/base" || sandbox.Runtime.Docker.Projects != "/workspace/custom" {
+	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "node:custom" {
 		t.Fatalf("sandbox = %#v", sandbox)
 	}
 	if sandbox.Runtime.Docker.Build.Context != dir || sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "Dockerfile") {
 		t.Fatalf("docker build = %#v", sandbox.Runtime.Docker.Build)
-	}
-	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(dir, "sandboxes", "base") {
-		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
-	}
-	mounts := cfg.MountProfiles().Config("default")
-	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
-		t.Fatalf("mounts = %#v", mounts)
-	}
-	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != filepath.Join(dir, "state", "default") {
-		t.Fatalf("mount roots = %#v", mounts)
 	}
 	toolProfiles := cfg.ToolMountProfiles()
 	if toolProfiles[tool.OpenCodeToolName] != "shared" || toolProfiles[tool.ClaudeToolName] != "default" {
@@ -163,17 +147,9 @@ sandbox:
     default: docker
     docker:
       image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
-      home: /home/toby
-      projects: /workspace
       build:
         context: docker/context
         dockerfile: ../Dockerfile.toby
-    bubblewrap:
-      root: ~/sandboxes
-mountProfiles:
-  default:
-    backing: host
-    hostRoot: /tmp/opencode-state
 settings:
   suppressWarnings:
     - opencode.model-discovery
@@ -187,24 +163,14 @@ settings:
 		t.Fatal(err)
 	}
 	sandbox := cfg.Sandbox()
-	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm" || sandbox.Runtime.Docker.Home != "/home/toby" || sandbox.Runtime.Docker.Projects != "/workspace" {
+	if sandbox.Runtime.Default != "docker" || sandbox.Runtime.Docker.Image != "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm" {
 		t.Fatalf("sandbox = %#v", sandbox)
 	}
 	if sandbox.Runtime.Docker.Build.Context != filepath.Join(dir, "docker", "context") || sandbox.Runtime.Docker.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
 		t.Fatalf("docker build = %#v", sandbox.Runtime.Docker.Build)
 	}
-	if sandbox.Runtime.Bubblewrap.Root != filepath.Join(home, "sandboxes") {
-		t.Fatalf("bubblewrap = %#v", sandbox.Runtime.Bubblewrap)
-	}
 	if sandbox.MCP.Runtime.Type != "" || sandbox.MCP.Runtime.Docker.Image != "" {
 		t.Fatalf("mcp sandbox = %#v", sandbox.MCP)
-	}
-	mounts := cfg.MountProfiles().Config("default")
-	if mounts.Backing != sandboxmount.BackingHost || mounts.BackingFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != sandboxmount.BackingHost {
-		t.Fatalf("mounts = %#v", mounts)
-	}
-	if mounts.HostRootFor(sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "opencode", Purpose: "config"}) != "/tmp/opencode-state" {
-		t.Fatalf("mount roots = %#v", mounts)
 	}
 	settings := cfg.Settings()
 	if !settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || settings.SuppressWarnings.Suppresses(warning.MountHostBacking) {
@@ -225,7 +191,7 @@ func TestLoadParsesMCPSandboxRuntime(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.json"), []byte(`{
-  "sandbox": { "mcp": { "runtime": "bubblewrap" } }
+  "sandbox": { "mcp": { "runtime": "podman" } }
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
 sandbox:
@@ -268,20 +234,6 @@ mcps:
 	}
 	if !reflect.DeepEqual(command, []string{"docs-mcp", "--port", "3000"}) {
 		t.Fatalf("command = %#v", command)
-	}
-}
-
-func TestLoadRejectsInvalidMountBacking(t *testing.T) {
-	home := t.TempDir()
-	dir := filepath.Join(home, ".config", "toby")
-	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-mountProfiles:
-  default:
-    backing: shared
-`))
-
-	if _, err := Load(dir, home); err == nil {
-		t.Fatal("expected invalid mount backing to fail")
 	}
 }
 
@@ -499,9 +451,6 @@ type configFakeSandbox struct {
 	files      []contextfiles.File
 }
 
-func (s *configFakeSandbox) Paths() sandboxpath.Paths {
-	return sandboxpath.Paths{Context: s.contextDir}
-}
 func (s *configFakeSandbox) ProjectPath(string) (string, bool)                    { return "", false }
 func (s *configFakeSandbox) VisibleHostPath(string) (string, error)               { return "", nil }
 func (s *configFakeSandbox) GetEnvironment(string) (string, bool)                 { return "", false }
@@ -512,15 +461,15 @@ func (s *configFakeSandbox) PrependEnvironment(context.Context, string, string, 
 func (s *configFakeSandbox) AppendEnvironment(context.Context, string, string, string) error {
 	return nil
 }
-func (s *configFakeSandbox) AddBind(sandboxmount.Bind) error { return nil }
-func (s *configFakeSandbox) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
-	return sandboxmount.Info{Key: req.Key}, nil
+func (s *configFakeSandbox) AddBind(mount.Bind) error { return nil }
+func (s *configFakeSandbox) AddMount(req mount.Request) (mount.Mount, error) {
+	return mount.Mount{Key: req.Key}, nil
 }
-func (s *configFakeSandbox) Mount(sandboxmount.Key) (sandboxmount.Info, bool) {
-	return sandboxmount.Info{}, false
+func (s *configFakeSandbox) Mount(mount.Key) (mount.Mount, bool) {
+	return mount.Mount{}, false
 }
 func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
-	rel := strings.TrimPrefix(path, s.contextDir+string(os.PathSeparator))
+	rel := strings.TrimPrefix(path, layout.Context+string(os.PathSeparator))
 	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }

@@ -6,8 +6,8 @@ Worked recipes for common Toby tasks. For the field-level reference see
 
 Throughout, `<env>` is an environment name that maps to a host project and to a
 persistent private sandbox home of the same name. By default, host projects are
-resolved under the host `XDG_PROJECTS_DIR`. Docker sandboxes show projects under
-`/toby/workspace`; Bubblewrap sandboxes keep them under `XDG_PROJECTS_DIR`.
+resolved under the host `XDG_PROJECTS_DIR`. Inside the sandbox, projects appear
+under `/toby/workspace`.
 
 ## Launch a coding tool in a project
 
@@ -202,31 +202,24 @@ Repository names are relative to the sandbox project root and must already be vi
 in the sandbox. `git.commit` commits only already-staged files; it does not add
 files. See [sandbox.md](sandbox.md#mcp) for the full tool reference.
 
-## Use Host-Backed Mounts
+## Isolate state with a mount profile
 
-By default each environment uses provider-backed managed mounts. To share a
-tool's data from a host directory (for example, to reuse an existing OpenCode
-login), enable host backing for that tool's managed mounts:
+Persistent tool and runtime state lives in container-native Docker named volumes
+keyed by a mount *profile*. Selecting a different profile gives a launch (or a
+single tool) a separate, isolated set of volumes — useful for keeping, say, a
+"work" login separate from a "personal" one:
 
 ```yaml
 # ~/.config/toby/config.yaml
-mountProfiles:
-  default:
-    backing: provider
-  host-state:
-    backing: host
-    hostRoot: ~/.config/toby/mounts/opencode
 settings:
-  suppressWarnings:
-    - mount.host-backing
+  mountProfile: work   # volumes become toby.work.<type>.<name>.<purpose>
 tools:
   opencode:
-    mountProfile: host-state
+    mountProfile: personal   # opencode gets its own toby.personal.* volumes
 ```
 
-Running multiple sandboxes against the same host-backed managed mount can
-corrupt that tool's databases, which is why Toby emits `mount.host-backing`
-unless you suppress it.
+Switching `mountProfile` back to `default` (or omitting it) returns to the
+default volume set. Volumes persist across runs and are managed by Docker.
 
 ## Build a custom Docker image for the sandbox
 

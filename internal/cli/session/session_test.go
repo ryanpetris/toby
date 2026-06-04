@@ -10,7 +10,6 @@ import (
 
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/tool"
 )
 
@@ -23,17 +22,9 @@ sandbox:
     default: docker
     docker:
       image: node:host
-      home: /home/host
-      projects: /workspace/host
       build:
         context: docker
         dockerfile: Dockerfile.toby
-    bubblewrap:
-      root: ./sandboxes
-mountProfiles:
-  default:
-    backing: host
-    hostRoot: ./state
 `))
 	cfg, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -41,18 +32,11 @@ mountProfiles:
 	}
 
 	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
-	if got.SandboxRuntime != "docker" || got.DockerImage != "node:host" || got.DockerHome != "/home/host" || got.DockerProjects != "/workspace/host" {
+	if got.SandboxRuntime != "docker" || got.Image != "node:host" {
 		t.Fatalf("defaults = %#v", got)
 	}
-	if got.DockerBuild.Context != filepath.Join(dir, "docker") || got.DockerBuild.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
-		t.Fatalf("docker build = %#v", got.DockerBuild)
-	}
-	if got.BubblewrapRoot != filepath.Join(dir, "sandboxes") {
-		t.Fatalf("defaults = %#v", got)
-	}
-	mounts := got.MountProfiles.Config("default")
-	if mounts.Backing != sandboxmount.BackingHost || mounts.HostRoot != filepath.Join(dir, "state") {
-		t.Fatalf("mounts = %#v", mounts)
+	if got.Build.Context != filepath.Join(dir, "docker") || got.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
+		t.Fatalf("docker build = %#v", got.Build)
 	}
 }
 
@@ -65,8 +49,6 @@ sandbox:
     default: docker
     docker:
       image: node:host
-      home: /home/host
-      projects: /workspace/host
       build:
         context: docker
 `))
@@ -75,35 +57,9 @@ sandbox:
 		t.Fatal(err)
 	}
 
-	got := ApplySandboxDefaults(&tool.CommandOptions{SandboxRuntime: "docker", DockerImage: "node:launch", DockerHome: "/home/launch", DockerProjects: "/workspace/launch"}, cfg)
-	if got.DockerImage != "node:launch" || got.DockerHome != "/home/launch" || got.DockerProjects != "/workspace/launch" {
+	got := ApplySandboxDefaults(&tool.CommandOptions{SandboxRuntime: "docker", Image: "node:launch"}, cfg)
+	if got.Image != "node:launch" {
 		t.Fatalf("defaults = %#v", got)
-	}
-}
-
-func TestApplySandboxDefaultsMergesLaunchMountOverrides(t *testing.T) {
-	home := t.TempDir()
-	dir := t.TempDir()
-	writeTobyConfig(t, dir, []byte(`
-mountProfiles:
-  default:
-    backing: host
-    hostRoot: ~/state/default
-`))
-	cfg, err := tobyconfig.Load(dir, home)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	opencodeKey := sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}
-	claudeKey := sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.ClaudeToolName, Purpose: "state"}
-	got := ApplySandboxDefaults(&tool.CommandOptions{MountProfiles: sandboxmount.Profiles{"default": {Backing: sandboxmount.BackingPrivate}}}, cfg)
-	mounts := got.MountProfiles.Config("default")
-	if mounts.BackingFor(opencodeKey) != sandboxmount.BackingPrivate || mounts.BackingFor(claudeKey) != sandboxmount.BackingPrivate {
-		t.Fatalf("mounts = %#v", mounts)
-	}
-	if mounts.HostRootFor(opencodeKey) != filepath.Join(home, "state", "default") {
-		t.Fatalf("mount roots = %#v", mounts)
 	}
 }
 
@@ -190,26 +146,6 @@ settings:
 	}
 }
 
-func TestWarnHostBackedMounts(t *testing.T) {
-	mounts := []sandboxmount.Info{{Key: sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}}}
-	var stderr bytes.Buffer
-	warnHostBackedMounts(&stderr, warning.Suppression{}, mounts)
-	if got := stderr.String(); got == "" || !bytes.Contains(stderr.Bytes(), []byte("warning[mount.host-backing]")) || !bytes.Contains(stderr.Bytes(), []byte("tool.opencode.config")) {
-		t.Fatalf("warning = %q", got)
-	}
-	stderr.Reset()
-	warnHostBackedMounts(&stderr, warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.MountHostBacking: true}}, mounts)
-	if stderr.Len() != 0 {
-		t.Fatalf("suppressed warning = %q", stderr.String())
-	}
-
-	stderr.Reset()
-	warnHostBackedMounts(&stderr, warning.Suppression{}, nil)
-	if stderr.Len() != 0 {
-		t.Fatalf("empty warning = %q", stderr.String())
-	}
-}
-
 func TestApplySandboxDefaultsDoesNotApplyDormantDockerDefaults(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
@@ -218,8 +154,6 @@ sandbox:
   runtime:
     docker:
       image: node:host
-      home: /home/host
-      projects: /workspace/host
 `))
 	cfg, err := tobyconfig.Load(dir, home)
 	if err != nil {
@@ -227,7 +161,7 @@ sandbox:
 	}
 
 	got := ApplySandboxDefaults(&tool.CommandOptions{}, cfg)
-	if got.DockerImage != "" || got.DockerHome != "" || got.DockerProjects != "" || got.DockerBuild.IsSet() {
+	if got.Image != "" || got.Build.IsSet() {
 		t.Fatalf("defaults = %#v", got)
 	}
 }

@@ -11,13 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/config/toby"
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/diagnostic/warning"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/tools/npm"
 	opencodeconfig "petris.dev/toby/internal/tools/opencode/config"
 	"petris.dev/toby/internal/tools/tool"
@@ -73,7 +74,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	if err := oc.SandboxContextSetup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, "runtime", "toby", "context", "opencode")
+	want := filepath.Join(layout.Context, "opencode")
 	if sandbox.Env["OPENCODE_CONFIG_DIR"] != want {
 		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", sandbox.Env["OPENCODE_CONFIG_DIR"], want)
 	}
@@ -108,11 +109,11 @@ func TestOpenCodeHostInitRegistersManagedMounts(t *testing.T) {
 		t.Fatalf("managed mounts registered binds: %#v", sandbox.Binds)
 	}
 	want := []struct {
-		key    sandboxmount.Key
+		key    mount.Key
 		target string
 	}{
-		{sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}, filepath.Join(sandbox.Paths().Home, ".config", "opencode")},
-		{sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "data"}, filepath.Join(sandbox.Paths().Home, ".local", "share", "opencode")},
+		{mount.Key{Type: mount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "config"}, filepath.Join(layout.Home, ".config", "opencode")},
+		{mount.Key{Type: mount.TypeTool, Name: tool.OpenCodeToolName, Purpose: "data"}, filepath.Join(layout.Home, ".local", "share", "opencode")},
 	}
 	if len(sandbox.Mounts) != len(want) {
 		t.Fatalf("mounts = %#v", sandbox.Mounts)

@@ -18,11 +18,11 @@ func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.NpmToolName, LaunchHelp: "Launch Node Package Manager"}}},
 		contextTool{Base: tool.Base{Metadata: tool.Metadata{Name: tool.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
 	}
-	parsed, err := executeTestLaunchParser(t, []string{"proj", "--debug", "--yolo", "--with-gh", "--upgrade", "--sandbox-runtime", "docker", "--sandbox-image=node:test", "--", "foo", "--", "bar"}, ctxTools)
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "--debug", "--yolo", "--with-gh", "--upgrade", "--runtime", "docker", "--runtime-image=node:test", "--", "foo", "--", "bar"}, ctxTools)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.SandboxRuntime != "docker" || parsed.Options.DockerImage != "node:test" {
+	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.SandboxRuntime != "docker" || parsed.Options.Image != "node:test" {
 		t.Fatalf("parsed options = %#v", parsed.Options)
 	}
 	if !parsed.Options.DebugEnabled() {

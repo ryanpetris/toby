@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/manager"
 	"petris.dev/toby/internal/config/toby"
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -178,7 +178,7 @@ func renderContextFilesWithConfig(t *testing.T, projectRoot string, instructions
 	t.Cleanup(app.RequireStop)
 	builder := service.NewBuilder()
 	proxy := httpproxy.NewService(httpproxy.ServiceParams{})
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(), mcpproxy.NewBubblewrapRunner()}})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runtimes: []mcpproxy.Runtime{mcpproxy.NewDockerRunner(manager.New())}})
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +187,7 @@ func renderContextFilesWithConfig(t *testing.T, projectRoot string, instructions
 			return nil, err
 		}
 	}
-	paths := sandboxpath.Paths{Home: testHome, Workspace: projectRoot}
-	if err := RegisterContextFiles(builder, paths, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, proxy, mcpProxy); err != nil {
+	if err := RegisterContextFiles(builder, instructions, cfg, "127.0.0.1:12345", testTobyMCPURL, proxy, mcpProxy); err != nil {
 		return nil, err
 	}
 	return builder.Files(), nil

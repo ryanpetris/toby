@@ -72,8 +72,8 @@ func newLaunchCommand(params Params, primary tool.Tool, rootConfigPath *string) 
 
 func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
-	cmd.Flags().String("sandbox-runtime", "", "Sandbox runtime to use: bubblewrap or docker.")
-	cmd.Flags().String("sandbox-image", "", "Docker image to use when --sandbox-runtime=docker.")
+	cmd.Flags().String("runtime", "", "Sandbox runtime to use (docker).")
+	cmd.Flags().String("runtime-image", "", "Container image to use for the sandbox.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tool.Tool, contextTools []tool.Tool) {

@@ -25,7 +25,7 @@ The wire protocol is documented as an OpenAPI schema in
 [toby-control-openapi.yaml](toby-control-openapi.yaml).
 
 ```
- host process (toby <tool> <env>)                 sandbox (docker / bubblewrap)
+ host process (toby <tool> <env>)                 sandbox (container)
  ┌───────────────────────────────┐                ┌─────────────────────────────┐
  │ CLI / session orchestration   │                │ /bin/sh bootstrap            │
  │ host manager (RPC handlers)   │   ws://.../control  curl /binary -> toby      │
@@ -87,8 +87,8 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `internal/control/httpproxy` | `/proxy/<uuid>` reverse proxy for MCP and providers. |
 | `internal/control/mcpserver` | Built-in Toby MCP server exposing host Git tools, MCP lifecycle tools, and `toby://` resources. |
 | `internal/sandbox` | Runtime selection, shared sandbox service/types, helper binary delivery. |
-| `internal/sandbox/docker` | Docker sandbox runtime implementation and Fx module. |
-| `internal/sandbox/bubblewrap` | Bubblewrap sandbox runtime implementation and Fx module. |
+| `internal/sandbox/docker` | Container sandbox runtime (testcontainers-go) and Fx module. |
+| `container/manager` | Shared Docker client and container service: tracks and tears down every container Toby starts. |
 | `internal/tools/tool` | Tool interface, lifecycle, registry, toolset, state settings. |
 | `internal/tools/<name>` | One package per tool (claude, codex, t3, …). |
 | `internal/tools/toolconfig` | Helpers for generating synthetic tool config. |
@@ -168,56 +168,69 @@ host Git tools, MCP lifecycle tools, and `toby://docs/...` plus
 URLs, headers, commands, argv, and environment values regardless of debug mode.
 Runtime details are returned as runtime-defined `runtimeInfo` maps. Generic MCP
 and sandbox orchestration code passes those maps through without interpreting
-Docker, Bubblewrap, or future-runtime fields.
+Docker or future-runtime fields.
 
 ### MCP sidecars
 
 Configured `type: local` MCP entries are owned by the host session, not by the
 tool running inside the main sandbox. During session startup Toby registers
 their proxy URLs synchronously, starts the sidecar processes asynchronously, and
-does not wait for MCP readiness before starting the main sandbox manager. Docker
-is the default MCP runtime independent of the main sandbox runtime; Bubblewrap
-can be selected globally or per MCP. Sidecars do not use `toby sandbox manager`,
-do not run setup hooks, and do not mount project, context, or managed-state
-paths. Docker MCP sidecars use the selected image defaults for user, home, and
-working directory. Bubblewrap sidecars run as the invoking user with regular
-system mounts and tmpfs home.
-When debug mode is enabled, Docker MCP sidecars omit `--rm` so stopped
-containers remain available for inspection. Restarts always create fresh
-container names and never reuse previous containers. Each MCP sidecar runtime
+does not wait for MCP readiness before starting the main sandbox manager.
+Sidecars run as containers (the `docker` runtime); they do not use `toby sandbox
+manager`, do not run setup hooks, and do not mount project, context, or
+managed-state paths. MCP sidecars use the selected image defaults for user,
+home, and working directory.
+When debug mode is enabled, MCP sidecar containers are left running for
+inspection instead of being terminated. Restarts always create fresh container
+names and never reuse previous containers. Each MCP sidecar runtime
 implementation owns its own startup, HTTP preparation, cleanup, and
 introspection behavior; adding another runtime should only require registering a
 new runtime implementation with Fx.
 
 ## Sandbox runtimes
 
-Toby selects the available runtime with the lowest priority number: Docker has
-priority 0 and Bubblewrap priority 1, so Docker is preferred when present. The
-runtime can be forced with `--sandbox-runtime` or `sandbox.runtime.default`.
+Toby runs sandboxes in containers and requires a reachable Docker-compatible
+daemon (priority 0; `--runtime` and `sandbox.runtime.default` accept
+`docker`). The runtime is implemented with the testcontainers-go library, which
+drives the Docker daemon through the Docker SDK rather than the `docker` CLI. It
+honors `DOCKER_HOST` and the active Docker context, so Docker Engine, Docker
+Desktop, Podman, and remote daemons all work. (Image building still shells out
+to `docker build`; container lifecycle goes through testcontainers-go.)
 
-- **Docker** (`internal/sandbox/docker`): `docker run --rm --init --user 0:0` with the configured image
-  (default `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`). `$HOME` (`/toby/home` by default) is backed by
-  a named Docker volume (e.g. `toby.<profile>.runtime.home.default`) so private
-  home state persists across runs; provider-backed managed mounts use lazy
-  volumes named `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host
+- **Container runtime** (`internal/sandbox/docker`): containers run as
+  `--user 0:0` with an init process and the configured image (default
+  `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`). `$HOME`
+  (`/toby/home` by default) is backed by a named Docker volume (e.g.
+  `toby.<profile>.runtime.home.default`) so private home state persists across
+  runs; provider-backed managed mounts use lazy volumes named
+  `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host
   under `/toby/workspace`. The image can be built from
-  `sandbox.runtime.docker.build`. With `settings.debug: true` or `--debug`,
-  Docker `--rm` is omitted for prime/setup/run containers so they remain after
-  exit. Phase-specific names prevent setup and run containers from colliding;
-  persisted containers are never reused.
-- **Bubblewrap** (`internal/sandbox/bubblewrap`): a `bwrap` sandbox that bind mounts
-  provider-backed directories from `sandbox.runtime.bubblewrap.root` by provider
-  ID, keeps projects under `$XDG_PROJECTS_DIR`, and stores Toby internals under
-  `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
+  `sandbox.runtime.docker.build`. The long-lived run container hosts
+  `toby sandbox manager` and has the interactive agent's terminal attached to it.
+  Launches use prime/setup/run phases; with `settings.debug: true` or `--debug`,
+  containers are left running after exit instead of being terminated. Phase-specific
+  names prevent setup and run containers from colliding; containers are never
+  reused.
+- **Networking** (`internal/sandbox/docker/networking.go`): how the container
+  reaches the host control server depends on the daemon. A local Linux daemon uses
+  host networking and the unchanged `127.0.0.1`; Docker Desktop uses
+  `host.docker.internal`; remote and Podman daemons use testcontainers'
+  host-access tunnel at `host.testcontainers.internal`.
 
-The selected runtime provides `sandboxpath.Paths`. The host-side
-`sandbox.SandboxService` exposes those paths and centralizes sandbox file and
-command operations for tool setup; it does not decide Docker or Bubblewrap path
-policy. Runtime-specific introspection is provided by the selected runtime as an
-opaque `runtimeInfo` map, so the shared sandbox service does not know about
-Docker, Bubblewrap, or future-runtime-specific fields.
+The runtime provides `sandboxpath.Paths`. The host-side `sandbox.SandboxService`
+exposes those paths and centralizes sandbox file and command operations for tool
+setup; it does not decide path policy. Runtime-specific introspection is provided
+as an opaque `runtimeInfo` map, so the shared sandbox service does not know about
+Docker or future-runtime-specific fields.
 
-In both runtimes, host secrets such as `~/.ssh` and `~/.gnupg` are not mounted.
+The `container/manager` service owns the shared Docker client and tracks every
+container Toby starts (sandbox phases and MCP sidecars), terminating them
+deterministically from an fx `OnStop` hook on session exit. Because Toby owns
+teardown, testcontainers' Ryuk reaper is disabled (`TESTCONTAINERS_RYUK_DISABLED`),
+which avoids an extra reaper container that would otherwise disrupt host-network
+and Podman setups.
+
+Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox.
 
 ### Helper binary delivery (`internal/sandbox/binary`)
 
@@ -308,6 +321,6 @@ matrix and the t3 walkthrough.
   `0` is success and unclassified errors map to `1`. Command execution maps
   `127` (not found), `126` (not executable), and `130` (canceled).
 - **Warnings** (`internal/diagnostic/warning`): suppressible IDs are
-  `mount.host-backing`, `opencode.model-discovery`, `project.autoload-disabled`,
+  `opencode.model-discovery`, `project.autoload-disabled`,
   `project.duplicate`, and `project.missing`. Suppress all with
   `settings.suppressWarnings: true` or a subset with a list of IDs.

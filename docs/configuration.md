@@ -26,17 +26,13 @@ Toby follows XDG conventions (`internal/config/paths.go`):
 | --- | --- | --- |
 | `XDG_PROJECTS_DIR` | `~/Projects` | Host project root used to resolve default project sources. |
 | `XDG_CONFIG_HOME` | `~/.config` | Host config dir is `$XDG_CONFIG_HOME/toby`. |
-| `XDG_CACHE_HOME` | `~/.cache` | Bubblewrap homes under `$XDG_CACHE_HOME/toby/sandboxes`. |
 
-Sandbox paths are runtime-specific. Docker uses `/toby`: `/toby/home` is
-`$HOME`, `/toby/workspace` contains mounted projects, `/toby/bin` contains the
-helper binary, and `/toby/context` contains generated configuration and
-instructions. Bubblewrap keeps `$HOME` and `$XDG_PROJECTS_DIR` at their normal
-paths and stores Toby internals under `${XDG_RUNTIME_DIR:-/run/user/<uid>}/toby`.
+The sandbox runs in a container under `/toby`: `/toby/home` is `$HOME`,
+`/toby/workspace` contains mounted projects, `/toby/bin` contains the helper
+binary, and `/toby/context` contains generated configuration and instructions.
 Toby does not construct startup environment variables from host values. It sets
-calculated `HOME` for the selected sandbox paths, passes host `TERM` to Docker
-containers when it is set, and otherwise lets the runtime supply the sandbox
-environment.
+calculated `HOME` for the sandbox paths, passes host `TERM` to the container
+when it is set, and otherwise lets the container supply the sandbox environment.
 
 The sandbox bootstrap and manager also receive `TOBY_CONTROL_HOST=host:port` and
 `TOBY_CONTROL_TOKEN` to reach the host control server. Launched sandbox commands
@@ -66,7 +62,7 @@ are last-write-wins.
 Toby config is its **own** format — it is not OpenCode config, though some
 nested shapes intentionally mirror OpenCode for convenience. The only supported
 top-level keys are `instructions`, `mcps`, `permissions`, `providers`,
-`mountProfiles`, `settings`, `tools`, and `sandbox`. **Any other top-level key fails
+`settings`, `tools`, and `sandbox`. **Any other top-level key fails
 config loading.**
 
 ### `instructions`
@@ -100,8 +96,8 @@ is merged. Configure non-proxied tool-native MCPs in the tool's own config.
 | `enabled` | bool | Defaults to `true`. |
 | `command` | string \| array | For `type: local`. First element is the command. |
 | `transport` | `stdio` \| `http` | For `type: local`; defaults to `stdio`. |
-| `runtime` | string \| object | For `type: local`; `docker` or `bubblewrap`. Object form supports `type` and `docker.image`. Defaults to `sandbox.mcp.runtime`, then `docker`. |
-| `port` | number | Required for local `transport: http`; container port for Docker, host port for Bubblewrap. |
+| `runtime` | string \| object | For `type: local`; `docker`. Object form supports `type` and `docker.image`. Defaults to `sandbox.mcp.runtime`, then `docker`. |
+| `port` | number | Required for local `transport: http`; the container port. |
 | `path` | string | URL path for local HTTP MCPs; defaults to `/`. |
 | `url` | string | For `type: remote`. The upstream MCP URL. |
 | `headers` | object | Headers for remote servers. Values are a string or string array and may use `{env:VAR}` / `{file:path}` substitution (resolved on the host). |
@@ -185,60 +181,49 @@ providers:
       example-model: {}
 ```
 
-### `sandbox`, `mountProfiles`, and `settings`
+### `sandbox` and `settings`
 
-Global sandbox runtime defaults live under `sandbox`. Managed mount profiles and
-warning/autoload settings are top-level `mountProfiles` and `settings` keys.
-Every field can be overridden per launch.
+Global sandbox runtime defaults live under `sandbox`. Warning/autoload settings
+and the mount-profile selection are top-level `settings` keys. Every field can be
+overridden per launch.
 
 ```yaml
 sandbox:
   runtime:
-    default: docker          # docker | bubblewrap; defaults to highest-priority available
+    default: docker          # defaults to docker
     docker:
       image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
       build:
         context: ~/docker/toby
-    bubblewrap:
-      root: ~/.cache/toby/sandboxes
   mcp:
     runtime:
-      type: docker           # docker | bubblewrap; defaults to docker
+      type: docker           # defaults to docker
       docker:
         image: ghcr.io/acme/toby-mcp-base:latest
-mountProfiles:
-  default:
-    backing: provider        # default | provider | private | host
-  host-state:
-    backing: host
-    hostRoot: ~/.config/toby/mounts/opencode
 settings:
-  suppressWarnings:
-    - mount.host-backing
+  mountProfile: default      # namespaces persistent volumes; defaults to default
   autoloadProjectConfig: true
   debug: false
   yolo: false
 tools:
   opencode:
-    mountProfile: host-state
+    mountProfile: work       # namespaces this tool's volumes separately
 ```
 
 - `sandbox.runtime` may be a string shorthand (`runtime: docker`) when no
   runtime-specific options are needed.
-- `sandbox.runtime.docker.home` and `sandbox.runtime.docker.projects` are
-  sandbox-visible paths; if set, they must stay under `/toby`.
-- `sandbox.runtime.bubblewrap.root` and relative `hostRoot` values in host
-  config resolve from the Toby config file directory.
+- The in-container layout is fixed (`/toby/home`, `/toby/workspace`, `/toby/bin`,
+  `/toby/context`); it is not configurable.
 - `sandbox.mcp.runtime` may be a string shorthand (`runtime: docker`) or an
   object with `type` and `docker.image`. Local MCP entries can override it with
-  `mcps.<name>.runtime` using the same shape. Docker MCP image precedence is
+  `mcps.<name>.runtime` using the same shape. MCP sidecar image precedence is
   per-MCP `runtime.docker.image`, then `sandbox.mcp.runtime.docker.image`, then
-  the effective main Docker image, then Toby's built-in Docker image.
+  the effective main sandbox image, then Toby's built-in image.
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
-- `settings.debug: true` enables debug mode. In Docker-backed sandboxes and
-  Docker-backed local MCP sidecars, Toby omits Docker `--rm` so containers remain
-  after exit for inspection; containers are still created fresh and never reused.
+- `settings.debug: true` enables debug mode. In sandbox and MCP sidecar
+  containers, Toby leaves containers running after exit for inspection instead of
+  terminating them; containers are still created fresh and never reused.
   Toby's MCP `toby://session/...` resources include host paths, Docker volume
   names, container names, and local MCP host ports only in debug mode. Provider
   and MCP headers, URLs, commands, argv, and environment values are never
@@ -255,36 +240,24 @@ tools:
 
 ## Managed Mounts
 
-`mountProfiles` controls where managed runtime/tool mounts are backed. Each
-profile has one `backing` and optional `hostRoot`. The selected launch profile is
-`settings.mountProfile`, defaulting to `default`. Launch config and host config
-`mountProfiles` merge by profile name; launch config values override host
-profile keys. A host or launch `tools.<tool>.mountProfile` entry can use a
-different profile for that tool's managed mounts.
+Persistent runtime and tool state lives in container-native Docker named volumes.
+A mount *profile* is just a namespace label on those volume names, so different
+profiles keep separate sets of state. `settings.mountProfile` selects the profile
+for a launch (default `default`), and a host or launch `tools.<tool>.mountProfile`
+selects a different profile for one tool.
 
-- `backing: default` or omitted — use Toby's default, currently `provider`.
-- `backing: provider` (default) — the selected sandbox provider stores the
-  managed mount. Docker uses lazy volumes named
-  `toby.<mountProfile>.<type>.<name>.<purpose>`; Bubblewrap uses host directories
-  under `sandbox.runtime.bubblewrap.root` named by the same provider ID.
-- `backing: private` — the mount stays in the private sandbox home; no separate
-  managed mount is registered.
-- `backing: host` — Toby bind-mounts the managed mount from `hostRoot`, which is
-  treated like `$HOME` for the mount's known subpath. If `hostRoot` is omitted,
-  host backing uses the actual `$HOME`.
+- A tool requests a mount by `type`/`name`/`purpose` at a container path
+  (`~/…` expands to the container `$HOME`, `/toby/home`). Toby never bind-mounts
+  the user's host tool configuration.
+- Each request resolves to a lazy Docker volume named
+  `toby.<mountProfile>.<type>.<name>.<purpose>`, managed by Docker. Runtime home
+  uses `toby.<mountProfile>.runtime.home.<sandboxName>`.
+- The **Docker** tool is the exception: it bind-mounts `/var/run/docker.sock` and
+  the `$HOME`-based `~/.docker` instead of using a managed volume.
 
-Runtime home is always provider-backed and uses provider ID
-`toby.<mountProfile>.runtime.home.<sandboxName>`. The **Docker** tool explicitly binds
-`/var/run/docker.sock` and `~/.docker`; it does not use managed mounts.
-
-Enabling host backing for a managed tool mount emits the suppressible
-`mount.host-backing` warning, because concurrent sandboxes sharing one
-host-backed mount can corrupt that tool's databases.
-
-Example resolution: OpenCode with `hostRoot: ~/.config/toby/mounts/opencode`
-uses `~/.config/toby/mounts/opencode/.config/opencode` and
-`~/.config/toby/mounts/opencode/.local/share/opencode` as host sources.
-Synthetic Toby config is generated in every backing mode.
+Each volume gets a private setup path so the Setup phase can initialize it as
+root (by default, `chown` to the host user). Synthetic Toby config is always
+generated.
 
 ## Warnings
 
@@ -293,7 +266,6 @@ to suppress everything, or to a list of IDs.
 
 | ID | Meaning |
 | --- | --- |
-| `mount.host-backing` | Host backing enabled for a managed tool mount. |
 | `opencode.model-discovery` | OpenCode provider model discovery failed. |
 | `project.autoload-disabled` | `.toby.yaml` present but autoload is off. |
 | `project.duplicate` | Duplicate configured project name skipped. |
@@ -309,25 +281,16 @@ tools, and working directory.
 sandbox:
   name: foo              # optional; defaults to the first project name
   runtime:
-    default: docker      # optional; defaults to highest-priority available runtime
+    default: docker      # optional; defaults to docker
     docker:
       image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm  # optional; defaults to mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
-      home: /toby/home          # optional; defaults to /toby/home
-      projects: /toby/workspace # optional; defaults to /toby/workspace
       build:                    # optional; build an image before launch
         context: .              # defaults to this config file's directory
         dockerfile: Dockerfile.toby  # optional; relative to context, defaults to Dockerfile
-    bubblewrap:
-      root: .toby/sandboxes     # optional; relative to this config file
-mountProfiles:
-  default:
-    backing: provider  # optional; default, provider, private, or host
-  host-state:
-    backing: host
-    hostRoot: .toby/tool-state  # optional; relative to this config file
 settings:
   autoUpgrade: true      # optional; defaults to false
-  suppressWarnings: [mount.host-backing]  # optional; true suppresses all warnings
+  mountProfile: work     # optional; namespaces this launch's persistent volumes
+  suppressWarnings: true # optional; true suppresses all warnings, or list specific IDs
 workdir: ~/tmp           # optional; defaults to the primary project path in the sandbox
 projects:
   foo:
@@ -339,7 +302,7 @@ tools:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]  # only valid on the primary tool
-    mountProfile: host-state  # optional; selects a mount profile for this tool
+    mountProfile: work  # optional; namespaces this tool's persistent volumes
   uv:
   npm:
 ```
@@ -349,9 +312,8 @@ tools:
 `projects` is an object keyed by project name. A null value enables the project
 with defaults. An object can set `path` and `primary`.
 
-- The project appears inside the sandbox under the selected runtime's project
-  root: `/toby/workspace/<name>` for Docker and `$XDG_PROJECTS_DIR/<name>` for
-  Bubblewrap, regardless of where its host source lives.
+- The project appears inside the sandbox under the project root at
+  `/toby/workspace/<name>`, regardless of where its host source lives.
 - `path` is the host **source**. If omitted, it defaults to
   `$XDG_PROJECTS_DIR/<name>`. Explicit relative paths resolve from the config
   file directory; absolute paths are used as-is; leading `~` expands to the host
@@ -414,8 +376,7 @@ tools:
 toby --config foo.yaml -- -- --watch
 ```
 
-runs `npm test -- --watch` in `/toby/workspace/foo` with Docker, or
-`$XDG_PROJECTS_DIR/foo` with Bubblewrap.
+runs `npm test -- --watch` in `/toby/workspace/foo`.
 
 ## Autoload
 

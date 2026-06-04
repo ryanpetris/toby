@@ -16,7 +16,6 @@ import (
 	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/providers/anthropic"
 	"petris.dev/toby/internal/providers/openai"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
 
@@ -28,7 +27,6 @@ const (
 var opencodeGitignore = []byte("*\n")
 
 type Mount struct {
-	paths         sandboxpath.Paths
 	controlHost   string
 	tobyMCPURL    string
 	instructions  []string
@@ -50,15 +48,15 @@ func NewRenderer(client *http.Client) (*Renderer, error) {
 	return &Renderer{http: client}, nil
 }
 
-func (r *Renderer) newMount(paths sandboxpath.Paths, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) (*Mount, error) {
+func (r *Renderer) newMount(controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) (*Mount, error) {
 	if r == nil || r.http == nil {
 		return nil, errors.New("opencode renderer requires an HTTP client")
 	}
-	return &Mount{paths: paths, controlHost: controlHost, tobyMCPURL: tobyMCPURL, instructions: append([]string(nil), instructions...), tobyConfig: cfg, proxy: proxy, mcpProxy: mcpProxy, http: r.http}, nil
+	return &Mount{controlHost: controlHost, tobyMCPURL: tobyMCPURL, instructions: append([]string(nil), instructions...), tobyConfig: cfg, proxy: proxy, mcpProxy: mcpProxy, http: r.http}, nil
 }
 
-func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, paths sandboxpath.Paths, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]error, error) {
-	mount, err := r.newMount(paths, controlHost, tobyMCPURL, instructions, cfg, proxy, mcpProxy)
+func (r *Renderer) RegisterContextFiles(ctx context.Context, registrar contextfiles.Registrar, controlHost, tobyMCPURL string, instructions []string, cfg *tobyconfig.Service, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) ([]error, error) {
+	mount, err := r.newMount(controlHost, tobyMCPURL, instructions, cfg, proxy, mcpProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +251,7 @@ func (m *Mount) addSynthetic(config map[string]any) error {
 	}
 	mcp["toby"] = toby
 	addInstructions(config, m.instructions)
-	addPermissionPaths(config, m.tobyConfig.PermissionPaths(m.paths))
+	addPermissionPaths(config, m.tobyConfig.PermissionPaths())
 	return nil
 }
 

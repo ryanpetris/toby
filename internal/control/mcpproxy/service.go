@@ -3,7 +3,6 @@ package mcpproxy
 import (
 	"context"
 	"fmt"
-	"net"
 	"sort"
 	"sync"
 	"time"
@@ -47,7 +46,7 @@ type Entry struct {
 }
 
 func Module() fx.Option {
-	return fx.Module("mcpproxy", fx.Provide(NewDockerRuntime, NewBubblewrapRuntime, NewService))
+	return fx.Module("mcpproxy", fx.Provide(NewDockerRuntime, NewService))
 }
 
 func NewService(params ServiceParams) (*Service, error) {
@@ -137,20 +136,6 @@ func (s *Service) configureEntry(ctx context.Context, controlHost, name string, 
 		return nil, fmt.Errorf("mcp.%s.transport is unsupported", name)
 	}
 	return entry, nil
-}
-
-func allocateLoopbackPort(ctx context.Context) (int, error) {
-	var dialer net.ListenConfig
-	listener, err := dialer.Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer listener.Close()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok || addr.Port <= 0 {
-		return 0, fmt.Errorf("unable to allocate loopback port")
-	}
-	return addr.Port, nil
 }
 
 func (s *Service) URL(name string) (string, bool) {

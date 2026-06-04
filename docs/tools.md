@@ -80,7 +80,7 @@ instructions. Provider models are used verbatim or discovered from `/models`.
 ### Claude Code
 
 Toby sets `CLAUDE_CONFIG_DIR=$HOME/.config/claude` (so credentials and session
-state live under the configured managed mount backing) and injects context
+state persist in its managed Docker volume) and injects context
 through launch flags rather than the config directory:
 
 - `--mcp-config .../claude/mcp.json` — the Toby MCP server.
@@ -132,7 +132,7 @@ toby t3 my-app --with-claude
 toby t3 my-app --with-claude --with-codex --with-opencode
 ```
 
-`my-app` is the environment/project name (mounted at `/toby/workspace/my-app` in Docker and `$XDG_PROJECTS_DIR/my-app` in Bubblewrap).
+`my-app` is the environment/project name (mounted at `/toby/workspace/my-app` in the sandbox).
 Each `--with-<tool>` flag installs that tool into the sandbox home and generates
 its Toby integration config. Inside t3 you then select whichever tool you want;
 its MCP (`git.*`), any configured providers, and your instruction files are

@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/config"
 	contextfiles "petris.dev/toby/internal/context/files"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
 	grokconfig "petris.dev/toby/internal/tools/grok/config"
 	"petris.dev/toby/internal/tools/tool"
 	"petris.dev/toby/internal/tools/tooltest"
@@ -25,7 +26,7 @@ func TestGrokHostInitRegistersManagedMount(t *testing.T) {
 	if len(sandbox.Binds) != 0 {
 		t.Fatalf("binds = %#v", sandbox.Binds)
 	}
-	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (sandboxmount.Key{Type: sandboxmount.TypeTool, Name: tool.GrokToolName, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(sandbox.Paths().Home, ".grok") || sandbox.Mounts[0].Subpath != ".grok" {
+	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (mount.Key{Type: mount.TypeTool, Name: tool.GrokToolName, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(layout.Home, ".grok") {
 		t.Fatalf("mounts = %#v", sandbox.Mounts)
 	}
 }
@@ -57,20 +58,18 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 
 func TestSandboxInitLinksManagedConfig(t *testing.T) {
 	home := t.TempDir()
-	sandboxHome := filepath.Join(home, "sandbox-home")
 	contextDir := filepath.Join(home, "context")
 	gr, sandbox, _ := newTestGrok(t, contextDir)
-	sandbox.PathsValue.Home = sandboxHome
 
 	if err := gr.SandboxInit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantDir := filepath.Join(sandboxHome, ".grok")
+	wantDir := filepath.Join(layout.Home, ".grok")
 	if !reflect.DeepEqual(sandbox.Dirs, []string{wantDir}) {
 		t.Fatalf("dirs = %#v, want %#v", sandbox.Dirs, []string{wantDir})
 	}
-	wantLink := filepath.Join(sandboxHome, ".grok", "managed_config.toml")
-	if sandbox.Symlinks[wantLink] != grokconfig.ConfigPath(contextDir) {
+	wantLink := filepath.Join(layout.Home, ".grok", "managed_config.toml")
+	if sandbox.Symlinks[wantLink] != grokconfig.ConfigPath(layout.Context) {
 		t.Fatalf("symlinks = %#v", sandbox.Symlinks)
 	}
 }

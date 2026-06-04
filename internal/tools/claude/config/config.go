@@ -17,7 +17,6 @@ import (
 	"petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/toolconfig"
 	"petris.dev/toby/internal/tools/toolconfig/proxyconfig"
 )
@@ -36,7 +35,7 @@ const (
 // instructions is the content of Toby's instruction files; they are concatenated
 // into a single file so the launcher can pass exactly one
 // --append-system-prompt-file.
-func RegisterContextFiles(registrar contextfiles.Registrar, paths sandboxpath.Paths, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) error {
+func RegisterContextFiles(registrar contextfiles.Registrar, instructions [][]byte, cfg *tobyconfig.Service, controlHost, tobyMCPURL string, proxy *httpproxy.Service, mcpProxy *mcpproxy.Service) error {
 	mcpConfig, err := syntheticMCP(cfg, controlHost, tobyMCPURL, proxy, mcpProxy)
 	if err != nil {
 		return err
@@ -45,7 +44,7 @@ func RegisterContextFiles(registrar contextfiles.Registrar, paths sandboxpath.Pa
 	if err != nil {
 		return err
 	}
-	settings, err := marshalJSON(syntheticSettings(cfg, paths))
+	settings, err := marshalJSON(syntheticSettings(cfg))
 	if err != nil {
 		return err
 	}
@@ -161,8 +160,8 @@ func convertRemoteMCPServer(server map[string]any) map[string]any {
 // permission paths. Claude's permissions.additionalDirectories takes directory
 // paths rather than glob patterns, so glob entries are dropped and only the
 // "allow" directories are listed.
-func syntheticSettings(cfg *tobyconfig.Service, paths sandboxpath.Paths) map[string]any {
-	dirs := allowedDirectories(cfg.PermissionPaths(paths))
+func syntheticSettings(cfg *tobyconfig.Service) map[string]any {
+	dirs := allowedDirectories(cfg.PermissionPaths())
 	if len(dirs) == 0 {
 		return map[string]any{}
 	}

@@ -39,16 +39,16 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 		return result, err
 	}
 	result.Options.Project = project
-	sandboxRuntime, err := flags.GetString("sandbox-runtime")
+	runtime, err := flags.GetString("runtime")
 	if err != nil {
 		return result, err
 	}
-	result.Options.SandboxRuntime = sandboxRuntime
-	dockerImage, err := flags.GetString("sandbox-image")
+	result.Options.SandboxRuntime = runtime
+	runtimeImage, err := flags.GetString("runtime-image")
 	if err != nil {
 		return result, err
 	}
-	result.Options.DockerImage = dockerImage
+	result.Options.Image = runtimeImage
 	applyDebugFlag(cmd, &result.Options)
 	applyYoloFlag(cmd, &result.Options)
 	for _, item := range contextTools {

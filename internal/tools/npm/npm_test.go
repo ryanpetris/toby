@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 	"reflect"
 	"testing"
 
@@ -52,7 +53,7 @@ func TestSandboxInitRunsContextScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{filepath.Join(contextDir, filepath.FromSlash(npmSandboxInitPath))}
+	want := []string{filepath.Join(layout.Context, filepath.FromSlash(npmSandboxInitPath))}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}

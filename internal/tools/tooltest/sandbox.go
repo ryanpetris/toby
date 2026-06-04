@@ -5,34 +5,30 @@ import (
 	"path/filepath"
 	"strings"
 
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/internal/context/files"
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
 	"petris.dev/toby/internal/tools/tool"
 )
 
 type Sandbox struct {
-	PathsValue sandboxpath.Paths
-	Env        map[string]string
-	Files      []contextfiles.File
-	Dirs       []string
-	Binds      []sandboxmount.Bind
-	Mounts     []sandboxmount.Info
-	Symlinks   map[string]string
-	ExecFunc   func(context.Context, []string, tool.ExecOptions) (int, error)
-	MCPURL     string
+	Env      map[string]string
+	Files    []contextfiles.File
+	Dirs     []string
+	Binds    []mount.Bind
+	Mounts   []mount.Mount
+	Symlinks map[string]string
+	ExecFunc func(context.Context, []string, tool.ExecOptions) (int, error)
+	MCPURL   string
 }
 
-func NewSandbox(contextDir string) *Sandbox {
-	root := filepath.Dir(contextDir)
+func NewSandbox(string) *Sandbox {
 	return &Sandbox{
-		PathsValue: sandboxpath.Paths{Root: root, Home: filepath.Dir(root), Context: contextDir, Bin: filepath.Join(root, "bin"), Workspace: filepath.Join(filepath.Dir(root), "Projects")},
-		Env:        map[string]string{},
-		Symlinks:   map[string]string{},
+		Env:      map[string]string{},
+		Symlinks: map[string]string{},
 	}
 }
 
-func (s *Sandbox) Paths() sandboxpath.Paths               { return s.PathsValue }
 func (s *Sandbox) ProjectPath(string) (string, bool)      { return "", false }
 func (s *Sandbox) VisibleHostPath(string) (string, error) { return "", nil }
 func (s *Sandbox) GetEnvironment(name string) (string, bool) {
@@ -57,24 +53,37 @@ func (s *Sandbox) AppendEnvironment(ctx context.Context, name, value, separator 
 	return s.setPathEntry(ctx, name, value, separator, false)
 }
 
-func (s *Sandbox) AddBind(bind sandboxmount.Bind) error {
+func (s *Sandbox) AddBind(bind mount.Bind) error {
+	bind.Target = layout.Expand(bind.Target)
 	s.Binds = append(s.Binds, bind)
 	return nil
 }
 
-func (s *Sandbox) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
-	info := sandboxmount.Info{Key: req.Key, Profile: "test", ProviderID: sandboxmount.ProviderID("test", req.Key), Backing: sandboxmount.BackingProvider, Target: sandboxpath.Resolve(req.Target, s.Paths()), Subpath: req.Subpath, Active: true, Source: sandboxmount.Source{Kind: sandboxmount.SourceProvider, Value: sandboxmount.ProviderID("test", req.Key)}, SetupPath: filepath.ToSlash(filepath.Join(sandboxpath.DefaultRoot, "mounts", "test-"+req.Key.Type+"-"+req.Key.Name+"-"+req.Key.Purpose)), Access: req.Access, Optional: req.Optional}
-	s.Mounts = append(s.Mounts, info)
-	return info, nil
+func (s *Sandbox) AddMount(req mount.Request) (mount.Mount, error) {
+	access := req.Access
+	if access == "" {
+		access = mount.AccessRegular
+	}
+	m := mount.Mount{
+		Key:       req.Key,
+		Profile:   "test",
+		Volume:    mount.Volume("test", req.Key),
+		Target:    layout.Expand(req.Target),
+		Access:    access,
+		Optional:  req.Optional,
+		SetupPath: "/toby/mounts/test-" + req.Key.Type + "-" + req.Key.Name + "-" + req.Key.Purpose,
+	}
+	s.Mounts = append(s.Mounts, m)
+	return m, nil
 }
 
-func (s *Sandbox) Mount(key sandboxmount.Key) (sandboxmount.Info, bool) {
+func (s *Sandbox) Mount(key mount.Key) (mount.Mount, bool) {
 	for _, item := range s.Mounts {
 		if item.Key == key {
 			return item, true
 		}
 	}
-	return sandboxmount.Info{}, false
+	return mount.Mount{}, false
 }
 
 func (s *Sandbox) setPathEntry(ctx context.Context, name, value, separator string, atStart bool) error {
@@ -98,10 +107,7 @@ func (s *Sandbox) setPathEntry(ctx context.Context, name, value, separator strin
 	return s.SetEnvironment(ctx, name, strings.Join(entries, separator))
 }
 func (s *Sandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
-	rel := path
-	if s.PathsValue.Context != "" {
-		rel = strings.TrimPrefix(path, s.PathsValue.Context+string(filepath.Separator))
-	}
+	rel := strings.TrimPrefix(path, layout.Context+string(filepath.Separator))
 	s.Files = append(s.Files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }

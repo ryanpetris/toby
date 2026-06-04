@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"path/filepath"
+	"petris.dev/toby/container/layout"
 
 	contextfiles "petris.dev/toby/internal/context/files"
 	"petris.dev/toby/internal/tools/helpers"
@@ -83,7 +84,7 @@ func (t *emdashTool) install(ctx context.Context, force bool) error {
 }
 
 func (t *emdashTool) contextPath(path string) string {
-	return filepath.Join(t.sandbox.Paths().Context, filepath.FromSlash(path))
+	return filepath.Join(layout.Context, filepath.FromSlash(path))
 }
 
 func (t *emdashTool) Launch(ctx context.Context, extra []string) error {

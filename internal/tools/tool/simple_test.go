@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	sandboxmount "petris.dev/toby/internal/sandbox/mount"
-	sandboxpath "petris.dev/toby/internal/sandbox/path"
+	"petris.dev/toby/container/layout"
+	"petris.dev/toby/container/mount"
 )
 
 func TestSimpleHostInitRegistersManagedMount(t *testing.T) {
@@ -16,22 +16,21 @@ func TestSimpleHostInitRegistersManagedMount(t *testing.T) {
 	if err := simple.HostInit(context.Background(), &CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []sandboxmount.Request{{
-		Key:     sandboxmount.Key{Type: sandboxmount.TypeTool, Name: "tool", Purpose: "state"},
-		Target:  sandboxpath.HomePath("state", "tool"),
-		Subpath: "state/tool",
-		Access:  sandboxmount.AccessRegular,
+	want := []mount.Request{{
+		Key:    mount.Key{Type: mount.TypeTool, Name: "tool", Purpose: "state"},
+		Target: "~/state/tool",
+		Access: mount.AccessRegular,
 	}}
 	if !reflect.DeepEqual(sandbox.mountRequests, want) {
 		t.Fatalf("mounts = %#v, want %#v", sandbox.mountRequests, want)
 	}
 
 	sandbox = &fakeSandboxService{}
-	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, Access: sandboxmount.AccessReadOnly}
+	simple = &Simple{Base: Base{Metadata: Metadata{Name: "tool"}}, Sandbox: sandbox, HostSubpath: []string{"host"}, SandboxSubpath: []string{"sandbox"}, Access: mount.AccessReadOnly}
 	if err := simple.HostInit(context.Background(), &CommandOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.mountRequests) != 1 || sandbox.mountRequests[0].Target != sandboxpath.HomePath("sandbox") || sandbox.mountRequests[0].Access != sandboxmount.AccessReadOnly {
+	if len(sandbox.mountRequests) != 1 || sandbox.mountRequests[0].Target != "~/sandbox" || sandbox.mountRequests[0].Access != mount.AccessReadOnly {
 		t.Fatalf("custom mounts = %#v", sandbox.mountRequests)
 	}
 
@@ -74,14 +73,11 @@ func TestSimpleLaunchReturnsExecError(t *testing.T) {
 
 type fakeSandboxService struct {
 	exec          func(context.Context, []string, ExecOptions) (int, error)
-	binds         []sandboxmount.Bind
-	mountRequests []sandboxmount.Request
-	mounts        map[sandboxmount.Key]sandboxmount.Info
+	binds         []mount.Bind
+	mountRequests []mount.Request
+	mounts        map[mount.Key]mount.Mount
 }
 
-func (s fakeSandboxService) Paths() sandboxpath.Paths {
-	return sandboxpath.Defaults()
-}
 func (s fakeSandboxService) ProjectPath(string) (string, bool)                    { return "", false }
 func (s fakeSandboxService) VisibleHostPath(string) (string, error)               { return "", nil }
 func (s fakeSandboxService) GetEnvironment(string) (string, bool)                 { return "", false }
@@ -92,22 +88,22 @@ func (s fakeSandboxService) PrependEnvironment(context.Context, string, string, 
 func (s fakeSandboxService) AppendEnvironment(context.Context, string, string, string) error {
 	return nil
 }
-func (s *fakeSandboxService) AddBind(bind sandboxmount.Bind) error {
+func (s *fakeSandboxService) AddBind(bind mount.Bind) error {
 	s.binds = append(s.binds, bind)
 	return nil
 }
-func (s *fakeSandboxService) AddMount(req sandboxmount.Request) (sandboxmount.Info, error) {
+func (s *fakeSandboxService) AddMount(req mount.Request) (mount.Mount, error) {
 	s.mountRequests = append(s.mountRequests, req)
-	info := sandboxmount.Info{Key: req.Key, Target: sandboxpath.Resolve(req.Target, s.Paths()), Active: true}
+	m := mount.Mount{Key: req.Key, Target: layout.Expand(req.Target)}
 	if s.mounts == nil {
-		s.mounts = map[sandboxmount.Key]sandboxmount.Info{}
+		s.mounts = map[mount.Key]mount.Mount{}
 	}
-	s.mounts[req.Key] = info
-	return info, nil
+	s.mounts[req.Key] = m
+	return m, nil
 }
-func (s *fakeSandboxService) Mount(key sandboxmount.Key) (sandboxmount.Info, bool) {
-	info, ok := s.mounts[key]
-	return info, ok
+func (s *fakeSandboxService) Mount(key mount.Key) (mount.Mount, bool) {
+	m, ok := s.mounts[key]
+	return m, ok
 }
 func (s fakeSandboxService) AddFile(context.Context, string, []byte, uint32) error { return nil }
 func (s fakeSandboxService) AddFileOwned(context.Context, string, []byte, uint32, int, int) error {
