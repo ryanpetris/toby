@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func testTool(name string, priority int, deps ...string) Tool {
-	return Base{Metadata: Metadata{Name: name, LaunchHelp: "help", Priority: priority, Dependencies: deps}}
+func testTool(name string, deps ...string) Tool {
+	return Base{Metadata: Metadata{Name: name, LaunchHelp: "help", Dependencies: deps}}
 }
 
 func groupedTool(name, group string) Tool {
@@ -33,29 +33,29 @@ func TestExpandGroupsAssemblesCatalogFromTools(t *testing.T) {
 }
 
 func TestNewRegistryRejectsDuplicateNames(t *testing.T) {
-	_, err := NewRegistry([]Tool{testTool("a", 10), testTool("a", 20)})
+	_, err := NewRegistry([]Tool{testTool("a"), testTool("a")})
 	if err == nil {
 		t.Fatal("expected duplicate registration to fail")
 	}
 }
 
-func TestNewRegistryRejectsBadDependencyPriority(t *testing.T) {
-	// dependency must have a strictly lower priority than the dependent.
-	_, err := NewRegistry([]Tool{testTool("dep", 100), testTool("main", 100, "dep")})
-	if err == nil {
-		t.Fatal("expected dependency priority violation to fail")
-	}
-	_, err = NewRegistry([]Tool{testTool("missing-dep", 100, "nope")})
+func TestNewRegistryRejectsBadDependency(t *testing.T) {
+	_, err := NewRegistry([]Tool{testTool("missing-dep", "nope")})
 	if err == nil {
 		t.Fatal("expected unknown dependency to fail")
 	}
+	// A dependency cycle has no valid topological order and must be rejected.
+	_, err = NewRegistry([]Tool{testTool("a", "b"), testTool("b", "a")})
+	if err == nil {
+		t.Fatal("expected dependency cycle to fail")
+	}
 }
 
-func TestBuildOrdersByPriorityThenName(t *testing.T) {
+func TestBuildOrdersTopologically(t *testing.T) {
 	registry, err := NewRegistry([]Tool{
-		testTool("npm", 10),
-		testTool("claude", 100, "npm"),
-		testTool("docker", 10),
+		testTool("npm"),
+		testTool("claude", "npm"),
+		testTool("docker"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,8 @@ func TestBuildOrdersByPriorityThenName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// npm pulled in as claude's dependency; priority 10 (docker, npm) before 100 (claude).
+	// npm is pulled in as claude's dependency and must precede claude; the
+	// independent docker/npm sort alphabetically, then the dependent claude.
 	if got, want := set.OrderedToolNames(), []string{"docker", "npm", "claude"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("order = %#v, want %#v", got, want)
 	}
@@ -74,7 +75,7 @@ func TestBuildOrdersByPriorityThenName(t *testing.T) {
 }
 
 func TestBuildRejectsUnknownTool(t *testing.T) {
-	registry, err := NewRegistry([]Tool{testTool("npm", 10)})
+	registry, err := NewRegistry([]Tool{testTool("npm")})
 	if err != nil {
 		t.Fatal(err)
 	}

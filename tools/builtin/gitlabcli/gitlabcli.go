@@ -3,7 +3,6 @@ package gitlabcli
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,10 +22,19 @@ import (
 
 var Module = fx.Module("tools.gitlabcli", fx.Provide(Provide))
 
-const gitlabCLIInstallPath = "gitlab_cli/install.sh"
+// Name is this tool's canonical identifier.
+const Name = "gitlab_cli"
 
-//go:embed install.sh
-var gitlabCLIFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	CLIName:       "glab",
+	LaunchHelp:    "Launch GitLab CLI",
+	Group:         tools.GroupVCS,
+	ContextGroups: []string{tools.GroupVCS, tools.GroupSystem},
+}
+
+const gitlabCLIInstallPath = "gitlab_cli/install.sh"
 
 type Result struct {
 	fx.Out
@@ -44,7 +52,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &gitlabCLITool{
-		Base:         tools.Base{Metadata: tools.Metadata{Name: tools.GitLabCliToolName, CLIName: "glab", LaunchHelp: "Launch GitLab CLI", Group: tools.GroupVCS, ContextGroups: []string{tools.GroupVCS, tools.GroupSystem}}},
+		Base:         tools.Base{Metadata: Meta},
 		http:         params.HTTP,
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
@@ -66,7 +74,7 @@ func (t *gitlabCLITool) InitSandbox(ctx context.Context) error {
 }
 
 func (t *gitlabCLITool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := gitlabCLIFiles.ReadFile("install.sh")
+	data, err := gitlabCLIFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

@@ -45,8 +45,7 @@ path expansion.
 ## Host config
 
 Host config is loaded from `$XDG_CONFIG_HOME/toby/` in this order, and any files
-that exist are deep-merged in order (`config/file`,
-`internal/dirty/config/toby`):
+that exist are deep-merged in order (`config/file`, `config/app`):
 
 1. `config.json`
 2. `config.yaml`
@@ -84,7 +83,7 @@ instruction:
 ### `mcp`
 
 `mcp` collects all MCP configuration. `mcp.server` is a map of MCP server name
-to definition; `mcp.image` is the default MCP sidecar image. Entries are
+to definition. Entries are
 Toby-managed proxy targets
 rendered into supported synthetic tool configs under the generated context
 directory; Toby's own MCP server is always injected as `toby` after host config
@@ -96,7 +95,7 @@ is merged. Configure non-proxied tool-native MCPs in the tool's own config.
 | `enabled` | bool | Defaults to `true`. |
 | `command` | string \| array | For `type: local`. First element is the command. |
 | `transport` | `stdio` \| `http` | For `type: local`; defaults to `stdio`. |
-| `image` | string | For `type: local`; the sidecar image. Defaults to `mcp.image`, then the effective main sandbox image, then Toby's built-in image. |
+| `image` | string | For `type: local`; the sidecar image. Defaults to the main sandbox image, then Toby's built-in image. |
 | `port` | number | Required for local `transport: http`; the container port. |
 | `path` | string | URL path for local HTTP MCPs; defaults to `/`. |
 | `url` | string | For `type: remote`. The upstream MCP URL. |
@@ -111,7 +110,6 @@ managerless sidecars and exposed through the same proxy URL shape.
 
 ```yaml
 mcp:
-  image: ghcr.io/acme/toby-mcp-base:latest   # optional default for MCP sidecars
   server:
     docs:
       type: remote
@@ -121,7 +119,7 @@ mcp:
     local-fs:
       type: local
       transport: stdio
-      image: ghcr.io/acme/mcp-node:latest
+      image: ghcr.io/acme/mcp-node:latest   # optional per-server image override
       command: ["my-mcp-server", "--root", "/srv"]
     local-http:
       type: local
@@ -191,8 +189,6 @@ container:
   image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
   build:
     context: ~/docker/toby
-mcp:
-  image: ghcr.io/acme/toby-mcp-base:latest
 settings:
   mountProfile: default      # namespaces persistent volumes; defaults to default
   autoloadProjectConfig: true
@@ -203,16 +199,14 @@ tool:
     mountProfile: work       # namespaces this tool's volumes separately
 ```
 
-- Docker is the only runtime. Podman and remote daemons are selected via the
-  standard `DOCKER_HOST` environment variable (e.g.
-  `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`), not via config. A
-  `--runtime` CLI flag remains as an override.
+- A reachable Docker socket is required. Podman and remote daemons work through
+  the standard `DOCKER_HOST` environment variable (e.g.
+  `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`); there is no runtime
+  selection in Toby.
 - The in-container layout is fixed (`/toby/home`, `/toby/workspace`, `/toby/bin`,
   `/toby/context`); it is not configurable.
-- `mcp.image` sets the default MCP sidecar image. Local MCP entries can override
-  it with a per-server `image`. MCP sidecar image precedence is
-  per-MCP `image`, then `mcp.image`, then
-  the effective main sandbox image, then Toby's built-in image.
+- Local MCP entries can set a per-server `image`. MCP sidecar image precedence is
+  per-MCP `image`, then the main sandbox image, then Toby's built-in image.
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
 - `settings.debug: true` enables debug mode. In sandbox and MCP sidecar

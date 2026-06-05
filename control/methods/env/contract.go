@@ -1,8 +1,8 @@
 package env
 
-// The env method contract: method names, typed request builders, and param/result
-// decoders. The host-side sandbox client (sender) and the handlers in this package
-// share these so the wire shape lives in exactly one place.
+// The env method contract: method names and param/result decoders. The host-side
+// sandbox client (sender) and the handlers in this package share these so the wire
+// shape lives in exactly one place.
 
 import (
 	"encoding/json"
@@ -17,18 +17,6 @@ const (
 	MethodGet = "env.get"
 	MethodSet = "env.set"
 )
-
-func NewGetRequest(id int64) ([]byte, error) {
-	return control.NewRequest(id, MethodGet, nil)
-}
-
-func NewSetRequest(id int64, params SetParams) ([]byte, error) {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return control.NewRequest(id, MethodSet, data)
-}
 
 func DecodeSetParams(raw json.RawMessage) (SetParams, error) {
 	params, err := control.DecodeParams[SetParams](raw)

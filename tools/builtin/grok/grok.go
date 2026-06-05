@@ -5,16 +5,15 @@ package grok
 
 import (
 	"context"
-	"embed"
 	"log"
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/control"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	grokconfig "petris.dev/toby/tools/builtin/grok/config"
 	"petris.dev/toby/tools/helpers"
@@ -27,10 +26,18 @@ const baseURL = "https://x.ai/cli"
 
 var Module = fx.Module("tools.grok", fx.Provide(Provide))
 
-const grokInstallPath = "grok/install.sh"
+// Name is this tool's canonical identifier.
+const Name = "grok"
 
-//go:embed install.sh
-var grokFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Grok",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+}
+
+const grokInstallPath = "grok/install.sh"
 
 type Params struct {
 	fx.In
@@ -48,7 +55,7 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &grokTool{Simple: &kit.Simple{
-		Base:           kit.Base(tools.GrokToolName, "Launch Grok", tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+		Base:           tools.Base{Metadata: Meta},
 		Sandbox:        params.Sandbox,
 		SandboxSubpath: []string{".grok"},
 	}, sessionConfig: params.SessionConfig, contextFiles: params.ContextFiles}
@@ -64,7 +71,7 @@ type grokTool struct {
 var _ tools.Tool = (*grokTool)(nil)
 
 func (t *grokTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := grokFiles.ReadFile("install.sh")
+	data, err := grokFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

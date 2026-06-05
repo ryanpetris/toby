@@ -8,17 +8,30 @@ import (
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	claudeconfig "petris.dev/toby/tools/builtin/claude/config"
+	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.claude", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "claude"
+
+// Meta is this tool's declarative identity. It runs after npm via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Claude",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{npm.Name},
+}
 
 type Params struct {
 	fx.In
@@ -38,7 +51,7 @@ func Provide(params Params) Result {
 	svc := &claudeTool{
 		Simple: kit.NewSimple(
 			params.Sandbox,
-			kit.DependentBase(tools.ClaudeToolName, "Launch Claude", 100, []string{tools.NpmToolName}, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+			tools.Base{Metadata: Meta},
 			[]string{".config", "claude"},
 			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
 			nil,

@@ -1,8 +1,8 @@
 package files
 
-// The file method contract: method names, typed request builders, and param
-// decoders. The host-side sandbox client (sender) and the handlers in this
-// package share these so the wire shape lives in exactly one place.
+// The file method contract: method names and param decoders. The host-side
+// sandbox client (sender) and the handlers in this package share these so the wire
+// shape lives in exactly one place.
 
 import (
 	"encoding/json"
@@ -18,38 +18,6 @@ const (
 	MethodMkdir   = "file.mkdir"
 	MethodSymlink = "file.symlink"
 )
-
-func NewCreateRequest(id int64, params CreateParams) ([]byte, error) {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return control.NewRequest(id, MethodCreate, data)
-}
-
-func NewDeleteRequest(id int64, params DeleteParams) ([]byte, error) {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return control.NewRequest(id, MethodDelete, data)
-}
-
-func NewMkdirRequest(id int64, params MkdirParams) ([]byte, error) {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return control.NewRequest(id, MethodMkdir, data)
-}
-
-func NewSymlinkRequest(id int64, params SymlinkParams) ([]byte, error) {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return control.NewRequest(id, MethodSymlink, data)
-}
 
 func DecodeCreateParams(raw json.RawMessage) (CreateParams, error) {
 	params, err := control.DecodeParams[CreateParams](raw)

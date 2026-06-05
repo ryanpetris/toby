@@ -28,11 +28,11 @@ func (r recorderTool) Install(_ context.Context, force bool) error {
 	return nil
 }
 
-func TestRunPhaseRunsToolsAndHooksByPriority(t *testing.T) {
+func TestRunPhaseRunsHooksThenToolsInOrder(t *testing.T) {
 	var log []string
 	registry, err := tools.NewRegistry([]tools.Tool{
-		recorderTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", Priority: 10}}, log: &log},
-		recorderTool{Base: tools.Base{Metadata: tools.Metadata{Name: "claude", Priority: 100}}, log: &log},
+		recorderTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm"}}, log: &log},
+		recorderTool{Base: tools.Base{Metadata: tools.Metadata{Name: "claude", Dependencies: []string{"npm"}}}, log: &log},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestRunPhaseRunsToolsAndHooksByPriority(t *testing.T) {
 	if err := runner.RunPhase(context.Background(), PhaseHostPrepare, set, Context{}, false); err != nil {
 		t.Fatal(err)
 	}
-	// hook priority -100 first, then npm (10), then claude (100).
+	// hooks run first, then tools in topological order (npm before its dependent claude).
 	if want := []string{"hook:early", "prepare:npm", "prepare:claude"}; !reflect.DeepEqual(log, want) {
 		t.Fatalf("host-prepare order = %#v, want %#v", log, want)
 	}
@@ -70,7 +70,7 @@ func TestRunPhaseSkipsNonParticipatingTools(t *testing.T) {
 	// A plain Base tool does not register context files, so the context-files
 	// phase must run nothing for it (and not error).
 	registry, err := tools.NewRegistry([]tools.Tool{
-		tools.Base{Metadata: tools.Metadata{Name: "plain", Priority: 10}},
+		tools.Base{Metadata: tools.Metadata{Name: "plain"}},
 	})
 	if err != nil {
 		t.Fatal(err)

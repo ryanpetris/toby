@@ -107,16 +107,19 @@ func (s *Service) addFile(ctx context.Context, path string, data []byte, mode ui
 	if mode == 0 {
 		mode = 0o644
 	}
+
 	s.mu.Lock()
 	sandbox := s.sandbox
 	s.mu.Unlock()
 	if sandbox == nil {
 		return "", fmt.Errorf("sandbox service is not configured")
 	}
+
 	target := filepath.Join(layout.Context, filepath.FromSlash(path))
 	if err := sandbox.AddFile(ctx, target, data, mode); err != nil {
 		return "", err
 	}
+
 	if instruction {
 		s.mu.Lock()
 		s.instructionPaths = append(s.instructionPaths, target)

@@ -6,16 +6,29 @@ package codex
 import (
 	"context"
 
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	codexconfig "petris.dev/toby/tools/builtin/codex/config"
+	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.codex", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "codex"
+
+// Meta is this tool's declarative identity. It runs after npm via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Codex",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{npm.Name},
+}
 
 type Params struct {
 	fx.In
@@ -34,7 +47,7 @@ func Provide(params Params) Result {
 	svc := &codexTool{
 		Simple: kit.NewSimple(
 			params.Sandbox,
-			kit.DependentBase(tools.CodexToolName, "Launch Codex", 100, []string{tools.NpmToolName}, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+			tools.Base{Metadata: Meta},
 			[]string{".codex"},
 			[]string{"npm", "install", "-g", "@openai/codex"},
 			nil,

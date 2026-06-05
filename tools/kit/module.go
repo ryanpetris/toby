@@ -20,17 +20,6 @@ func NewHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// Base builds a tool identity. group is the tool's primary category (used for
-// listing and group expansion) and is also its first context group; contextGroups
-// are the additional groups whose context the tool receives.
-func Base(name, help, group string, contextGroups ...string) tools.Base {
-	return tools.Base{Metadata: tools.Metadata{Name: name, LaunchHelp: help, Group: group, ContextGroups: append([]string{group}, contextGroups...)}}
-}
-
-func DependentBase(name, help string, priority int, dependencies []string, group string, contextGroups ...string) tools.Base {
-	return tools.Base{Metadata: tools.Metadata{Name: name, LaunchHelp: help, Group: group, ContextGroups: append([]string{group}, contextGroups...), Dependencies: append([]string(nil), dependencies...), Priority: priority}}
-}
-
 func NewSimple(sbx sandbox.Service, base tools.Base, sandboxSubpath []string, install []string, sandboxEnv map[string]string) *Simple {
 	return &Simple{
 		Base:           base,

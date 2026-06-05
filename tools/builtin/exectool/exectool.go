@@ -7,12 +7,23 @@ import (
 
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
-	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.exec", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "exec"
+
+// Meta is this tool's declarative identity, used both for planning (without
+// construction) and by Provide below.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Run a command in Toby Sandbox (default: interactive shell).",
+	Group:         tools.GroupCommand,
+	ContextGroups: []string{tools.GroupCommand, tools.GroupAI, tools.GroupUI, tools.GroupSystem, tools.GroupVCS},
+}
 
 type Result struct {
 	fx.Out
@@ -22,15 +33,7 @@ type Result struct {
 
 func Provide(sandbox sandbox.Service) Result {
 	svc := &execTool{
-		Base: kit.Base(
-			tools.ExecToolName,
-			"Run a command in Toby Sandbox (default: interactive shell).",
-			tools.GroupCommand,
-			tools.GroupAI,
-			tools.GroupUI,
-			tools.GroupSystem,
-			tools.GroupVCS,
-		),
+		Base:    tools.Base{Metadata: Meta},
 		sandbox: sandbox,
 	}
 	return Result{Service: svc}

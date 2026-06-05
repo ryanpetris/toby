@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	copilotconfig "petris.dev/toby/tools/builtin/copilot/config"
 	"petris.dev/toby/tools/fake"

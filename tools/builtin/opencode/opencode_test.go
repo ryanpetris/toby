@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"petris.dev/toby/config"
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/fake"
@@ -56,7 +56,7 @@ func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 			Tools []tools.Tool `group:"tools"`
 		}) {
 			for _, item := range params.Tools {
-				if item.Name() == tools.OpenCodeToolName {
+				if item.Name() == Name {
 					oc = item
 				}
 			}
@@ -84,8 +84,8 @@ func TestOpenCodeDeclaresNPMDependency(t *testing.T) {
 		ContextFiles: contextFiles,
 	}).Service
 
-	if got := oc.Dependencies(); len(got) != 1 || got[0] != tools.NpmToolName || oc.LifecyclePriority() != 100 {
-		t.Fatalf("dependency metadata = deps %#v priority %d", got, oc.LifecyclePriority())
+	if got := oc.Dependencies(); len(got) != 1 || got[0] != npm.Name {
+		t.Fatalf("dependency metadata = deps %#v", got)
 	}
 }
 
@@ -103,8 +103,8 @@ func TestOpenCodeHostInitRegistersManagedMounts(t *testing.T) {
 		key    mount.Key
 		target string
 	}{
-		{mount.Key{Type: mount.TypeTool, Name: tools.OpenCodeToolName, Purpose: "config"}, filepath.Join(layout.Home, ".config", "opencode")},
-		{mount.Key{Type: mount.TypeTool, Name: tools.OpenCodeToolName, Purpose: "data"}, filepath.Join(layout.Home, ".local", "share", "opencode")},
+		{mount.Key{Type: mount.TypeTool, Name: Name, Purpose: "config"}, filepath.Join(layout.Home, ".config", "opencode")},
+		{mount.Key{Type: mount.TypeTool, Name: Name, Purpose: "data"}, filepath.Join(layout.Home, ".local", "share", "opencode")},
 	}
 	if len(sandbox.Mounts) != len(want) {
 		t.Fatalf("mounts = %#v", sandbox.Mounts)

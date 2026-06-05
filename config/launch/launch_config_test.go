@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/config"
-	tobyconfig "petris.dev/toby/config/toby"
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/tools"
 )
@@ -129,8 +129,8 @@ tool:
     mountProfile: shared
 `))
 	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.NpmToolName, LaunchHelp: "Launch npm"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "github_cli", CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", LaunchHelp: "Launch npm"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,10 +140,10 @@ tool:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Primary != tools.GitHubCliToolName {
+	if launch.Primary != "github_cli" {
 		t.Fatalf("primary = %q", launch.Primary)
 	}
-	wantTools := []string{tools.GitHubCliToolName, tools.NpmToolName}
+	wantTools := []string{"github_cli", "npm"}
 	if !reflect.DeepEqual(launch.RequestedTools, wantTools) {
 		t.Fatalf("requested tools = %#v, want %#v", launch.RequestedTools, wantTools)
 	}
@@ -162,7 +162,7 @@ tool:
 	if !launch.Options.SuppressWarnings.Suppresses(warning.ModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
 	}
-	if launch.Options.ToolMountProfiles[tools.NpmToolName] != "shared" {
+	if launch.Options.ToolMountProfiles["npm"] != "shared" {
 		t.Fatalf("tool mount profiles = %#v", launch.Options.ToolMountProfiles)
 	}
 	if got, want := launch.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
@@ -183,8 +183,8 @@ tool:
   npm:
 `))
 	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.ExecToolName, LaunchHelp: "Run a command"}}},
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.NpmToolName, LaunchHelp: "Launch npm"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "exec", LaunchHelp: "Run a command"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", LaunchHelp: "Launch npm"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ tool:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Primary != tools.ExecToolName {
+	if launch.Primary != "exec" {
 		t.Fatalf("primary = %q", launch.Primary)
 	}
 	wantExtra := []string{"npm", "test", "--", "--watch"}
@@ -232,23 +232,23 @@ tool:
   npm:
 `))
 	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.NpmToolName, LaunchHelp: "Launch npm"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "opencode", LaunchHelp: "Launch OpenCode"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", LaunchHelp: "Launch npm"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, Extra: []string{"--foreground"}, RequestedTools: []string{tools.OpenCodeToolName}}
+	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, Extra: []string{"--foreground"}, RequestedTools: []string{"opencode"}}
 	paths := config.Paths{Home: home, ProjectRoot: projectRoot}
 	primaryProject, err := ResolveDirectLaunchProject(paths, parsed.Options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	launch, err := BuildOverlayConfiguredLaunch(Params{Registry: registry, Paths: paths}, configPath, parsed, tools.OpenCodeToolName, primaryProject)
+	launch, err := BuildOverlayConfiguredLaunch(Params{Registry: registry, Paths: paths}, configPath, parsed, "opencode", primaryProject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Primary != tools.OpenCodeToolName || !reflect.DeepEqual(launch.RequestedTools, []string{tools.OpenCodeToolName, tools.NpmToolName}) {
+	if launch.Primary != "opencode" || !reflect.DeepEqual(launch.RequestedTools, []string{"opencode", "npm"}) {
 		t.Fatalf("tools = primary %q requested %#v", launch.Primary, launch.RequestedTools)
 	}
 	if launch.Options.Env != "custom-name" || !reflect.DeepEqual(launch.Extra, []string{"--foreground"}) {
@@ -273,8 +273,8 @@ tool:
     params: ["test"]
 `))
 	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.ExecToolName, LaunchHelp: "Run a command"}}},
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.NpmToolName, LaunchHelp: "Launch npm"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "exec", LaunchHelp: "Run a command"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", LaunchHelp: "Launch npm"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ tool:
   exec:
 `))
 
-	_, err := loadLaunchConfig(configPath, home)
+	_, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home})
 	if err == nil || !strings.Contains(err.Error(), "settings.suppressWarnings[0]") {
 		t.Fatalf("error = %v", err)
 	}
@@ -333,13 +333,13 @@ func TestMaybeAutoloadProjectConfigWarnsWhenDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("project: {}\ntool: {}\n"))
-	cfgSvc, err := tobyconfig.Load(t.TempDir(), home)
+	cfgSvc, err := appconfig.Load(t.TempDir(), home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, RequestedTools: []string{tools.OpenCodeToolName}}
+	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, RequestedTools: []string{"opencode"}}
 	var stderr bytes.Buffer
-	_, ok, err := MaybeAutoloadProjectConfig(Params{Paths: configPaths(home, projectRoot), Config: cfgSvc, Stderr: &stderr}, parsed, tools.OpenCodeToolName)
+	_, ok, err := MaybeAutoloadProjectConfig(Params{Paths: configPaths(home, projectRoot), Config: cfgSvc, Stderr: &stderr}, parsed, "opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,29 +375,29 @@ tool:
 settings:
   autoloadProjectConfig: true
 `))
-	cfgSvc, err := tobyconfig.Load(configDir, home)
+	cfgSvc, err := appconfig.Load(configDir, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.OpenCodeToolName, LaunchHelp: "Launch OpenCode"}}},
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.NpmToolName, LaunchHelp: "Launch npm"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "opencode", LaunchHelp: "Launch OpenCode"}}},
+		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "npm", LaunchHelp: "Launch npm"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, RequestedTools: []string{tools.OpenCodeToolName}}
-	launch, ok, err := MaybeAutoloadProjectConfig(Params{Registry: registry, Paths: configPaths(home, projectRoot), Config: cfgSvc}, parsed, tools.OpenCodeToolName)
+	parsed := DirectLaunch{Options: tools.Options{Env: "app"}, RequestedTools: []string{"opencode"}}
+	launch, ok, err := MaybeAutoloadProjectConfig(Params{Registry: registry, Paths: configPaths(home, projectRoot), Config: cfgSvc}, parsed, "opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Fatal("expected autoload")
 	}
-	if launch.Options.Env != "review" || launch.Primary != tools.OpenCodeToolName {
+	if launch.Options.Env != "review" || launch.Primary != "opencode" {
 		t.Fatalf("launch = %#v", launch)
 	}
-	wantTools := []string{tools.OpenCodeToolName, tools.NpmToolName}
+	wantTools := []string{"opencode", "npm"}
 	if len(launch.RequestedTools) != len(wantTools) || launch.RequestedTools[0] != wantTools[0] || launch.RequestedTools[1] != wantTools[1] {
 		t.Fatalf("requested tools = %#v", launch.RequestedTools)
 	}

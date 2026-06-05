@@ -9,10 +9,10 @@ code to match rather than redefining a term here.
 - **sandbox** — the isolated execution space a tool runs in. The user-facing and
   conceptual term. A single running sandbox is an *instance*. Use "container" only when
   talking about the Docker implementation detail specifically.
-- **runtime** — the pluggable backend that creates and runs sandboxes (today: Docker).
-  Docker is the only runtime; Podman and remote daemons are selected via the standard
-  `DOCKER_HOST` environment variable, not via config, with a `--runtime` CLI flag as an
-  override. In code this is the `Runtime` interface.
+- **runtime** — the host-side machinery that creates and runs sandboxes. Docker is the
+  only backend; Podman and remote daemons work through the standard `DOCKER_HOST`
+  environment variable. There is no runtime selection. In code this is the
+  `petris.dev/toby/sandbox/runtime` package.
 - **engine** — the Docker-daemon layer beneath the runtime: the shared Docker client, the
   registry of containers Toby started, their deterministic teardown, and sanitized
   introspection. Code: pkg `container/engine`, `engine.Service`. Distinct from *runtime*

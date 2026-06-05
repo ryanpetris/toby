@@ -7,20 +7,32 @@ import (
 	"context"
 	"path/filepath"
 
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/builtin/npm"
 	opencodeconfig "petris.dev/toby/tools/builtin/opencode/config"
 	"petris.dev/toby/tools/helpers"
-	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.opencode", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "opencode"
+
+// Meta is this tool's declarative identity. It runs after npm via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch OpenCode",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{npm.Name},
+}
 
 type Params struct {
 	fx.In
@@ -38,7 +50,7 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &openCodeTool{
-		Base:          kit.DependentBase(tools.OpenCodeToolName, "Launch OpenCode", 100, []string{tools.NpmToolName}, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+		Base:          tools.Base{Metadata: Meta},
 		sessionConfig: params.SessionConfig,
 		sandbox:       params.Sandbox,
 		contextFiles:  params.ContextFiles,

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"petris.dev/toby/sessionconfig"
+	"petris.dev/toby/config/session"
 )
 
 const testTobyMCPURL = "http://127.0.0.1:12345/proxy/toby"

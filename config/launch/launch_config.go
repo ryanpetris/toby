@@ -1,7 +1,7 @@
 // Package launchconfig loads and resolves the per-launch config (.toby.yaml or
 // --config) into a ConfiguredLaunch: the tool selection, project mounts, and
 // container settings for one sandbox launch. It shares the container block and
-// strict decoding with the host config (config/toby) via config/container and
+// strict decoding with the host config (config/app) via config/container and
 // config/file.
 package launchconfig
 
@@ -15,9 +15,9 @@ import (
 	"strings"
 
 	"petris.dev/toby/config"
+	appconfig "petris.dev/toby/config/app"
 	containerconfig "petris.dev/toby/config/container"
 	configfile "petris.dev/toby/config/file"
-	tobyconfig "petris.dev/toby/config/toby"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/tools"
@@ -28,7 +28,7 @@ const projectLaunchConfigName = ".toby.yaml"
 type Params struct {
 	Registry *tools.Registry
 	Paths    config.Paths
-	Config   *tobyconfig.Service
+	Config   *appconfig.Service
 	Stderr   io.Writer
 }
 
@@ -237,9 +237,6 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tools.Options {
 }
 
 func mergeDirectLaunchOptions(dst *tools.Options, src tools.Options) {
-	if src.SandboxRuntime != "" {
-		dst.SandboxRuntime = src.SandboxRuntime
-	}
 	if src.Image != "" {
 		dst.Image = src.Image
 	}
@@ -272,10 +269,6 @@ func configuredLaunchExtra(params, extra []string) []string {
 	result = append(result, params...)
 	result = append(result, extra...)
 	return result
-}
-
-func loadLaunchConfig(path, home string) (launchConfig, error) {
-	return loadLaunchConfigWithPaths(path, config.Paths{Home: home})
 }
 
 func loadLaunchConfigWithPaths(path string, paths config.Paths) (launchConfig, error) {

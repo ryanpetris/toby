@@ -19,7 +19,7 @@ func TestProvideMetadataAndHostInitBinds(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
 	svc := Provide(config.Paths{Home: home}, sandbox).Service
 
-	if svc.Name() != tools.DockerToolName || svc.CommandName() != tools.DockerToolName || svc.LaunchHelp() == "" {
+	if svc.Name() != Name || svc.CommandName() != Name || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
 	if err := svc.PrepareHost(context.Background(), &tools.Options{}); err != nil {

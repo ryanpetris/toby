@@ -25,31 +25,13 @@ const (
 	GroupCommand = "command"
 )
 
-// Canonical tool names. These are the stable identifiers used as config keys,
-// dependency references, and CLI selectors.
-const (
-	ExecToolName       = "exec"
-	NpmToolName        = "npm"
-	UvToolName         = "uv"
-	OpenCodeToolName   = "opencode"
-	CopilotToolName    = "copilot"
-	ClaudeToolName     = "claude"
-	DockerToolName     = "docker"
-	CodexToolName      = "codex"
-	GrokToolName       = "grok"
-	EmdashToolName     = "emdash"
-	T3ToolName         = "t3"
-	SpeckitToolName    = "speckit"
-	GitHubCliToolName  = "github_cli"
-	GitLabCliToolName  = "gitlab_cli"
-	ForgejoCliToolName = "fj"
-)
-
 // Tool is the contract every tool implements. Embed Base for identity and no-op
 // lifecycle defaults, then override only the phases the tool needs. Optional
 // capabilities (writing context files) are separate interfaces a tool may also
 // satisfy. The sandbox and other dependencies are injected at construction, so
-// the phase methods take only a context.
+// the phase methods take only a context. A tool declares its launch order
+// relative to others purely through Dependencies (resolved by the registry into
+// a topological order); there is no priority number.
 type Tool interface {
 	// Identity.
 	Name() string
@@ -58,7 +40,6 @@ type Tool interface {
 	Group() string
 	ContextGroups() []string
 	Dependencies() []string
-	LifecyclePriority() int
 
 	// Lifecycle phases, in order. PrepareHost runs host-side before the sandbox
 	// starts; the remaining phases run once the sandbox is up.
@@ -88,7 +69,6 @@ type Options struct {
 	Project           string
 	Projects          []ProjectMount
 	Workdir           string
-	SandboxRuntime    string
 	Image             string
 	Build             Build
 	MountProfile      string

@@ -94,7 +94,7 @@ func (s *Service) AddMount(req Request) (Entry, error) {
 		return Entry{}, fmt.Errorf("mount service is not configured")
 	}
 
-	profile := s.getProfile(req.Key)
+	profile := s.profileFor(req.Key)
 	mount := Entry{
 		Key:       req.Key,
 		Profile:   profile,
@@ -146,8 +146,8 @@ func (s *Service) AddBind(bind Bind) error {
 	return nil
 }
 
-// GetMount returns a registered mount by key.
-func (s *Service) GetMount(key Key) (Entry, bool) {
+// Mount returns a registered mount by key.
+func (s *Service) Mount(key Key) (Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -155,8 +155,8 @@ func (s *Service) GetMount(key Key) (Entry, bool) {
 	return mount, ok
 }
 
-// GetMounts returns every registered volume mount in registration order.
-func (s *Service) GetMounts() []Entry {
+// Mounts returns every registered volume mount in registration order.
+func (s *Service) Mounts() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,8 +167,8 @@ func (s *Service) GetMounts() []Entry {
 	return result
 }
 
-// GetBinds returns the registered passthrough binds.
-func (s *Service) GetBinds() []Bind {
+// Binds returns the registered passthrough binds.
+func (s *Service) Binds() []Bind {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -214,7 +214,7 @@ func (s *Service) RunSetup(ctx context.Context, run Executor) error {
 	return nil
 }
 
-func (s *Service) getProfile(key Key) string {
+func (s *Service) profileFor(key Key) string {
 	if key.Type == TypeTool {
 		if profile := strings.TrimSpace(s.toolProfiles[key.Name]); profile != "" {
 			return profile

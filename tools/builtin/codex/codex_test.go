@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
+	"petris.dev/toby/config/session"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/tools/fake"
 )

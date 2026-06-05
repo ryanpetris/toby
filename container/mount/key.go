@@ -41,28 +41,6 @@ func RuntimeHomeKey(sandboxName string) Key {
 	return Key{Type: TypeRuntime, Name: NameHome, Purpose: purpose}
 }
 
-// IsRuntimeHome reports whether key is the runtime home volume.
-func IsRuntimeHome(key Key) bool {
-	return key.Type == TypeRuntime && key.Name == NameHome
-}
-
-// ParseKey parses "type.name" or "type.name.purpose".
-func ParseKey(value string) (Key, error) {
-	parts := strings.Split(strings.TrimSpace(value), ".")
-	if len(parts) < 2 || len(parts) > 3 {
-		return Key{}, fmt.Errorf("mount key must be type.name or type.name.purpose")
-	}
-
-	key := Key{Type: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}
-	if len(parts) == 3 {
-		key.Purpose = strings.TrimSpace(parts[2])
-	}
-	if key.Type == "" || key.Name == "" || strings.ContainsAny(key.Type+key.Name+key.Purpose, "\x00") {
-		return Key{}, fmt.Errorf("invalid mount key %q", value)
-	}
-	return key, nil
-}
-
 func validateKey(key Key) error {
 	key.Type = strings.TrimSpace(key.Type)
 	key.Name = strings.TrimSpace(key.Name)

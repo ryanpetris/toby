@@ -4,7 +4,6 @@ package forgejocli
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,10 +23,18 @@ import (
 
 var Module = fx.Module("tools.forgejocli", fx.Provide(Provide))
 
-const forgejoCLIInstallPath = "fj/install.sh"
+// Name is this tool's canonical identifier.
+const Name = "fj"
 
-//go:embed install.sh
-var forgejoCLIFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Forgejo CLI",
+	Group:         tools.GroupVCS,
+	ContextGroups: []string{tools.GroupVCS, tools.GroupSystem},
+}
+
+const forgejoCLIInstallPath = "fj/install.sh"
 
 type Result struct {
 	fx.Out
@@ -45,7 +52,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &forgejoCLITool{
-		Base:         kit.Base(tools.ForgejoCliToolName, "Launch Forgejo CLI", tools.GroupVCS, tools.GroupSystem),
+		Base:         tools.Base{Metadata: Meta},
 		http:         params.HTTP,
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
@@ -67,7 +74,7 @@ func (t *forgejoCLITool) InitSandbox(ctx context.Context) error {
 }
 
 func (t *forgejoCLITool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := forgejoCLIFiles.ReadFile("install.sh")
+	data, err := forgejoCLIFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,6 @@ package githubcli
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,10 +22,19 @@ import (
 
 var Module = fx.Module("tools.githubcli", fx.Provide(Provide))
 
-const githubCLIInstallPath = "github_cli/install.sh"
+// Name is this tool's canonical identifier.
+const Name = "github_cli"
 
-//go:embed install.sh
-var githubCLIFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	CLIName:       "gh",
+	LaunchHelp:    "Launch GitHub CLI",
+	Group:         tools.GroupVCS,
+	ContextGroups: []string{tools.GroupVCS, tools.GroupSystem},
+}
+
+const githubCLIInstallPath = "github_cli/install.sh"
 
 type Result struct {
 	fx.Out
@@ -44,7 +52,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &githubCLITool{
-		Base:         tools.Base{Metadata: tools.Metadata{Name: tools.GitHubCliToolName, CLIName: "gh", LaunchHelp: "Launch GitHub CLI", Group: tools.GroupVCS, ContextGroups: []string{tools.GroupVCS, tools.GroupSystem}}},
+		Base:         tools.Base{Metadata: Meta},
 		http:         params.HTTP,
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
@@ -66,7 +74,7 @@ func (t *githubCLITool) InitSandbox(ctx context.Context) error {
 }
 
 func (t *githubCLITool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := githubCLIFiles.ReadFile("install.sh")
+	data, err := githubCLIFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

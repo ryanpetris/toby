@@ -20,7 +20,7 @@ import (
 func TestProvideMetadataAndLaunch(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
 	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
-	if svc.Name() != tools.GitHubCliToolName || svc.CommandName() != "gh" || svc.LaunchHelp() == "" {
+	if svc.Name() != Name || svc.CommandName() != "gh" || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
 	var got []string

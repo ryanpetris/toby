@@ -10,6 +10,7 @@ import (
 
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/builtin/uv"
 	"petris.dev/toby/tools/fake"
 )
 
@@ -36,7 +37,7 @@ func TestLatestReleaseTagRejectsMissingTag(t *testing.T) {
 
 func TestInstallSkipsWhenSpecifyExists(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
-	svc := &speckitTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.SpeckitToolName}}, sandbox: sandbox}
+	svc := &speckitTool{Base: tools.Base{Metadata: tools.Metadata{Name: Name}}, sandbox: sandbox}
 	var execCalls [][]string
 	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
 		execCalls = append(execCalls, append([]string(nil), argv...))
@@ -54,7 +55,7 @@ func TestInstallSkipsWhenSpecifyExists(t *testing.T) {
 func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
 	svc := &speckitTool{
-		Base:    tools.Base{Metadata: tools.Metadata{Name: tools.SpeckitToolName}},
+		Base:    tools.Base{Metadata: tools.Metadata{Name: Name}},
 		http:    speckitHTTPClient(http.StatusOK, `{"tag_name":"v0.5.0"}`),
 		sandbox: sandbox,
 	}
@@ -75,14 +76,14 @@ func TestUpgradeRunsUVToolInstallWithLatestTag(t *testing.T) {
 
 func TestSpeckitDeclaresUVDependency(t *testing.T) {
 	svc := Provide(Params{HTTP: http.DefaultClient, Sandbox: fake.NewSandbox("/toby/context")}).Service
-	if got := svc.Dependencies(); len(got) != 1 || got[0] != tools.UvToolName || svc.LifecyclePriority() != 100 {
-		t.Fatalf("dependency metadata = deps %#v priority %d", got, svc.LifecyclePriority())
+	if got := svc.Dependencies(); len(got) != 1 || got[0] != uv.Name {
+		t.Fatalf("dependency metadata = deps %#v", got)
 	}
 }
 
 func TestLaunchRunsSpecifyWithExtras(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
-	svc := &speckitTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.SpeckitToolName}}, sandbox: sandbox}
+	svc := &speckitTool{Base: tools.Base{Metadata: tools.Metadata{Name: Name}}, sandbox: sandbox}
 	var got []string
 	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)

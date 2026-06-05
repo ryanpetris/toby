@@ -14,7 +14,7 @@ func TestConfigureRegistersRuntimeHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, ok := s.GetMount(RuntimeHomeKey("demo"))
+	home, ok := s.Mount(RuntimeHomeKey("demo"))
 	if !ok {
 		t.Fatal("runtime home not registered")
 	}
@@ -95,7 +95,7 @@ func TestAddBindExpandsAndDedups(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	binds := s.GetBinds()
+	binds := s.Binds()
 	if len(binds) != 2 {
 		t.Fatalf("binds = %#v", binds)
 	}

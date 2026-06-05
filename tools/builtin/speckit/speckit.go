@@ -12,6 +12,7 @@ import (
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/builtin/uv"
 	"petris.dev/toby/tools/helpers"
 	"petris.dev/toby/tools/kit"
 
@@ -24,6 +25,18 @@ const (
 )
 
 var Module = fx.Module("tools.speckit", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "speckit"
+
+// Meta is this tool's declarative identity. It runs after uv via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Spec Kit",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{uv.Name},
+}
 
 type Params struct {
 	fx.In
@@ -40,7 +53,7 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &speckitTool{
-		Base:    kit.DependentBase(tools.SpeckitToolName, "Launch Spec Kit", 100, []string{tools.UvToolName}, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+		Base:    tools.Base{Metadata: Meta},
 		http:    params.HTTP,
 		sandbox: params.Sandbox,
 	}

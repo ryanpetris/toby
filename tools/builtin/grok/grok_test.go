@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	grokconfig "petris.dev/toby/tools/builtin/grok/config"
 	"petris.dev/toby/tools/fake"
@@ -27,7 +27,7 @@ func TestGrokHostInitRegistersManagedMount(t *testing.T) {
 	if len(sandbox.Binds) != 0 {
 		t.Fatalf("binds = %#v", sandbox.Binds)
 	}
-	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (mount.Key{Type: mount.TypeTool, Name: tools.GrokToolName, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(layout.Home, ".grok") {
+	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (mount.Key{Type: mount.TypeTool, Name: Name, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(layout.Home, ".grok") {
 		t.Fatalf("mounts = %#v", sandbox.Mounts)
 	}
 }

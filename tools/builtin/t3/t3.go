@@ -4,13 +4,13 @@ package t3
 
 import (
 	"context"
-	"embed"
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
@@ -18,10 +18,19 @@ import (
 
 var Module = fx.Module("tools.t3", fx.Provide(Provide))
 
-const t3WrapperPath = "t3/t3-wrapper.sh"
+// Name is this tool's canonical identifier.
+const Name = "t3"
 
-//go:embed t3-wrapper.sh
-var t3Files embed.FS
+// Meta is this tool's declarative identity. It runs after npm via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch T3 Code",
+	Group:         tools.GroupUI,
+	ContextGroups: []string{tools.GroupUI, tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{npm.Name},
+}
+
+const t3WrapperPath = "t3/t3-wrapper.sh"
 
 type Params struct {
 	fx.In
@@ -39,7 +48,7 @@ type Result struct {
 func Provide(params Params) Result {
 	simple := kit.NewSimple(
 		params.Sandbox,
-		kit.DependentBase(tools.T3ToolName, "Launch T3 Code", 100, []string{tools.NpmToolName}, tools.GroupUI, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+		tools.Base{Metadata: Meta},
 		nil,
 		[]string{"npm", "install", "-g", "t3"},
 		map[string]string{"T3CODE_NO_BROWSER": "1"},
@@ -68,7 +77,7 @@ func (t *t3Tool) ConfigureSandbox(ctx context.Context) error {
 }
 
 func (t *t3Tool) RegisterContextFiles(ctx context.Context, opts tools.ContextOptions) error {
-	data, err := t3Files.ReadFile("t3-wrapper.sh")
+	data, err := t3Files.ReadFile("resources/t3-wrapper.sh")
 	if err != nil {
 		return err
 	}

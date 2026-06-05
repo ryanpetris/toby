@@ -41,7 +41,7 @@ The wire protocol is documented as an OpenAPI schema in
 
 Toby is wired together with [uber-go/fx](https://github.com/uber-go/fx)
 dependency injection. `main.go` calls `app.Run()`, which builds a planning fx
-application from `internal/dirty/app/module.go` and executes the Cobra CLI.
+application from `app/module.go` and executes the Cobra CLI.
 
 The root planning graph composes:
 
@@ -50,19 +50,20 @@ The root planning graph composes:
 - `sandbox.Module()` (`control/sandbox`) — sandbox-side control RPC handlers for
   the hidden `toby sandbox manager` command.
 - Supporting providers: `config.NewPaths` (XDG path resolution),
-  `tobyconfig.New`, `tool.NewRegistry`, and the session runner factory.
+  `appconfig.New`, `tool.NewRegistry`, and the session runner factory.
 
 Each launch builds a separate execution fx graph. That graph contains only the
 selected tool dependency closure from `tools.SelectedModule(...)`, the selected
 sandbox runtime module when known, and the host-side services needed for that
-run: `sandbox.Module()`, `host.Module()` (`control/host`), `mcpserver.Module()`,
+run: `sandbox.Module()`, `host.Module()` (`control/host`), `mcpserver.Module()`
+(plus the `gitservice`/`sessionservice` service-plugin modules),
 `contextfiles.NewService`, `executil.NewProcessRunner`, `tool.NewRegistry`, and
 the lifecycle hook providers.
 
-The CLI is built in `internal/dirty/cli/commands`. `NewRootCommand` registers:
+The CLI is built in `cli`. `NewRootCommand` registers:
 
 - one launch subcommand per registered tool that has launch help, via
-  `Registry.LaunchTools()` (see `internal/dirty/cli/commands/root.go`);
+  `Registry.LaunchTools()` (see `cli/root.go`);
 - the hidden `toby sandbox manager` command tree (`sandbox.go`);
 - a shell-completion command.
 
@@ -72,30 +73,28 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 
 | Package | Responsibility |
 | --- | --- |
-| `internal/dirty/app` | fx application wiring and entry point. |
-| `internal/dirty/cli/commands` | Cobra commands, flag parsing, `toby sandbox` tree. |
-| `internal/dirty/cli/launchconfig` | `--config` / `.toby.yaml` launch config parsing and resolution. |
-| `internal/dirty/cli/session` | End-to-end session orchestration (`session.Run`). |
-| `internal/dirty/config` | XDG paths (`paths.go`). |
+| `app` | fx application wiring and entry point. |
+| `cli` | Cobra commands, flag parsing, `toby sandbox` tree. |
+| `config/launch` | `--config` / `.toby.yaml` launch config parsing and resolution. |
+| `session/run` | End-to-end launch orchestration (`run.Run`). |
+| `config` | XDG paths (`paths.go`). |
 | `config/file` | Config file decoding (JSON/YAML), deep merge. |
-| `internal/dirty/config/toby` | Host config schema, validation, and context-file rendering. |
-| `internal/dirty/context/files` | Context file session/builder for generated config and configured instructions. |
-| `internal/dirty/context/setup` | Context lifecycle hooks for host config and tool context files. |
+| `config/app` | Host config schema, validation, and context-file rendering (`appconfig`). |
+| `context/files` | Context file session/builder for generated config and configured instructions. |
+| `context/setup` | Context lifecycle hooks for host config and tool context files. |
 | `control` | Control transport: WebSocket (coder/websocket), chi router, JSON-RPC peer/envelope; capability `Router`; generic param/result decoders and shared wire sentinels. |
 | `control/methods/<name>` | One self-contained control capability per method family (`files`, `env`, `command`, `git`); each owns its wire contract and handler `Service`. `control/methods/lifecycle` holds the cross-side handshake method names. |
 | `control/host` | Host-side control endpoint: registry/router, sandbox client, `context.init`/`command.exit` orchestration. |
 | `control/sandbox` | Sandbox-side control endpoint: registry/router, connection lifecycle, `sandbox.terminate`. |
 | `control/httpproxy` | `/proxy/<uuid>` reverse proxy for MCP and providers. |
-| `internal/dirty/control/mcpserver` | Built-in Toby MCP server exposing host Git tools, MCP lifecycle tools, and `toby://` resources. |
-| `internal/dirty/sandbox` | Runtime selection, shared sandbox service/types, helper binary delivery. |
-| `internal/dirty/sandbox/docker` | Container sandbox runtime (testcontainers-go) and Fx module. |
+| `control/mcpserver` | Built-in Toby MCP server framework + per-session contract; service plugins live in `control/mcpserver/services/{git,session}` (host Git tools; MCP lifecycle tools and `toby://` introspection resources). |
+| `sandbox/runtime` | Host-side sandbox runtime: the Factory, the control-channel sandbox service, and the Docker container backend (testcontainers-go) and Fx module (clean). |
 | `container/engine` | Shared Docker client and container service: tracks and tears down every container Toby starts. |
 | `tools` | `Tool` contract, `Base`, `Metadata`, `Registry`, `Toolset` (clean). |
 | `lifecycle` | Launch phase runner driving the toolset through its phases (clean). |
 | `sandbox` | Tool-facing sandbox interface (`Service`, `Paths`, `ExecOptions`) (clean). |
-| `internal/dirty/toolwiring` | Fx composition of the tool modules + planning metadata. |
-| `internal/dirty/tools/<name>` | One package per tool (claude, codex, t3, …). |
-| `internal/dirty/tools/toolconfig` | Helpers for generating synthetic tool config. |
+| `tools/wiring` | Fx composition of the tool modules + planning metadata (clean). |
+| `tools/builtin/<name>` | One package per tool (claude, codex, t3, …) (clean). |
 | `providers` (+ `openai`, `anthropic`) | Upstream `/models` discovery, fx-grouped provider clients behind a caching registry. |
 | `diagnostic` | Exit-code mapping and suppressible warnings. |
 | `platform/executil` | Process runner with signal forwarding. |
@@ -198,16 +197,16 @@ new runtime implementation with Fx.
 ## Sandbox runtimes
 
 Toby runs sandboxes in containers and requires a reachable Docker-compatible
-daemon. Docker is the only runtime; Podman and remote daemons are selected via
+daemon. Docker is the only backend; Podman and remote daemons work through
 the standard `DOCKER_HOST` environment variable (e.g.
-`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`), not via config, and a
-`--runtime` CLI flag remains as an override. The runtime is implemented with the testcontainers-go library, which
+`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`), with no runtime
+selection in Toby. The runtime is implemented with the testcontainers-go library, which
 drives the Docker daemon through the Docker SDK rather than the `docker` CLI. It
 honors `DOCKER_HOST` and the active Docker context, so Docker Engine, Docker
 Desktop, Podman, and remote daemons all work. (Image building still shells out
 to `docker build`; container lifecycle goes through testcontainers-go.)
 
-- **Container runtime** (`internal/dirty/sandbox/docker`): containers run as
+- **Container runtime** (`sandbox/runtime`): containers run as
   `--user 0:0` with an init process and the configured image (default
   `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`). `$HOME`
   (`/toby/home` by default) is backed by a named Docker volume (e.g.
@@ -221,7 +220,7 @@ to `docker build`; container lifecycle goes through testcontainers-go.)
   containers are left running after exit instead of being terminated. Phase-specific
   names prevent setup and run containers from colliding; containers are never
   reused.
-- **Networking** (`internal/dirty/sandbox/docker/networking.go`): how the container
+- **Networking** (`sandbox/runtime/networking.go`): how the container
   reaches the host control server depends on the daemon. A local Linux daemon uses
   host networking and the unchanged `127.0.0.1`; Docker Desktop uses
   `host.docker.internal`; remote and Podman daemons use testcontainers'
@@ -252,7 +251,7 @@ require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
 ## End-to-end launch flow
 
 A direct launch such as `toby claude my-app` proceeds through the app session
-runner and `internal/dirty/cli/session/session.go`:
+runner and `session/run/run.go`:
 
 1. **Plan execution.** Parse CLI flags, merge host-config sandbox defaults, and
    (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands
@@ -294,15 +293,19 @@ runner and `internal/dirty/cli/session/session.go`:
 
 ## Tool abstraction (`tools` + `lifecycle`)
 
-Every full tool implements the `Tool` interface. Tool implementations register
-into the `toby.tools` fx group in the execution graph and are looked up by name
-in the `Registry`. Planning uses metadata-only `Tool` values with the same names,
-CLI names, groups, declared dependencies, and lifecycle priorities.
+Every full tool implements the `Tool` interface. Each tool package declares its
+own identity (a `Name` constant and a `Meta` value) alongside its fx `Module`;
+`tools/wiring` enumerates those packages in one place. Tool implementations
+register into the `tools` fx group in the execution graph and are looked up by
+name in the `Registry`. Planning uses metadata-only `Tool` values built from the
+same per-tool `Meta` (same names, CLI names, groups, and declared dependencies),
+so no execution services are constructed.
 
 A `Toolset` is an ordered collection with one primary tool. Dependencies select
-additional tools; they do not directly run dependency code. Static lifecycle
-priority controls hook ordering, so dependency tools use lower priorities than
-their dependents.
+additional tools; they do not directly run dependency code. The `Registry` orders
+a launch's tools by a topological sort of their declared dependencies — every tool
+runs after the tools it depends on (e.g. an agent runs after the npm it needs).
+There is no priority number; ordering is derived from the dependency graph alone.
 
 Lifecycle hook groups:
 

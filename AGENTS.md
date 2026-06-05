@@ -40,31 +40,17 @@ code, don't redefine the term.
   tools and resources, and the like. Migration paths and backward-compatible
   fallbacks are not required.
 
-## The `internal/dirty/` quarantine
+## Package layout
 
-Everything under `internal/dirty/` predates the terminology/API cleanup and has
-**not** been reviewed against [the glossary](docs/glossary.md) — treat its exported
-names, package boundaries, and structure as provisional and dirty. `internal/` is a
-fine long-term home for genuinely private code; the `dirty/` prefix is the temporary
-marker for "not yet cleaned."
+Every package lives in its proper home: a top-level package when it is a clean public
+API, or a plain `internal/` package when it should stay genuinely private. The
+`internal/dirty/` quarantine that once held the un-cleaned code is **gone** — the
+terminology/API cleanup it tracked is complete and the tree has been fully emptied
+(leaf-first, ending with the composition root `app`).
 
-As a package is cleaned (names aligned to the glossary, dead exports unexported, public
-surface verified), **promote it out of `internal/dirty/`** to its proper home: a
-top-level package when it is a clean public API, or a plain `internal/` package when it
-should stay private. The goal is to empty `internal/dirty/`. Do not add new code under
-`internal/dirty/` — new packages start clean in their proper location.
-
-**Clean code must never reference dirty code.** Nothing outside `internal/dirty/` — no
-top-level package and no plain `internal/` package — may import any
-`internal/dirty/...` package. Dependencies flow one way only: dirty → clean, never
-clean → dirty. A consequence is that you can only promote a package out of
-`internal/dirty/` once everything it imports has already been cleaned and promoted, so
-cleanup proceeds leaf-first. If promoting a package would force a clean package to
-import the quarantine, it is not ready yet.
-
-The sole tolerated exception is the root `main.go`, which must import the composition
-root (`app`) to bootstrap; it stops referencing the quarantine when `app` is promoted
-out, necessarily last.
+New packages start clean in their proper location: exported names follow
+[the glossary](docs/glossary.md), dead exports stay unexported, and the public surface
+is kept minimal. `main.go` imports only the composition root (`app`) to bootstrap.
 
 ## Build, test, and run
 
@@ -76,7 +62,7 @@ gofmt -l .        # should print nothing
 ```
 
 The project uses [uber-go/fx](https://github.com/uber-go/fx) for dependency
-injection; `internal/dirty/app/module.go` is the composition root. `main.go` calls
+injection; `app/module.go` is the composition root. `main.go` calls
 `app.Run()`.
 
 `version.Current` is overridden at build time with
@@ -86,57 +72,84 @@ builds are produced by `.github/workflows/release.yaml`.
 `support/toby/Dockerfile` is the reference sandbox image used by the
 repository's own `.toby.yaml`.
 
+## Dependencies and licenses
+
+[docs/dependencies.md](docs/dependencies.md) is the canonical inventory of every
+Go module in `go.mod` (direct and indirect) and the license it ships under.
+
+- **Permissive licenses only.** Toby may only depend on modules under permissive
+  licenses (MIT, BSD-2/3-Clause, ISC, Apache-2.0, MPL-2.0, and similar). **Never**
+  pull in a copyleft license — GPL, AGPL, LGPL, SSPL, or any license with
+  comparable reciprocal/source-disclosure obligations — as either a direct or an
+  indirect dependency.
+- **Check the license before adding or updating a dependency.** Before running
+  `go get`/`go mod tidy` to add or bump a module, verify the license of the new
+  module **and** of any new indirect dependencies it drags in. Read the
+  `LICENSE`/`COPYING` file in the module cache
+  (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`). If anything is not
+  clearly permissive, stop and do not pull it in.
+- **Keep the inventory in sync.** Any change to `go.mod`'s `require` blocks —
+  adding, removing, or updating a direct or indirect dependency — must update the
+  matching row(s) in [docs/dependencies.md](docs/dependencies.md) in the same
+  change, including whether the dependency is direct or indirect.
+
 ## Package map
 
 | Area | Packages |
 | --- | --- |
-| Entry / wiring | `internal/dirty/app` |
-| CLI | `internal/dirty/cli/commands`, `internal/dirty/cli/launchconfig`, `internal/dirty/cli/session` |
-| Config | `internal/dirty/config/toby` |
-| Context injection | `internal/dirty/context/files`, `internal/dirty/context/setup` |
-| Control handlers (dirty) | `internal/dirty/control/mcpserver`, `mcpproxy` |
-| Sandbox runtimes | `internal/dirty/sandbox` (+ docker runtime) |
-| Tools | tool implementations `internal/dirty/tools/<name>`; fx composition `internal/dirty/toolwiring`; shared `internal/dirty/tools/{toolutil,helpers,tooltest}` |
-| **Clean (promoted)** | `config` (XDG path resolution), `config/file` (JSON/YAML decode + deep merge), `container/engine`, `container/layout`, `container/mount`, `control` (transport + JSON-RPC envelope + capability `Router`), `control/host` & `control/sandbox` (the two control endpoints), `control/methods/<name>` (one self-contained capability per method family: `files`, `env`, `command`, `git`, plus `lifecycle` method names), `control/httpproxy`, `diagnostic/exitcode`, `diagnostic/warning`, `lifecycle` (launch phase runner), `platform/environ` (env-var helper), `platform/executil`, `providers` (+ `openai`, `anthropic`), `sandbox` (tool-facing sandbox interface), `sandbox/binary`, `tools` (`Tool` contract + `Registry`), `version` |
+| Entry / wiring | `app` (composition root + `main.go` entry) |
+| CLI | `cli` (Cobra command tree) |
+| Session | `session/run` (end-to-end launch runner), `session/resolve` (privileged session-config resolver), `config/session` (resolved, sandbox-safe config handed to tools) |
+| Context injection | `context/files`, `context/setup` |
+| Tools | tool implementations `tools/builtin/<name>`; fx composition `tools/wiring`; shared `tools/{kit,helpers,fake}` |
+| **Clean (promoted)** | `config` (XDG path resolution), `config/app` (host config: deep-merges defaults with the user config), `config/file` (JSON/YAML decode + deep merge), `container/engine`, `container/layout`, `container/mount`, `control` (transport + JSON-RPC envelope + capability `Router`), `control/host` & `control/sandbox` (the two control endpoints), `control/methods/<name>` (one self-contained capability per method family: `files`, `env`, `command`, `git`, plus `lifecycle` method names), `control/httpproxy`, `control/mcpproxy` (MCP server proxy: remote upstreams + Docker stdio/http sidecars), `control/mcpserver` (host-side MCP server framework + per-session contract) & `control/mcpserver/services/{git,session}` (the git and session-introspection tool/resource service plugins), `diagnostic/exitcode`, `diagnostic/warning`, `lifecycle` (launch phase runner), `platform/environ` (env-var helper), `platform/executil`, `providers` (+ `openai`, `anthropic`), `sandbox` (tool-facing sandbox interface), `sandbox/runtime` (host-side sandbox runtime + Docker backend), `sandbox/binary`, `tools` (`Tool` contract + `Registry`), `version` |
 
 A control **capability** lives in `control/methods/<name>`: it owns its wire contract (`types.go` for params/results, `contract.go` for method-name constants, request builders, and param/result decoders) and its handler (`Service`). The `Service` is provided to fx both as a concrete injectable type and into a handler group (`control.host.handlers` or `control.sandbox.handlers`) via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`; the host/sandbox registries build a `control.Router` from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared wire sentinels (`HostUser`/`HostGroup`) live in `control` itself, not in any capability.
 
 ## Conventions
 
-- **Adding a tool:** create `internal/dirty/tools/<name>`, implement the
-  `tools.Tool` interface from the clean `tools` package (embed `tools.Base` for
-  identity + no-op lifecycle defaults, or `toolutil.Simple` for a config-driven
-  CLI), and register it into the `toby.tools` fx group via a `Module()` that
-  provides `tools.Tool`. Wire that module into `internal/dirty/toolwiring`, and
-  add its name constant + group in `tools/tools.go` / `tools/registry.go`. Tool
-  lifecycle phases (`PrepareHost`, `ConfigureSandbox`, `InitSandbox`, `Install`,
-  `Launch`) are driven by the `lifecycle.Runner`; optional capabilities like
-  writing context files are separate interfaces (`tools.ContextFileRegistrar`).
-  Add tests next to the package and update [docs/tools.md](docs/tools.md) and the
-  README tool table.
+- **Adding a tool:** create `tools/builtin/<name>` and let it own its identity —
+  declare a `Name` constant and a `Meta` (`tools.Metadata`) value in the package,
+  then implement the `tools.Tool` interface (embed `tools.Base{Metadata: Meta}`
+  for identity + no-op lifecycle defaults, or `kit.Simple` for a config-driven
+  CLI). Provide it into the `tools` fx group via a `Module()` that provides
+  `tools.Tool`. Register the tool by adding one `{Meta, Module}` row to the
+  `entries` list in `tools/wiring`; the planning metadata and the name→module
+  selection are both derived from that list, so there is no central name constant.
+  A tool that depends on another references the dependency's exported `Name` (e.g.
+  `Dependencies: []string{npm.Name}`); the `Registry` orders tools by a
+  topological sort of those dependencies (no priority numbers). Tool lifecycle
+  phases (`PrepareHost`, `ConfigureSandbox`, `InitSandbox`, `Install`, `Launch`)
+  are driven by the `lifecycle.Runner`; optional capabilities like writing context
+  files are separate interfaces (`tools.ContextFileRegistrar`). Add tests next to
+  the package and update [docs/tools.md](docs/tools.md) and the README tool table.
 - **Synthetic config** belongs in the tool's `RegisterContextFiles` (and/or
   launch flags in `Launch`); never write into the tools' real config files on
   the host or in the sandbox home.
 - **Warnings** must use a registered ID in `diagnostic/warning` so they
   remain suppressible via `settings.suppressWarnings`.
 - Match the surrounding code style; keep tests alongside the code they cover.
-- **Prefix accessors with `Get`/`get`.** A function whose job is to return data
-  the receiver already holds (or trivially derives from it) is named with a
-  `Get` prefix — exported `GetX`, unexported `getX`. For example a service that
-  hands back its registered mounts uses `GetMounts()`/`GetMount(key)`, not
-  `Mounts()`/`Mount(key)`. This does **not** apply to:
-  - constructors (`New*`) and key/value builders (e.g. `RuntimeHomeKey`);
-  - functions that perform the real work or a side effect rather than merely
-    read — actions (`AddMount`, `Configure`, `Ping`), and lazy initializers that
-    construct and return a resource on first call (e.g. `Client`). A
-    lazy-loading *accessor* — one that ensures a value is loaded and then returns
-    stored data — is still a getter and takes the prefix (e.g. `GetDaemonClass`);
-  - pure computations and transforms of their arguments (e.g. `Volume`,
-    `Expand`), which derive a result rather than read stored state;
-  - predicates (`Is*`/`Has*`) and the `String()`/`Error()` interface methods.
+- **Name getters without a `Get` prefix.** Follow idiomatic Go (Effective Go):
+  a method that returns data the receiver holds takes the bare field-style name —
+  `Mounts()`/`Mount(key)`, `DaemonClass()`, not `GetMounts()`/`GetDaemonClass()`.
+  This holds for lazy-loading accessors too (one that ensures a value is loaded
+  and then returns it). The `Get` *prefix* survives only where `GET` is the real
+  operation, not an accessor — an HTTP GET helper (`GetJSON`). Related forms:
+  - **setters keep `Set`** (`SetEnvironment`), and a getter/setter pair drops the
+    prefix on the getter only (`Environment`/`SetEnvironment`);
+  - a **map/registry-style lookup** may use a bare `Get`/`Lookup` matching the
+    stdlib (`url.Values.Get`, `os.LookupEnv`) — it's the `GetX` *prefix* that's
+    out, not the bare method name `Get`;
+  - **constructors** (`New*`) and key/value builders (e.g. `RuntimeHomeKey`),
+    **actions** that do real work or a side effect (`AddMount`, `Configure`,
+    `Ping`), and lazy initializers that construct a resource on first call
+    (`Client`) were never getters and are unaffected;
+  - **pure computations** and transforms of their arguments (e.g. `Volume`,
+    `Expand`) derive a result rather than read stored state;
+  - **predicates** (`Is*`/`Has*`) and the `String()`/`Error()` interface methods.
 - **No function aliases.** Don't add a function or method that exists only to
-  forward to another under a second name (e.g. a `GetVolumes` that just returns
-  `GetMounts()`). Keep one canonical name and update every call site to use it.
+  forward to another under a second name (e.g. a `Volumes` that just returns
+  `Mounts()`). Keep one canonical name and update every call site to use it.
 - **Assert interface implementations at compile time.** When a type is meant to
   satisfy an interface, add a blank-identifier assertion in the same file as the
   type so a drifting method set fails the build instead of some distant call
@@ -210,3 +223,6 @@ A control **capability** lives in `control/methods/<name>`: it owns its wire con
   update [docs/tools.md](docs/tools.md) and the README tool table.
 - When changing the runtime architecture or control flow, update
   [docs/architecture.md](docs/architecture.md).
+- When changing `go.mod`'s dependencies (adding, removing, or updating a direct
+  or indirect module), update [docs/dependencies.md](docs/dependencies.md) in the
+  same change after confirming the license is permissive.

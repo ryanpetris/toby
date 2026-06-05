@@ -122,7 +122,7 @@ mcp:
   image: ghcr.io/acme/toby-mcp-base:latest # optional default for MCP sidecars
 ```
 
-Docker is the only runtime. Podman and remote daemons are selected via the standard `DOCKER_HOST` environment variable (for example `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`), not via config. A `--runtime` CLI flag remains as an override.
+A reachable Docker socket is required. Podman and remote daemons work through the standard `DOCKER_HOST` environment variable (for example `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`); there is no runtime selection in Toby.
 
 ## Launch Configuration
 
@@ -206,8 +206,7 @@ toby exec <env> -- <command arguments>
 Useful flags:
 
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
-- `--runtime <docker>` selects the sandbox runtime.
-- `--runtime-image <image>` selects the container image for direct launches.
+- `--image <image>` selects the container image for direct launches.
 - `--config <file>` launches from a YAML or JSON launch configuration.
 - `--debug` enables debug mode for the launch, overriding config.
 - `--install` installs the selected tool and exits.
@@ -221,7 +220,7 @@ The sandbox manager uses `TOBY_CONTROL_HOST=host:port` and `TOBY_CONTROL_TOKEN` 
 
 Configured MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.server.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://<control-host>/proxy/<uuid>`. Toby opens remote upstream connections from the host process and applies configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox.
 
-Local MCP entries use `type: local`, `command`, and optional `transport: stdio` (default) or `transport: http`. Toby starts them asynchronously as managerless sidecars with no project/context/managed mounts. MCP sidecars run as Docker containers; the default sidecar image can be set globally with `mcp.image` and overridden per MCP with a per-server `image`. MCP sidecars use that `image` and the image defaults for user, home, and working directory. If you do not want Toby proxying, configure the MCP directly in the tool's own config instead.
+Local MCP entries use `type: local`, `command`, and optional `transport: stdio` (default) or `transport: http`. Toby starts them asynchronously as managerless sidecars with no project/context/managed mounts. MCP sidecars run as Docker containers; by default they use the main sandbox image, and each MCP can override it with a per-server `image`. MCP sidecars use that `image` and the image defaults for user, home, and working directory. If you do not want Toby proxying, configure the MCP directly in the tool's own config instead.
 
 Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok's `managed_config.toml` symlink points back to the generated Grok config. Tool-specific instruction injection is also session-scoped: Copilot receives a generated `AGENTS.md` directory through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, Grok receives combined rules through `--rules`, and Codex receives combined developer instructions through `-c developer_instructions=...`.
 

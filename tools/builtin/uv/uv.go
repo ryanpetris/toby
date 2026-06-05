@@ -3,7 +3,6 @@ package uv
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,10 +23,19 @@ import (
 
 var Module = fx.Module("tools.uv", fx.Provide(Provide))
 
-const uvInstallPath = "uv/install.sh"
+// Name is this tool's canonical identifier (the dependency name speckit
+// references).
+const Name = "uv"
 
-//go:embed install.sh
-var uvFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch UV (Python Package Manager)",
+	Group:         tools.GroupSystem,
+	ContextGroups: []string{tools.GroupSystem, tools.GroupVCS},
+}
+
+const uvInstallPath = "uv/install.sh"
 
 type Result struct {
 	fx.Out
@@ -45,7 +53,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &uvTool{
-		Base:         kit.Base(tools.UvToolName, "Launch UV (Python Package Manager)", tools.GroupSystem, tools.GroupVCS),
+		Base:         tools.Base{Metadata: Meta},
 		http:         params.HTTP,
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
@@ -83,7 +91,7 @@ func (t *uvTool) InitSandbox(ctx context.Context) error {
 	}
 
 	for _, key := range []string{"UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR"} {
-		dir, _ := t.sandbox.GetEnvironment(key)
+		dir, _ := t.sandbox.Environment(key)
 		if err := t.sandbox.MkdirOwned(ctx, dir, 0o755, control.HostUser, control.HostGroup); err != nil {
 			return err
 		}
@@ -92,7 +100,7 @@ func (t *uvTool) InitSandbox(ctx context.Context) error {
 }
 
 func (t *uvTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := uvFiles.ReadFile("install.sh")
+	data, err := uvFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

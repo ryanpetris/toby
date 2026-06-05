@@ -11,7 +11,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"petris.dev/toby/sessionconfig"
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/tools/helpers"
 )
 

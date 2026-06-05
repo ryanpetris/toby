@@ -47,8 +47,8 @@ func (s *Service) Client(ctx context.Context) (*testcontainers.DockerClient, err
 	return s.client, s.clientErr
 }
 
-// GetDaemonClass returns how the daemon is reached, creating the client if needed.
-func (s *Service) GetDaemonClass(ctx context.Context) (DaemonClass, error) {
+// DaemonClass returns how the daemon is reached, creating the client if needed.
+func (s *Service) DaemonClass(ctx context.Context) (DaemonClass, error) {
 	if _, err := s.Client(ctx); err != nil {
 		return 0, err
 	}
@@ -56,8 +56,9 @@ func (s *Service) GetDaemonClass(ctx context.Context) (DaemonClass, error) {
 	return s.class, nil
 }
 
-// Ping verifies the daemon is reachable. Used by the sandbox runtime's Available
-// check to surface a clear error when no daemon is running.
+// Ping verifies the daemon is reachable. The session runs it as a preflight
+// check to surface a clear error when no daemon is running (or DOCKER_HOST is
+// unreachable) before building a sandbox.
 func (s *Service) Ping(ctx context.Context) error {
 	cli, err := s.Client(ctx)
 	if err != nil {
@@ -131,9 +132,9 @@ func (s *Service) terminateAll(_ context.Context) {
 	}
 }
 
-// GetSnapshot returns sanitized metadata for every tracked container, sorted by
+// Snapshot returns sanitized metadata for every tracked container, sorted by
 // label then phase, for introspection resources.
-func (s *Service) GetSnapshot() []ContainerInfo {
+func (s *Service) Snapshot() []ContainerInfo {
 	s.mu.Lock()
 	infos := make([]ContainerInfo, 0, len(s.records))
 	for id, rec := range s.records {

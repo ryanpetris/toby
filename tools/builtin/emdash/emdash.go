@@ -4,7 +4,6 @@ package emdash
 
 import (
 	"context"
-	"embed"
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
@@ -12,7 +11,6 @@ import (
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/tools/helpers"
-	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
@@ -21,10 +19,18 @@ const appImageURL = "https://github.com/generalaction/emdash/releases/latest/dow
 
 var Module = fx.Module("tools.emdash", fx.Provide(Provide))
 
-const emdashInstallPath = "emdash/install.sh"
+// Name is this tool's canonical identifier.
+const Name = "emdash"
 
-//go:embed install.sh
-var emdashFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Emdash",
+	Group:         tools.GroupUI,
+	ContextGroups: []string{tools.GroupUI, tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+}
+
+const emdashInstallPath = "emdash/install.sh"
 
 type Result struct {
 	fx.Out
@@ -40,7 +46,7 @@ type Params struct {
 }
 
 func Provide(params Params) Result {
-	svc := &emdashTool{Base: kit.Base(tools.EmdashToolName, "Launch Emdash", tools.GroupUI, tools.GroupAI, tools.GroupSystem, tools.GroupVCS), sandbox: params.Sandbox, contextFiles: params.ContextFiles}
+	svc := &emdashTool{Base: tools.Base{Metadata: Meta}, sandbox: params.Sandbox, contextFiles: params.ContextFiles}
 	return Result{Service: svc}
 }
 
@@ -53,7 +59,7 @@ type emdashTool struct {
 var _ tools.Tool = (*emdashTool)(nil)
 
 func (t *emdashTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := emdashFiles.ReadFile("install.sh")
+	data, err := emdashFiles.ReadFile("resources/install.sh")
 	if err != nil {
 		return err
 	}

@@ -11,12 +11,22 @@ import (
 	"petris.dev/toby/container/mount"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
-	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.docker", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "docker"
+
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Docker",
+	Group:         tools.GroupSystem,
+	ContextGroups: []string{tools.GroupSystem, tools.GroupVCS},
+}
 
 type Result struct {
 	fx.Out
@@ -26,7 +36,7 @@ type Result struct {
 
 func Provide(paths config.Paths, sandbox sandbox.Service) Result {
 	svc := &dockerTool{
-		Base:    kit.Base(tools.DockerToolName, "Launch Docker", tools.GroupSystem, tools.GroupVCS),
+		Base:    tools.Base{Metadata: Meta},
 		paths:   paths,
 		sandbox: sandbox,
 	}

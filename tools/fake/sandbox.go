@@ -34,7 +34,7 @@ func NewSandbox(string) *Sandbox {
 
 func (s *Sandbox) ProjectPath(string) (string, bool)      { return "", false }
 func (s *Sandbox) VisibleHostPath(string) (string, error) { return "", nil }
-func (s *Sandbox) GetEnvironment(name string) (string, bool) {
+func (s *Sandbox) Environment(name string) (string, bool) {
 	value, ok := s.Env[name]
 	return value, ok
 }

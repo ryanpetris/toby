@@ -7,8 +7,6 @@ import (
 	"context"
 	"sort"
 
-	"go.uber.org/fx"
-
 	"petris.dev/toby/tools"
 )
 
@@ -23,53 +21,50 @@ func NewRunner(hooks []Hook) *Runner {
 	return &Runner{hooks: append([]Hook(nil), hooks...)}
 }
 
-// Module provides the Runner, consuming every Hook in the "lifecycle" group.
-func Module() fx.Option {
-	return fx.Module("lifecycle",
-		fx.Provide(
-			fx.Annotate(NewRunner, fx.ParamTags(`group:"lifecycle"`)),
-		),
-	)
-}
-
-type action struct {
+type hookAction struct {
 	priority int
 	name     string
 	run      func(context.Context) error
 }
 
-// RunPhase runs phase for the toolset: every active tool's phase method plus
-// every Hook registered for the phase, ordered by priority then name. force is
-// passed to PhaseInstall (true performs an upgrade).
+// RunPhase runs phase for the toolset: first every Hook registered for the phase
+// (ordered by priority then name), then every active tool's phase method in the
+// toolset's topological order (each tool follows the tools it depends on). Hooks
+// prepare shared state (e.g. context files) that tools then consume, so they
+// always run before the tools. force is passed to PhaseInstall (true performs an
+// upgrade).
 func (r *Runner) RunPhase(ctx context.Context, phase Phase, set *tools.Toolset, lctx Context, force bool) error {
-	var actions []action
+	var hooks []hookAction
+	for _, hook := range r.hooks {
+		if hook.Phase != phase || hook.Run == nil {
+			continue
+		}
+		hook := hook
+		hooks = append(hooks, hookAction{priority: hook.Priority, name: hook.Name, run: func(ctx context.Context) error {
+			return hook.Run(ctx, lctx)
+		}})
+	}
+	sort.SliceStable(hooks, func(i, j int) bool {
+		if hooks[i].priority == hooks[j].priority {
+			return hooks[i].name < hooks[j].name
+		}
+		return hooks[i].priority < hooks[j].priority
+	})
+	for _, a := range hooks {
+		if err := a.run(ctx); err != nil {
+			return err
+		}
+	}
+
 	if set != nil {
 		for _, t := range set.OrderedTools() {
 			run := toolAction(t, phase, lctx, force)
 			if run == nil {
 				continue
 			}
-			actions = append(actions, action{priority: t.LifecyclePriority(), name: t.Name(), run: run})
-		}
-	}
-	for _, hook := range r.hooks {
-		if hook.Phase != phase || hook.Run == nil {
-			continue
-		}
-		hook := hook
-		actions = append(actions, action{priority: hook.Priority, name: hook.Name, run: func(ctx context.Context) error {
-			return hook.Run(ctx, lctx)
-		}})
-	}
-	sort.SliceStable(actions, func(i, j int) bool {
-		if actions[i].priority == actions[j].priority {
-			return actions[i].name < actions[j].name
-		}
-		return actions[i].priority < actions[j].priority
-	})
-	for _, a := range actions {
-		if err := a.run(ctx); err != nil {
-			return err
+			if err := run(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -24,7 +24,7 @@ type ExecOptions struct {
 type Service interface {
 	ProjectPath(string) (string, bool)
 	VisibleHostPath(string) (string, error)
-	GetEnvironment(string) (string, bool)
+	Environment(string) (string, bool)
 	SetEnvironment(context.Context, string, string) error
 	PrependEnvironment(context.Context, string, string, string) error
 	AppendEnvironment(context.Context, string, string, string) error

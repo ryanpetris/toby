@@ -8,7 +8,7 @@ import (
 )
 
 func TestSimpleMapsConfiguration(t *testing.T) {
-	base := Base("example", "Launch Example", tools.GroupSystem)
+	base := tools.Base{Metadata: tools.Metadata{Name: "example", LaunchHelp: "Launch Example", Group: tools.GroupSystem, ContextGroups: []string{tools.GroupSystem}}}
 	install := []string{"npm", "install", "-g", "example"}
 	env := map[string]string{"EXAMPLE": "1"}
 

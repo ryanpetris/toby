@@ -10,8 +10,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools/helpers"
 )
 

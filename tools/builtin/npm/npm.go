@@ -4,24 +4,31 @@ package npm
 
 import (
 	"context"
-	"embed"
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
-	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.npm", fx.Provide(Provide))
 
-const npmSandboxInitPath = "npm/sandbox-init.sh"
+// Name is this tool's canonical identifier (the dependency name npm-installed
+// agent tools reference).
+const Name = "npm"
 
-//go:embed sandbox-init.sh
-var npmFiles embed.FS
+// Meta is this tool's declarative identity.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Node Package Manager",
+	Group:         tools.GroupSystem,
+	ContextGroups: []string{tools.GroupSystem, tools.GroupVCS},
+}
+
+const npmSandboxInitPath = "npm/sandbox-init.sh"
 
 type Result struct {
 	fx.Out
@@ -38,7 +45,7 @@ type Params struct {
 
 func Provide(params Params) Result {
 	svc := &npmTool{
-		Base:         kit.Base(tools.NpmToolName, "Launch Node Package Manager", tools.GroupSystem, tools.GroupVCS),
+		Base:         tools.Base{Metadata: Meta},
 		sandbox:      params.Sandbox,
 		contextFiles: params.ContextFiles,
 	}
@@ -77,7 +84,7 @@ func (t *npmTool) InitSandbox(ctx context.Context) error {
 }
 
 func (t *npmTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
-	data, err := npmFiles.ReadFile("sandbox-init.sh")
+	data, err := npmFiles.ReadFile("resources/sandbox-init.sh")
 	if err != nil {
 		return err
 	}

@@ -7,7 +7,7 @@ import (
 
 func TestNewServiceHasEmptySnapshot(t *testing.T) {
 	s := New()
-	if got := s.GetSnapshot(); len(got) != 0 {
+	if got := s.Snapshot(); len(got) != 0 {
 		t.Fatalf("snapshot = %#v", got)
 	}
 

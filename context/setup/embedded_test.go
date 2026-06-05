@@ -7,7 +7,7 @@ import (
 )
 
 func TestAgentFilesExposeSandboxGuidance(t *testing.T) {
-	data, err := fs.ReadFile(AgentFiles(), TobyAgentsPath)
+	data, err := fs.ReadFile(AgentFiles(), tobyAgentsFile)
 	if err != nil {
 		t.Fatal(err)
 	}

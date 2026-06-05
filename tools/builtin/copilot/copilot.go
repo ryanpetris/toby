@@ -7,17 +7,30 @@ import (
 	"context"
 	"petris.dev/toby/container/layout"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	copilotconfig "petris.dev/toby/tools/builtin/copilot/config"
+	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
 
 var Module = fx.Module("tools.copilot", fx.Provide(Provide))
+
+// Name is this tool's canonical identifier.
+const Name = "copilot"
+
+// Meta is this tool's declarative identity. It runs after npm via its dependency.
+var Meta = tools.Metadata{
+	Name:          Name,
+	LaunchHelp:    "Launch Copilot",
+	Group:         tools.GroupAI,
+	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
+	Dependencies:  []string{npm.Name},
+}
 
 type Params struct {
 	fx.In
@@ -37,7 +50,7 @@ func Provide(params Params) Result {
 	svc := &copilotTool{
 		Simple: kit.NewSimple(
 			params.Sandbox,
-			kit.DependentBase(tools.CopilotToolName, "Launch Copilot", 100, []string{tools.NpmToolName}, tools.GroupAI, tools.GroupSystem, tools.GroupVCS),
+			tools.Base{Metadata: Meta},
 			[]string{".copilot"},
 			[]string{"npm", "install", "-g", "@github/copilot"},
 			nil,

@@ -110,7 +110,7 @@ func TestInstallSkipsWhenBinaryExists(t *testing.T) {
 }
 
 func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
-	svc := &uvTool{Base: tools.Base{Metadata: tools.Metadata{Name: tools.UvToolName}}}
+	svc := &uvTool{Base: tools.Base{Metadata: tools.Metadata{Name: Name}}}
 	assetName, err := svc.assetName()
 	if err != nil {
 		t.Skip(err)

@@ -9,8 +9,8 @@ package config
 import (
 	"encoding/json"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/sessionconfig"
 )
 
 const (

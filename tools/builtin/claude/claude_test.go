@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"petris.dev/toby/config"
+	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/tools/builtin/npm"
 	"petris.dev/toby/tools/fake"
@@ -36,7 +36,7 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 			Tools []tools.Tool `group:"tools"`
 		}) {
 			for _, item := range params.Tools {
-				if item.Name() == tools.ClaudeToolName {
+				if item.Name() == Name {
 					claude = item
 				}
 			}

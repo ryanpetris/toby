@@ -17,7 +17,6 @@ type Metadata struct {
 	Group         string
 	ContextGroups []string
 	Dependencies  []string
-	Priority      int
 }
 
 // CommandName is the name the tool is invoked as on the CLI, defaulting to Name.
@@ -40,13 +39,6 @@ func (b Base) LaunchHelp() string      { return b.Metadata.LaunchHelp }
 func (b Base) Group() string           { return b.Metadata.Group }
 func (b Base) ContextGroups() []string { return append([]string(nil), b.Metadata.ContextGroups...) }
 func (b Base) Dependencies() []string  { return append([]string(nil), b.Metadata.Dependencies...) }
-
-func (b Base) LifecyclePriority() int {
-	if b.Metadata.Priority != 0 {
-		return b.Metadata.Priority
-	}
-	return 10
-}
 
 func (b Base) PrepareHost(context.Context, *Options) error { return nil }
 func (b Base) ConfigureSandbox(context.Context) error      { return nil }

@@ -20,9 +20,9 @@ type Registry struct {
 }
 
 // NewRegistry indexes the tools supplied via the fx "tools" group, rejecting
-// empty or duplicate names and validating that each dependency exists with a
-// lower lifecycle priority. It also assembles the group catalog from each tool's
-// primary Group.
+// empty or duplicate names and validating that every dependency exists and that
+// the dependency graph is acyclic. It also assembles the group catalog from each
+// tool's primary Group.
 func NewRegistry(toolList []Tool) (*Registry, error) {
 	registry := &Registry{tools: make(map[string]Tool, len(toolList)), byGroup: map[string][]string{}}
 	for _, item := range toolList {
@@ -42,14 +42,13 @@ func NewRegistry(toolList []Tool) (*Registry, error) {
 	}
 	for _, item := range toolList {
 		for _, dep := range item.Dependencies() {
-			depTool, ok := registry.tools[dep]
-			if !ok {
+			if _, ok := registry.tools[dep]; !ok {
 				return nil, fmt.Errorf("tool %s depends on unknown tool: %s", item.Name(), dep)
 			}
-			if depTool.LifecyclePriority() >= item.LifecyclePriority() {
-				return nil, fmt.Errorf("tool %s dependency %s must have lower lifecycle priority", item.Name(), dep)
-			}
 		}
+	}
+	if _, err := topologicalOrder(toolList); err != nil {
+		return nil, err
 	}
 	return registry, nil
 }
@@ -92,39 +91,35 @@ func (r *Registry) LaunchTools() []Tool {
 	return result
 }
 
-// Build resolves the requested tools (and the primary) plus their dependencies
-// into a Toolset ordered by lifecycle priority.
+// Build resolves the requested tools (and the primary) plus their transitive
+// dependencies into a Toolset ordered topologically: every tool follows the tools
+// it depends on.
 func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
-	seen := map[string]bool{}
-	ordered := make([]Tool, 0, len(requested)+1)
-	var add func(string, map[string]bool) error
-	add = func(name string, visiting map[string]bool) error {
-		if seen[name] {
+	closure := map[string]Tool{}
+	var gather func(string) error
+	gather = func(name string) error {
+		if _, ok := closure[name]; ok {
 			return nil
-		}
-		if visiting[name] {
-			return fmt.Errorf("tool dependency cycle includes %s", name)
 		}
 		item, ok := r.Get(name)
 		if !ok {
 			return fmt.Errorf("unknown tool: %s", name)
 		}
-		visiting[name] = true
+		closure[name] = item
 		for _, dep := range item.Dependencies() {
-			if err := add(dep, visiting); err != nil {
+			if err := gather(dep); err != nil {
 				return err
 			}
 		}
-		delete(visiting, name)
-		seen[name] = true
-		ordered = append(ordered, item)
 		return nil
 	}
+
 	for _, name := range requested {
-		if err := add(name, map[string]bool{}); err != nil {
+		if err := gather(name); err != nil {
 			return nil, err
 		}
 	}
+
 	var primaryTool Tool
 	if primary != "" {
 		var ok bool
@@ -132,16 +127,20 @@ func (r *Registry) Build(requested []string, primary string) (*Toolset, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown primary tool: %s", primary)
 		}
-		if err := add(primary, map[string]bool{}); err != nil {
+		if err := gather(primary); err != nil {
 			return nil, err
 		}
 	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].LifecyclePriority() == ordered[j].LifecyclePriority() {
-			return ordered[i].Name() < ordered[j].Name()
-		}
-		return ordered[i].LifecyclePriority() < ordered[j].LifecyclePriority()
-	})
+
+	items := make([]Tool, 0, len(closure))
+	for _, item := range closure {
+		items = append(items, item)
+	}
+
+	ordered, err := topologicalOrder(items)
+	if err != nil {
+		return nil, err
+	}
 	return &Toolset{primary: primaryTool, ordered: ordered}, nil
 }
 

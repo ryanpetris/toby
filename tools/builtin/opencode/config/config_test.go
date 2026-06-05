@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools/fake"
 )
 

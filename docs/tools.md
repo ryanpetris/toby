@@ -1,7 +1,7 @@
 # Tools
 
 Toby launches and manages a set of development tools inside the sandbox. Each
-tool is a package under `internal/dirty/tools/` that registers into the tool registry
+tool is a package under `tools/builtin/` that registers into the tool registry
 and implements the `Tool` lifecycle (see [architecture.md](architecture.md)).
 
 You launch a tool with `toby <tool> <env>`. The tool you name becomes the
