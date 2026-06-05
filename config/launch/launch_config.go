@@ -1,3 +1,8 @@
+// Package launchconfig loads and resolves the per-launch config (.toby.yaml or
+// --config) into a ConfiguredLaunch: the tool selection, project mounts, and
+// container settings for one sandbox launch. It shares the container block and
+// strict decoding with the host config (config/toby) via config/container and
+// config/file.
 package launchconfig
 
 import (

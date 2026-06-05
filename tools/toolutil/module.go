@@ -1,3 +1,7 @@
+// Package toolutil provides shared building blocks for the concrete tool
+// implementations: the Simple tool template, Base metadata constructors, a
+// shared HTTP client for downloads, and GitHub release/asset-architecture
+// helpers.
 package toolutil
 
 import (

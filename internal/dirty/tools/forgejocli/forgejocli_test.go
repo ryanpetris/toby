@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
-	"petris.dev/toby/internal/dirty/tools/toolutil"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
+	"petris.dev/toby/tools/toolutil"
 )
 
 func TestProvideMetadataAndLaunch(t *testing.T) {

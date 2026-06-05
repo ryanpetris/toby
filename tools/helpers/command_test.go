@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"petris.dev/toby/diagnostic/exitcode"
-	"petris.dev/toby/internal/dirty/tools/helpers"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
+	"petris.dev/toby/tools/helpers"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestCommandExists(t *testing.T) {

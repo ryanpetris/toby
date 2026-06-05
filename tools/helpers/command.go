@@ -1,3 +1,6 @@
+// Package helpers provides small utilities shared by the concrete tool
+// implementations: command-existence probes, environment construction from
+// string lists, and the lifecycle phase wrappers.
 package helpers
 
 import (

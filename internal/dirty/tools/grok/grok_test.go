@@ -12,9 +12,9 @@ import (
 	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	grokconfig "petris.dev/toby/internal/dirty/tools/grok/config"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestGrokHostInitRegistersManagedMount(t *testing.T) {

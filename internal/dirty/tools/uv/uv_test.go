@@ -13,9 +13,9 @@ import (
 
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestSandboxContextSetupConfiguresEnvironment(t *testing.T) {

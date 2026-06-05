@@ -17,9 +17,9 @@ import (
 	"petris.dev/toby/internal/dirty/tools/opencode"
 	"petris.dev/toby/internal/dirty/tools/speckit"
 	"petris.dev/toby/internal/dirty/tools/t3"
-	"petris.dev/toby/internal/dirty/tools/toolutil"
 	"petris.dev/toby/internal/dirty/tools/uv"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/toolutil"
 
 	"go.uber.org/fx"
 )

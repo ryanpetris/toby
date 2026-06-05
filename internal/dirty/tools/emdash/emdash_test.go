@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestRegisterContextFilesWritesInstaller(t *testing.T) {

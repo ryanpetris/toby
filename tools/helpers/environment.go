@@ -1,5 +1,7 @@
 package helpers
 
+// Environment construction from KEY=VALUE string lists.
+
 import (
 	"strings"
 

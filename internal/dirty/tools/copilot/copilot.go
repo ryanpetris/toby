@@ -11,10 +11,10 @@ import (
 	"petris.dev/toby/control/httpproxy"
 	"petris.dev/toby/internal/dirty/control/mcpproxy"
 	copilotconfig "petris.dev/toby/internal/dirty/tools/copilot/config"
-	"petris.dev/toby/internal/dirty/tools/helpers"
-	"petris.dev/toby/internal/dirty/tools/toolutil"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/helpers"
+	"petris.dev/toby/tools/toolutil"
 
 	"go.uber.org/fx"
 )

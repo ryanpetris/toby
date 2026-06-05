@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestExecLaunchRunsExtraCommand(t *testing.T) {

@@ -11,7 +11,6 @@ import (
 
 	tobyconfig "petris.dev/toby/config/toby"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/context/files/embedded"
 	"petris.dev/toby/lifecycle"
 )
 
@@ -32,7 +31,7 @@ func NewLifecycleHooks(cfg *tobyconfig.Service, contextFiles *contextfiles.Servi
 			Name:     "context.agent-instructions",
 			Priority: -200,
 			Run: func(ctx context.Context, _ lifecycle.Context) error {
-				_, err := contextFiles.AddInstructionFS(ctx, embedded.TobyAgentsPath, embedded.AgentFiles(), embedded.TobyAgentsPath, 0o644)
+				_, err := contextFiles.AddInstructionFS(ctx, TobyAgentsPath, AgentFiles(), TobyAgentsPath, 0o644)
 				return err
 			},
 		},

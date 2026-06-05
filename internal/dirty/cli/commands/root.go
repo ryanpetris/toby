@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"petris.dev/toby/config/launch"
 	"petris.dev/toby/diagnostic/exitcode"
-	"petris.dev/toby/internal/dirty/cli/launchconfig"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/version"
 

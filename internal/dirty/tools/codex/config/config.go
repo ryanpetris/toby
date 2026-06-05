@@ -11,8 +11,8 @@ import (
 	"petris.dev/toby/config/toby"
 	"petris.dev/toby/control/httpproxy"
 	"petris.dev/toby/internal/dirty/control/mcpproxy"
-	"petris.dev/toby/internal/dirty/tools/toolconfig"
-	"petris.dev/toby/internal/dirty/tools/toolconfig/proxyconfig"
+	"petris.dev/toby/internal/dirty/tools/proxyconfig"
+	"petris.dev/toby/tools/toolconfig"
 )
 
 const TobyServerName = "toby"

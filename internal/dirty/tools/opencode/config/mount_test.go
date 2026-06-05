@@ -13,10 +13,10 @@ import (
 	"petris.dev/toby/config/toby"
 	"petris.dev/toby/context/files"
 	"petris.dev/toby/control/httpproxy"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	"petris.dev/toby/providers"
 	"petris.dev/toby/providers/anthropic"
 	"petris.dev/toby/providers/openai"
+	"petris.dev/toby/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"

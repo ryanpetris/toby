@@ -9,9 +9,9 @@ import (
 	"petris.dev/toby/config"
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 )
 
 func TestProvideMetadataAndHostInitBinds(t *testing.T) {

@@ -21,11 +21,11 @@ import (
 	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/internal/dirty/tools/npm"
 	opencodeconfig "petris.dev/toby/internal/dirty/tools/opencode/config"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	"petris.dev/toby/providers"
 	"petris.dev/toby/providers/openai"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"

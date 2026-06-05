@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/internal/dirty/cli/launchconfig"
+	"petris.dev/toby/config/launch"
 	"petris.dev/toby/tools"
 
 	"github.com/spf13/cobra"

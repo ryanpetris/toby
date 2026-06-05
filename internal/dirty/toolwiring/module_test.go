@@ -8,9 +8,9 @@ import (
 
 	"petris.dev/toby/config"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/internal/dirty/tools/tooltest"
 	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/tooltest"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"

@@ -15,10 +15,10 @@ import (
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/internal/dirty/control/mcpproxy"
 	grokconfig "petris.dev/toby/internal/dirty/tools/grok/config"
-	"petris.dev/toby/internal/dirty/tools/helpers"
-	"petris.dev/toby/internal/dirty/tools/toolutil"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/helpers"
+	"petris.dev/toby/tools/toolutil"
 
 	"go.uber.org/fx"
 )

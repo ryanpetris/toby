@@ -1,5 +1,8 @@
 package toolutil
 
+// Fetching release metadata over HTTP and mapping the host platform to release
+// asset architecture strings (Go, Linux, and Rust target-triple conventions).
+
 import (
 	"context"
 	"encoding/json"

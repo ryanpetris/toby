@@ -1,5 +1,7 @@
-// Package embedded holds context files compiled into the binary.
-package embedded
+package contextinit
+
+// Embedded agent guidance compiled into the binary and written into the sandbox
+// context directory by the agent-instructions hook.
 
 import (
 	"embed"
@@ -11,7 +13,7 @@ import (
 const TobyAgentsPath = "TOBY_AGENTS.md"
 
 //go:embed TOBY_AGENTS.md
-var files embed.FS
+var agentFiles embed.FS
 
 // AgentFiles returns the embedded agent guidance files.
-func AgentFiles() fs.FS { return files }
+func AgentFiles() fs.FS { return agentFiles }

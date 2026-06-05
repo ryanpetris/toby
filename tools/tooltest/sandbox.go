@@ -1,3 +1,6 @@
+// Package tooltest provides test doubles for exercising tool implementations,
+// chiefly a fake sandbox.Service that records mounts, files, and environment
+// changes in memory instead of touching a real sandbox.
 package tooltest
 
 import (

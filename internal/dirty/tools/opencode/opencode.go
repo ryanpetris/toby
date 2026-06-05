@@ -14,14 +14,14 @@ import (
 	"petris.dev/toby/control/httpproxy"
 	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/internal/dirty/control/mcpproxy"
-	"petris.dev/toby/internal/dirty/tools/helpers"
 	opencodeconfig "petris.dev/toby/internal/dirty/tools/opencode/config"
-	"petris.dev/toby/internal/dirty/tools/toolutil"
 	"petris.dev/toby/providers"
 	"petris.dev/toby/providers/anthropic"
 	"petris.dev/toby/providers/openai"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/helpers"
+	"petris.dev/toby/tools/toolutil"
 
 	"go.uber.org/fx"
 )

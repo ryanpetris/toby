@@ -1,13 +1,16 @@
 package toolutil
 
+// Simple: a reusable Tool implementation for tools installed by copying a host
+// subpath into the sandbox and running a fixed install command.
+
 import (
 	"context"
 	pathpkg "path"
 
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/internal/dirty/tools/helpers"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
+	"petris.dev/toby/tools/helpers"
 )
 
 // Simple is a config-driven tool: it mounts a state subpath, optionally installs

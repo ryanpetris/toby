@@ -1,4 +1,4 @@
-package embedded
+package contextinit
 
 import (
 	"bytes"

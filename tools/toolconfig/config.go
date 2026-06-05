@@ -1,3 +1,6 @@
+// Package toolconfig provides helpers for tools that render their own config
+// files: splitting command strings into argv, copying fields between generic
+// maps, and joining instruction fragments.
 package toolconfig
 
 import (
