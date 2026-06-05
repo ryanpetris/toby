@@ -3,23 +3,23 @@ package toolwiring
 import (
 	"fmt"
 
-	"petris.dev/toby/internal/dirty/tools/claude"
-	"petris.dev/toby/internal/dirty/tools/codex"
-	"petris.dev/toby/internal/dirty/tools/copilot"
-	"petris.dev/toby/internal/dirty/tools/docker"
-	"petris.dev/toby/internal/dirty/tools/emdash"
-	"petris.dev/toby/internal/dirty/tools/exectool"
-	"petris.dev/toby/internal/dirty/tools/forgejocli"
-	"petris.dev/toby/internal/dirty/tools/githubcli"
-	"petris.dev/toby/internal/dirty/tools/gitlabcli"
-	"petris.dev/toby/internal/dirty/tools/grok"
-	"petris.dev/toby/internal/dirty/tools/npm"
-	"petris.dev/toby/internal/dirty/tools/opencode"
-	"petris.dev/toby/internal/dirty/tools/speckit"
-	"petris.dev/toby/internal/dirty/tools/t3"
-	"petris.dev/toby/internal/dirty/tools/uv"
 	"petris.dev/toby/tools"
-	"petris.dev/toby/tools/toolutil"
+	"petris.dev/toby/tools/builtin/claude"
+	"petris.dev/toby/tools/builtin/codex"
+	"petris.dev/toby/tools/builtin/copilot"
+	"petris.dev/toby/tools/builtin/docker"
+	"petris.dev/toby/tools/builtin/emdash"
+	"petris.dev/toby/tools/builtin/exectool"
+	"petris.dev/toby/tools/builtin/forgejocli"
+	"petris.dev/toby/tools/builtin/githubcli"
+	"petris.dev/toby/tools/builtin/gitlabcli"
+	"petris.dev/toby/tools/builtin/grok"
+	"petris.dev/toby/tools/builtin/npm"
+	"petris.dev/toby/tools/builtin/opencode"
+	"petris.dev/toby/tools/builtin/speckit"
+	"petris.dev/toby/tools/builtin/t3"
+	"petris.dev/toby/tools/builtin/uv"
+	"petris.dev/toby/tools/kit"
 
 	"go.uber.org/fx"
 )
@@ -27,7 +27,7 @@ import (
 func Module() fx.Option {
 	return fx.Module(
 		"tools",
-		toolutil.Module,
+		kit.Module,
 		exectool.Module,
 		npm.Module,
 		docker.Module,
@@ -51,7 +51,7 @@ func PlanningModule() fx.Option {
 }
 
 func SelectedModule(names []string) (fx.Option, error) {
-	modules := []fx.Option{toolutil.Module}
+	modules := []fx.Option{kit.Module}
 	seen := map[string]bool{}
 	for _, name := range names {
 		if seen[name] {

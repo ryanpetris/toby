@@ -23,11 +23,11 @@ func NewRunner(hooks []Hook) *Runner {
 	return &Runner{hooks: append([]Hook(nil), hooks...)}
 }
 
-// Module provides the Runner, consuming every Hook in the "toby.lifecycle" group.
+// Module provides the Runner, consuming every Hook in the "lifecycle" group.
 func Module() fx.Option {
 	return fx.Module("lifecycle",
 		fx.Provide(
-			fx.Annotate(NewRunner, fx.ParamTags(`group:"toby.lifecycle"`)),
+			fx.Annotate(NewRunner, fx.ParamTags(`group:"lifecycle"`)),
 		),
 	)
 }

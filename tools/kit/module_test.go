@@ -1,0 +1,26 @@
+package kit
+
+import (
+	"reflect"
+	"testing"
+
+	"petris.dev/toby/tools"
+)
+
+func TestSimpleMapsConfiguration(t *testing.T) {
+	base := Base("example", "Launch Example", tools.GroupSystem)
+	install := []string{"npm", "install", "-g", "example"}
+	env := map[string]string{"EXAMPLE": "1"}
+
+	simple := NewSimple(nil, base, []string{".config", "example"}, install, env)
+
+	if simple.Name() != "example" || simple.LaunchHelp() != "Launch Example" {
+		t.Fatalf("simple metadata = %#v", simple)
+	}
+	if !reflect.DeepEqual(simple.SandboxSubpath, []string{".config", "example"}) {
+		t.Fatalf("simple paths = %#v", simple)
+	}
+	if !reflect.DeepEqual(simple.InstallCommand, install) || !reflect.DeepEqual(simple.SandboxEnv, env) {
+		t.Fatalf("simple config = %#v", simple)
+	}
+}

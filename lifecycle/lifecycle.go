@@ -13,7 +13,7 @@ import (
 )
 
 // Group is the fx group non-tool lifecycle Hooks register into.
-const Group = "toby.lifecycle"
+const Group = "lifecycle"
 
 // Phase is a step in the launch lifecycle, run in declared order.
 type Phase int

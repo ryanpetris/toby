@@ -166,7 +166,7 @@ tools through `http://<control-host>/proxy/<uuid>`.
 For OpenCode, providers are translated to `@ai-sdk/openai-compatible` or
 `@ai-sdk/anthropic`. If `models` is omitted, Toby queries the upstream
 `/models` endpoint during sandbox startup (`providers/openai`, `providers/anthropic`).
-Discovery failures emit the `opencode.model-discovery` warning and omit only
+Discovery failures emit the `provider.model-discovery` warning and omit only
 the failed provider from generated OpenCode config.
 
 ```yaml
@@ -260,7 +260,7 @@ list: set it to `["*"]` to suppress everything, or to a list of specific IDs.
 
 | ID | Meaning |
 | --- | --- |
-| `opencode.model-discovery` | OpenCode provider model discovery failed. |
+| `provider.model-discovery` | OpenCode provider model discovery failed. |
 | `project.autoload-disabled` | `.toby.yaml` present but autoload is off. |
 | `project.duplicate` | Duplicate configured project name skipped. |
 | `project.missing` | Configured project path does not exist. |

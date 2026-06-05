@@ -1,7 +1,7 @@
 // Package tools defines the contract for a Toby tool and the registry that
 // collects them. A tool is a development program Toby launches and manages
 // (OpenCode, Claude Code, npm, …); each concrete tool lives in a subpackage and
-// registers itself into the fx "toby.tools" group as a Tool. The Registry builds
+// registers itself into the fx "tools" group as a Tool. The Registry builds
 // an ordered Toolset for a requested launch, and the lifecycle package drives the
 // Toolset through its phases. This mirrors the providers package.
 package tools
@@ -14,7 +14,7 @@ import (
 )
 
 // Group is the fx group name every tool registers into.
-const Group = "toby.tools"
+const Group = "tools"
 
 // Context-injection groups a tool may belong to.
 const (

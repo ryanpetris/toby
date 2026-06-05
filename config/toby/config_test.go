@@ -123,7 +123,7 @@ container:
 	}
 	// A later source's list replaces an earlier one: yaml's [mount.host-backing]
 	// overrides json's ["*"].
-	if !settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+	if !settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || settings.SuppressWarnings.Suppresses(warning.ModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", settings.SuppressWarnings)
 	}
 	if settings.AutoloadProjectConfigEnabled() {
@@ -148,7 +148,7 @@ container:
     dockerfile: ../Dockerfile.toby
 settings:
   suppressWarnings:
-    - opencode.model-discovery
+    - provider.model-discovery
   autoloadProjectConfig: true
   debug: true
   yolo: true
@@ -166,7 +166,7 @@ settings:
 		t.Fatalf("container build = %#v", container.Build)
 	}
 	settings := cfg.Settings()
-	if !settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || settings.SuppressWarnings.Suppresses(warning.MountHostBacking) {
+	if !settings.SuppressWarnings.Suppresses(warning.ModelDiscovery) || settings.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", settings.SuppressWarnings)
 	}
 	if !settings.AutoloadProjectConfigEnabled() {
@@ -327,9 +327,6 @@ func TestMCPServerHeadersCloneAndResolve(t *testing.T) {
 	if server.Enabled() {
 		t.Fatal("server should be disabled")
 	}
-	if !server.HTTPProxyable() {
-		t.Fatal("remote server should be HTTP proxyable")
-	}
 	headers, err := server.Headers()
 	if err != nil {
 		t.Fatal(err)
@@ -342,25 +339,7 @@ func TestMCPServerHeadersCloneAndResolve(t *testing.T) {
 	}
 }
 
-func TestMCPServerHTTPProxyableCases(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  map[string]any
-		want bool
-	}{
-		{name: "remote", raw: map[string]any{"type": "remote", "command": "ignored"}, want: true},
-		{name: "implicit url", raw: map[string]any{"url": " https://example.com/mcp "}, want: true},
-		{name: "implicit command", raw: map[string]any{"command": "mcp"}, want: true},
-		{name: "local", raw: map[string]any{"type": "local", "command": "mcp"}, want: true},
-		{name: "blank", raw: map[string]any{"url": " "}, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := MCPServerHTTPProxyable(tt.raw); got != tt.want {
-				t.Fatalf("MCPServerHTTPProxyable = %v, want %v", got, tt.want)
-			}
-		})
-	}
+func TestMCPServerEnabledDefaultsTrue(t *testing.T) {
 	if (MCPServer{}).Enabled() != true {
 		t.Fatal("missing enabled should default true")
 	}

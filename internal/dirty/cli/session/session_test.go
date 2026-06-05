@@ -89,7 +89,7 @@ settings:
 	}
 
 	got := ApplySandboxDefaults(&tools.Options{SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.MountHostBacking: true}}}, cfg)
-	if !got.SuppressWarnings.Suppresses(warning.MountHostBacking) || got.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+	if !got.SuppressWarnings.Suppresses(warning.MountHostBacking) || got.SuppressWarnings.Suppresses(warning.ModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", got.SuppressWarnings)
 	}
 }

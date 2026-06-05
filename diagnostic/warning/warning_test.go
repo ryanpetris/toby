@@ -19,7 +19,7 @@ func TestSuppressionFromList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ids.Set || ids.All || !ids.Suppresses(MountHostBacking) || !ids.Suppresses(ProjectMissing) || ids.Suppresses(OpenCodeModelDiscovery) {
+	if !ids.Set || ids.All || !ids.Suppresses(MountHostBacking) || !ids.Suppresses(ProjectMissing) || ids.Suppresses(ModelDiscovery) {
 		t.Fatalf("id suppression = %#v", ids)
 	}
 

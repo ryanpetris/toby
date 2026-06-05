@@ -20,9 +20,14 @@ import (
 	"petris.dev/toby/internal/dirty/control/mcpserver"
 	"petris.dev/toby/internal/dirty/sandbox"
 	sandboxdocker "petris.dev/toby/internal/dirty/sandbox/docker"
+	"petris.dev/toby/internal/dirty/sessionresolve"
 	"petris.dev/toby/internal/dirty/toolwiring"
 	"petris.dev/toby/lifecycle"
 	"petris.dev/toby/platform/executil"
+	"petris.dev/toby/providers"
+	"petris.dev/toby/providers/anthropic"
+	"petris.dev/toby/providers/openai"
+	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
 
 	"go.uber.org/dig"
@@ -64,27 +69,12 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, e
 	}
 
 	var params session.Params
-	app := fx.New(
+	options := append(sessionModules(toolModule, runtimeModule, r.stderr),
 		fx.NopLogger,
 		fx.Supply(r.paths, r.config),
-		host.Module(),
-		engine.Module(),
-		mount.Module(),
-		mcpproxy.Module(),
-		mcpserver.Module(),
-		sandbox.Module(),
-		runtimeModule,
-		toolModule,
-		tools.Module(),
-		lifecycle.Module(),
-		fx.Provide(
-			executil.NewProcessRunner,
-			contextfiles.NewService,
-			contextinit.NewLifecycleHooks,
-			newExecutionSessionParams(r.stderr),
-		),
 		fx.Populate(&params),
 	)
+	app := fx.New(options...)
 	if err := app.Err(); err != nil {
 		return fxRootCause(err)
 	}
@@ -102,6 +92,36 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, e
 		return runErr
 	}
 	return fxRootCause(stopErr)
+}
+
+// sessionModules is the fx graph for one launch: host services, the selected
+// tools, the sandbox runtime, the lifecycle runner, the provider registry, and
+// the session-config resolver. It excludes the run-specific bindings (paths,
+// config, populate target) so the graph can be validated in isolation.
+func sessionModules(toolModule, runtimeModule fx.Option, stderr io.Writer) []fx.Option {
+	return []fx.Option{
+		host.Module(),
+		engine.Module(),
+		mount.Module(),
+		mcpproxy.Module(),
+		mcpserver.Module(),
+		sandbox.Module(),
+		runtimeModule,
+		toolModule,
+		tools.Module(),
+		lifecycle.Module(),
+		providers.Module(),
+		openai.Module(),
+		anthropic.Module(),
+		fx.Provide(
+			executil.NewProcessRunner,
+			contextfiles.NewService,
+			contextinit.NewLifecycleHooks,
+			sessionconfig.NewHolder,
+			sessionresolve.NewLifecycleHooks,
+			newExecutionSessionParams(stderr),
+		),
+	}
 }
 
 func executionRuntimeModule(runtime string) (fx.Option, error) {

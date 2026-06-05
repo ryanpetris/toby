@@ -19,7 +19,7 @@ type Registry struct {
 	byGroup map[string][]string
 }
 
-// NewRegistry indexes the tools supplied via the fx "toby.tools" group, rejecting
+// NewRegistry indexes the tools supplied via the fx "tools" group, rejecting
 // empty or duplicate names and validating that each dependency exists with a
 // lower lifecycle priority. It also assembles the group catalog from each tool's
 // primary Group.

@@ -18,8 +18,8 @@ import (
 type HooksResult struct {
 	fx.Out
 
-	AgentInstructions lifecycle.Hook `group:"toby.lifecycle"`
-	TobyConfig        lifecycle.Hook `group:"toby.lifecycle"`
+	AgentInstructions lifecycle.Hook `group:"lifecycle"`
+	TobyConfig        lifecycle.Hook `group:"lifecycle"`
 }
 
 // NewLifecycleHooks builds the agent-instructions and toby-config context-file

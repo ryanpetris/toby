@@ -626,10 +626,6 @@ func (s MCPServer) Environment() (map[string]string, error) {
 	return env, nil
 }
 
-func (s MCPServer) HTTPProxyable() bool {
-	return MCPServerHTTPProxyable(s.raw)
-}
-
 func (s MCPServer) URL() string {
 	return MCPServerURL(s.raw)
 }
@@ -649,23 +645,6 @@ func (s MCPServer) Headers() (http.Header, error) {
 		}
 	}
 	return headers, nil
-}
-
-func MCPServerHTTPProxyable(server map[string]any) bool {
-	typ, _ := server["type"].(string)
-	typ = strings.TrimSpace(typ)
-	switch typ {
-	case MCPTypeRemote, MCPTypeLocal:
-		return true
-	case "":
-		if _, ok := server["command"]; ok {
-			return true
-		}
-		url, _ := server["url"].(string)
-		return strings.TrimSpace(url) != ""
-	default:
-		return false
-	}
 }
 
 func MCPServerURL(server map[string]any) string {

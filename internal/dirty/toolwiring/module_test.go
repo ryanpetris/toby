@@ -9,8 +9,9 @@ import (
 	"petris.dev/toby/config"
 	contextfiles "petris.dev/toby/context/files"
 	sandboxapi "petris.dev/toby/sandbox"
+	"petris.dev/toby/sessionconfig"
 	"petris.dev/toby/tools"
-	"petris.dev/toby/tools/tooltest"
+	"petris.dev/toby/tools/fake"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -18,18 +19,18 @@ import (
 
 func TestModuleRegistersEveryConfiguredTool(t *testing.T) {
 	home := t.TempDir()
-	sandbox := tooltest.NewSandbox(filepath.Join(home, "context"))
+	sandbox := fake.NewSandbox(filepath.Join(home, "context"))
 	var registered []string
 	registeredTools := map[string]tools.Tool{}
 	app := fxtest.New(t,
 		fx.Supply(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}),
 		fx.Supply(fx.Annotate(sandbox, fx.As(new(sandboxapi.Service)))),
-		fx.Provide(contextfiles.NewService),
+		fx.Provide(contextfiles.NewService, sessionconfig.NewHolder),
 		Module(),
 		fx.Invoke(func(params struct {
 			fx.In
 
-			Tools []tools.Tool `group:"toby.tools"`
+			Tools []tools.Tool `group:"tools"`
 		}) {
 			for _, item := range params.Tools {
 				registered = append(registered, item.Name())
@@ -77,7 +78,7 @@ func TestPlanningModuleRegistersEveryConfiguredToolWithoutExecutionServices(t *t
 		fx.Invoke(func(params struct {
 			fx.In
 
-			Tools []tools.Tool `group:"toby.tools"`
+			Tools []tools.Tool `group:"tools"`
 		}) {
 			for _, item := range params.Tools {
 				registered = append(registered, item.Name())
@@ -99,17 +100,17 @@ func TestSelectedModuleRegistersOnlySelectedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	sandbox := tooltest.NewSandbox(filepath.Join(home, "context"))
+	sandbox := fake.NewSandbox(filepath.Join(home, "context"))
 	var registered []string
 	app := fxtest.New(t,
 		fx.Supply(config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}),
 		fx.Supply(fx.Annotate(sandbox, fx.As(new(sandboxapi.Service)))),
-		fx.Provide(contextfiles.NewService),
+		fx.Provide(contextfiles.NewService, sessionconfig.NewHolder),
 		module,
 		fx.Invoke(func(params struct {
 			fx.In
 
-			Tools []tools.Tool `group:"toby.tools"`
+			Tools []tools.Tool `group:"tools"`
 		}) {
 			for _, item := range params.Tools {
 				registered = append(registered, item.Name())

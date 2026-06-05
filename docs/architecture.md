@@ -331,6 +331,6 @@ matrix and the t3 walkthrough.
   `0` is success and unclassified errors map to `1`. Command execution maps
   `127` (not found), `126` (not executable), and `130` (canceled).
 - **Warnings** (`diagnostic/warning`): suppressible IDs are
-  `opencode.model-discovery`, `project.autoload-disabled`,
+  `provider.model-discovery`, `project.autoload-disabled`,
   `project.duplicate`, and `project.missing`. Suppress all with
   `settings.suppressWarnings: ["*"]` or a subset with a list of specific IDs.

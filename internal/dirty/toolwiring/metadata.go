@@ -9,7 +9,7 @@ import (
 type planningToolsResult struct {
 	fx.Out
 
-	Tools []tools.Tool `group:"toby.tools,flatten"`
+	Tools []tools.Tool `group:"tools,flatten"`
 }
 
 func newPlanningTools() planningToolsResult {
@@ -41,7 +41,7 @@ func Metadata() []tools.Metadata {
 	}
 	for i := range items {
 		// A tool's primary group is the first group it declares (matching the
-		// toolutil.Base convention used by the real tools).
+		// kit.Base convention used by the real tools).
 		if len(items[i].ContextGroups) > 0 {
 			items[i].Group = items[i].ContextGroups[0]
 		}

@@ -68,7 +68,7 @@ tool:
 	if cfg.Container.Build.Context != filepath.Join(dir, "docker", "context") || cfg.Container.Build.Dockerfile != filepath.Join(dir, "docker", "Dockerfile.toby") {
 		t.Fatalf("container build config = %#v", cfg.Container)
 	}
-	if !cfg.Settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || !cfg.Settings.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) {
+	if !cfg.Settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || !cfg.Settings.SuppressWarnings.Suppresses(warning.ModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", cfg.Settings.SuppressWarnings)
 	}
 	wantProjects := []tools.ProjectMount{
@@ -121,7 +121,7 @@ settings:
   debug: false
   yolo: true
   suppressWarnings:
-    - opencode.model-discovery
+    - provider.model-discovery
 tool:
   gh:
     primary: true
@@ -159,7 +159,7 @@ tool:
 	if launch.Options.MountProfile != "shared" {
 		t.Fatalf("mount profile = %q", launch.Options.MountProfile)
 	}
-	if !launch.Options.SuppressWarnings.Suppresses(warning.OpenCodeModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
+	if !launch.Options.SuppressWarnings.Suppresses(warning.ModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
 	}
 	if launch.Options.ToolMountProfiles[tools.NpmToolName] != "shared" {
