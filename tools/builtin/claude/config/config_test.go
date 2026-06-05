@@ -123,6 +123,33 @@ func TestContextFilesPermissionDenyDropped(t *testing.T) {
 	}
 }
 
+func TestContextFilesPassesDirectoriesVerbatim(t *testing.T) {
+	files := render(t, sessionconfig.Config{
+		Permissions: map[string]string{
+			"/foobar/":    "allow",
+			"/foobar":     "allow",
+			"/":           "allow",
+			"/globbed/**": "allow",
+		},
+	})
+	settings := decode(t, fileByPath(t, files, StaticSettingsPath).Data)
+	dirs := settings["permissions"].(map[string]any)["additionalDirectories"].([]any)
+	got := map[string]bool{}
+	for _, dir := range dirs {
+		got[dir.(string)] = true
+	}
+	// Paths are listed exactly as written — the trailing slash is not stripped.
+	for _, want := range []string{"/foobar/", "/foobar", "/"} {
+		if !got[want] {
+			t.Fatalf("additionalDirectories missing %q: %#v", want, dirs)
+		}
+	}
+	// Glob patterns are not valid additionalDirectories and are dropped.
+	if got["/globbed/**"] {
+		t.Fatalf("glob pattern should be dropped: %#v", dirs)
+	}
+}
+
 func TestContextFilesCombinesInstructions(t *testing.T) {
 	files := render(t, sessionconfig.Config{
 		Instructions: sessionconfig.Instructions{Contents: [][]byte{[]byte("# git\n"), []byte("# context\n")}},

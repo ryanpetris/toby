@@ -47,9 +47,5 @@ type SessionState struct {
 
 func (s SessionState) Clone() SessionState {
 	s.ActiveTools = append([]string(nil), s.ActiveTools...)
-	if s.Options.Debug != nil {
-		debug := *s.Options.Debug
-		s.Options.Debug = &debug
-	}
 	return s
 }

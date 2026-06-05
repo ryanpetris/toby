@@ -150,20 +150,20 @@ tool:
 	if launch.Options.Env != "" || launch.Options.Workdir != "/tmp/work" || len(launch.Options.Projects) != 1 || launch.Options.Projects[0].Name != "foo" {
 		t.Fatalf("options = %#v", launch.Options)
 	}
-	if launch.Options.Debug == nil || launch.Options.DebugEnabled() {
-		t.Fatalf("debug = %#v", launch.Options.Debug)
+	if launch.Overrides.Debug == nil || *launch.Overrides.Debug {
+		t.Fatalf("debug = %#v", launch.Overrides.Debug)
 	}
-	if launch.Options.Yolo == nil || !launch.Options.YoloEnabled() {
-		t.Fatalf("yolo = %#v", launch.Options.Yolo)
+	if launch.Overrides.Yolo == nil || !*launch.Overrides.Yolo {
+		t.Fatalf("yolo = %#v", launch.Overrides.Yolo)
 	}
-	if launch.Options.MountProfile != "shared" {
-		t.Fatalf("mount profile = %q", launch.Options.MountProfile)
+	if launch.Overrides.MountProfile != "shared" {
+		t.Fatalf("mount profile = %q", launch.Overrides.MountProfile)
 	}
-	if !launch.Options.SuppressWarnings.Suppresses(warning.ModelDiscovery) || launch.Options.SuppressWarnings.Suppresses(warning.MountHostBacking) {
-		t.Fatalf("suppress warnings = %#v", launch.Options.SuppressWarnings)
+	if !launch.Overrides.SuppressWarnings.Suppresses(warning.ModelDiscovery) || launch.Overrides.SuppressWarnings.Suppresses(warning.MountHostBacking) {
+		t.Fatalf("suppress warnings = %#v", launch.Overrides.SuppressWarnings)
 	}
-	if launch.Options.ToolMountProfiles["npm"] != "shared" {
-		t.Fatalf("tool mount profiles = %#v", launch.Options.ToolMountProfiles)
+	if launch.Overrides.ToolMountProfiles["npm"] != "shared" {
+		t.Fatalf("tool mount profiles = %#v", launch.Overrides.ToolMountProfiles)
 	}
 	if got, want := launch.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("extra = %#v, want %#v", got, want)

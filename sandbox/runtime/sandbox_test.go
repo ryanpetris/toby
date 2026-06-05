@@ -18,7 +18,7 @@ func TestProjectOutsideHomeRejected(t *testing.T) {
 	outside := t.TempDir()
 	paths := testPaths(home)
 	factory := testFactory(paths)
-	_, err := factory.FromOptions(&tools.Options{Env: "demo", Project: outside})
+	_, err := factory.FromOptions(&tools.Options{Env: "demo", Project: outside}, "", tools.Build{})
 	if err == nil {
 		t.Fatal("expected project outside home to be rejected")
 	}
@@ -31,7 +31,7 @@ func TestProjectUnderProjectRootAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(testPaths(home))
-	sbx, err := factory.FromOptions(&tools.Options{Env: "demo", Project: projectDir})
+	sbx, err := factory.FromOptions(&tools.Options{Env: "demo", Project: projectDir}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestConfiguredProjectVisibleHostPathUsesProjectName(t *testing.T) {
 	sbx, err := factory.FromOptions(&tools.Options{
 		Env:      "env",
 		Projects: []tools.ProjectMount{{Name: "baz", Source: source}},
-	})
+	}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestConfiguredProjectsAllowSameSourceWithDifferentNames(t *testing.T) {
 	sbx, err := factory.FromOptions(&tools.Options{
 		Env:      "env",
 		Projects: []tools.ProjectMount{{Name: "foo", Source: source}, {Name: "bar", Source: source}},
-	})
+	}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestVisibleHostPathAllowsNestedRepositoryUnderVisibleProject(t *testing.T) 
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"})
+	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestVisibleHostPathRejectsDotSegmentRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"})
+	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestVisibleHostPathRejectsInvisibleRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"})
+	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestVisibleHostPathRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"})
+	sbx, err := factory.FromOptions(&tools.Options{Env: "foobar"}, "", tools.Build{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +189,7 @@ func TestFactoryAcceptsImageAndBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	_, err := factory.FromOptions(&tools.Options{
-		Env:   "demo",
-		Image: "node:test",
-		Build: tools.Build{Context: home, Dockerfile: filepath.Join(home, "Dockerfile")},
-	})
+	_, err := factory.FromOptions(&tools.Options{Env: "demo"}, "node:test", tools.Build{Context: home, Dockerfile: filepath.Join(home, "Dockerfile")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,10 +203,10 @@ func TestSandboxAndProjectNamesRejectSlashes(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := testFactory(paths)
-	if _, err := factory.FromOptions(&tools.Options{Env: "team/demo"}); err == nil {
+	if _, err := factory.FromOptions(&tools.Options{Env: "team/demo"}, "", tools.Build{}); err == nil {
 		t.Fatal("expected slash in sandbox name to be rejected")
 	}
-	if _, err := factory.FromOptions(&tools.Options{Projects: []tools.ProjectMount{{Name: "team/demo", Source: projectDir}}}); err == nil {
+	if _, err := factory.FromOptions(&tools.Options{Projects: []tools.ProjectMount{{Name: "team/demo", Source: projectDir}}}, "", tools.Build{}); err == nil {
 		t.Fatal("expected slash in project name to be rejected")
 	}
 }

@@ -8,6 +8,7 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 
 	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
@@ -97,8 +98,22 @@ func addPermissionPaths(config map[string]any, paths map[string]string) {
 		permission["external_directory"] = external
 	}
 	for pattern, mode := range paths {
-		external[pattern] = mode
+		for _, expanded := range expandDirectoryPattern(pattern) {
+			external[expanded] = mode
+		}
 	}
+}
+
+// expandDirectoryPattern turns a Toby permission path into the patterns opencode's
+// external_directory expects. Permission paths are always directories, so each is
+// emitted verbatim plus a recursive glob covering its subtree (e.g. "/foobar" ->
+// "/foobar", "/foobar/**"; "/foobar/" -> "/foobar/", "/foobar/**"). The trailing
+// slash is never stripped.
+func expandDirectoryPattern(pattern string) []string {
+	if strings.HasSuffix(pattern, "/") {
+		return []string{pattern, pattern + "**"}
+	}
+	return []string{pattern, pattern + "/**"}
 }
 
 func addInstructions(config map[string]any, paths []string) {

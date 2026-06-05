@@ -15,7 +15,7 @@ import (
 	"petris.dev/toby/tools"
 )
 
-func prepareConfiguredProjects(stderr io.Writer, home string, opts *tools.Options) error {
+func prepareConfiguredProjects(stderr io.Writer, home string, opts *tools.Options, suppress warning.Suppression) error {
 	if opts == nil || len(opts.Projects) == 0 {
 		return nil
 	}
@@ -27,11 +27,11 @@ func prepareConfiguredProjects(stderr io.Writer, home string, opts *tools.Option
 			return err
 		}
 		if !exists {
-			warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectMissing, "configured project %q does not exist: %s; skipping it.", resolved.Name, resolved.Source)
+			warning.Fprintf(stderr, suppress, warning.ProjectMissing, "configured project %q does not exist: %s; skipping it.", resolved.Name, resolved.Source)
 			continue
 		}
 		if previous, ok := seen[resolved.Name]; ok {
-			warning.Fprintf(stderr, opts.SuppressWarnings, warning.ProjectDuplicate, "configured project %q duplicates an earlier project name; using %s and skipping %s.", resolved.Name, previous.Source, resolved.Source)
+			warning.Fprintf(stderr, suppress, warning.ProjectDuplicate, "configured project %q duplicates an earlier project name; using %s and skipping %s.", resolved.Name, previous.Source, resolved.Source)
 			continue
 		}
 		seen[resolved.Name] = resolved

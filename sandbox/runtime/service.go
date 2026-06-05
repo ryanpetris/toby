@@ -18,7 +18,6 @@ import (
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/platform/environ"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/tools"
 )
 
 type Service struct {
@@ -60,7 +59,7 @@ func (s *Service) Prepare(instance Instance) {
 	s.mu.Unlock()
 }
 
-func (s *Service) ConfigureMounts(opts *tools.Options) error {
+func (s *Service) ConfigureMounts(mountProfile string, toolProfiles map[string]string) error {
 	s.mu.Lock()
 	instance := s.instance
 	mounts := s.mounts
@@ -70,12 +69,6 @@ func (s *Service) ConfigureMounts(opts *tools.Options) error {
 	}
 	if mounts == nil {
 		return fmt.Errorf("mount service is not configured")
-	}
-	mountProfile := ""
-	toolProfiles := map[string]string(nil)
-	if opts != nil {
-		mountProfile = opts.MountProfile
-		toolProfiles = opts.ToolMountProfiles
 	}
 	return mounts.Configure(mount.Config{Profile: mountProfile, SandboxName: instance.Label(), ToolProfiles: toolProfiles})
 }

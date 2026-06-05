@@ -22,14 +22,14 @@ func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Options.Image != "node:test" {
-		t.Fatalf("parsed options = %#v", parsed.Options)
+	if parsed.Options.Env != "proj" || !parsed.Options.Upgrade || parsed.Overrides.Image != "node:test" {
+		t.Fatalf("parsed options = %#v overrides = %#v", parsed.Options, parsed.Overrides)
 	}
-	if !parsed.Options.DebugEnabled() {
-		t.Fatalf("debug = %#v", parsed.Options.Debug)
+	if parsed.Overrides.Debug == nil || !*parsed.Overrides.Debug {
+		t.Fatalf("debug = %#v", parsed.Overrides.Debug)
 	}
-	if !parsed.Options.YoloEnabled() {
-		t.Fatalf("yolo = %#v", parsed.Options.Yolo)
+	if parsed.Overrides.Yolo == nil || !*parsed.Overrides.Yolo {
+		t.Fatalf("yolo = %#v", parsed.Overrides.Yolo)
 	}
 	if got, want := parsed.RequestedTools, []string{"github_cli", "opencode"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("requested = %#v, want %#v", got, want)

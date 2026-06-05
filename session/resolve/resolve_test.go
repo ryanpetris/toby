@@ -51,11 +51,16 @@ func newSandbox() *fake.Sandbox {
 
 func resolve(t *testing.T, p Params, stderr *bytes.Buffer) sessionconfig.Config {
 	t.Helper()
+	return resolveWithOptions(t, p, &tools.Options{}, stderr)
+}
+
+func resolveWithOptions(t *testing.T, p Params, opts *tools.Options, stderr *bytes.Buffer) sessionconfig.Config {
+	t.Helper()
 	if p.Holder == nil {
 		p.Holder = sessionconfig.NewHolder()
 	}
 	hooks := NewLifecycleHooks(p)
-	lctx := lifecycle.Context{Options: &tools.Options{}, Stderr: stderr}
+	lctx := lifecycle.Context{Options: opts, Stderr: stderr}
 	if err := hooks.Hook.Run(context.Background(), lctx); err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +133,22 @@ func TestResolveProvidersModelFetchFailureWarnsAndOmits(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "warning[provider.model-discovery]") {
 		t.Fatalf("warning = %q", stderr.String())
+	}
+}
+
+func TestResolvePermissionsYoloGrantsRoot(t *testing.T) {
+	// yolo is sourced from the (effective) config, where the launch boundary has
+	// already folded in the --yolo flag.
+	yoloParams := Params{Config: loadConfig(t, `{"settings":{"yolo":true}}`), Providers: emptyRegistry(), ContextFiles: contextfiles.NewService(), Sandbox: newSandbox()}
+	withYolo := resolve(t, yoloParams, nil)
+	if withYolo.Permissions["/"] != "allow" {
+		t.Fatalf("yolo should grant root: %#v", withYolo.Permissions)
+	}
+
+	plainParams := Params{Config: loadConfig(t, `{}`), Providers: emptyRegistry(), ContextFiles: contextfiles.NewService(), Sandbox: newSandbox()}
+	withoutYolo := resolve(t, plainParams, nil)
+	if _, ok := withoutYolo.Permissions["/"]; ok {
+		t.Fatalf("non-yolo should not grant root: %#v", withoutYolo.Permissions)
 	}
 }
 

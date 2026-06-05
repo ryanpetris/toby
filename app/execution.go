@@ -58,8 +58,10 @@ func newSessionRunner(params sessionRunnerParams) run.Runner {
 	return &executionSessionRunner{registry: params.Registry, paths: params.Paths, config: params.Config, stderr: os.Stderr}
 }
 
-func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, extra, requestedTools []string, primary string) error {
-	effectiveOpts := run.ApplySandboxDefaults(opts, r.config)
+func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, overrides appconfig.LaunchOverrides, extra, requestedTools []string, primary string) error {
+	// Fold the launch's config-corresponding overrides (CLI flags + launch-config
+	// file) into a per-launch effective config; the whole graph reads from it.
+	effectiveConfig := r.config.WithOverrides(overrides)
 	selected, err := r.registry.Build(requestedTools, primary)
 	if err != nil {
 		return err
@@ -72,7 +74,7 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, e
 	var params run.Params
 	options := append(sessionModules(toolModule, r.stderr),
 		fx.NopLogger,
-		fx.Supply(r.paths, r.config),
+		fx.Supply(r.paths, effectiveConfig),
 		fx.Populate(&params),
 	)
 	app := fx.New(options...)
@@ -85,7 +87,7 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, e
 	if startErr != nil {
 		return fxRootCause(startErr)
 	}
-	runErr := run.Run(ctx, params, &effectiveOpts, extra, requestedTools, primary)
+	runErr := run.Run(ctx, params, opts, extra, requestedTools, primary)
 	stopCtx, cancel := context.WithTimeout(context.Background(), app.StopTimeout())
 	stopErr := app.Stop(stopCtx)
 	cancel()

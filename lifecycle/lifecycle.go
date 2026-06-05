@@ -9,6 +9,7 @@ import (
 	"context"
 	"io"
 
+	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/tools"
 )
 
@@ -33,8 +34,9 @@ const (
 
 // Context carries cross-cutting inputs available to every phase action.
 type Context struct {
-	Options *tools.Options
-	Stderr  io.Writer
+	Options          *tools.Options
+	Stderr           io.Writer
+	SuppressWarnings warning.Suppression
 }
 
 // Hook is a non-tool participant in a phase (e.g. writing Toby's own context

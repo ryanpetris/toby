@@ -38,5 +38,5 @@ type Params struct {
 }
 
 type Runner interface {
-	Run(context.Context, *tools.Options, []string, []string, string) error
+	Run(context.Context, *tools.Options, appconfig.LaunchOverrides, []string, []string, string) error
 }

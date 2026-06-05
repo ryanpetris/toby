@@ -6,6 +6,7 @@ package cli
 import (
 	"strings"
 
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/config/launch"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/tools"
@@ -46,9 +47,9 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 	if err != nil {
 		return result, err
 	}
-	result.Options.Image = image
-	applyDebugFlag(cmd, &result.Options)
-	applyYoloFlag(cmd, &result.Options)
+	result.Overrides.Image = image
+	applyDebugFlag(cmd, &result.Overrides)
+	applyYoloFlag(cmd, &result.Overrides)
 	for _, item := range contextTools {
 		if item.Name() == primary {
 			continue
@@ -67,26 +68,26 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 	return result, nil
 }
 
-func applyDebugFlag(cmd *cobra.Command, opts *tools.Options) {
-	if cmd == nil || opts == nil || !flagChanged(cmd, "debug") {
+func applyDebugFlag(cmd *cobra.Command, overrides *appconfig.LaunchOverrides) {
+	if cmd == nil || overrides == nil || !flagChanged(cmd, "debug") {
 		return
 	}
 	debug, err := cmd.Flags().GetBool("debug")
 	if err != nil {
 		return
 	}
-	opts.Debug = &debug
+	overrides.Debug = &debug
 }
 
-func applyYoloFlag(cmd *cobra.Command, opts *tools.Options) {
-	if cmd == nil || opts == nil || !flagChanged(cmd, "yolo") {
+func applyYoloFlag(cmd *cobra.Command, overrides *appconfig.LaunchOverrides) {
+	if cmd == nil || overrides == nil || !flagChanged(cmd, "yolo") {
 		return
 	}
 	yolo, err := cmd.Flags().GetBool("yolo")
 	if err != nil {
 		return
 	}
-	opts.Yolo = &yolo
+	overrides.Yolo = &yolo
 }
 
 func launchCommandArgs(args []string, argsLenAtDash int) (string, []string, error) {

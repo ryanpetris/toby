@@ -84,10 +84,7 @@ func toolAction(t tools.Tool, phase Phase, lctx Context, force bool) func(contex
 			return nil
 		}
 		return func(ctx context.Context) error {
-			opts := tools.ContextOptions{Stderr: lctx.Stderr}
-			if lctx.Options != nil {
-				opts.SuppressWarnings = lctx.Options.SuppressWarnings
-			}
+			opts := tools.ContextOptions{Stderr: lctx.Stderr, SuppressWarnings: lctx.SuppressWarnings}
 			return registrar.RegisterContextFiles(ctx, opts)
 		}
 	case PhaseInitSandbox:

@@ -47,15 +47,23 @@ func TestSuppressionCloneAndMerge(t *testing.T) {
 		t.Fatalf("source changed after clone mutation: %#v", src)
 	}
 
-	dst := Suppression{Set: true, All: true}
+	dst := Suppression{Set: true, IDs: map[ID]bool{ModelDiscovery: true}}
 	dst.Merge(Suppression{})
-	if !dst.All {
+	if !dst.Suppresses(ModelDiscovery) {
 		t.Fatalf("unset merge changed suppression: %#v", dst)
 	}
 	dst.Merge(src)
 	src.IDs[MountHostBacking] = false
-	if dst.All || !dst.Suppresses(MountHostBacking) {
-		t.Fatalf("merge did not clone source: %#v", dst)
+	// Merge unions src into dst and copies src's IDs.
+	if !dst.Suppresses(ModelDiscovery) || !dst.Suppresses(MountHostBacking) {
+		t.Fatalf("merge should union and copy source ids: %#v", dst)
+	}
+
+	// Merging an All suppression unions the All flag.
+	allDst := Suppression{Set: true, IDs: map[ID]bool{ModelDiscovery: true}}
+	allDst.Merge(Suppression{Set: true, All: true})
+	if !allDst.All || !allDst.Suppresses(ModelDiscovery) {
+		t.Fatalf("merge should union All: %#v", allDst)
 	}
 }
 

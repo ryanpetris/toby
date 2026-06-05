@@ -34,12 +34,14 @@ type Params struct {
 
 type DirectLaunch struct {
 	Options        tools.Options
+	Overrides      appconfig.LaunchOverrides
 	Extra          []string
 	RequestedTools []string
 }
 
 type ConfiguredLaunch struct {
 	Options        tools.Options
+	Overrides      appconfig.LaunchOverrides
 	Extra          []string
 	RequestedTools []string
 	Primary        string
@@ -136,13 +138,15 @@ func BuildConfiguredLaunch(params Params, configPath string, extra []string) (Co
 	}
 	options := commandOptionsFromLaunchConfig(cfg)
 	options.Projects = orderedProjectMounts(cfg.Projects, primaryProject)
+	overrides := overridesFromLaunchConfig(cfg)
 	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
-	options.ToolMountProfiles = profiles
+	overrides.ToolMountProfiles = profiles
 	return ConfiguredLaunch{
 		Options:        options,
+		Overrides:      overrides,
 		Extra:          configuredLaunchExtra(primaryToolConfig.Params, extra),
 		RequestedTools: configuredTools,
 		Primary:        primaryTool,
@@ -163,18 +167,19 @@ func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed Direc
 		return ConfiguredLaunch{}, err
 	}
 	options := commandOptionsFromLaunchConfig(cfg)
+	overrides := overridesFromLaunchConfig(cfg)
 	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
-	options.ToolMountProfiles = profiles
+	overrides.ToolMountProfiles = profiles
 	if options.Env == "" {
 		options.Env = parsed.Options.Env
 	}
 	options.Install = parsed.Options.Install
 	options.Upgrade = options.Upgrade || parsed.Options.Upgrade
 	options.Projects = append([]tools.ProjectMount{primaryProject}, options.Projects...)
-	mergeDirectLaunchOptions(&options, parsed.Options)
+	mergeLaunchOverrides(&overrides, parsed.Overrides)
 	requestedTools := appendIfMissing(nil, primary)
 	for _, name := range parsed.RequestedTools {
 		requestedTools = appendIfMissing(requestedTools, name)
@@ -184,6 +189,7 @@ func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed Direc
 	}
 	return ConfiguredLaunch{
 		Options:        options,
+		Overrides:      overrides,
 		Extra:          configuredLaunchExtra(primaryParams, parsed.Extra),
 		RequestedTools: requestedTools,
 		Primary:        primary,
@@ -223,10 +229,15 @@ func MaybeAutoloadProjectConfig(params Params, parsed DirectLaunch, primary stri
 
 func commandOptionsFromLaunchConfig(cfg launchConfig) tools.Options {
 	return tools.Options{
-		Env:              cfg.Name,
-		Upgrade:          cfg.Settings.AutoUpgrade,
-		Projects:         projectMounts(cfg.Projects),
-		Workdir:          cfg.Workdir,
+		Env:      cfg.Name,
+		Upgrade:  cfg.Settings.AutoUpgrade,
+		Projects: projectMounts(cfg.Projects),
+		Workdir:  cfg.Workdir,
+	}
+}
+
+func overridesFromLaunchConfig(cfg launchConfig) appconfig.LaunchOverrides {
+	return appconfig.LaunchOverrides{
 		Image:            cfg.Container.Image,
 		Build:            cfg.Container.Build,
 		MountProfile:     cfg.Settings.MountProfile,
@@ -236,7 +247,7 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tools.Options {
 	}
 }
 
-func mergeDirectLaunchOptions(dst *tools.Options, src tools.Options) {
+func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOverrides) {
 	if src.Image != "" {
 		dst.Image = src.Image
 	}

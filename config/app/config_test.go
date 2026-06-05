@@ -38,7 +38,7 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
   },
   "settings": {
     "mountProfile": "default",
-    "suppressWarnings": ["*"],
+    "suppressWarnings": ["provider.model-discovery"],
     "autoloadProjectConfig": true,
     "debug": true,
     "yolo": false
@@ -49,6 +49,9 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
   "container": { "image": "node:base" }
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+instruction:
+  - base.md
+  - extra.md
 mcp:
   server:
     docs:
@@ -85,10 +88,10 @@ container:
 	if mcp["url"] != "https://example.com/mcp" || mcp["enabled"] != true {
 		t.Fatalf("mcp.docs = %#v", mcp)
 	}
-	// instruction is set only in json; the yaml file (no instruction key) leaves
-	// it intact.
+	// instruction lists union across files (dedup, first-occurrence order): json's
+	// [base.md] plus yaml's [base.md, extra.md] => [base.md, extra.md].
 	instructions := cfg.Instructions()
-	if len(instructions) != 1 || instructions[0] != "base.md" {
+	if len(instructions) != 2 || instructions[0] != "base.md" || instructions[1] != "extra.md" {
 		t.Fatalf("instructions = %#v", instructions)
 	}
 	provider := cfg.Providers()["local"]
@@ -120,9 +123,9 @@ container:
 	if settings.MountProfile != "default" {
 		t.Fatalf("mount profile = %q", settings.MountProfile)
 	}
-	// A later source's list replaces an earlier one: yaml's [mount.host-backing]
-	// overrides json's ["*"].
-	if !settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || settings.SuppressWarnings.Suppresses(warning.ModelDiscovery) {
+	// suppressWarnings lists union across files: json's [provider.model-discovery]
+	// plus yaml's [mount.host-backing] suppresses both.
+	if !settings.SuppressWarnings.Suppresses(warning.MountHostBacking) || !settings.SuppressWarnings.Suppresses(warning.ModelDiscovery) {
 		t.Fatalf("suppress warnings = %#v", settings.SuppressWarnings)
 	}
 	if settings.AutoloadProjectConfigEnabled() {
@@ -176,6 +179,106 @@ settings:
 	}
 	if !settings.YoloEnabled() {
 		t.Fatalf("yolo = %#v", settings.Yolo)
+	}
+}
+
+func TestPermissionPathsPassesThroughVerbatimAndYoloRoot(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+permission:
+  paths:
+    /verbatim: allow
+    /subtree/: allow
+`))
+	cfg, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := cfg.PermissionPaths()
+	// Default directories are passed through verbatim, with no glob or trailing
+	// slash added.
+	if paths["/tmp"] != defaultPermissionMode {
+		t.Fatalf("default /tmp should be present verbatim: %#v", paths)
+	}
+	if _, ok := paths["/tmp/"]; ok {
+		t.Fatalf("default paths should not gain a trailing slash: %#v", paths)
+	}
+	if _, ok := paths["/tmp/**"]; ok {
+		t.Fatalf("default paths should not contain a recursive glob: %#v", paths)
+	}
+	// User entries pass through verbatim, preserving exactly what they wrote.
+	if paths["/verbatim"] != "allow" || paths["/subtree/"] != "allow" {
+		t.Fatalf("user permission paths = %#v", paths)
+	}
+	if _, ok := paths["/"]; ok {
+		t.Fatalf("root should not be granted without yolo: %#v", paths)
+	}
+
+	// yolo folded into the config grants the filesystem root.
+	enabled := true
+	yoloed := cfg.WithOverrides(LaunchOverrides{Yolo: &enabled})
+	if yoloed.PermissionPaths()["/"] != defaultPermissionMode {
+		t.Fatalf("yolo should grant the filesystem root: %#v", yoloed.PermissionPaths())
+	}
+	// The override must not mutate the original Service.
+	if _, ok := cfg.PermissionPaths()["/"]; ok {
+		t.Fatalf("WithOverrides must not mutate the receiver: %#v", cfg.PermissionPaths())
+	}
+}
+
+func TestWithOverridesPrecedenceAndMerges(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+settings:
+  mountProfile: base
+  suppressWarnings:
+    - mount.host-backing
+container:
+  image: node:host
+tool:
+  claude:
+    mountProfile: shared
+`))
+	cfg, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	debug := true
+	effective := cfg.WithOverrides(LaunchOverrides{
+		Image:             "node:launch",
+		MountProfile:      "launch",
+		Debug:             &debug,
+		ToolMountProfiles: map[string]string{"codex": "private"},
+		SuppressWarnings:  warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ModelDiscovery: true}},
+	})
+
+	// Scalar overrides win.
+	if effective.Image() != "node:launch" {
+		t.Fatalf("image = %q", effective.Image())
+	}
+	if effective.MountProfile() != "launch" {
+		t.Fatalf("mount profile = %q", effective.MountProfile())
+	}
+	if !effective.DebugEnabled() {
+		t.Fatalf("debug should be enabled")
+	}
+	// Tool mount profiles merge config base with the override.
+	profiles := effective.ToolMountProfiles()
+	if profiles["claude"] != "shared" || profiles["codex"] != "private" {
+		t.Fatalf("tool mount profiles = %#v", profiles)
+	}
+	// Suppressed warnings union the config base with the launch override.
+	suppress := effective.Settings().SuppressWarnings
+	if !suppress.Suppresses(warning.ModelDiscovery) || !suppress.Suppresses(warning.MountHostBacking) {
+		t.Fatalf("suppress should union config and override: %#v", suppress)
+	}
+	// The receiver is unchanged.
+	if cfg.Image() != "node:host" || cfg.MountProfile() != "base" {
+		t.Fatalf("receiver mutated: image=%q profile=%q", cfg.Image(), cfg.MountProfile())
 	}
 }
 

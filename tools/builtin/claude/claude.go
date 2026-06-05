@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"petris.dev/toby/container/layout"
 
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/sandbox"
@@ -39,6 +40,7 @@ type Params struct {
 	SessionConfig *sessionconfig.Holder
 	Sandbox       sandbox.Service
 	ContextFiles  *contextfiles.Service
+	Config        *appconfig.Service
 }
 
 type Result struct {
@@ -58,6 +60,7 @@ func Provide(params Params) Result {
 		),
 		sessionConfig: params.SessionConfig,
 		contextFiles:  params.ContextFiles,
+		config:        params.Config,
 	}
 	return Result{Service: svc}
 }
@@ -66,15 +69,14 @@ type claudeTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
 	contextFiles  *contextfiles.Service
+	config        *appconfig.Service
 	yolo          bool
 }
 
 var _ tools.Tool = (*claudeTool)(nil)
 
 func (t *claudeTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	if opts != nil {
-		t.yolo = opts.YoloEnabled()
-	}
+	t.yolo = t.config.YoloEnabled()
 
 	return t.Simple.PrepareHost(ctx, opts)
 }

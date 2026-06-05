@@ -17,16 +17,11 @@ import (
 	"petris.dev/toby/tools"
 )
 
-func mcpDefaults(opts *tools.Options, config *appconfig.Service) mcpproxy.Defaults {
+func mcpDefaults(config *appconfig.Service) mcpproxy.Defaults {
 	var defaults mcpproxy.Defaults
 	if config != nil {
-		defaults.Image = config.Container().Image
-	}
-	if opts != nil && strings.TrimSpace(opts.Image) != "" {
-		defaults.Image = strings.TrimSpace(opts.Image)
-	}
-	if opts != nil {
-		defaults.Debug = opts.DebugEnabled()
+		defaults.Image = strings.TrimSpace(config.Image())
+		defaults.Debug = config.DebugEnabled()
 	}
 	return defaults
 }
@@ -41,7 +36,7 @@ func registerTobyMCPProxy(params Params, manager *host.Service, controlHost stri
 	if strings.TrimSpace(controlHost) == "" {
 		return "", fmt.Errorf("%s is required", control.EnvControlHost)
 	}
-	state := mcpserver.SessionState{Debug: opts != nil && opts.DebugEnabled(), Paths: params.Paths, Sandbox: params.SandboxService, MCPProxy: params.MCPProxy, Config: params.TobyConfig, Registry: params.Registry, ActiveTools: activeTools, PrimaryTool: primary}
+	state := mcpserver.SessionState{Debug: params.TobyConfig.DebugEnabled(), Paths: params.Paths, Sandbox: params.SandboxService, MCPProxy: params.MCPProxy, Config: params.TobyConfig, Registry: params.Registry, ActiveTools: activeTools, PrimaryTool: primary}
 	if opts != nil {
 		state.Options = *opts
 	}

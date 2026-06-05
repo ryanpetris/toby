@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"petris.dev/toby/config"
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
@@ -26,6 +27,7 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 	var claude tools.Tool
 	app := fxtest.New(t,
 		fx.Supply(paths),
+		fx.Supply(testConfig(t, false)),
 		fx.Supply(fx.Annotate(sandbox, fx.As(new(sandboxapi.Service)))),
 		fx.Provide(contextfiles.NewService, sessionconfig.NewHolder),
 		npm.Module,
@@ -55,15 +57,14 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 
 func TestLaunchYoloAppendsSkipPermissions(t *testing.T) {
 	home := t.TempDir()
-	claude, sandbox := newTestClaude(t, filepath.Join(home, "runtime", "toby", "context"))
+	claude, sandbox := newTestClaude(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, true))
 	var got []string
 	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)
 		return 0, nil
 	}
 
-	yes := true
-	if err := claude.PrepareHost(context.Background(), &tools.Options{Yolo: &yes}); err != nil {
+	if err := claude.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := claude.Launch(context.Background(), []string{"--model", "opus"}); err != nil {
@@ -74,7 +75,7 @@ func TestLaunchYoloAppendsSkipPermissions(t *testing.T) {
 	}
 
 	got = nil
-	plain, plainSandbox := newTestClaude(t, filepath.Join(home, "runtime2", "toby", "context"))
+	plain, plainSandbox := newTestClaude(t, filepath.Join(home, "runtime2", "toby", "context"), testConfig(t, false))
 	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
 		got = append([]string(nil), argv...)
 		return 0, nil
@@ -90,13 +91,28 @@ func TestLaunchYoloAppendsSkipPermissions(t *testing.T) {
 	}
 }
 
-func newTestClaude(t *testing.T, contextDir string) (tools.Tool, *fake.Sandbox) {
+func newTestClaude(t *testing.T, contextDir string, cfg *appconfig.Service) (tools.Tool, *fake.Sandbox) {
 	t.Helper()
 	sandbox := fake.NewSandbox(contextDir)
 	sandbox.MCPURL = "http://127.0.0.1:12345/proxy/toby"
 	contextFiles := contextfiles.NewService()
 	contextFiles.SetSandbox(sandbox)
-	return Provide(Params{Sandbox: sandbox, ContextFiles: contextFiles, SessionConfig: sessionconfig.NewHolder()}).Service, sandbox
+	return Provide(Params{Sandbox: sandbox, ContextFiles: contextFiles, SessionConfig: sessionconfig.NewHolder(), Config: cfg}).Service, sandbox
+}
+
+// testConfig builds an appconfig.Service for tests, optionally with yolo folded in
+// the way a launch would.
+func testConfig(t *testing.T, yolo bool) *appconfig.Service {
+	t.Helper()
+	base, err := appconfig.Load(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !yolo {
+		return base
+	}
+	enabled := true
+	return base.WithOverrides(appconfig.LaunchOverrides{Yolo: &enabled})
 }
 
 func TestContextFlags(t *testing.T) {

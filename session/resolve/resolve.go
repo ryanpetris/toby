@@ -214,10 +214,7 @@ func (r *Resolver) fetchModels(ctx context.Context, provider appconfig.ProviderC
 }
 
 func suppression(lctx lifecycle.Context) warning.Suppression {
-	if lctx.Options != nil {
-		return lctx.Options.SuppressWarnings
-	}
-	return warning.Suppression{}
+	return lctx.SuppressWarnings
 }
 
 func headerStrings(headers http.Header) map[string]string {

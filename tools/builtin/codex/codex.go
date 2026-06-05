@@ -6,6 +6,7 @@ package codex
 import (
 	"context"
 
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/config/session"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
@@ -35,6 +36,7 @@ type Params struct {
 
 	SessionConfig *sessionconfig.Holder
 	Sandbox       sandbox.Service
+	Config        *appconfig.Service
 }
 
 type Result struct {
@@ -53,6 +55,7 @@ func Provide(params Params) Result {
 			nil,
 		),
 		sessionConfig: params.SessionConfig,
+		config:        params.Config,
 	}
 	return Result{Service: svc}
 }
@@ -60,15 +63,14 @@ func Provide(params Params) Result {
 type codexTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
+	config        *appconfig.Service
 	yolo          bool
 }
 
 var _ tools.Tool = (*codexTool)(nil)
 
 func (t *codexTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	if opts != nil {
-		t.yolo = opts.YoloEnabled()
-	}
+	t.yolo = t.config.YoloEnabled()
 
 	return t.Simple.PrepareHost(ctx, opts)
 }

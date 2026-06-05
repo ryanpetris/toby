@@ -67,4 +67,3 @@ code to match rather than redefining a term here.
 - **Registry** — an in-memory collection/lookup of like items (e.g. `tools.Registry`).
 - **Router** (or **Dispatcher**) — maps RPC method names to handlers.
 - **Handler** — a type implementing a group of RPC methods.
-- **Manager** — retired; do not introduce new `*Manager` types.

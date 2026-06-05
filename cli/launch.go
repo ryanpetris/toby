@@ -53,16 +53,16 @@ func newLaunchCommand(params Params, primary tools.Tool, rootConfigPath *string)
 				if err != nil {
 					return err
 				}
-				return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+				return runSession(cmd.Context(), params, &launch.Options, launch.Overrides, launch.Extra, launch.RequestedTools, launch.Primary)
 			}
 			launch, ok, err := launchconfig.MaybeAutoloadProjectConfig(launchConfigParams(params), parsed, primary.Name())
 			if err != nil {
 				return err
 			}
 			if ok {
-				return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+				return runSession(cmd.Context(), params, &launch.Options, launch.Overrides, launch.Extra, launch.RequestedTools, launch.Primary)
 			}
-			return runSession(cmd.Context(), params, &parsed.Options, parsed.Extra, parsed.RequestedTools, primary.Name())
+			return runSession(cmd.Context(), params, &parsed.Options, parsed.Overrides, parsed.Extra, parsed.RequestedTools, primary.Name())
 		},
 	}
 	addSandboxFlags(cmd)

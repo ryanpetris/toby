@@ -85,6 +85,8 @@ func allowedDirectories(permissions map[string]string) []any {
 		if mode != "allow" {
 			continue
 		}
+		// Claude's additionalDirectories takes directory paths, not globs; the
+		// path is otherwise listed verbatim.
 		if strings.ContainsAny(pattern, "*?[") {
 			continue
 		}

@@ -68,11 +68,26 @@ func (s Suppression) Clone() Suppression {
 	return clone
 }
 
+// Merge unions src into s: when src is set, s becomes set, s.All is OR'd with
+// src.All, and src's suppressed IDs are added to s. src's IDs are copied, so later
+// mutations of src do not affect s.
 func (s *Suppression) Merge(src Suppression) {
 	if !src.Set {
 		return
 	}
-	*s = src.Clone()
+	s.Set = true
+	if src.All {
+		s.All = true
+	}
+	for id, suppressed := range src.IDs {
+		if !suppressed {
+			continue
+		}
+		if s.IDs == nil {
+			s.IDs = make(map[ID]bool, len(src.IDs))
+		}
+		s.IDs[id] = true
+	}
 }
 
 func (s Suppression) Suppresses(id ID) bool {

@@ -50,7 +50,9 @@ func NewFactory(paths config.Paths, containers *engine.Service) Factory {
 	return Factory{paths: paths, containers: containers}
 }
 
-func (f Factory) FromOptions(opts *tools.Options) (Instance, error) {
+// FromOptions resolves the sandbox spec from the launch-only options, with the
+// image and build supplied separately from the effective config.
+func (f Factory) FromOptions(opts *tools.Options, image string, build tools.Build) (Instance, error) {
 	if opts == nil {
 		opts = &tools.Options{}
 	}
@@ -59,6 +61,8 @@ func (f Factory) FromOptions(opts *tools.Options) (Instance, error) {
 	if err != nil {
 		return nil, err
 	}
+	spec.Image = strings.TrimSpace(image)
+	spec.Build = build
 
 	return f.newInstance(spec)
 }
@@ -101,8 +105,6 @@ func (f Factory) specFromOptions(opts *tools.Options) (Spec, error) {
 		return Spec{}, err
 	}
 
-	spec.Image = strings.TrimSpace(opts.Image)
-	spec.Build = opts.Build
 	return spec, nil
 }
 

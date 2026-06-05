@@ -19,9 +19,10 @@ import (
 )
 
 func Run(ctx context.Context, params Params, opts *tools.Options, extra, requestedTools []string, primary string) error {
-	effectiveOpts := ApplySandboxDefaults(opts, params.TobyConfig)
-	opts = &effectiveOpts
-	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts); err != nil {
+	if opts == nil {
+		opts = &tools.Options{}
+	}
+	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts, params.TobyConfig.Settings().SuppressWarnings); err != nil {
 		return err
 	}
 	if params.Engine == nil {
@@ -30,7 +31,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	if err := params.Engine.Ping(ctx); err != nil {
 		return exitcode.New(2, "docker socket not reachable (is the daemon running, or DOCKER_HOST set?): %v", err)
 	}
-	sbx, err := params.SandboxFactory.FromOptions(opts)
+	sbx, err := params.SandboxFactory.FromOptions(opts, params.TobyConfig.Image(), params.TobyConfig.Build())
 	if err != nil {
 		return err
 	}
@@ -39,7 +40,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		return fmt.Errorf("sandbox service is not configured")
 	}
 	params.SandboxService.Prepare(sbx)
-	if err := params.SandboxService.ConfigureMounts(opts); err != nil {
+	if err := params.SandboxService.ConfigureMounts(params.TobyConfig.MountProfile(), params.TobyConfig.ToolMountProfiles()); err != nil {
 		return err
 	}
 
@@ -47,7 +48,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	if err != nil {
 		return err
 	}
-	lctx := lifecycle.Context{Options: opts, Stderr: params.Stderr}
+	lctx := lifecycle.Context{Options: opts, Stderr: params.Stderr, SuppressWarnings: params.TobyConfig.Settings().SuppressWarnings}
 	activeTools := toolset.OrderedToolNames()
 	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseHostPrepare, toolset, lctx, false); err != nil {
 		return err
@@ -89,7 +90,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	}
 	params.SandboxService.SetTobyMCPURL(mcpURL)
 	if params.MCPProxy != nil {
-		if err := params.MCPProxy.Configure(ctx, env[control.EnvControlHost], params.TobyConfig, mcpDefaults(opts, params.TobyConfig)); err != nil {
+		if err := params.MCPProxy.Configure(ctx, env[control.EnvControlHost], params.TobyConfig, mcpDefaults(params.TobyConfig)); err != nil {
 			return err
 		}
 		params.MCPProxy.StartAll(ctx)
@@ -98,7 +99,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 
 	mounts := params.SandboxService.RuntimeMounts()
 	binds := params.SandboxService.StartBinds()
-	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts, Debug: opts.DebugEnabled()}
+	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts, Debug: params.TobyConfig.DebugEnabled()}
 	primeCode, primeErr := sbx.Prime(ctx, runSpec)
 	if primeErr != nil {
 		return primeErr

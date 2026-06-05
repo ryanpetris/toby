@@ -73,6 +73,31 @@ func TestRendersPermissionPaths(t *testing.T) {
 	}
 }
 
+func TestRendersDirectoryPermissionPaths(t *testing.T) {
+	config := renderConfig(t, sessionconfig.Config{
+		Permissions: map[string]string{"/foobar": "allow", "/withslash/": "allow", "/": "allow"},
+	})
+	external := config["permission"].(map[string]any)["external_directory"].(map[string]any)
+	// A path without a trailing slash: verbatim plus "<path>/**".
+	if external["/foobar"] != "allow" || external["/foobar/**"] != "allow" {
+		t.Fatalf("/foobar should expand to itself and /foobar/**: %#v", external)
+	}
+	// A path with a trailing slash is kept verbatim; the recursive form appends "**".
+	if external["/withslash/"] != "allow" || external["/withslash/**"] != "allow" {
+		t.Fatalf("/withslash/ should be kept and expand to /withslash/**: %#v", external)
+	}
+	if _, ok := external["/withslash"]; ok {
+		t.Fatalf("trailing slash must not be stripped: %#v", external)
+	}
+	// Root expands without producing a doubled slash.
+	if external["/"] != "allow" || external["/**"] != "allow" {
+		t.Fatalf("root should expand to / and /**: %#v", external)
+	}
+	if _, ok := external["//**"]; ok {
+		t.Fatalf("root must not produce //**: %#v", external)
+	}
+}
+
 func TestRendersOpenAIProvider(t *testing.T) {
 	config := renderConfig(t, sessionconfig.Config{
 		Providers: []sessionconfig.Provider{{

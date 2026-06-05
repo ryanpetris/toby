@@ -49,6 +49,9 @@ type Service struct {
 	Dir    string
 	Home   string
 	config Config
+	// toolMountProfileOverrides are per-tool mount profiles folded in from a
+	// launch (CLI/launch-config), layered over the config-derived profiles.
+	toolMountProfileOverrides map[string]string
 }
 
 // Config is the resolved Toby host configuration.
@@ -151,9 +154,13 @@ func New(paths config.Paths) (*Service, error) {
 }
 
 // Load reads the config source files from dir, deep-merges them as generic maps,
-// strict-decodes the result, and resolves it into a Service.
+// strict-decodes the result, and resolves it into a Service. The generic merge
+// has a later file's value replace an earlier one's; the list-valued instruction
+// and settings.suppressWarnings keys are instead unioned across files (first
+// occurrence wins on order), so each file contributes additively.
 func Load(dir, home string) (*Service, error) {
 	merged := map[string]any{}
+	var instructions, suppressWarnings []any
 	for _, name := range sourceFiles() {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err != nil {
@@ -166,7 +173,26 @@ func Load(dir, home string) (*Service, error) {
 		if err := configfile.DecodeFile(path, &fileMap); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+		if list, ok := fileMap["instruction"].([]any); ok {
+			instructions = append(instructions, list...)
+		}
+		if settings, ok := fileMap["settings"].(map[string]any); ok {
+			if list, ok := settings["suppressWarnings"].([]any); ok {
+				suppressWarnings = append(suppressWarnings, list...)
+			}
+		}
 		configfile.Merge(merged, fileMap)
+	}
+	if len(instructions) > 0 {
+		merged["instruction"] = dedupeList(instructions)
+	}
+	if len(suppressWarnings) > 0 {
+		settings, ok := merged["settings"].(map[string]any)
+		if !ok {
+			settings = map[string]any{}
+			merged["settings"] = settings
+		}
+		settings["suppressWarnings"] = dedupeList(suppressWarnings)
 	}
 	var schema fileSchema
 	if err := configfile.DecodeInto(merged, &schema); err != nil {
@@ -184,6 +210,24 @@ func Load(dir, home string) (*Service, error) {
 
 func sourceFiles() []string {
 	return []string{"config.json", "config.yaml", "config.yml"}
+}
+
+// dedupeList returns items with duplicate string entries removed, preserving the
+// order of first occurrence. Non-string entries are kept as-is for the strict
+// decoder to reject.
+func dedupeList(items []any) []any {
+	seen := make(map[string]bool, len(items))
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func emptyConfig() Config {
@@ -434,10 +478,12 @@ const defaultPermissionMode = "allow"
 // defaultPermissionPaths returns the permission paths Toby injects into supported
 // tool configs by default. They grant access to the sandbox projects root, /tmp,
 // and the common home cache/state directories used by development tooling such as
-// Go, npm, and pip. Each directory is paired with a recursive glob so tools that
-// match on patterns cover the subtree. The projects root itself is added, not the
-// individual mounted project paths.
-func defaultPermissionPaths() map[string]string {
+// Go, npm, and pip. Permission paths are always directories, so each is passed to
+// the consuming tool config verbatim; tools that match on globs (opencode) add a
+// recursive form themselves. The projects root itself is added, not the individual
+// mounted project paths. When yolo is enabled the filesystem root is granted so the
+// tool may reach any path.
+func defaultPermissionPaths(yolo bool) map[string]string {
 	dirs := []string{"/tmp", layout.Workspace, filepath.Join(layout.Home, "go"), filepath.Join(layout.Home, ".cache")}
 	result := map[string]string{}
 	for _, dir := range dirs {
@@ -445,16 +491,20 @@ func defaultPermissionPaths() map[string]string {
 			continue
 		}
 		result[dir] = defaultPermissionMode
-		result[dir+"/**"] = defaultPermissionMode
+	}
+	if yolo {
+		result["/"] = defaultPermissionMode
 	}
 	return result
 }
 
 // PermissionPaths returns the permission paths for supported tool configs: Toby's
 // default injected paths merged with the user-configured permission.paths. User
-// entries override defaults for the same path.
+// entries override defaults for the same path. When yolo is enabled (in the
+// effective config, which already folds in the --yolo flag) the filesystem root
+// is granted.
 func (s *Service) PermissionPaths() map[string]string {
-	result := defaultPermissionPaths()
+	result := defaultPermissionPaths(s.YoloEnabled())
 	if s == nil {
 		return result
 	}
@@ -474,6 +524,9 @@ func (s *Service) ToolMountProfiles() map[string]string {
 			profiles[name] = strings.TrimSpace(cfg.MountProfile)
 		}
 	}
+	for name, profile := range s.toolMountProfileOverrides {
+		profiles[name] = profile
+	}
 	return profiles
 }
 
@@ -490,6 +543,76 @@ func (s *Service) Container() ContainerConfig {
 		return ContainerConfig{}
 	}
 	return s.config.Container
+}
+
+// Service-level reads of config-corresponding launch values. These are the single
+// source of truth: a launch's CLI flags and launch-config overrides are folded in
+// via WithOverrides before the per-launch graph reads them.
+func (s *Service) YoloEnabled() bool    { return s.Settings().YoloEnabled() }
+func (s *Service) DebugEnabled() bool   { return s.Settings().DebugEnabled() }
+func (s *Service) Image() string        { return s.Container().Image }
+func (s *Service) Build() tools.Build   { return s.Container().Build }
+func (s *Service) MountProfile() string { return s.Settings().MountProfile }
+
+// LaunchOverrides carries the config-corresponding values a single launch may
+// override (from CLI flags and the launch-config file). Folding these into the
+// config via WithOverrides keeps the Service the single source of truth.
+type LaunchOverrides struct {
+	MountProfile      string
+	Image             string
+	Build             tools.Build
+	Debug             *bool
+	Yolo              *bool
+	ToolMountProfiles map[string]string
+	SuppressWarnings  warning.Suppression
+}
+
+// WithOverrides returns a new Service whose config has the launch overrides folded
+// in (override wins; ToolMountProfiles and SuppressWarnings merge over the config
+// base). The receiver is not mutated, so the process-wide singleton is unaffected.
+func (s *Service) WithOverrides(o LaunchOverrides) *Service {
+	if s == nil {
+		return nil
+	}
+	next := *s
+
+	settings := s.config.Settings
+	settings.SuppressWarnings = s.config.Settings.SuppressWarnings.Clone()
+	settings.SuppressWarnings.Merge(o.SuppressWarnings)
+	if o.MountProfile != "" {
+		settings.MountProfile = o.MountProfile
+	}
+	if o.Debug != nil {
+		debug := *o.Debug
+		settings.Debug = &debug
+	}
+	if o.Yolo != nil {
+		yolo := *o.Yolo
+		settings.Yolo = &yolo
+	}
+	next.config.Settings = settings
+
+	container := s.config.Container
+	if o.Image != "" {
+		container.Image = o.Image
+	}
+	if o.Build.IsSet() {
+		container.Build = o.Build
+	}
+	next.config.Container = container
+
+	if len(o.ToolMountProfiles) > 0 {
+		merged := make(map[string]string, len(s.toolMountProfileOverrides)+len(o.ToolMountProfiles))
+		for name, profile := range s.toolMountProfileOverrides {
+			merged[name] = profile
+		}
+		for name, profile := range o.ToolMountProfiles {
+			merged[name] = profile
+		}
+		next.toolMountProfileOverrides = merged
+	}
+
+	return &next
 }
 
 func (s *Service) RegisterContextFiles(ctx context.Context, service *contextfiles.Service) error {

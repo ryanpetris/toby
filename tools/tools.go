@@ -62,22 +62,17 @@ type ContextOptions struct {
 	Stderr           io.Writer
 }
 
-// Options is the fully resolved configuration for one launch, shared by every
-// tool in the launch.
+// Options is the launch-only configuration for one launch, shared by every tool
+// in the launch. Config-corresponding values (image, build, debug, yolo, mount
+// profiles, suppressed warnings) are NOT here: they are folded into the effective
+// appconfig.Service at the launch boundary and read from there.
 type Options struct {
-	Env               string
-	Project           string
-	Projects          []ProjectMount
-	Workdir           string
-	Image             string
-	Build             Build
-	MountProfile      string
-	ToolMountProfiles map[string]string
-	SuppressWarnings  warning.Suppression
-	Debug             *bool
-	Yolo              *bool
-	Install           bool
-	Upgrade           bool
+	Env      string
+	Project  string
+	Projects []ProjectMount
+	Workdir  string
+	Install  bool
+	Upgrade  bool
 }
 
 // Build describes a sandbox image to build from source instead of pulling.
@@ -88,12 +83,6 @@ type Build struct {
 
 // IsSet reports whether a build context was configured.
 func (b Build) IsSet() bool { return b.Context != "" }
-
-// DebugEnabled reports whether debug output is enabled for the launch.
-func (o Options) DebugEnabled() bool { return o.Debug != nil && *o.Debug }
-
-// YoloEnabled reports whether yolo mode is enabled for the launch.
-func (o Options) YoloEnabled() bool { return o.Yolo != nil && *o.Yolo }
 
 // ProjectMount names a host project to mount into the sandbox.
 type ProjectMount struct {

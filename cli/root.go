@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	appconfig "petris.dev/toby/config/app"
 	"petris.dev/toby/config/launch"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/tools"
@@ -52,9 +53,9 @@ func NewRootCommand(params Params) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			applyDebugFlag(cmd, &launch.Options)
-			applyYoloFlag(cmd, &launch.Options)
-			return runSession(cmd.Context(), params, &launch.Options, launch.Extra, launch.RequestedTools, launch.Primary)
+			applyDebugFlag(cmd, &launch.Overrides)
+			applyYoloFlag(cmd, &launch.Overrides)
+			return runSession(cmd.Context(), params, &launch.Options, launch.Overrides, launch.Extra, launch.RequestedTools, launch.Primary)
 		},
 	}
 	cmd.SetOut(stdout)
@@ -90,9 +91,9 @@ func launchConfigParams(params Params) launchconfig.Params {
 	}
 }
 
-func runSession(ctx context.Context, params Params, opts *tools.Options, extra, requestedTools []string, primary string) error {
+func runSession(ctx context.Context, params Params, opts *tools.Options, overrides appconfig.LaunchOverrides, extra, requestedTools []string, primary string) error {
 	if params.SessionRunner == nil {
 		return fmt.Errorf("session runner is not configured")
 	}
-	return params.SessionRunner.Run(ctx, opts, extra, requestedTools, primary)
+	return params.SessionRunner.Run(ctx, opts, overrides, extra, requestedTools, primary)
 }
