@@ -61,9 +61,9 @@ Or define it declaratively with t3 as the primary tool:
 
 ```yaml
 # t3.yaml
-projects:
+project:
   my-app:
-tools:
+tool:
   t3:
     primary: true
   claude:
@@ -81,18 +81,15 @@ A launch config describes one launch's sandbox, projects, and tools.
 
 ```yaml
 # review.yaml
-sandbox:
-  name: review
-  runtime:
-    default: docker
-    docker:
-      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
-projects:
+name: review
+container:
+  image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
+project:
   app:
     primary: true
   shared:
     path: ../shared-lib
-tools:
+tool:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]
@@ -123,9 +120,9 @@ projects.
 
 ```yaml
 # test.yaml
-projects:
+project:
   my-app:
-tools:
+tool:
   exec:
     primary: true
     params: ["npm", "test"]
@@ -147,7 +144,7 @@ proxies them to tools through a per-run URL.
 
 ```yaml
 # ~/.config/toby/config.yaml
-providers:
+provider:
   local:
     type: openai
     baseURL: https://api.example.com/v1
@@ -165,12 +162,13 @@ EXAMPLE_API_KEY=sk-... toby opencode my-app
 
 ```yaml
 # ~/.config/toby/config.yaml
-mcps:
-  docs:
-    type: remote
-    url: https://example.com/mcp
-    headers:
-      Authorization: "Bearer {env:DOCS_TOKEN}"
+mcp:
+  server:
+    docs:
+      type: remote
+      url: https://example.com/mcp
+      headers:
+        Authorization: "Bearer {env:DOCS_TOKEN}"
 ```
 
 ```sh
@@ -213,7 +211,7 @@ single tool) a separate, isolated set of volumes — useful for keeping, say, a
 # ~/.config/toby/config.yaml
 settings:
   mountProfile: work   # volumes become toby.work.<type>.<name>.<purpose>
-tools:
+tool:
   opencode:
     mountProfile: personal   # opencode gets its own toby.personal.* volumes
 ```
@@ -225,16 +223,13 @@ default volume set. Volumes persist across runs and are managed by Docker.
 
 ```yaml
 # build.yaml
-sandbox:
-  runtime:
-    default: docker
-    docker:
-      build:
-        context: .
-        dockerfile: Dockerfile.toby
-projects:
+container:
+  build:
+    context: .
+    dockerfile: Dockerfile.toby
+project:
   my-app:
-tools:
+tool:
   opencode:
     primary: true
 ```

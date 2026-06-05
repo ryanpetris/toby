@@ -22,19 +22,16 @@ Launch configuration files passed with `toby --config <file>` can define one or 
 Example:
 
 ```yaml
-sandbox:
-  name: review
-  runtime:
-    default: docker
-    docker:
-      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
-      build:
-        context: .
-        dockerfile: Dockerfile.toby
+name: review
+container:
+  image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
+  build:
+    context: .
+    dockerfile: Dockerfile.toby
 settings:
   mountProfile: review
 workdir: ~/tmp
-projects:
+project:
   app:
     primary: true
   foo:
@@ -42,7 +39,7 @@ projects:
   qux:
   baz:
     path: /foo/bar
-tools:
+tool:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]
@@ -56,18 +53,18 @@ If a configured project has a null value or no `path`, the host source defaults 
 
 If `workdir` is set, Toby passes it to the selected runtime after leading `~` expansion to the sandbox home without otherwise resolving or validating it. If omitted, the working directory is the primary configured project's sandbox path.
 
-Configured `tools` entries are object keys. A null value enables the tool with defaults; an object can set `primary`, `params`, and `mountProfile`. `params` is only allowed on the resolved primary tool, and `mountProfile` namespaces that tool's persistent volumes. Tool names must be registered Toby tools. In config-owned launches, the primary tool launches and later tools are installed and made available. Toby parses all CLI arguments before the first `--`; arguments after that first `--`, including later `--` values, are appended to the primary tool's configured `params`. In overlay launches, the CLI-selected tool launches in the foreground and configured tools are additional; duplicate tools are loaded once.
+Configured `tool` entries are object keys. A null value enables the tool with defaults; an object can set `primary`, `params`, and `mountProfile`. `params` is only allowed on the resolved primary tool, and `mountProfile` namespaces that tool's persistent volumes. Tool names must be registered Toby tools. In config-owned launches, the primary tool launches and later tools are installed and made available. Toby parses all CLI arguments before the first `--`; arguments after that first `--`, including later `--` values, are appended to the primary tool's configured `params`. In overlay launches, the CLI-selected tool launches in the foreground and configured tools are additional; duplicate tools are loaded once.
 
-Persistent runtime and tool state lives in container-native Docker named volumes. `settings.mountProfile` namespaces those volumes for a launch (default `default`); `tools.<tool>.mountProfile` selects a different namespace for one tool. A tool requests a mount by `type`/`name`/`purpose` at a container path (`~/…` expands to the container `$HOME`); each request resolves to a lazy Docker volume named `toby.<mountProfile>.<type>.<name>.<purpose>`, managed by Docker. Runtime home uses `toby.<mountProfile>.runtime.home.<sandboxName>`. Toby never bind-mounts the user's host tool configuration. The Docker tool is the exception: it binds `/var/run/docker.sock` and the `$HOME`-based `~/.docker`. Set `settings.suppressWarnings: true` to suppress all warnings, or set it to a list of warning IDs such as `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Synthetic Toby config is generated in all modes.
+Persistent runtime and tool state lives in container-native Docker named volumes. `settings.mountProfile` namespaces those volumes for a launch (default `default`); `tool.<tool>.mountProfile` selects a different namespace for one tool. A tool requests a mount by `type`/`name`/`purpose` at a container path (`~/…` expands to the container `$HOME`); each request resolves to a lazy Docker volume named `toby.<mountProfile>.<type>.<name>.<purpose>`, managed by Docker. Runtime home uses `toby.<mountProfile>.runtime.home.<sandboxName>`. Toby never bind-mounts the user's host tool configuration. The Docker tool is the exception: it binds `/var/run/docker.sock` and the `$HOME`-based `~/.docker`. Set `settings.suppressWarnings: ["*"]` to suppress all warnings, or set it to a list of warning IDs such as `opencode.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Synthetic Toby config is generated in all modes.
 
 Configured project paths that do not exist are skipped with `project.missing`. Duplicate configured project names are skipped with `project.duplicate`; the same host source path may be mounted multiple times under different project names. If all configured projects are missing or duplicate in a config-owned launch, Toby exits after printing the warnings. If a CLI project is specified and exists, missing or duplicate configured projects only reduce the additional project set.
 
 Use `exec` as the primary tool to run arbitrary sandbox commands:
 
 ```yaml
-projects:
+project:
   foo:
-tools:
+tool:
   exec:
     primary: true
     params: ["npm", "test"]
@@ -98,7 +95,7 @@ The `workdir` value is a sandbox-visible path. A leading `~` expands to the sand
 
 The container image is responsible for containing the tools required by the selected Toby tools, including `curl` for the bootstrap download. Toby mounts the private home and selected projects; it does not install base OS packages into the image.
 
-Set `sandbox.runtime.docker.build.context` to build an image before launch. Relative build contexts resolve from the config file directory, relative `dockerfile` values resolve from the build context, and `dockerfile` defaults to `Dockerfile`. If `image` is set, Toby first checks whether the image exists locally and only builds when it is missing. If `image` is omitted, Toby builds for every launch and uses the resulting image ID, relying on Docker's build cache for repeat runs.
+Set `container.build.context` to build an image before launch. Relative build contexts resolve from the config file directory, relative `dockerfile` values resolve from the build context, and `dockerfile` defaults to `Dockerfile`. If `image` is set, Toby first checks whether the image exists locally and only builds when it is missing. If `image` is omitted, Toby builds for every launch and uses the resulting image ID, relying on Docker's build cache for repeat runs.
 
 On Linux, the sandbox-facing Toby binary is served from `/proc/self/exe`. macOS release builds embed the matching Linux helper. Local Darwin builds without the release embed tag require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
 
@@ -106,38 +103,35 @@ Local Linux daemons bind-mount host project paths directly. With a remote daemon
 
 ## Host Configuration
 
-Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.jsonc`, `config.yaml`, and `config.yml`, with `~/.config` used when `XDG_CONFIG_HOME` is unset. If multiple files exist, they are deep merged in that order.
+Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.yaml`, and `config.yml`, with `~/.config` used when `XDG_CONFIG_HOME` is unset. If multiple files exist, they are deep merged in that order.
 
-Toby config is its own format. Supported top-level keys are `instructions`, `mcps`, `permissions`, `providers`, `settings`, `tools`, and `sandbox`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
+Toby config is its own format. Supported top-level keys are `instruction`, `mcp`, `permission`, `provider`, `settings`, `tool`, and `container`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcps` config is rendered into supported synthetic tool config files under the generated context directory. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`; both are rendered as remote MCP URLs through `http://<control-host>/proxy/<uuid>`. Toby keeps remote upstream URLs and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to the generated Grok config.
-- `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under the generated context directory using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
-- `permissions.paths` entries are path patterns and permission modes rendered into supported tool configs. Leading `~` expands to the host home directory. Toby also injects default permissions for the sandbox projects root, `/tmp`, and the common sandbox `$HOME` cache/state directories used by Go, npm, and pip (`~/go` and `~/.cache`). Configured entries override generated defaults for the same path.
-- `providers` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps upstream `baseURL` and credential `headers` on the host and exposes each provider to tools through `http://<control-host>/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `opencode.model-discovery` and excludes only that provider from generated OpenCode config.
-- `sandbox` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
+- `mcp.server` config is rendered into supported synthetic tool config files under the generated context directory. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`; both are rendered as remote MCP URLs through `http://<control-host>/proxy/<uuid>`. Toby keeps remote upstream URLs and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to the generated Grok config.
+- `instruction` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under the generated context directory using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
+- `permission.paths` entries are path patterns and permission modes rendered into supported tool configs. Leading `~` expands to the host home directory. Toby also injects default permissions for the sandbox projects root, `/tmp`, and the common sandbox `$HOME` cache/state directories used by Go, npm, and pip (`~/go` and `~/.cache`). Configured entries override generated defaults for the same path.
+- `provider` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps upstream `baseURL` and credential `headers` on the host and exposes each provider to tools through `http://<control-host>/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `opencode.model-discovery` and excludes only that provider from generated OpenCode config.
+- `container` config sets global defaults for sandbox launches. CLI flags override launch config values, launch config values override host config defaults, and host config defaults override built-in defaults.
 
 Global mount-profile and warning defaults use the same shape as launch config:
 
 ```yaml
 settings:
   mountProfile: default
-  suppressWarnings: true
+  suppressWarnings: ["*"]
   autoloadProjectConfig: true
-tools:
+tool:
   claude:
     mountProfile: work
 ```
 
-`settings.mountProfile` (and per-tool `tools.<tool>.mountProfile`) namespaces a tool's persistent Docker volumes. Set `settings.suppressWarnings: true` to suppress all warning IDs from that config, or provide a list of IDs to suppress only those warnings. Set `settings.autoloadProjectConfig: true` to automatically load `<project>/.toby.yaml` for direct launches; when disabled, the presence of `.toby.yaml` emits the suppressible `project.autoload-disabled` warning.
+`settings.mountProfile` (and per-tool `tool.<tool>.mountProfile`) namespaces a tool's persistent Docker volumes. Set `settings.suppressWarnings: ["*"]` to suppress all warning IDs from that config, or provide a list of specific IDs to suppress only those warnings. Set `settings.autoloadProjectConfig: true` to automatically load `<project>/.toby.yaml` for direct launches; when disabled, the presence of `.toby.yaml` emits the suppressible `project.autoload-disabled` warning.
 
-Example global Docker sandbox defaults:
+Example global Docker container defaults:
 
 ```yaml
-sandbox:
-  runtime:
-    default: docker
-    docker:
-      image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
+container:
+  image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
 ```
 
 ## MCP
@@ -148,7 +142,7 @@ Git MCP calls run through the host Toby process, so host Git config, SSH agents,
 
 Toby also exposes each configured MCP server through a per-run HTTP proxy URL. Supported remote entries use `type: remote` and `url`; generated tool config keeps the original MCP name and points the tool at `http://<control-host>/proxy/<uuid>`. The built-in Toby MCP uses the same shape, with the proxy dispatching to the in-process MCP handler. The host Toby process opens upstream endpoints for configured remote MCPs and applies configured headers or host environment tokens.
 
-Local MCP entries use `type: local` and are started as session-scoped sidecars, then rendered to tools as remote/http MCP URLs. `transport: stdio` runs the configured command and bridges stdio to streamable HTTP in the host Toby process. `transport: http` runs the configured command and proxies to the configured port/path. Sidecars do not run `toby sandbox manager`, do not receive setup hooks, and do not mount projects, generated context, or managed state. MCP sidecars run with the selected image defaults for user, home, and working directory. The MCP runtime is `docker`; set `sandbox.mcp.runtime` or `mcps.<name>.runtime` to configure it.
+Local MCP entries use `type: local` and are started as session-scoped sidecars, then rendered to tools as remote/http MCP URLs. `transport: stdio` runs the configured command and bridges stdio to streamable HTTP in the host Toby process. `transport: http` runs the configured command and proxies to the configured port/path. Sidecars do not run `toby sandbox manager`, do not receive setup hooks, and do not mount projects, generated context, or managed state. MCP sidecars run with the selected image defaults for user, home, and working directory. MCP sidecars run as Docker containers; set the default sidecar image with `mcp.image` or override it per server with a per-server `image`.
 
 Available tools:
 

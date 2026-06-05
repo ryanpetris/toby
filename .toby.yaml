@@ -1,6 +1,3 @@
-sandbox:
-  runtime:
-    default: docker
-    docker:
-      build:
-        context: support/toby
+container:
+  build:
+    context: support/toby

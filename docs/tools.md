@@ -1,13 +1,13 @@
 # Tools
 
 Toby launches and manages a set of development tools inside the sandbox. Each
-tool is a package under `internal/tools/` that registers into the tool registry
+tool is a package under `internal/dirty/tools/` that registers into the tool registry
 and implements the `Tool` lifecycle (see [architecture.md](architecture.md)).
 
 You launch a tool with `toby <tool> <env>`. The tool you name becomes the
 **primary** (foreground) tool. Additional tools can be installed alongside it,
 either with `--with-<tool>` flags (for tools in the primary's context groups) or
-through launch config `tools:` entries.
+through launch config `tool:` entries.
 
 ## Tool catalog
 
@@ -148,9 +148,9 @@ The equivalent in a launch config makes t3 the primary tool with the coding
 tools listed after it:
 
 ```yaml
-projects:
+project:
   my-app:
-tools:
+tool:
   t3:
     primary: true
   claude:

@@ -14,7 +14,7 @@ func TestConfigureRegistersRuntimeHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, ok := s.Mount(RuntimeHomeKey("demo"))
+	home, ok := s.GetMount(RuntimeHomeKey("demo"))
 	if !ok {
 		t.Fatal("runtime home not registered")
 	}
@@ -95,7 +95,7 @@ func TestAddBindExpandsAndDedups(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	binds := s.Binds()
+	binds := s.GetBinds()
 	if len(binds) != 2 {
 		t.Fatalf("binds = %#v", binds)
 	}
@@ -149,7 +149,7 @@ func TestRunSetupInvokesPerMountHook(t *testing.T) {
 	_, err := s.AddMount(Request{
 		Key:    Key{Type: TypeTool, Name: "opencode", Purpose: "config"},
 		Target: "~/.config/opencode",
-		Setup: func(_ context.Context, setupPath string, _ Runner) error {
+		Setup: func(_ context.Context, setupPath string, _ Executor) error {
 			gotPath = setupPath
 			return nil
 		},
