@@ -101,11 +101,11 @@ func TestRendersDirectoryPermissionPaths(t *testing.T) {
 func TestRendersOpenAIProvider(t *testing.T) {
 	config := renderConfig(t, sessionconfig.Config{
 		Providers: []sessionconfig.Provider{{
-			ID:      "local",
-			Type:    "openai",
-			Name:    "Local",
-			BaseURL: "http://127.0.0.1:12345/proxy/abc",
-			Models:  map[string]any{"alpha": map[string]any{"name": "alpha"}},
+			ID:     "local",
+			Type:   "openai",
+			Name:   "Local",
+			URL:    "http://127.0.0.1:12345/proxy/abc",
+			Models: map[string]any{"alpha": map[string]any{"name": "alpha"}},
 		}},
 	})
 	provider := config["provider"].(map[string]any)["local"].(map[string]any)
@@ -126,10 +126,10 @@ func TestRendersOpenAIProvider(t *testing.T) {
 func TestRendersAnthropicProvider(t *testing.T) {
 	config := renderConfig(t, sessionconfig.Config{
 		Providers: []sessionconfig.Provider{{
-			ID:      "anthropic",
-			Type:    "anthropic",
-			BaseURL: "http://127.0.0.1:12345/proxy/xyz",
-			Models:  map[string]any{"claude": map[string]any{"name": "Claude"}},
+			ID:     "anthropic",
+			Type:   "anthropic",
+			URL:    "http://127.0.0.1:12345/proxy/xyz",
+			Models: map[string]any{"claude": map[string]any{"name": "Claude"}},
 		}},
 	})
 	provider := config["provider"].(map[string]any)["anthropic"].(map[string]any)

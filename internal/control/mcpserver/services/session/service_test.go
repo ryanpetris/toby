@@ -68,14 +68,15 @@ func TestResourcesReadReturnsRequestedAndReportsUnknown(t *testing.T) {
 
 func TestIntrospectionResourcesRedactProviderAndMCPSecrets(t *testing.T) {
 	cfg := testTobyConfig(t, []byte(`
-provider:
-  local:
-    type: openai
-    baseURL: https://secret-provider.example/v1
-    headers:
-      Authorization: Bearer secret-provider-token
-mcp:
-  server:
+providers:
+  servers:
+    local:
+      type: openai
+      url: https://secret-provider.example/v1
+      headers:
+        Authorization: Bearer secret-provider-token
+mcps:
+  servers:
     docs:
       type: local
       command: [secret-mcp-command, --token, secret-command-token]

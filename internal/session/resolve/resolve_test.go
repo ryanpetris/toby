@@ -68,7 +68,7 @@ func resolveWithOptions(t *testing.T, p Params, opts *tools.Options, stderr *byt
 }
 
 func TestResolveMCPServersIncludesTobyAndProxiesConfigured(t *testing.T) {
-	cfg := loadConfig(t, `{"mcp":{"server":{"docs":{"type":"remote","url":"https://example.com/mcp"}}}}`)
+	cfg := loadConfig(t, `{"mcps":{"servers":{"docs":{"type":"remote","url":"https://example.com/mcp"}}}}`)
 	proxy := httpproxy.NewService(nil)
 	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runner: mcpproxy.NewDockerRunner(engine.New())})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestResolveProvidersFetchesModelsAndProxies(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"alpha"},{"id":"beta"}]}`))
 	}))
 	t.Cleanup(server.Close)
-	cfg := loadConfig(t, `{"provider":{"local":{"type":"openai","baseURL":"`+server.URL+`"}}}`)
+	cfg := loadConfig(t, `{"providers":{"servers":{"local":{"type":"openai","url":"`+server.URL+`"}}}}`)
 	registry := providers.NewRegistry([]providers.Client{openai.New(server.Client())})
 
 	config := resolve(t, Params{Config: cfg, Proxy: httpproxy.NewService(nil), Providers: registry, ContextFiles: contextfiles.NewService(), Sandbox: newSandbox()}, nil)
@@ -109,7 +109,7 @@ func TestResolveProvidersFetchesModelsAndProxies(t *testing.T) {
 		t.Fatalf("providers = %#v", config.Providers)
 	}
 	provider := config.Providers[0]
-	if provider.ID != "local" || !strings.HasPrefix(provider.BaseURL, "http://"+testControlHost+"/proxy/") {
+	if provider.ID != "local" || !strings.HasPrefix(provider.URL, "http://"+testControlHost+"/proxy/") {
 		t.Fatalf("provider = %#v", provider)
 	}
 	if _, ok := provider.Models["alpha"]; !ok {
@@ -122,7 +122,7 @@ func TestResolveProvidersModelFetchFailureWarnsAndOmits(t *testing.T) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
-	cfg := loadConfig(t, `{"provider":{"local":{"type":"openai","baseURL":"`+server.URL+`"}}}`)
+	cfg := loadConfig(t, `{"providers":{"servers":{"local":{"type":"openai","url":"`+server.URL+`"}}}}`)
 	registry := providers.NewRegistry([]providers.Client{openai.New(server.Client())})
 
 	var stderr bytes.Buffer

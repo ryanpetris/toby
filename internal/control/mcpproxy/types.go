@@ -5,12 +5,14 @@ package mcpproxy
 // and the spec/image resolution that turns a configured MCP server into a spec.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"petris.dev/toby/internal/config/app"
 	sandboxruntime "petris.dev/toby/sandbox/runtime"
+	"petris.dev/toby/tools"
 )
 
 type TransportType string
@@ -32,10 +34,39 @@ const (
 )
 
 type Defaults struct {
-	// Image is the sandbox container image, used for any MCP server that does
-	// not specify its own image or build.
+	// Image is the configured `mcp.image` default sidecar image, used for any MCP
+	// server that does not specify its own image.
 	Image string
-	Debug bool
+	// Build is the configured `mcp.build`; when set it is built once and the
+	// resulting image becomes the default sidecar image.
+	Build tools.Build
+	// ContainerImage is the main sandbox image, used as the fallback default when
+	// neither mcp.image nor mcp.build is configured.
+	ContainerImage string
+	Debug          bool
+}
+
+// resolveDefaultImage computes the effective default sidecar image once: the
+// built `mcp.build` image when set, then `mcp.image`, then the main sandbox
+// image, then the built-in default. Building shells out to the docker CLI.
+func resolveDefaultImage(ctx context.Context, defaults Defaults) (string, error) {
+	if defaults.Build.IsSet() {
+		image, code, err := sandboxruntime.BuildImage(ctx, defaults.Build, strings.TrimSpace(defaults.Image), !defaults.Debug)
+		if err != nil {
+			return "", err
+		}
+		if code != 0 {
+			return "", fmt.Errorf("mcp image build failed (exit %d)", code)
+		}
+		return image, nil
+	}
+	if image := strings.TrimSpace(defaults.Image); image != "" {
+		return image, nil
+	}
+	if image := strings.TrimSpace(defaults.ContainerImage); image != "" {
+		return image, nil
+	}
+	return sandboxruntime.DefaultImage, nil
 }
 
 type SidecarSpec struct {
@@ -92,14 +123,23 @@ func sidecarSpec(name string, server appconfig.MCPServer, defaults Defaults) (Si
 	return spec, nil
 }
 
-// sidecarImage picks the sidecar image: the server's own override, then the
-// sandbox container image, then the built-in default.
+// needsDefaultImage reports whether any enabled local server lacks its own image
+// and will therefore fall back to the resolved default sidecar image.
+func needsDefaultImage(servers map[string]appconfig.MCPServer, names []string) bool {
+	for _, name := range names {
+		server := servers[name]
+		if server.Local() && server.Image() == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// sidecarImage picks the sidecar image: the server's own override, otherwise the
+// pre-resolved effective default (defaults.Image, set once in Configure).
 func sidecarImage(server appconfig.MCPServer, defaults Defaults) string {
 	if image := server.Image(); image != "" {
 		return image
 	}
-	if image := strings.TrimSpace(defaults.Image); image != "" {
-		return image
-	}
-	return sandboxruntime.DefaultImage
+	return defaults.Image
 }

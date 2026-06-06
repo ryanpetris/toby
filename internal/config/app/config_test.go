@@ -21,16 +21,18 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.json"), []byte(`{
-  "mcp": {
-    "server": {
+  "mcps": {
+    "servers": {
       "docs": { "type": "remote", "url": "https://example.com/mcp" }
     }
   },
-  "instruction": ["base.md"],
-  "provider": {
+  "instructions": ["base.md"],
+  "providers": {
+    "servers": {
       "local": { "type": "openai", "headers": { "Authorization": "Bearer base" } }
-    },
-  "permission": {
+    }
+  },
+  "permissions": {
     "paths": {
       "~/allowed": "allow",
       "~/allowed/**": "allow"
@@ -43,23 +45,24 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
     "debug": true,
     "yolo": false
   },
-  "tool": {
+  "tools": {
     "opencode": { "mountProfile": "default" }
   },
   "container": { "image": "node:base" }
 }`))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-instruction:
+instructions:
   - base.md
   - extra.md
-mcp:
-  server:
+mcps:
+  servers:
     docs:
       enabled: true
-provider:
-  local:
-    baseURL: https://models.example.com
-permission:
+providers:
+  servers:
+    local:
+      url: https://models.example.com
+permissions:
   paths:
     /tmp/shared: allow
 settings:
@@ -68,7 +71,7 @@ settings:
   autoloadProjectConfig: false
   debug: false
   yolo: true
-tool:
+tools:
   opencode:
     mountProfile: shared
   claude:
@@ -95,7 +98,7 @@ container:
 		t.Fatalf("instructions = %#v", instructions)
 	}
 	provider := cfg.Providers()["local"]
-	if provider.Type != ProviderTypeOpenAI || provider.Headers["Authorization"] != "Bearer base" || provider.BaseURL != "https://models.example.com" {
+	if provider.Type != ProviderTypeOpenAI || provider.Headers["Authorization"] != "Bearer base" || provider.URL != "https://models.example.com" {
 		t.Fatalf("provider = %#v", provider)
 	}
 	permission := cfg.Permission()
@@ -186,7 +189,7 @@ func TestPermissionPathsPassesThroughVerbatimAndYoloRoot(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-permission:
+permissions:
   paths:
     /verbatim: allow
     /subtree/: allow
@@ -238,7 +241,7 @@ settings:
     - mount.host-backing
 container:
   image: node:host
-tool:
+tools:
   claude:
     mountProfile: shared
 `))
@@ -286,8 +289,8 @@ func TestLoadParsesMCPServers(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-mcp:
-  server:
+mcps:
+  servers:
     docs:
       type: local
       transport: http
@@ -331,14 +334,60 @@ settings:
 	}
 }
 
+func TestLoadMCPImageAndBuildDefaults(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+mcps:
+  image: ghcr.io/acme/mcp-base:latest
+  build:
+    context: docker/mcp
+  servers:
+    docs:
+      type: local
+      command: docs-mcp
+`))
+	cfg, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MCPImage() != "ghcr.io/acme/mcp-base:latest" {
+		t.Fatalf("mcp image = %q", cfg.MCPImage())
+	}
+	build := cfg.MCPBuild()
+	if build.Context != filepath.Join(dir, "docker", "mcp") || build.Dockerfile != filepath.Join(dir, "docker", "mcp", "Dockerfile") {
+		t.Fatalf("mcp build = %#v", build)
+	}
+	if _, ok := cfg.MCPServers()["docs"]; !ok {
+		t.Fatalf("docs server missing from %#v", cfg.MCPServers())
+	}
+}
+
+func TestLoadRejectsProviderEntriesWithoutServers(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "toby")
+	// Provider entries must live under `providers.servers`; a flat entry directly
+	// under `providers` is an unknown key and strict decoding rejects it.
+	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
+providers:
+  local:
+    type: openai
+    url: https://example.com/v1
+`))
+	if _, err := Load(dir, home); err == nil {
+		t.Fatal("expected provider entry without servers to be rejected")
+	}
+}
+
 func TestLoadRejectsUnsupportedProviderType(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-provider:
-  local:
-    type: bedrock
-    baseURL: https://example.com/v1
+providers:
+  servers:
+    local:
+      type: bedrock
+      url: https://example.com/v1
 `))
 
 	if _, err := Load(dir, home); err == nil {
@@ -366,7 +415,7 @@ func TestRegisterContextFilesUsesBasenameAndRandomizesCollisions(t *testing.T) {
 	writeFile(t, first, []byte("first"))
 	writeFile(t, second, []byte("second"))
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
-instruction:
+instructions:
   - a/foobar.md
   - b/foobar.md
 `))

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"petris.dev/toby/diagnostic/exitcode"
+	"petris.dev/toby/tools"
 )
 
 // resolveImage ensures s.image refers to a runnable image, building from the
@@ -26,51 +27,63 @@ func (s *instance) resolveImage(ctx context.Context, spec RunSpec) (int, error) 
 		}
 		return 0, nil
 	}
-	hide := spec.ExecOptions.HideOutput
-	if s.image != "" {
-		code, err := runDockerCLI(ctx, true, "image", "inspect", s.image)
-		if err != nil {
-			return code, err
-		}
-		if code == 0 {
-			return 0, nil
-		}
-		code, err = runDockerCLI(ctx, hide, "build", "-t", s.image, "-f", s.build.Dockerfile, s.build.Context)
-		if err != nil {
-			return code, err
-		}
-		if code != 0 {
-			return code, exitcode.New(code, "docker image build failed")
-		}
-		return 0, nil
-	}
-	iidFile, err := os.CreateTemp("", "toby-docker-image-*.iid")
-	if err != nil {
-		return 1, err
-	}
-	iidPath := iidFile.Name()
-	if err := iidFile.Close(); err != nil {
-		return 1, err
-	}
-	_ = os.Remove(iidPath)
-	defer os.Remove(iidPath)
-	code, err := runDockerCLI(ctx, hide, "build", "--iidfile", iidPath, "-f", s.build.Dockerfile, s.build.Context)
-	if err != nil {
+	image, code, err := BuildImage(ctx, s.build, s.image, spec.ExecOptions.HideOutput)
+	if err != nil || code != 0 {
 		return code, err
-	}
-	if code != 0 {
-		return code, exitcode.New(code, "docker image build failed")
-	}
-	data, err := os.ReadFile(iidPath)
-	if err != nil {
-		return 1, err
-	}
-	image := strings.TrimSpace(string(data))
-	if image == "" {
-		return 1, fmt.Errorf("docker build did not write an image id")
 	}
 	s.image = image
 	return 0, nil
+}
+
+// BuildImage builds the Dockerfile context described by build (which must be set)
+// via the `docker` CLI and returns a runnable image reference. When image is
+// non-empty it is used as the build tag and an already-present image is reused
+// without rebuilding; when empty, the built image id is captured with --iidfile
+// and returned. A non-zero docker exit is returned as the code with an error.
+func BuildImage(ctx context.Context, build tools.Build, image string, hideOutput bool) (string, int, error) {
+	if image != "" {
+		code, err := runDockerCLI(ctx, true, "image", "inspect", image)
+		if err != nil {
+			return "", code, err
+		}
+		if code == 0 {
+			return image, 0, nil
+		}
+		code, err = runDockerCLI(ctx, hideOutput, "build", "-t", image, "-f", build.Dockerfile, build.Context)
+		if err != nil {
+			return "", code, err
+		}
+		if code != 0 {
+			return "", code, exitcode.New(code, "docker image build failed")
+		}
+		return image, 0, nil
+	}
+	iidFile, err := os.CreateTemp("", "toby-docker-image-*.iid")
+	if err != nil {
+		return "", 1, err
+	}
+	iidPath := iidFile.Name()
+	if err := iidFile.Close(); err != nil {
+		return "", 1, err
+	}
+	_ = os.Remove(iidPath)
+	defer os.Remove(iidPath)
+	code, err := runDockerCLI(ctx, hideOutput, "build", "--iidfile", iidPath, "-f", build.Dockerfile, build.Context)
+	if err != nil {
+		return "", code, err
+	}
+	if code != 0 {
+		return "", code, exitcode.New(code, "docker image build failed")
+	}
+	data, err := os.ReadFile(iidPath)
+	if err != nil {
+		return "", 1, err
+	}
+	built := strings.TrimSpace(string(data))
+	if built == "" {
+		return "", 1, fmt.Errorf("docker build did not write an image id")
+	}
+	return built, 0, nil
 }
 
 func dockerCLI() string {

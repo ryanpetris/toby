@@ -40,7 +40,7 @@ code to match rather than redefining a term here.
 - **bind** — a passthrough of a host path into the sandbox (e.g. the Docker socket,
   project directories). Not persistent state Toby owns.
 - **profile** — a namespace label on volume names so separate sets of state can coexist.
-  Default is `default`; `settings.mountProfile` (and per-tool `tool.<t>.mountProfile`)
+  Default is `default`; `settings.mountProfile` (and per-tool `tools.<t>.mountProfile`)
   select another.
 
 ## Integrations

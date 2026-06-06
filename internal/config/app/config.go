@@ -58,15 +58,18 @@ type Service struct {
 type Config struct {
 	Instructions []string
 	MCP          MCPConfig
-	Permission   PermissionConfig
-	Provider     map[string]ProviderConfig
+	Permissions  PermissionConfig
+	Providers    map[string]ProviderConfig
 	Settings     SettingsConfig
 	Tools        map[string]ToolConfig
 	Container    ContainerConfig
 }
 
-// MCPConfig holds the configured MCP servers.
+// MCPConfig holds the configured MCP servers plus the default sidecar image and
+// build that apply to any server without its own image.
 type MCPConfig struct {
+	Image   string
+	Build   tools.Build
 	Servers map[string]MCPServer
 }
 
@@ -101,7 +104,7 @@ type MCPServer struct {
 type ProviderConfig struct {
 	Type      string
 	Name      string
-	BaseURL   string
+	URL       string
 	Headers   map[string]string
 	Models    map[string]any
 	modelsSet bool
@@ -115,17 +118,28 @@ type PermissionConfig struct {
 // fields (MCP server bodies, provider models) keep their map[string]any type so
 // strict decoding never recurses into them.
 type fileSchema struct {
-	Instruction []string                   `json:"instruction" yaml:"instruction"`
-	Container   containerconfig.Config     `json:"container" yaml:"container"`
-	MCP         mcpSchema                  `json:"mcp" yaml:"mcp"`
-	Permission  permissionSchema           `json:"permission" yaml:"permission"`
-	Provider    map[string]*providerSchema `json:"provider" yaml:"provider"`
-	Settings    settingsSchema             `json:"settings" yaml:"settings"`
-	Tool        map[string]*toolSchema     `json:"tool" yaml:"tool"`
+	Instructions []string               `json:"instructions" yaml:"instructions"`
+	Container    containerconfig.Config `json:"container" yaml:"container"`
+	MCP          mcpSchema              `json:"mcps" yaml:"mcps"`
+	Permissions  permissionSchema       `json:"permissions" yaml:"permissions"`
+	Providers    providerBlockSchema    `json:"providers" yaml:"providers"`
+	Settings     settingsSchema         `json:"settings" yaml:"settings"`
+	Tools        map[string]*toolSchema `json:"tools" yaml:"tools"`
 }
 
+// providerBlockSchema is the `providers` block: the map of provider definitions
+// under `servers`, mirroring the `mcps` block. (Image/build defaults for stdio
+// providers can follow here later.)
+type providerBlockSchema struct {
+	Servers map[string]*providerSchema `json:"servers" yaml:"servers"`
+}
+
+// mcpSchema is the `mcps` block: the default sidecar image/build (the shared
+// container block, so a server without its own image can fall back to it) plus
+// the map of configured MCP servers.
 type mcpSchema struct {
-	Server map[string]map[string]any `json:"server" yaml:"server"`
+	containerconfig.Config `yaml:",inline"`
+	Servers                map[string]map[string]any `json:"servers" yaml:"servers"`
 }
 
 type permissionSchema struct {
@@ -135,7 +149,7 @@ type permissionSchema struct {
 type providerSchema struct {
 	Type    string            `json:"type" yaml:"type"`
 	Name    string            `json:"name" yaml:"name"`
-	BaseURL string            `json:"baseURL" yaml:"baseURL"`
+	URL     string            `json:"url" yaml:"url"`
 	Headers map[string]string `json:"headers" yaml:"headers"`
 	Models  *map[string]any   `json:"models" yaml:"models"`
 }
@@ -158,7 +172,7 @@ func New(paths config.Paths) (*Service, error) {
 
 // Load reads the config source files from dir, deep-merges them as generic maps,
 // strict-decodes the result, and resolves it into a Service. The generic merge
-// has a later file's value replace an earlier one's; the list-valued instruction
+// has a later file's value replace an earlier one's; the list-valued instructions
 // and settings.suppressWarnings keys are instead unioned across files (first
 // occurrence wins on order), so each file contributes additively.
 func Load(dir, home string) (*Service, error) {
@@ -176,7 +190,7 @@ func Load(dir, home string) (*Service, error) {
 		if err := configfile.DecodeFile(path, &fileMap); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		if list, ok := fileMap["instruction"].([]any); ok {
+		if list, ok := fileMap["instructions"].([]any); ok {
 			instructions = append(instructions, list...)
 		}
 		if settings, ok := fileMap["settings"].(map[string]any); ok {
@@ -187,7 +201,7 @@ func Load(dir, home string) (*Service, error) {
 		configfile.Merge(merged, fileMap)
 	}
 	if len(instructions) > 0 {
-		merged["instruction"] = dedupeList(instructions)
+		merged["instructions"] = dedupeList(instructions)
 	}
 	if len(suppressWarnings) > 0 {
 		settings, ok := merged["settings"].(map[string]any)
@@ -235,10 +249,10 @@ func dedupeList(items []any) []any {
 
 func emptyConfig() Config {
 	return Config{
-		MCP:        MCPConfig{Servers: map[string]MCPServer{}},
-		Provider:   map[string]ProviderConfig{},
-		Permission: PermissionConfig{Paths: map[string]string{}},
-		Tools:      map[string]ToolConfig{},
+		MCP:         MCPConfig{Servers: map[string]MCPServer{}},
+		Providers:   map[string]ProviderConfig{},
+		Permissions: PermissionConfig{Paths: map[string]string{}},
+		Tools:       map[string]ToolConfig{},
 	}
 }
 
@@ -247,30 +261,36 @@ func emptyConfig() Config {
 // bodies so the Config never shares mutable structure with the decoded maps.
 func resolve(schema fileSchema, dir, home string) (Config, error) {
 	result := emptyConfig()
-	result.Instructions = append([]string(nil), schema.Instruction...)
+	result.Instructions = append([]string(nil), schema.Instructions...)
 
-	for name, body := range schema.MCP.Server {
+	mcpBuild, err := containerconfig.ResolveBuild(schema.MCP.Build, dir, home)
+	if err != nil {
+		return Config{}, err
+	}
+	result.MCP.Image = strings.TrimSpace(schema.MCP.Image)
+	result.MCP.Build = mcpBuild
+	for name, body := range schema.MCP.Servers {
 		if body == nil {
-			return Config{}, fmt.Errorf("mcp.server.%s must be an object", name)
+			return Config{}, fmt.Errorf("mcps.servers.%s must be an object", name)
 		}
 		clean := configfile.CloneMap(body)
 		configfile.NormalizeNumbers(clean)
 		result.MCP.Servers[name] = MCPServer{raw: clean}
 	}
 
-	for pattern, mode := range schema.Permission.Paths {
-		result.Permission.Paths[config.ExpandHome(pattern, home)] = mode
+	for pattern, mode := range schema.Permissions.Paths {
+		result.Permissions.Paths[config.ExpandHome(pattern, home)] = mode
 	}
 
-	for name, provider := range schema.Provider {
+	for name, provider := range schema.Providers.Servers {
 		if provider == nil {
-			return Config{}, fmt.Errorf("provider.%s must be an object", name)
+			return Config{}, fmt.Errorf("providers.servers.%s must be an object", name)
 		}
 		resolved, err := provider.resolve(name)
 		if err != nil {
 			return Config{}, err
 		}
-		result.Provider[name] = resolved
+		result.Providers[name] = resolved
 	}
 
 	settings, err := schema.Settings.resolve()
@@ -279,10 +299,10 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 	}
 	result.Settings = settings
 
-	for rawName, tool := range schema.Tool {
+	for rawName, tool := range schema.Tools {
 		name := strings.TrimSpace(rawName)
 		if name == "" {
-			return Config{}, fmt.Errorf("tool keys must not be empty")
+			return Config{}, fmt.Errorf("tools keys must not be empty")
 		}
 		cfg := ToolConfig{}
 		if tool != nil {
@@ -302,9 +322,9 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 
 func (p *providerSchema) resolve(name string) (ProviderConfig, error) {
 	cfg := ProviderConfig{
-		Type:    strings.TrimSpace(p.Type),
-		Name:    p.Name,
-		BaseURL: strings.TrimSpace(p.BaseURL),
+		Type: strings.TrimSpace(p.Type),
+		Name: p.Name,
+		URL:  strings.TrimSpace(p.URL),
 	}
 	if len(p.Headers) > 0 {
 		cfg.Headers = make(map[string]string, len(p.Headers))
@@ -351,30 +371,30 @@ func (c Config) Validate() error {
 	for name, server := range c.MCP.Servers {
 		typ := server.Type()
 		if typ != "" && typ != MCPTypeLocal && typ != MCPTypeRemote {
-			return fmt.Errorf("mcp.server.%s.type is unsupported", name)
+			return fmt.Errorf("mcps.servers.%s.type is unsupported", name)
 		}
 		if server.Local() {
 			transport := server.Transport()
 			if transport != MCPTransportStdio && transport != MCPTransportHTTP {
-				return fmt.Errorf("mcp.server.%s.transport is unsupported", name)
+				return fmt.Errorf("mcps.servers.%s.transport is unsupported", name)
 			}
 			if _, err := server.CommandParts(); err != nil {
 				return err
 			}
 			if transport == MCPTransportHTTP && server.Port() <= 0 {
-				return fmt.Errorf("mcp.server.%s.port is required for http transport", name)
+				return fmt.Errorf("mcps.servers.%s.port is required for http transport", name)
 			}
 		}
 	}
-	for name, provider := range c.Provider {
+	for name, provider := range c.Providers {
 		if provider.Type == "" {
-			return fmt.Errorf("provider.%s.type is required", name)
+			return fmt.Errorf("providers.servers.%s.type is required", name)
 		}
 		if !providerTypeSupported(provider.Type) {
-			return fmt.Errorf("provider.%s.type is unsupported", name)
+			return fmt.Errorf("providers.servers.%s.type is unsupported", name)
 		}
-		if provider.BaseURL == "" {
-			return fmt.Errorf("provider.%s.baseURL is required", name)
+		if provider.URL == "" {
+			return fmt.Errorf("providers.servers.%s.url is required", name)
 		}
 	}
 	return nil
@@ -416,7 +436,7 @@ func (s *Service) Providers() map[string]ProviderConfig {
 	if s == nil {
 		return providers
 	}
-	for name, provider := range s.config.Provider {
+	for name, provider := range s.config.Providers {
 		providers[name] = provider.Clone()
 	}
 	return providers
@@ -426,7 +446,7 @@ func (s *Service) Provider(name string) (ProviderConfig, bool) {
 	if s == nil {
 		return ProviderConfig{}, false
 	}
-	provider, ok := s.config.Provider[name]
+	provider, ok := s.config.Providers[name]
 	if !ok {
 		return ProviderConfig{}, false
 	}
@@ -469,7 +489,7 @@ func (s *Service) Permission() PermissionConfig {
 	if s == nil {
 		return permission
 	}
-	for pattern, mode := range s.config.Permission.Paths {
+	for pattern, mode := range s.config.Permissions.Paths {
 		permission.Paths[pattern] = mode
 	}
 	return permission
@@ -511,7 +531,7 @@ func (s *Service) PermissionPaths() map[string]string {
 	if s == nil {
 		return result
 	}
-	for pattern, mode := range s.config.Permission.Paths {
+	for pattern, mode := range s.config.Permissions.Paths {
 		result[pattern] = mode
 	}
 	return result
@@ -548,15 +568,26 @@ func (s *Service) Container() ContainerConfig {
 	return s.config.Container
 }
 
+// mcpConfig returns the resolved `mcps:` block (default sidecar image/build +
+// servers).
+func (s *Service) mcpConfig() MCPConfig {
+	if s == nil {
+		return MCPConfig{}
+	}
+	return s.config.MCP
+}
+
 // Service-level reads of config-corresponding launch values. These are the single
 // source of truth: a launch's CLI flags and launch-config overrides are folded in
 // via WithOverrides before the per-launch graph reads them.
-func (s *Service) YoloEnabled() bool    { return s.Settings().YoloEnabled() }
-func (s *Service) DebugEnabled() bool   { return s.Settings().DebugEnabled() }
-func (s *Service) Image() string        { return s.Container().Image }
-func (s *Service) Build() tools.Build   { return s.Container().Build }
-func (s *Service) Ports() []string      { return s.Container().Ports }
-func (s *Service) MountProfile() string { return s.Settings().MountProfile }
+func (s *Service) YoloEnabled() bool     { return s.Settings().YoloEnabled() }
+func (s *Service) DebugEnabled() bool    { return s.Settings().DebugEnabled() }
+func (s *Service) Image() string         { return s.Container().Image }
+func (s *Service) Build() tools.Build    { return s.Container().Build }
+func (s *Service) Ports() []string       { return s.Container().Ports }
+func (s *Service) MCPImage() string      { return s.mcpConfig().Image }
+func (s *Service) MCPBuild() tools.Build { return s.mcpConfig().Build }
+func (s *Service) MountProfile() string  { return s.Settings().MountProfile }
 
 // LaunchOverrides carries the config-corresponding values a single launch may
 // override (from CLI flags and the launch-config file). Folding these into the
@@ -692,7 +723,7 @@ func (s MCPServer) Transport() string {
 	return transport
 }
 
-// Image returns this server's sidecar image override (`mcp.server.<n>.image`),
+// Image returns this server's sidecar image override (`mcps.servers.<n>.image`),
 // or the empty string when it should fall back to the configured defaults.
 func (s MCPServer) Image() string {
 	image, _ := s.raw["image"].(string)
@@ -863,8 +894,8 @@ func (p ProviderConfig) Raw() map[string]any {
 	if p.Name != "" {
 		raw["name"] = p.Name
 	}
-	if p.BaseURL != "" {
-		raw["baseURL"] = p.BaseURL
+	if p.URL != "" {
+		raw["url"] = p.URL
 	}
 	if len(p.Headers) > 0 {
 		headers := map[string]any{}

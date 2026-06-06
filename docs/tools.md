@@ -148,9 +148,9 @@ The equivalent in a launch config makes t3 the primary tool with the coding
 tools listed after it:
 
 ```yaml
-project:
+projects:
   my-app:
-tool:
+tools:
   t3:
     primary: true
   claude:

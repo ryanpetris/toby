@@ -12,6 +12,7 @@ import (
 	"petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/tunnel"
+	sandboxruntime "petris.dev/toby/sandbox/runtime"
 
 	dcontainer "github.com/moby/moby/api/types/container"
 )
@@ -66,8 +67,8 @@ func TestHTTPRequestExposesContainerPort(t *testing.T) {
 
 func TestConfigureRegistersRemoteAndLocalProxyURLs(t *testing.T) {
 	cfg := testConfig(t, []byte(`
-mcp:
-  server:
+mcps:
+  servers:
     docs:
       type: local
       command: docs-mcp
@@ -98,8 +99,8 @@ mcp:
 
 func TestSidecarSpecImagePrecedence(t *testing.T) {
 	cfg := testConfig(t, []byte(`
-mcp:
-  server:
+mcps:
+  servers:
     docs:
       type: local
       image: docs:latest
@@ -124,6 +125,22 @@ mcp:
 	}
 	if fallback.Image != "main:latest" {
 		t.Fatalf("fallback image = %q", fallback.Image)
+	}
+}
+
+func TestResolveDefaultImagePrecedence(t *testing.T) {
+	ctx := context.Background()
+	// mcp.image wins over the main container image.
+	if img, err := resolveDefaultImage(ctx, Defaults{Image: "mcp:latest", ContainerImage: "main:latest"}); err != nil || img != "mcp:latest" {
+		t.Fatalf("mcp.image precedence = %q, %v", img, err)
+	}
+	// With no mcp.image/build, fall back to the main container image.
+	if img, err := resolveDefaultImage(ctx, Defaults{ContainerImage: "main:latest"}); err != nil || img != "main:latest" {
+		t.Fatalf("container fallback = %q, %v", img, err)
+	}
+	// With nothing configured, fall back to the built-in default.
+	if img, err := resolveDefaultImage(ctx, Defaults{}); err != nil || img != sandboxruntime.DefaultImage {
+		t.Fatalf("built-in fallback = %q, %v", img, err)
 	}
 }
 

@@ -171,15 +171,15 @@ func (r *Resolver) resolveProviders(ctx context.Context, lctx lifecycle.Context)
 		if err != nil {
 			return nil, err
 		}
-		proxyID, err := r.proxy.RegisterUpstream(provider.BaseURL, headers)
+		proxyID, err := r.proxy.RegisterUpstream(provider.URL, headers)
 		if err != nil {
 			return nil, fmt.Errorf("register provider %q proxy: %w", id, err)
 		}
 		resolved := sessionconfig.Provider{
-			ID:      id,
-			Type:    provider.Type,
-			Name:    provider.Name,
-			BaseURL: r.sandbox.ProxyBaseURL(proxyID),
+			ID:   id,
+			Type: provider.Type,
+			Name: provider.Name,
+			URL:  r.sandbox.ProxyBaseURL(proxyID),
 		}
 		if provider.HasModels() {
 			resolved.Models = configfile.CloneMap(provider.Models)
@@ -201,7 +201,7 @@ func (r *Resolver) fetchModels(ctx context.Context, provider appconfig.ProviderC
 	if provider.Type == appconfig.ProviderTypeAnthropic {
 		kind = providers.KindAnthropic
 	}
-	models, err := r.providers.LookupModels(ctx, kind, provider.BaseURL, headerStrings(headers))
+	models, err := r.providers.LookupModels(ctx, kind, provider.URL, headerStrings(headers))
 	if err != nil {
 		return nil, err
 	}

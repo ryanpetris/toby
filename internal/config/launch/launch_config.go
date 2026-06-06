@@ -90,9 +90,9 @@ type launchSchema struct {
 	Name      string                          `json:"name" yaml:"name"`
 	Container launchContainerSchema           `json:"container" yaml:"container"`
 	Settings  launchSettingsSchema            `json:"settings" yaml:"settings"`
-	Project   map[string]*launchProjectSchema `json:"project" yaml:"project"`
+	Projects  map[string]*launchProjectSchema `json:"projects" yaml:"projects"`
 	Workdir   string                          `json:"workdir" yaml:"workdir"`
-	Tool      map[string]*launchToolSchema    `json:"tool" yaml:"tool"`
+	Tools     map[string]*launchToolSchema    `json:"tools" yaml:"tools"`
 }
 
 // launchContainerSchema is the launch config's `container:` block: the shared
@@ -337,13 +337,13 @@ func parseLaunchConfigWithPaths(schema launchSchema, dir string, paths config.Pa
 		return launchConfig{}, err
 	}
 	cfg.Container = launchContainerConfig{Image: strings.TrimSpace(schema.Container.Image), Build: build, Ports: resolvePortSpecs(schema.Container.Ports)}
-	projects, err := resolveLaunchProjects(schema.Project, dir, paths)
+	projects, err := resolveLaunchProjects(schema.Projects, dir, paths)
 	if err != nil {
 		return launchConfig{}, err
 	}
 	cfg.Projects = projects
 	cfg.Workdir = schema.Workdir
-	toolConfigs, err := resolveLaunchTools(schema.Tool)
+	toolConfigs, err := resolveLaunchTools(schema.Tools)
 	if err != nil {
 		return launchConfig{}, err
 	}
@@ -393,7 +393,7 @@ func resolveLaunchProjects(raw map[string]*launchProjectSchema, dir string, path
 	paths = launchConfigPaths(paths)
 	projects := make([]launchProjectConfig, 0, len(raw))
 	for _, name := range sortedKeys(raw) {
-		project, err := resolveLaunchProject(raw[name], "project."+name, name, dir, paths)
+		project, err := resolveLaunchProject(raw[name], "projects."+name, name, dir, paths)
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +432,7 @@ func resolveLaunchProject(p *launchProjectSchema, label, name string, dir string
 func resolveLaunchTools(raw map[string]*launchToolSchema) ([]launchToolConfig, error) {
 	result := make([]launchToolConfig, 0, len(raw))
 	for _, name := range sortedKeys(raw) {
-		parsed, err := resolveLaunchTool(raw[name], "tool."+name, name)
+		parsed, err := resolveLaunchTool(raw[name], "tools."+name, name)
 		if err != nil {
 			return nil, err
 		}

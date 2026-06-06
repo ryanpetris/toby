@@ -33,7 +33,7 @@ settings:
   yolo: true
   suppressWarnings: ["*"]
 workdir: ~/literal-workdir/../raw
-project:
+projects:
   foo:
   named:
   dot:
@@ -44,7 +44,7 @@ project:
     path: `+absolute+`
   tilde:
     path: ~/tilde-source/../raw
-tool:
+tools:
   opencode:
     mountProfile: review
   uv:
@@ -82,7 +82,7 @@ tool:
 	if !reflect.DeepEqual(projectMounts(cfg.Projects), wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", cfg.Projects, wantProjects)
 	}
-	wantTools := []launchToolConfig{{Name: "npm", Label: "tool.npm"}, {Name: "opencode", Label: "tool.opencode", MountProfile: "review"}, {Name: "uv", Label: "tool.uv"}}
+	wantTools := []launchToolConfig{{Name: "npm", Label: "tools.npm"}, {Name: "opencode", Label: "tools.opencode", MountProfile: "review"}, {Name: "uv", Label: "tools.uv"}}
 	if !reflect.DeepEqual(cfg.Tools, wantTools) {
 		t.Fatalf("tools = %#v, want %#v", cfg.Tools, wantTools)
 	}
@@ -92,7 +92,7 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	home := t.TempDir()
 	projectRoot := filepath.Join(home, "Projects")
 	configPath := filepath.Join(home, "toby.json")
-	writeTestFile(t, configPath, []byte(`{"name":"json-env","container":{"image":"custom-node"},"project":{"foo":null},"tool":{"opencode":null}}`))
+	writeTestFile(t, configPath, []byte(`{"name":"json-env","container":{"image":"custom-node"},"projects":{"foo":null},"tools":{"opencode":null}}`))
 
 	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: projectRoot})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestBuildConfiguredLaunchResolvesCommandNames(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
-project:
+projects:
   foo:
 workdir: /tmp/work
 settings:
@@ -122,7 +122,7 @@ settings:
   yolo: true
   suppressWarnings:
     - provider.model-discovery
-tool:
+tools:
   gh:
     primary: true
   npm:
@@ -174,9 +174,9 @@ func TestBuildConfiguredLaunchAppendsCLIArgsAfterPrimaryParams(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
-project:
+projects:
   foo:
-tool:
+tools:
   exec:
     primary: true
     params: ["npm", "test"]
@@ -221,13 +221,13 @@ func TestBuildOverlayConfiguredLaunchKeepsCLIPrimaryAndAddsConfigToolsProjects(t
 	configPath := filepath.Join(home, "config.yaml")
 	writeTestFile(t, configPath, []byte(`
 name: custom-name
-project:
+projects:
   duplicate:
     path: Projects/app
   shared:
   extra:
     path: extra
-tool:
+tools:
   opencode:
   npm:
 `))
@@ -264,9 +264,9 @@ func TestBuildConfiguredLaunchRejectsParamsOnSecondaryTool(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
-project:
+projects:
   foo:
-tool:
+tools:
   exec:
     primary: true
   npm:
@@ -281,7 +281,7 @@ tool:
 	}
 
 	_, err = BuildConfiguredLaunch(Params{Registry: registry, Paths: config.Paths{Home: home}}, configPath, nil)
-	if err == nil || !strings.Contains(err.Error(), "tool.npm.params is only supported on the primary tool") {
+	if err == nil || !strings.Contains(err.Error(), "tools.npm.params is only supported on the primary tool") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -293,9 +293,9 @@ func TestLoadLaunchConfigRejectsInvalidSuppressedWarning(t *testing.T) {
 settings:
   suppressWarnings:
     - unknown.warning
-project:
+projects:
   foo:
-tool:
+tools:
   exec:
 `))
 
@@ -309,9 +309,9 @@ func TestBuildConfiguredLaunchRejectsUnknownTools(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(`
-project:
+projects:
   foo:
-tool:
+tools:
   unknown-command:
 `))
 	registry, err := tools.NewRegistry(nil)
@@ -332,7 +332,7 @@ func TestMaybeAutoloadProjectConfigWarnsWhenDisabled(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("project: {}\ntool: {}\n"))
+	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte("projects: {}\ntools: {}\n"))
 	cfgSvc, err := appconfig.Load(t.TempDir(), home)
 	if err != nil {
 		t.Fatal(err)
@@ -364,9 +364,9 @@ func TestMaybeAutoloadProjectConfigLoadsWhenEnabled(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(project, projectLaunchConfigName), []byte(`
 name: review
-project:
+projects:
   sibling:
-tool:
+tools:
   opencode:
   npm:
 `))
@@ -423,9 +423,9 @@ container:
     - "8080:3000"
     - " 127.0.0.1:9090:9090/udp "
     - ""
-project:
+projects:
   demo:
-tool:
+tools:
   opencode:
 `))
 	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects")})
@@ -437,6 +437,16 @@ tool:
 	}
 	if overrides := overridesFromLaunchConfig(cfg); !reflect.DeepEqual(overrides.Ports, cfg.Container.Ports) {
 		t.Fatalf("override ports = %#v, want %#v", overrides.Ports, cfg.Container.Ports)
+	}
+}
+
+func TestLoadLaunchConfigRejectsLegacyProjectAndToolKeys(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "toby.yaml")
+	// Pre-rename singular keys (`project`/`tool`) are no longer accepted.
+	writeTestFile(t, configPath, []byte("project:\n  foo:\ntool:\n  opencode:\n"))
+	if _, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects")}); err == nil {
+		t.Fatal("expected legacy project/tool keys to be rejected")
 	}
 }
 

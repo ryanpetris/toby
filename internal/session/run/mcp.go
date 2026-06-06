@@ -19,7 +19,9 @@ import (
 func mcpDefaults(config *appconfig.Service) mcpproxy.Defaults {
 	var defaults mcpproxy.Defaults
 	if config != nil {
-		defaults.Image = strings.TrimSpace(config.Image())
+		defaults.Image = strings.TrimSpace(config.MCPImage())
+		defaults.Build = config.MCPBuild()
+		defaults.ContainerImage = strings.TrimSpace(config.Image())
 		defaults.Debug = config.DebugEnabled()
 	}
 	return defaults

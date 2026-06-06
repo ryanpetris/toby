@@ -54,16 +54,16 @@ that exist are deep-merged in order (`config/file`, `internal/config/app`):
 
 JSON and YAML are both decoded strictly: unknown fields are rejected (use YAML
 if you want comments). Empty/whitespace-only files are skipped. On deep merge,
-nested objects merge recursively, the `instruction` array is de-duplicated and
+nested objects merge recursively, the `instructions` array is de-duplicated and
 appended, and other arrays and scalars are last-write-wins.
 
 Toby config is its **own** format — it is not OpenCode config, though some
 nested shapes intentionally mirror OpenCode for convenience. The only supported
-top-level keys are `instruction`, `mcp`, `permission`, `provider`,
-`settings`, `tool`, and `container`. **Any other top-level key fails
+top-level keys are `instructions`, `mcps`, `permissions`, `providers`,
+`settings`, `tools`, and `container`. **Any other top-level key fails
 config loading.**
 
-### `instruction`
+### `instructions`
 
 An array of host instruction file paths or glob patterns. Relative paths
 resolve from `$XDG_CONFIG_HOME/toby`; a leading `~` expands to the host home.
@@ -75,20 +75,27 @@ delivered to each tool through that tool's native instruction mechanism (see
 [tools.md](tools.md)).
 
 ```yaml
-instruction:
+instructions:
   - house-style.md
   - ~/notes/review-checklist.md
   - prompts/*.md
 ```
 
-### `mcp`
+### `mcps`
 
-`mcp` collects all MCP configuration. `mcp.server` is a map of MCP server name
+`mcps` collects all MCP configuration. `mcps.servers` is a map of MCP server name
 to definition. Entries are
 Toby-managed proxy targets
 rendered into supported synthetic tool configs under the generated context
 directory; Toby's own MCP server is always injected as `toby` after host config
 is merged. Configure non-proxied tool-native MCPs in the tool's own config.
+
+`mcps.image` and `mcps.build` mirror the `container` block (`build.context` /
+`build.dockerfile`, no `ports`) and provide a **default sidecar image** for any
+local server that does not set its own `image`. When `mcps.build` is set, Toby
+builds it once and uses the result. The per-server image precedence is: the
+server's own `image`, then `mcps.image`/`mcps.build`, then the main sandbox
+image, then Toby's built-in image.
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -96,7 +103,7 @@ is merged. Configure non-proxied tool-native MCPs in the tool's own config.
 | `enabled` | bool | Defaults to `true`. |
 | `command` | string \| array | For `type: local`. First element is the command. |
 | `transport` | `stdio` \| `http` | For `type: local`; defaults to `stdio`. |
-| `image` | string | For `type: local`; the sidecar image. Defaults to the main sandbox image, then Toby's built-in image. |
+| `image` | string | For `type: local`; the sidecar image. Defaults to `mcps.image`/`mcps.build`, then the main sandbox image, then Toby's built-in image. |
 | `port` | number | Required for local `transport: http`; the container port. |
 | `path` | string | URL path for local HTTP MCPs; defaults to `/`. |
 | `url` | string | For `type: remote`. The upstream MCP URL. |
@@ -110,8 +117,11 @@ credentials stay on the host. Local entries are started asynchronously as
 managerless sidecars and exposed through the same proxy URL shape.
 
 ```yaml
-mcp:
-  server:
+mcps:
+  image: ghcr.io/acme/mcp-base:latest   # optional default sidecar image
+  build:                                # optional; built once, used as the default
+    context: docker/mcp
+  servers:
     docs:
       type: remote
       url: https://example.com/mcp
@@ -130,9 +140,9 @@ mcp:
       path: /mcp
 ```
 
-### `permission`
+### `permissions`
 
-`permission.paths` maps path patterns to permission modes (e.g. `allow`)
+`permissions.paths` maps path patterns to permission modes (e.g. `allow`)
 rendered into supported tool configs. A leading `~` expands to the host home.
 
 Toby injects default permissions for the sandbox projects root, `/tmp`, and the
@@ -141,24 +151,25 @@ and `~/.cache`). Configured entries override the generated defaults for the same
 path, so an explicit `deny` removes an injected default.
 
 ```yaml
-permission:
+permissions:
   paths:
     ~/shared: allow
     ~/shared/**: allow
 ```
 
-### `provider`
+### `providers`
 
-A map of provider name to declaration. Supported `type` values are `openai`
-(OpenAI-compatible) and `anthropic` (Anthropic-compatible). Toby keeps upstream
-`baseURL` and credential `headers` on the host and exposes each provider to
-tools through `http://<control-host>/proxy/<uuid>`.
+`providers.servers` is a map of provider name to declaration, mirroring the
+`mcps` block. Supported `type` values are `openai` (OpenAI-compatible) and
+`anthropic` (Anthropic-compatible). Toby keeps the upstream `url` and credential
+`headers` on the host and exposes each provider to tools through
+`http://<control-host>/proxy/<uuid>`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `type` | `openai` \| `anthropic` | Required. |
 | `name` | string | Display name (optional). |
-| `baseURL` | string | Required. Upstream API base URL. |
+| `url` | string | Required. Upstream API base URL. |
 | `headers` | object | Credential/HTTP headers, kept on host. Supports `{env:VAR}` / `{file:path}` substitution. |
 | `models` | object | Model entries; used verbatim when present. |
 
@@ -169,14 +180,15 @@ Discovery failures emit the `provider.model-discovery` warning and omit only
 the failed provider from generated OpenCode config.
 
 ```yaml
-provider:
-  local:
-    type: openai
-    baseURL: https://api.example.com/v1
-    headers:
-      Authorization: "Bearer {env:EXAMPLE_API_KEY}"
-    models:
-      example-model: {}
+providers:
+  servers:
+    local:
+      type: openai
+      url: https://api.example.com/v1
+      headers:
+        Authorization: "Bearer {env:EXAMPLE_API_KEY}"
+      models:
+        example-model: {}
 ```
 
 ### `container` and `settings`
@@ -195,7 +207,7 @@ settings:
   autoloadProjectConfig: true
   debug: false
   yolo: false
-tool:
+tools:
   opencode:
     mountProfile: work       # namespaces this tool's volumes separately
 ```
@@ -207,7 +219,8 @@ tool:
 - The in-container layout is fixed (`/toby/home`, `/toby/workspace`, `/toby/bin`,
   `/toby/context`); it is not configurable.
 - Local MCP entries can set a per-server `image`. MCP sidecar image precedence is
-  per-MCP `image`, then the main sandbox image, then Toby's built-in image.
+  per-server `image`, then `mcps.image`/`mcps.build`, then the main sandbox image,
+  then Toby's built-in image.
 - Publishing sandbox ports to the host (`container.ports`) is launch-only — set it
   in the project `.toby.yaml` or with `--publish`/`-p`, not in the host config.
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
@@ -234,7 +247,7 @@ tool:
 Persistent runtime and tool state lives in container-native Docker named volumes.
 A mount *profile* is just a namespace label on those volume names, so different
 profiles keep separate sets of state. `settings.mountProfile` selects the profile
-for a launch (default `default`), and a host or launch `tool.<tool>.mountProfile`
+for a launch (default `default`), and a host or launch `tools.<tool>.mountProfile`
 selects a different profile for one tool.
 
 - A tool requests a mount by `type`/`name`/`purpose` at a container path
@@ -283,13 +296,13 @@ settings:
   mountProfile: work     # optional; namespaces this launch's persistent volumes
   suppressWarnings: ["*"] # optional; list of warning IDs, or ["*"] to suppress all
 workdir: ~/tmp           # optional; defaults to the primary project path in the sandbox
-project:
+projects:
   foo:
     primary: true
   baz:                   # source defaults to $XDG_PROJECTS_DIR/baz
   bar:
     path: ../bar-source  # optional source; relative to this config file, leading ~ expands
-tool:
+tools:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]  # only valid on the primary tool
@@ -312,9 +325,9 @@ port on the host, the same syntax as `docker run -p`:
   `0.0.0.0` (not just the container's loopback). Bracketed IPv6 host addresses
   are not supported.
 
-### `project`
+### `projects`
 
-`project` is an object keyed by project name. A null value enables the project
+`projects` is an object keyed by project name. A null value enables the project
 with defaults. An object can set `path` and `primary`.
 
 - The project appears inside the sandbox under the project root at
@@ -329,10 +342,10 @@ with defaults. An object can set `path` and `primary`.
 - Toby Git and MCP repository names use the configured project **names**, not
   the host source paths.
 
-### `tool`
+### `tools`
 
-Host config `tool` entries are defaults only and currently support
-`mountProfile`. Launch config `tool` entries are enabled tools, keyed by tool
+Host config `tools` entries are defaults only and currently support
+`mountProfile`. Launch config `tools` entries are enabled tools, keyed by tool
 name. A null value enables the tool with defaults. An object can set
 `mountProfile`, `primary`, and `params`. `params` is only honored when that tool
 is the resolved primary tool: either it has `primary: true` in a config-owned
@@ -368,9 +381,9 @@ toby --config foo.yaml -- --additional-param value
 With `exec` as the first tool you can run arbitrary commands. For example:
 
 ```yaml
-project:
+projects:
   foo:
-tool:
+tools:
   exec:
     primary: true
     params: ["npm", "test"]
@@ -398,7 +411,7 @@ The repository's own `.toby.yaml` is a minimal example:
 container:
   build:
     context: support/toby
-tool:
+tools:
   docker:
     primary: true
 ```

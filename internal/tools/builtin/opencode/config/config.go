@@ -69,7 +69,7 @@ func syntheticProviders(providers []sessionconfig.Provider) map[string]any {
 	out := map[string]any{}
 	for _, provider := range providers {
 		entry := map[string]any{
-			"options": map[string]any{"baseURL": provider.BaseURL},
+			"options": map[string]any{"baseURL": provider.URL},
 		}
 		if provider.Type == providerTypeAnthropic {
 			entry["npm"] = "@ai-sdk/anthropic"

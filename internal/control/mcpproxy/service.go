@@ -75,6 +75,19 @@ func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, default
 		}
 	}
 	sort.Strings(names)
+
+	// Resolve (and build, if mcp.build is set) the default sidecar image once,
+	// but only when an enabled local server will actually fall back to it.
+	if needsDefaultImage(servers, names) {
+		image, err := resolveDefaultImage(ctx, defaults)
+		if err != nil {
+			return err
+		}
+		defaults.Image = image
+	} else {
+		defaults.Image = ""
+	}
+
 	entries := make(map[string]*Entry, len(names))
 	for _, name := range names {
 		entry, err := s.configureEntry(ctx, name, servers[name], defaults)

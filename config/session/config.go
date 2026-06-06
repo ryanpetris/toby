@@ -35,11 +35,11 @@ type MCPServer struct {
 // Provider is one resolved LLM provider: its id, kind ("anthropic"/"openai"),
 // display name, the proxied base URL, and the resolved model map.
 type Provider struct {
-	ID      string
-	Type    string
-	Name    string
-	BaseURL string
-	Models  map[string]any
+	ID     string
+	Type   string
+	Name   string
+	URL    string
+	Models map[string]any
 }
 
 // Instructions are the instruction files contributed for the launch, available
