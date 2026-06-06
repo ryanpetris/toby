@@ -21,11 +21,13 @@ SSH keys, GPG setup, and credentials on the host. It is a single Go binary
   injects credentials the sandbox never sees.
 - Inside the **sandbox**, the same binary runs as `toby sandbox manager`: a
   proxy-only process that accepts the sandbox's outbound HTTP connections on a
-  loopback listener and tunnels them to the host.
+  loopback listener and tunnels them to the host. The container's own main
+  process is just `toby sandbox idle`, so the manager runs as a `docker exec`
+  alongside it and `docker logs` stays empty.
 
-The two halves talk over a single gRPC connection carried on the container's
-**stdio** (stdin/stdout); the manager is the gRPC client and the host is the
-server. Everything else the host does to the sandbox — running the tool, writing
+The two halves talk over a single gRPC connection carried on the **manager
+exec's stdio** (its stdin/stdout); the manager is the gRPC client and the host is
+the server. Everything else the host does to the sandbox — running the tool, writing
 context files, initializing mounts, tearing down — goes through the Docker API
 (`docker exec`, `docker cp`, stop/remove), not an in-sandbox RPC service.
 
@@ -115,17 +117,19 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 ## Control plane
 
 There is a single host↔sandbox channel: a gRPC connection carried over the
-container's stdio. Everything host-initiated uses the Docker API instead.
+manager exec's stdio. Everything host-initiated uses the Docker API instead.
 
 ### The stdio gRPC link (`internal/control/tunnel`, `internal/control/stdio`)
 
-The run container's `Cmd` is `toby sandbox manager` with **no TTY**, so its
-stdout/stderr are Docker-multiplexed. The host attaches to the container's stdio
-*before* starting it (so the manager's first gRPC bytes are not raced past),
-demultiplexes the stream (`stdcopy`) into stdout (gRPC frames) and stderr
-(manager logs), and wraps `(demuxed-stdout, attach-stdin)` as a `net.Conn`. The
-manager wraps `(os.Stdin, os.Stdout)` the same way and routes its own logging to
-stderr so fd 1 carries only gRPC frames.
+The run container's `Cmd` is `toby sandbox idle` — a process that only blocks
+until teardown — so the container's own stdout stays empty and `docker logs` is
+clean. The host then launches `toby sandbox manager` as a `docker exec` with **no
+TTY**, so its stdout/stderr are Docker-multiplexed. Attaching to the exec returns
+its stream from the first byte (so the manager's first gRPC bytes are not raced
+past); the host demultiplexes the stream (`stdcopy`) into stdout (gRPC frames) and
+stderr (manager logs) and wraps `(demuxed-stdout, exec-stdin)` as a `net.Conn`.
+The manager wraps `(os.Stdin, os.Stdout)` the same way and routes its own logging
+to stderr so fd 1 carries only gRPC frames.
 
 The host runs the gRPC **server** over that single conn (via a one-shot
 listener); the manager is the **client**. The link has no keepalive (a pipe

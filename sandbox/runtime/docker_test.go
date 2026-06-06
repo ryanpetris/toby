@@ -67,7 +67,7 @@ func findMount(mounts []dmount.Mount, target string) (dmount.Mount, bool) {
 	return dmount.Mount{}, false
 }
 
-func TestContainerRequestRunsProxyManager(t *testing.T) {
+func TestContainerRequestRunsIdle(t *testing.T) {
 	inst, projectDir := dockerInstance(t, nil)
 	home := inst.HomeDir()
 	env := environ.Environment{"HOME": home}
@@ -83,7 +83,7 @@ func TestContainerRequestRunsProxyManager(t *testing.T) {
 	if req.Started {
 		t.Fatal("container must be created but not started (binary is copied in first)")
 	}
-	if !slices.Equal(req.Cmd, []string{"sandbox", "manager"}) {
+	if !slices.Equal(req.Cmd, []string{"sandbox", "idle"}) {
 		t.Fatalf("cmd = %#v", req.Cmd)
 	}
 	if req.Env["HOME"] != home {
@@ -97,11 +97,8 @@ func TestContainerRequestRunsProxyManager(t *testing.T) {
 	if !slices.Equal(cfg.Entrypoint, []string{inst.TobyBinaryPath()}) {
 		t.Fatalf("entrypoint = %#v", cfg.Entrypoint)
 	}
-	if !cfg.OpenStdin || !cfg.AttachStdin {
-		t.Fatalf("run config should keep stdin open: %#v", cfg)
-	}
 	if cfg.Tty {
-		t.Fatal("the gRPC stdio link must not use a TTY")
+		t.Fatal("the idle main process must not use a TTY")
 	}
 
 	hc := applyHostConfig(req)

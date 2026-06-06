@@ -215,7 +215,7 @@ Useful flags:
 
 Toby automatically exposes a sandbox-only MCP server to supported tools launched through `toby <client>`. The built-in server is registered as a per-run `/proxy/<uuid>` target, like configured remote MCP servers, and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, `git.tag`, `mcp.start`, `mcp.stop`, and `mcp.restart`, plus `toby://docs/...` and `toby://session/...` resources. Git tools operate on repositories already visible in the sandbox. Session resources never expose provider/MCP headers, URLs, commands, argv, or environment values; host paths, Docker volume names, container names, and local MCP host ports are included only when debug mode is enabled. For OpenCode, Claude Code, Copilot, and Grok, Toby injects this server through synthetic tool configuration generated under the context directory. Grok discovers that generated config through a `~/.grok/managed_config.toml` symlink. Codex receives Toby MCP through launch-time `-c` config overrides instead of a generated profile file.
 
-The sandbox manager connects back to the host over a gRPC link carried on the container's stdio; there is no control host or token to pass in. `HOME` remains available to commands. MCP and provider proxy URLs point at the manager's in-container loopback listener (`http://127.77.0.1:47600/proxy/<uuid>`), which tunnels each connection to the host reverse proxy.
+The sandbox manager runs as a `docker exec` (the container's main process just idles, so `docker logs` stays clean) and connects back to the host over a gRPC link carried on that exec's stdio; there is no control host or token to pass in. `HOME` remains available to commands. MCP and provider proxy URLs point at the manager's in-container loopback listener (`http://127.77.0.1:47600/proxy/<uuid>`), which tunnels each connection to the host reverse proxy.
 
 Configured MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.server.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://<control-host>/proxy/<uuid>`. Toby opens remote upstream connections from the host process and applies configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox.
 
@@ -223,7 +223,7 @@ Local MCP entries use `type: local`, `command`, and optional `transport: stdio` 
 
 Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok's `managed_config.toml` symlink points back to the generated Grok config. Tool-specific instruction injection is also session-scoped: Copilot receives a generated `AGENTS.md` directory through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, Grok receives combined rules through `--rules`, and Codex receives combined developer instructions through `-c developer_instructions=...`.
 
-Inside the sandbox, Toby downloads the sandbox-facing Toby binary as `toby` and runs the hidden `toby sandbox manager` command to manage the session.
+Inside the sandbox, Toby downloads the sandbox-facing Toby binary as `toby`, starts the container on the idle `toby sandbox idle` process, and runs the hidden `toby sandbox manager` command as a `docker exec` to manage the session.
 
 ## Tools
 

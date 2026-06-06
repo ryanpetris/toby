@@ -4,12 +4,13 @@ package runtime
 // testcontainers request for the single long-lived container. It touches no Docker
 // daemon, so it is unit-testable in isolation from the lifecycle in container.go.
 //
-// The container runs the proxy-only manager (`toby sandbox manager`) with its stdio
-// as the gRPC link, so it has NO TTY; the user's tools run via docker exec with
-// their own stdio. Each volume is mounted at both its final target (for the running
-// tool, with binds layered) and its isolated setup path (so the host can chown it
-// without touching those binds). The container is created but not started, so the
-// caller can docker cp the binary in before starting it.
+// The container's main process is an idle command (`toby sandbox idle`) that only
+// blocks until teardown, so `docker logs` stays empty. The proxy-only manager and
+// the user's tools both run via docker exec with their own stdio; the manager exec's
+// stdout is what carries the gRPC link. Each volume is mounted at both its final
+// target (for the running tool, with binds layered) and its isolated setup path (so
+// the host can chown it without touching those binds). The container is created but
+// not started, so the caller can docker cp the binary in before starting it.
 
 import (
 	"os"
@@ -24,20 +25,17 @@ import (
 
 func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContainerRequest {
 	req := testcontainers.ContainerRequest{Image: s.image}
-	req.Cmd = []string{"sandbox", "manager"}
+	req.Cmd = []string{"sandbox", "idle"}
 	req.Env = runEnv(spec.Env)
 	workdir := s.ChdirDir()
 	binary := s.TobyBinaryPath()
 
+	// The main process only idles, so it needs no stdin and no TTY; the manager and
+	// tool execs attach their own stdio.
 	cfgFns := []func(*dcontainer.Config){func(c *dcontainer.Config) {
 		c.User = "0:0"
 		c.Entrypoint = []string{binary}
 		c.WorkingDir = workdir
-		c.OpenStdin = true
-		c.AttachStdin = true
-		c.AttachStdout = true
-		c.AttachStderr = true
-		c.StdinOnce = false
 		c.Tty = false
 	}}
 

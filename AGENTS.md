@@ -6,10 +6,10 @@ Orientation for agents (and humans) working on the Toby codebase.
 
 Toby is a single Go binary (`petris.dev/toby`, Go 1.26+) that runs development
 tools inside private-home Linux sandboxes. The same binary runs on the host
-(`toby <tool> <env>`) and inside the sandbox (`toby sandbox manager`). The host
-talks to the sandbox over a single gRPC connection carried on the container's
-stdio, and otherwise drives the sandbox through the Docker API (`docker exec`,
-`docker cp`).
+(`toby <tool> <env>`) and inside the sandbox (`toby sandbox manager`, run as a
+`docker exec` alongside the container's idle main process). The host talks to the
+sandbox over a single gRPC connection carried on that manager exec's stdio, and
+otherwise drives the sandbox through the Docker API (`docker exec`, `docker cp`).
 
 Start with [docs/architecture.md](docs/architecture.md) for the full picture.
 Other references: [docs/configuration.md](docs/configuration.md),
@@ -122,7 +122,7 @@ binary, and the Go toolchain forbids importing them from outside the module.
 | Internal | Lifecycle | `internal/lifecycle` (launch phase runner) |
 | Internal | Sandbox delivery | `internal/sandbox/binary` |
 
-The host↔sandbox transport is the gRPC `Tunnel` service (`internal/control/tunnel`) carried over the container's stdio (`internal/control/stdio`); the sandbox manager is proxy-only and the host drives all sandbox operations via the Docker API. The remaining **capability** is host Git in `internal/control/methods/git`: it owns its wire contract (`types.go`, `contract.go`) and handler (`Service`), is provided into the `control.host.handlers` fx group via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`, and is dispatched in-process through the `control.Router` that `internal/control/host` builds from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared sentinels (`HostUser`/`HostGroup`) live in `internal/control` itself.
+The host↔sandbox transport is the gRPC `Tunnel` service (`internal/control/tunnel`) carried over the manager exec's stdio (`internal/control/stdio`); the container's main process is the idle `toby sandbox idle`, the sandbox manager is a proxy-only `docker exec`, and the host drives all sandbox operations via the Docker API. The remaining **capability** is host Git in `internal/control/methods/git`: it owns its wire contract (`types.go`, `contract.go`) and handler (`Service`), is provided into the `control.host.handlers` fx group via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`, and is dispatched in-process through the `control.Router` that `internal/control/host` builds from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared sentinels (`HostUser`/`HostGroup`) live in `internal/control` itself.
 
 ## Conventions
 

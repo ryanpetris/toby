@@ -1,8 +1,10 @@
 package runtime
 
 // The Docker-backed Instance: it creates the single long-lived container, delivers
-// the toby binary with docker cp, starts it running the proxy-only manager, and
-// hands back the host side of the stdio gRPC link. Tools, mount-init, and file
+// the toby binary with docker cp, starts it on an idle command, then launches the
+// proxy-only manager as a docker exec and hands back the host side of that exec's
+// stdio gRPC link. Keeping the manager off the container's main process leaves
+// `docker logs` empty instead of full of gRPC frames. Tools, mount-init, and file
 // provisioning then run against the live container via docker exec / docker cp.
 // Building images shells out to the docker CLI (see build.go); everything else
 // goes through the moby client.
@@ -107,10 +109,12 @@ func (s *instance) meta() engine.Meta {
 	}
 }
 
-// RunStart creates the container, copies the toby binary in, starts it running the
-// proxy-only manager, and returns the host side of the stdio gRPC link (the
-// demultiplexed stdout as reader, the attach stdin as writer). The caller serves
-// the Tunnel gRPC service over the returned conn and waits for the manager's Ready.
+// RunStart creates the container, copies the toby binary in, starts it on its idle
+// command, then launches the proxy-only manager via docker exec and returns the host
+// side of that exec's stdio gRPC link (the demultiplexed exec stdout as reader, the
+// exec stdin as writer). The exec stream carries the gRPC frames, so the container's
+// own stdout — and thus `docker logs` — stays empty. The caller serves the Tunnel
+// gRPC service over the returned conn and waits for the manager's Ready.
 func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error) {
 	if code, err := s.resolveImage(ctx, spec); err != nil {
 		return nil, err
@@ -131,7 +135,8 @@ func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error)
 	}
 	id := ctr.GetContainerID()
 
-	// Deliver the binary into the created (not yet started) container, then start it.
+	// Deliver the binary into the created (not yet started) container, then start it
+	// on the idle command so the container is live before the manager execs in.
 	bin, err := sandboxbinary.SourceBytes()
 	if err != nil {
 		return nil, err
@@ -144,17 +149,25 @@ func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error)
 	}}); err != nil {
 		return nil, fmt.Errorf("copy toby binary: %w", err)
 	}
+	if err := ctr.Start(ctx); err != nil {
+		return nil, err
+	}
 
-	// Attach BEFORE starting so the manager's first gRPC bytes (the HTTP/2 client
-	// preface) are captured rather than raced past.
-	attach, err := cli.ContainerAttach(ctx, id, client.ContainerAttachOptions{
-		Stream: true,
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
+	// Launch the manager as a docker exec; attaching returns its stream from the
+	// first byte, so the manager's HTTP/2 client preface is captured, not raced past.
+	created, err := cli.ExecCreate(ctx, id, client.ExecCreateOptions{
+		User:         "0:0",
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          []string{s.TobyBinaryPath(), "sandbox", "manager"},
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create sandbox manager exec: %w", err)
+	}
+	attach, err := cli.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("attach sandbox manager exec: %w", err)
 	}
 
 	// fd 1 (stdout) carries the gRPC frames; fd 2 (stderr) carries manager logs,
@@ -164,11 +177,6 @@ func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error)
 		_, copyErr := dstdcopy.StdCopy(pw, os.Stderr, attach.Reader)
 		_ = pw.CloseWithError(copyErr)
 	}()
-
-	if err := ctr.Start(ctx); err != nil {
-		attach.Close()
-		return nil, err
-	}
 
 	conn := stdio.NewConn(pr, attach.Conn, func() error {
 		attach.Close()

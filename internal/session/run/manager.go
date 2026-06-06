@@ -1,8 +1,8 @@
 package run
 
 // Driving the single sandbox container: startRunSandbox creates and starts it
-// (binary delivered via docker cp), serves the Tunnel gRPC over its stdio link,
-// waits for the in-sandbox manager's Ready, then runs mount-init, sandbox
+// (binary delivered via docker cp), serves the Tunnel gRPC over the manager exec's
+// stdio link, waits for the in-sandbox manager's Ready, then runs mount-init, sandbox
 // configuration, and the requested tool — all via docker exec/cp — and tears the
 // container down on return.
 

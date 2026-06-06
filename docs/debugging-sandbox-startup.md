@@ -9,8 +9,9 @@ requested tool runs. For how that path is built, see
 ## How startup works (and how it fails)
 
 The host launches one container, `docker cp`s the `toby` binary into it, and starts
-it running `toby sandbox manager`. The manager's stdin/stdout *are* a single gRPC
-connection (no TTY): the manager is the gRPC client, the host is the server. The
+it on the idle `toby sandbox idle` main process, then runs `toby sandbox manager` as
+a `docker exec`. The manager exec's stdin/stdout *are* a single gRPC connection (no
+TTY): the manager is the gRPC client, the host is the server. The
 manager binds a fixed loopback proxy listener (`tunnel.ProxyAddr`,
 `127.77.0.1:47600`) and calls `Ready`. The host waits for that `Ready` for up to 30s
 before proceeding to mount-init, context files, tool install, and launch.
@@ -18,15 +19,12 @@ before proceeding to mount-init, context files, tool install, and launch.
 Two failure shapes to distinguish from the host error message:
 
 - **`timed out waiting for sandbox manager to start`** — the container is alive but
-  the gRPC handshake never completed. Causes: the manager's HTTP/2 client preface
-  was lost (e.g. attaching to the container's stdio *after* starting it, so the
-  first bytes are emitted before the attach captures them — attach must happen
-  *before* `ContainerStart`), the manager wrote non-gRPC bytes to fd 1 (stdout must
-  carry only gRPC frames; all logging must go to stderr), or the manager never bound
-  its listener.
-- **`sandbox manager exited before reporting ready`** — the container's main process
-  died (bad/missing binary, a crash on startup, a config error). The gRPC `Serve`
-  loop saw EOF rather than timing out.
+  the gRPC handshake never completed. Causes: the manager exec wrote non-gRPC bytes
+  to fd 1 (stdout must carry only gRPC frames; all logging must go to stderr), or the
+  manager never bound its listener.
+- **`sandbox manager exited before reporting ready`** — the manager exec died
+  (bad/missing binary, a crash on startup, a config error). The gRPC `Serve` loop saw
+  EOF rather than timing out.
 
 ## What you need on the host
 
@@ -109,8 +107,10 @@ file rather than guessing.
 
 ## Things that bite
 
-- **Attach before start.** The manager emits its gRPC preface immediately on start;
-  attach to the container's stdio before `ContainerStart` or the handshake is lost.
+- **Manager runs as a docker exec.** The container's main process is the idle `toby
+  sandbox idle`, so `docker logs` stays empty; the manager runs as a `docker exec`
+  whose stdout carries the gRPC link. Attaching to the exec returns its stream from
+  the first byte, so the preface is captured without an attach-before-start race.
 - **Keep fd 1 pure.** Only gRPC frames may go to stdout; route all manager logging
   to stderr, which the host demultiplexes (`stdcopy`) and forwards.
 - **No TTY on the control link.** The manager's stdio is binary gRPC; a PTY would
