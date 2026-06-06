@@ -2,9 +2,14 @@ package runtime
 
 // Docker-exec backend: runs commands in the long-lived Run container via the raw
 // moby exec API (testcontainers' Exec wrapper attaches no stdin and blocks until
-// exit, so it cannot drive an interactive tool). Interactive launches wire the
-// host terminal to the exec stream (raw mode, resize, PTY-delivered signals);
-// non-interactive commands capture or discard output and return the exit code.
+// exit, so it cannot drive an interactive tool). A foreground launch always runs
+// under a container PTY so the tool line-buffers and flushes its output and
+// renders as if attached to a terminal; when the host itself is a terminal that
+// PTY is additionally wired to it (raw mode, resize, PTY-delivered signals), and
+// when it is not — a systemd service, a redirected run — the PTY stream is copied
+// straight through so the output still reaches the host stdout. Non-interactive
+// commands run without a PTY and capture or discard output, returning the exit
+// code.
 
 import (
 	"context"
@@ -21,13 +26,20 @@ import (
 	"golang.org/x/term"
 )
 
+// defaultCols and defaultRows seed a headless foreground PTY (no host terminal to
+// measure) so the tool sees a plausible terminal size instead of zero.
+const (
+	defaultCols = 80
+	defaultRows = 24
+)
+
 // ExecSpec describes one command to run in the Run container.
 type ExecSpec struct {
 	Argv        []string
 	Env         []string // KEY=VALUE, the host-held environment
 	User        string   // "uid:gid"; empty means the container default
 	WorkingDir  string
-	Interactive bool // foreground: attach stdin (and a TTY when the host is a terminal)
+	Interactive bool // foreground: attach stdin and run under a container PTY
 	HideOutput  bool // discard stdout/stderr
 }
 
@@ -42,8 +54,14 @@ func (s *instance) Exec(ctx context.Context, spec ExecSpec) (int, error) {
 		return 1, fmt.Errorf("run container is not started")
 	}
 
-	tty := spec.Interactive && stdinIsTerminal() && stdoutIsTerminal()
-	created, err := cli.ExecCreate(ctx, id, client.ExecCreateOptions{
+	// A foreground tool always runs under a container PTY: without one its stdout
+	// is a pipe, so it block-buffers and a long-running tool's output never reaches
+	// a non-terminal host (a systemd journal, a log file). The host being a terminal
+	// only decides how the PTY is driven, not whether one is allocated.
+	tty := spec.Interactive
+	hostTerminal := stdinIsTerminal() && stdoutIsTerminal()
+
+	createOpts := client.ExecCreateOptions{
 		User:         spec.User,
 		TTY:          tty,
 		AttachStdin:  spec.Interactive,
@@ -52,12 +70,21 @@ func (s *instance) Exec(ctx context.Context, spec ExecSpec) (int, error) {
 		Env:          spec.Env,
 		WorkingDir:   spec.WorkingDir,
 		Cmd:          spec.Argv,
-	})
+	}
+	attachOpts := client.ExecAttachOptions{TTY: tty}
+	// With no host terminal there is no size to track, so seed the PTY with a sane
+	// default; the host-terminal path resizes to the real terminal immediately after
+	// attach instead.
+	if tty && !hostTerminal {
+		createOpts.ConsoleSize = client.ConsoleSize{Height: defaultRows, Width: defaultCols}
+		attachOpts.ConsoleSize = client.ConsoleSize{Height: defaultRows, Width: defaultCols}
+	}
+	created, err := cli.ExecCreate(ctx, id, createOpts)
 	if err != nil {
 		return 1, err
 	}
 
-	attach, err := cli.ExecAttach(ctx, created.ID, client.ExecAttachOptions{TTY: tty})
+	attach, err := cli.ExecAttach(ctx, created.ID, attachOpts)
 	if err != nil {
 		return 1, err
 	}
@@ -72,9 +99,12 @@ func (s *instance) Exec(ctx context.Context, spec ExecSpec) (int, error) {
 		attach.Close()
 	}()
 
-	if tty {
+	switch {
+	case tty && hostTerminal:
 		s.runExecTTY(ctx, cli, created.ID, attach.HijackedResponse)
-	} else {
+	case tty:
+		runExecHeadlessTTY(attach.HijackedResponse, spec)
+	default:
 		s.runExecPlain(attach.HijackedResponse, spec)
 	}
 
@@ -118,6 +148,28 @@ func (s *instance) runExecTTY(ctx context.Context, cli *testcontainers.DockerCli
 		_ = attach.CloseWrite()
 	}()
 	<-outDone
+}
+
+// runExecHeadlessTTY streams a foreground exec that runs under a container PTY but
+// has no host terminal (a service or a redirected run). The PTY merges the tool's
+// stdout and stderr into one stream — there is nothing to demultiplex — and makes
+// the tool line-buffer and flush, so io.Copy carries its output to the host stdout
+// (and on to the journal) promptly. Host stdin is forwarded so a tool that reads it
+// still works, but its write half is left open: there is no terminal to signal EOF,
+// and closing it would feed a spurious end-of-input to a long-running server. Raw
+// mode, resize, and signal forwarding are all skipped — there is no host terminal to
+// drive them.
+func runExecHeadlessTTY(attach client.HijackedResponse, spec ExecSpec) {
+	if spec.Interactive {
+		go func() {
+			_, _ = io.Copy(attach.Conn, os.Stdin)
+		}()
+	}
+	out := io.Writer(os.Stdout)
+	if spec.HideOutput {
+		out = io.Discard
+	}
+	_, _ = io.Copy(out, attach.Reader)
 }
 
 // runExecPlain streams a non-interactive exec: stdin is forwarded only for

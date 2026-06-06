@@ -162,11 +162,14 @@ headers, commands, argv, and environment values regardless of debug mode).
 The host does not push files or commands over an RPC channel. Instead:
 
 - **Run a command** — `docker exec` against the live container (`sandbox/runtime/exec.go`).
-  The interactive primary tool gets a TTY and the host terminal (raw mode, resize,
-  PTY-delivered signals); install/configure/mount commands run non-interactively
-  and return an exit code. The exec carries the resolved user (`uid:gid`, defaulting
-  to the host user), working directory, and the host-held environment; supplementary
-  groups come from the container's `GroupAdd` (set at create).
+  The foreground primary tool always runs under a container PTY so it line-buffers
+  and flushes its output; when the host is itself a terminal that PTY is wired to it
+  (raw mode, resize, PTY-delivered signals), and when it is not — a systemd service or
+  a redirected run — the PTY stream is copied straight through to the host stdout so
+  the output still reaches the journal. Install/configure/mount commands run
+  non-interactively and return an exit code. The exec carries the resolved user
+  (`uid:gid`, defaulting to the host user), working directory, and the host-held
+  environment; supplementary groups come from the container's `GroupAdd` (set at create).
 - **Write/replace files** — `docker cp` of an in-memory tar carrying mode + uid/gid
   (`sandbox/runtime/copy.go`); `*Owned` variants map directly to tar ownership.
   Deletes run as a root `docker exec rm`.
@@ -289,7 +292,8 @@ runner and `internal/session/run/run.go`:
 7. **Install and launch.** Run `toby.lifecycle.sandbox.init`, then
    `toby.lifecycle.sandbox.install` or `toby.lifecycle.sandbox.upgrade` as needed
    (each command via `docker exec`). The primary tool's `Launch` runs the
-   foreground command via `docker exec`, wired to the host terminal.
+   foreground command via `docker exec` under a container PTY, wired to the host
+   terminal when there is one and otherwise streamed straight to the host stdout.
 8. **Tear down.** When the foreground command exits, the host stops the gRPC
    server, stops and removes the container, and exits with the foreground
    command's exit code (under `--debug` the container is stopped but left on the
