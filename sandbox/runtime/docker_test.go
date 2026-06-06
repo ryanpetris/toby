@@ -138,17 +138,6 @@ func TestContainerRequestMultiMountsSetupAndFinal(t *testing.T) {
 	}
 }
 
-func TestContainerRequestDebugNamesContainer(t *testing.T) {
-	inst, _ := dockerInstance(t, nil)
-	spec := RunSpec{Env: environ.Environment{}, Mounts: dockerHomeMount(inst.HomeDir()), Debug: true}
-	if got := inst.containerRequest(spec).Name; got != inst.containerName+"-run" {
-		t.Fatalf("debug name = %q, want %q", got, inst.containerName+"-run")
-	}
-	if got := inst.containerRequest(RunSpec{Env: environ.Environment{}}).Name; got != "" {
-		t.Fatalf("non-debug name = %q, want empty", got)
-	}
-}
-
 func TestNewInstanceAppliesImage(t *testing.T) {
 	inst, _ := dockerInstance(t, func(s *Spec) {
 		s.Image = "custom:latest"

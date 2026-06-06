@@ -21,8 +21,9 @@ import (
 
 // Service owns the shared Docker client and the registry of running containers.
 type Service struct {
-	mu      sync.Mutex
-	records map[string]*record
+	mu          sync.Mutex
+	records     map[string]*record
+	keepStopped bool
 
 	clientOnce sync.Once
 	client     *testcontainers.DockerClient
@@ -78,37 +79,58 @@ func (s *Service) Start(ctx context.Context, req testcontainers.GenericContainer
 	return ctr, nil
 }
 
-// Terminate stops, removes, and forgets a tracked container.
+// SetKeepStopped sets the teardown policy: when keep is true, a torn-down
+// container is stopped but left on the host (only dropped from the registry) so
+// a debug session can inspect it after exit; when false it is stopped and
+// removed. The launch sets this from its debug flag before any teardown runs.
+func (s *Service) SetKeepStopped(keep bool) {
+	s.mu.Lock()
+	s.keepStopped = keep
+	s.mu.Unlock()
+}
+
+// Terminate tears a tracked container down and drops it from the registry. The
+// container is always stopped; it is removed unless the keep-stopped policy is
+// set (debug), in which case it is left on the host for inspection.
 func (s *Service) Terminate(ctx context.Context, ctr testcontainers.Container) error {
 	if ctr == nil {
 		return nil
 	}
 
+	s.mu.Lock()
+	keep := s.keepStopped
 	if id := ctr.GetContainerID(); id != "" {
-		s.mu.Lock()
 		delete(s.records, id)
-		s.mu.Unlock()
 	}
+	s.mu.Unlock()
 
+	if keep {
+		return s.stopContainer(ctx, ctr, 10*time.Second)
+	}
 	return testcontainers.TerminateContainer(ctr, testcontainers.StopTimeout(10*time.Second))
 }
 
-// Forget drops a container from the registry without stopping it (used in debug
-// mode, where containers are intentionally left running for inspection).
-func (s *Service) Forget(ctr testcontainers.Container) {
-	if ctr == nil {
-		return
+// stopContainer stops a container without removing it, so a debug session can
+// inspect it after exit.
+func (s *Service) stopContainer(ctx context.Context, ctr testcontainers.Container, timeout time.Duration) error {
+	id := ctr.GetContainerID()
+	if id == "" {
+		return nil
 	}
 
-	if id := ctr.GetContainerID(); id != "" {
-		s.mu.Lock()
-		delete(s.records, id)
-		s.mu.Unlock()
+	cli, err := s.Client(ctx)
+	if err != nil {
+		return err
 	}
+
+	secs := int(timeout.Seconds())
+	_, err = cli.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: &secs})
+	return err
 }
 
-func (s *Service) terminateAll(_ context.Context) {
+func (s *Service) terminateAll(ctx context.Context) {
 	s.mu.Lock()
+	keep := s.keepStopped
 	records := make([]*record, 0, len(s.records))
 	for _, rec := range s.records {
 		records = append(records, rec)
@@ -117,6 +139,10 @@ func (s *Service) terminateAll(_ context.Context) {
 	s.mu.Unlock()
 
 	for _, rec := range records {
+		if keep {
+			_ = s.stopContainer(ctx, rec.ctr, 5*time.Second)
+			continue
+		}
 		_ = testcontainers.TerminateContainer(rec.ctr, testcontainers.StopTimeout(5*time.Second))
 	}
 }

@@ -44,8 +44,9 @@ type Instance interface {
 	// RunStart creates the container, copies the binary in, starts the proxy-only
 	// manager, and returns the host side of the stdio gRPC link.
 	RunStart(context.Context, RunSpec) (net.Conn, error)
-	// RunStop tears the container down (removing it unless debug).
-	RunStop(context.Context, bool)
+	// RunStop tears the container down; the engine's keep-stopped policy decides
+	// whether it is removed or only stopped (kept for inspection under debug).
+	RunStop(context.Context)
 	// RunContainerEnv returns the container's base environment for seeding execs.
 	RunContainerEnv(context.Context) ([]string, error)
 

@@ -197,8 +197,9 @@ not wait for MCP readiness before bringing up the main sandbox manager. Sidecars
 run as their own containers; they do not use `toby sandbox manager`, do not run
 setup hooks, and do not mount project, context, or managed-state paths. They use
 the selected image defaults for user, home, and working directory. Under debug
-mode sidecar containers are left running for inspection; restarts always create
-fresh container names and never reuse previous containers. Each sidecar runtime
+mode sidecar containers are stopped but left on the host (not removed) for
+inspection; restarts always create fresh container names and never reuse
+previous containers. Each sidecar runtime
 owns its own startup, HTTP preparation, cleanup, and introspection; runtime
 details are returned as opaque `runtimeInfo` maps that generic code passes
 through without interpreting.
@@ -224,8 +225,8 @@ to `docker build`.
   the host can chown it (root `docker exec`) without crossing into the binds
   layered under the final target. Projects bind-mount from the host under
   `/toby/workspace`. Empty volumes seed from the image on first mount. Under
-  `settings.debug: true` or `--debug` the container is left running after exit for
-  inspection; containers are never reused.
+  `settings.debug: true` or `--debug` the container is stopped on exit but left on
+  the host (not removed) for inspection; containers are never reused.
 - **Networking**: the container uses **bridge** networking. The manager's proxy
   listener is on the container's own loopback, so it stays container-private, while
   tools still have outbound network access. The gRPC control link rides the Docker
@@ -287,7 +288,8 @@ runner and `internal/session/run/run.go`:
    foreground command via `docker exec`, wired to the host terminal.
 8. **Tear down.** When the foreground command exits, the host stops the gRPC
    server, stops and removes the container, and exits with the foreground
-   command's exit code (left running under `--debug`).
+   command's exit code (under `--debug` the container is stopped but left on the
+   host, not removed).
 
 ## Tool abstraction (`tools` + `internal/lifecycle`)
 

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 )
 
@@ -10,7 +11,9 @@ func TestNewServiceHasEmptySnapshot(t *testing.T) {
 		t.Fatalf("snapshot = %#v", got)
 	}
 
-	s.Forget(nil) // must not panic on a nil container
+	if err := s.Terminate(context.Background(), nil); err != nil { // must not panic or error on a nil container
+		t.Fatalf("Terminate(nil) = %v", err)
+	}
 }
 
 func TestShortID(t *testing.T) {

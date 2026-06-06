@@ -34,10 +34,9 @@ const DefaultImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookwor
 
 type instance struct {
 	BaseInstance
-	containers    *engine.Service
-	image         string
-	build         tools.Build
-	containerName string
+	containers *engine.Service
+	image      string
+	build      tools.Build
 
 	mu           sync.Mutex
 	runContainer testcontainers.Container
@@ -51,12 +50,6 @@ func (s *instance) RuntimeInfo(debug bool) RuntimeInfo {
 	}
 	if debug && s.build.IsSet() {
 		info["build"] = map[string]any{"context": s.build.Context, "dockerfile": s.build.Dockerfile}
-	}
-	if debug && s.containerName != "" {
-		info["container"] = map[string]any{
-			"baseName": s.containerName,
-			"run":      s.phaseContainerName("run", true),
-		}
 	}
 	if debug {
 		var tracked []map[string]any
@@ -89,13 +82,6 @@ func (s *instance) Cleanup() error {
 		_ = s.containers.Terminate(context.Background(), ctr)
 	}
 	return nil
-}
-
-func (s *instance) phaseContainerName(phase string, debug bool) string {
-	if !debug || phase == "" {
-		return s.containerName
-	}
-	return s.containerName + "-" + phase
 }
 
 func (s *instance) meta() engine.Meta {
@@ -184,14 +170,23 @@ func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error)
 	return conn, nil
 }
 
-// RunStop tears down the Run container (removing it unless debug), matching the
-// finishPhase semantics the prior lifecycle used.
-func (s *instance) RunStop(ctx context.Context, debug bool) {
+// RunStop tears down the Run container. The container is always stopped; the
+// engine's keep-stopped policy decides whether it is removed or left on the host
+// for inspection (debug). On context cancellation it still tears down using a
+// background context.
+func (s *instance) RunStop(ctx context.Context) {
 	s.mu.Lock()
 	ctr := s.runContainer
 	s.runContainer = nil
 	s.mu.Unlock()
-	s.finishPhase(ctx, ctr, debug)
+	if ctr == nil {
+		return
+	}
+	termCtx := ctx
+	if ctx.Err() != nil {
+		termCtx = context.Background()
+	}
+	_ = s.containers.Terminate(termCtx, ctr)
 }
 
 // RunContainerEnv returns the container's base environment (image defaults plus the
@@ -213,24 +208,6 @@ func (s *instance) RunContainerEnv(ctx context.Context) ([]string, error) {
 		return nil, nil
 	}
 	return info.Container.Config.Env, nil
-}
-
-// finishPhase removes the container (non-debug) or leaves it for inspection while
-// dropping it from the tracking registry (debug). On context cancellation it still
-// removes the container using a background context.
-func (s *instance) finishPhase(ctx context.Context, ctr testcontainers.Container, debug bool) {
-	if ctr == nil {
-		return
-	}
-	if debug {
-		s.containers.Forget(ctr)
-		return
-	}
-	termCtx := ctx
-	if ctx.Err() != nil {
-		termCtx = context.Background()
-	}
-	_ = s.containers.Terminate(termCtx, ctr)
 }
 
 func stdinIsTerminal() bool { return isCharDevice(os.Stdin) }

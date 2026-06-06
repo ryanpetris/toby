@@ -13,7 +13,6 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"petris.dev/toby/config"
 	"petris.dev/toby/container/engine"
@@ -83,11 +82,10 @@ func (f Factory) newInstance(spec Spec) (Instance, error) {
 	}
 
 	return &instance{
-		BaseInstance:  base,
-		containers:    f.containers,
-		image:         image,
-		build:         spec.Build,
-		containerName: fmt.Sprintf("toby-%d-%d", os.Getpid(), time.Now().UnixNano()),
+		BaseInstance: base,
+		containers:   f.containers,
+		image:        image,
+		build:        spec.Build,
 	}, nil
 }
 

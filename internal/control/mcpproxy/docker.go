@@ -163,10 +163,6 @@ func (r *DockerRunner) newHandle(ctx context.Context, ctr testcontainers.Contain
 		if cleanup != nil {
 			cleanup()
 		}
-		if spec.Debug {
-			r.containers.Forget(ctr)
-			return nil
-		}
 		return r.containers.Terminate(ctx, ctr)
 	}
 	go func() {

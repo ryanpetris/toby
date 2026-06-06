@@ -67,9 +67,6 @@ func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContaine
 		// Host networking would bind the host's loopback instead.
 	}
 
-	if spec.Debug {
-		req.Name = s.phaseContainerName("run", true)
-	}
 	req.Labels = map[string]string{
 		"toby.sandbox": s.Label(),
 		"toby.phase":   "run",

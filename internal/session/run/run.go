@@ -32,6 +32,9 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	if params.Engine == nil {
 		return fmt.Errorf("container engine is not configured")
 	}
+	// Under debug, keep containers on the host after stopping them so they can be
+	// inspected; otherwise stop and remove them on teardown.
+	params.Engine.SetKeepStopped(params.TobyConfig.DebugEnabled())
 	params.Status.Set("Connecting to Docker")
 	if err := params.Engine.Ping(ctx); err != nil {
 		return exitcode.New(2, "docker socket not reachable (is the daemon running, or DOCKER_HOST set?): %v", err)

@@ -120,5 +120,5 @@ file rather than guessing.
   closed) is a normal keep-alive client close, not an error; it is filtered from the
   manager log.
 - **Cleanup is automatic** on a clean or errored return (the run container is
-  stopped and removed), except under `--debug`, where it is left running for
-  inspection.
+  stopped and removed). Under `--debug` the container is still stopped but left on
+  the host (not removed) so it can be inspected after exit.

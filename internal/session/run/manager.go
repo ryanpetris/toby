@@ -30,14 +30,13 @@ func startRunSandbox(ctx context.Context, params Params, manager *host.Service, 
 	if manager == nil || manager.HTTPProxy == nil {
 		return fmt.Errorf("http proxy service is not configured")
 	}
-	debug := params.TobyConfig.DebugEnabled()
 
 	params.Status.Set("Starting sandbox")
 	conn, err := sbx.RunStart(ctx, runSpec)
 	if err != nil {
 		return err
 	}
-	defer sbx.RunStop(ctx, debug)
+	defer sbx.RunStop(ctx)
 	defer conn.Close()
 
 	// Serve the Tunnel gRPC service over the container's stdio link. The manager is

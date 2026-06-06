@@ -211,12 +211,12 @@ tool:
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
 - `settings.debug: true` enables debug mode. In sandbox and MCP sidecar
-  containers, Toby leaves containers running after exit for inspection instead of
-  terminating them; containers are still created fresh and never reused.
-  Toby's MCP `toby://session/...` resources include host paths, Docker volume
-  names, container names, and local MCP host ports only in debug mode. Provider
-  and MCP headers, URLs, commands, argv, and environment values are never
-  exposed, even in debug mode. A project `.toby.yaml` with `settings.debug: false` overrides a
+  containers, Toby stops containers on exit but leaves them on the host (rather
+  than removing them) so they can be inspected; containers are still created fresh
+  and never reused. Toby's MCP `toby://session/...` resources include host paths,
+  Docker volume names, and local MCP host ports only in debug mode. Provider and
+  MCP headers, URLs, commands, argv, and environment values are never exposed,
+  even in debug mode. A project `.toby.yaml` with `settings.debug: false` overrides a
   global `settings.debug: true`; `--debug` overrides config for the launch.
 - `settings.yolo: true` launches the AI tool with its permission-bypass flag so it
   no longer prompts to approve actions: Claude with `--dangerously-skip-permissions`,
