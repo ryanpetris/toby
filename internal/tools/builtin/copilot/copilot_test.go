@@ -18,8 +18,6 @@ import (
 	"petris.dev/toby/tools"
 )
 
-type fakeNPM struct{ tools.Base }
-
 func TestSandboxContextSetupAddsCustomInstructionsDir(t *testing.T) {
 	home := t.TempDir()
 	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, false))

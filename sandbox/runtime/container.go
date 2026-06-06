@@ -25,7 +25,6 @@ import (
 	"petris.dev/toby/tools"
 
 	dstdcopy "github.com/moby/moby/api/pkg/stdcopy"
-	dcontainer "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 )
@@ -214,27 +213,6 @@ func (s *instance) RunContainerEnv(ctx context.Context) ([]string, error) {
 		return nil, nil
 	}
 	return info.Container.Config.Env, nil
-}
-
-// waitExit blocks until the container leaves the running state and returns its
-// exit code. ctx cancellation yields 130, matching ProcessRunner.
-func (s *instance) waitExit(ctx context.Context, ctr testcontainers.Container) (int, error) {
-	cli, err := s.containers.Client(ctx)
-	if err != nil {
-		return 1, err
-	}
-	result := cli.ContainerWait(ctx, ctr.GetContainerID(), client.ContainerWaitOptions{Condition: dcontainer.WaitConditionNotRunning})
-	select {
-	case res := <-result.Result:
-		return int(res.StatusCode), nil
-	case werr := <-result.Error:
-		if st, serr := ctr.State(ctx); serr == nil && st != nil && !st.Running {
-			return st.ExitCode, nil
-		}
-		return 1, werr
-	case <-ctx.Done():
-		return 130, ctx.Err()
-	}
 }
 
 // finishPhase removes the container (non-debug) or leaves it for inspection while

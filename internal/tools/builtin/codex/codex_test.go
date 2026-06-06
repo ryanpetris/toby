@@ -14,8 +14,6 @@ import (
 	"petris.dev/toby/tools"
 )
 
-type fakeNPM struct{ tools.Base }
-
 func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	home := t.TempDir()
 	cdx, sandbox, holder := newTestCodex(t, filepath.Join(home, "context"), testConfig(t, false))

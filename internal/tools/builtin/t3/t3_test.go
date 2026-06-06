@@ -14,8 +14,6 @@ import (
 	"petris.dev/toby/tools"
 )
 
-type fakeNPM struct{ tools.Base }
-
 func TestRegisterContextFilesWritesWrapper(t *testing.T) {
 	svc, sandbox := newTestT3(t, "/toby/context")
 

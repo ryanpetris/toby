@@ -20,21 +20,6 @@ import (
 	"go.uber.org/fx/fxtest"
 )
 
-type fakeNPM struct {
-	tools.Base
-	sandbox sandboxapi.Service
-}
-
-func (t fakeNPM) ConfigureSandbox(ctx context.Context) error {
-	if t.sandbox == nil {
-		return nil
-	}
-	if err := t.sandbox.SetEnvironment(ctx, "NPM_CALLED", "1"); err != nil {
-		return err
-	}
-	return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", "dependency")
-}
-
 func TestOpenCodeSetsSyntheticConfigDir(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{Home: home, SandboxRoot: filepath.Join(home, "sandboxes")}
