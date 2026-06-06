@@ -34,7 +34,7 @@ func newSandboxManagerCommand(runner *sandbox.Runner) *cobra.Command {
 			if runner == nil {
 				return fmt.Errorf("sandbox manager runner is not configured")
 			}
-			return runner.Run(cmd.Context(), "")
+			return runner.Run(cmd.Context())
 		},
 	}
 }

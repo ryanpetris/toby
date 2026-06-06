@@ -30,6 +30,8 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | go.uber.org/dig | v1.19.0 | MIT |
 | go.uber.org/fx | v1.24.0 | MIT |
 | golang.org/x/term | v0.43.0 | BSD-3-Clause |
+| google.golang.org/grpc | v1.80.0 | Apache-2.0 |
+| google.golang.org/protobuf | v1.36.11 | BSD-3-Clause |
 | gopkg.in/yaml.v3 | v3.0.1 | MIT and Apache-2.0 |
 
 ## Indirect dependencies
@@ -41,7 +43,6 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/Microsoft/go-winio | v0.6.2 | MIT |
 | github.com/cenkalti/backoff/v4 | v4.3.0 | MIT |
 | github.com/cespare/xxhash/v2 | v2.3.0 | MIT |
-| github.com/coder/websocket | v1.8.14 | ISC |
 | github.com/containerd/errdefs | v1.0.0 | Apache-2.0 |
 | github.com/containerd/errdefs/pkg | v0.3.0 | Apache-2.0 |
 | github.com/containerd/log | v0.1.0 | Apache-2.0 |
@@ -53,7 +54,6 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/docker/go-units | v0.5.0 | Apache-2.0 |
 | github.com/ebitengine/purego | v0.10.0 | Apache-2.0 |
 | github.com/felixge/httpsnoop | v1.0.4 | MIT |
-| github.com/go-chi/chi/v5 | v5.3.0 | MIT |
 | github.com/go-logr/logr | v1.4.3 | Apache-2.0 |
 | github.com/go-logr/stdr | v1.2.2 | Apache-2.0 |
 | github.com/go-ole/go-ole | v1.2.6 | MIT |
@@ -89,7 +89,8 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | go.uber.org/multierr | v1.10.0 | MIT |
 | go.uber.org/zap | v1.26.0 | MIT |
 | golang.org/x/crypto | v0.48.0 | BSD-3-Clause |
-| golang.org/x/oauth2 | v0.30.0 | BSD-3-Clause |
+| golang.org/x/net | v0.49.0 | BSD-3-Clause |
+| golang.org/x/oauth2 | v0.34.0 | BSD-3-Clause |
 | golang.org/x/sys | v0.44.0 | BSD-3-Clause |
-</content>
-</invoke>
+| golang.org/x/text | v0.34.0 | BSD-3-Clause |
+| google.golang.org/genproto/googleapis/rpc | v0.0.0-20260120221211-b8f7ae30c516 | Apache-2.0 |

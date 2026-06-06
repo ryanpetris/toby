@@ -67,44 +67,49 @@ func findMount(mounts []dmount.Mount, target string) (dmount.Mount, bool) {
 	return dmount.Mount{}, false
 }
 
-func TestContainerRequestRunMountsEnvAndHostNetwork(t *testing.T) {
+func TestContainerRequestRunsProxyManager(t *testing.T) {
 	inst, projectDir := dockerInstance(t, nil)
 	home := inst.HomeDir()
-	env := environ.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "TOBY_CONTROL_TOKEN": "secret", "HOME": home}
+	env := environ.Environment{"HOME": home}
 	mounts := dockerHomeMount(home)
 	bindTarget := filepath.Join(home, ".local", "share", "opencode")
 	binds := []mount.Bind{{HostPath: "/host/opencode", Target: bindTarget, Access: mount.AccessRegular}}
-	argv := []string{inst.TobyBinaryPath(), "sandbox", "manager"}
 
-	req := inst.containerRequest(RunSpec{Argv: argv, Env: env, Binds: binds, Mounts: mounts}, phaseRun, engine.DaemonLocalUnix)
+	req := inst.containerRequest(RunSpec{Env: env, Binds: binds, Mounts: mounts})
 
 	if req.Image != DefaultImage {
 		t.Fatalf("image = %q, want %q", req.Image, DefaultImage)
 	}
-	if !slices.Equal(req.Cmd, argv) {
+	if req.Started {
+		t.Fatal("container must be created but not started (binary is copied in first)")
+	}
+	if !slices.Equal(req.Cmd, []string{"sandbox", "manager"}) {
 		t.Fatalf("cmd = %#v", req.Cmd)
 	}
-	if req.Env["TOBY_CONTROL_HOST"] != "127.0.0.1:1234" {
-		t.Fatalf("control host = %q (local should be unchanged)", req.Env["TOBY_CONTROL_HOST"])
-	}
-	if req.Env["TOBY_CONTROL_TOKEN"] != "secret" || req.Env["HOME"] != home {
+	if req.Env["HOME"] != home {
 		t.Fatalf("env = %#v", req.Env)
-	}
-	if req.HostAccessPorts != nil {
-		t.Fatalf("local daemon should not use host-access tunnel: %#v", req.HostAccessPorts)
 	}
 
 	cfg := applyConfig(req)
 	if cfg.User != "0:0" {
 		t.Fatalf("user = %q", cfg.User)
 	}
+	if !slices.Equal(cfg.Entrypoint, []string{inst.TobyBinaryPath()}) {
+		t.Fatalf("entrypoint = %#v", cfg.Entrypoint)
+	}
 	if !cfg.OpenStdin || !cfg.AttachStdin {
 		t.Fatalf("run config should keep stdin open: %#v", cfg)
 	}
+	if cfg.Tty {
+		t.Fatal("the gRPC stdio link must not use a TTY")
+	}
 
 	hc := applyHostConfig(req)
-	if hc.NetworkMode != "host" {
-		t.Fatalf("network mode = %q, want host", hc.NetworkMode)
+	if hc.NetworkMode == "host" {
+		t.Fatal("run container must use bridge networking, not host")
+	}
+	if hc.Init == nil || !*hc.Init {
+		t.Fatal("run should request an init process")
 	}
 	if v, ok := findMount(hc.Mounts, home); !ok || v.Type != dmount.TypeVolume || v.Source != mounts[0].Volume {
 		t.Fatalf("home volume mount = %#v ok=%v", v, ok)
@@ -118,31 +123,7 @@ func TestContainerRequestRunMountsEnvAndHostNetwork(t *testing.T) {
 	}
 }
 
-func TestContainerRequestPrimeEntrypointAndMounts(t *testing.T) {
-	inst, _ := dockerInstance(t, nil)
-	home := inst.HomeDir()
-	req := inst.containerRequest(RunSpec{Mounts: dockerHomeMount(home)}, phasePrime, engine.DaemonLocalUnix)
-
-	if !slices.Equal(req.Cmd, []string{"-c", "exit"}) {
-		t.Fatalf("cmd = %#v", req.Cmd)
-	}
-	cfg := applyConfig(req)
-	if !slices.Equal(cfg.Entrypoint, []string{"/bin/sh"}) {
-		t.Fatalf("entrypoint = %#v", cfg.Entrypoint)
-	}
-	hc := applyHostConfig(req)
-	if hc.Init != nil {
-		t.Fatal("prime should not request an init process")
-	}
-	if hc.NetworkMode != "" {
-		t.Fatalf("prime should not set a network mode: %q", hc.NetworkMode)
-	}
-	if _, ok := findMount(hc.Mounts, home); !ok {
-		t.Fatal("prime must seed the home volume at its final target")
-	}
-}
-
-func TestContainerRequestSetupUsesSetupPathAndInit(t *testing.T) {
+func TestContainerRequestMultiMountsSetupAndFinal(t *testing.T) {
 	inst, _ := dockerInstance(t, nil)
 	home := inst.HomeDir()
 	m := mount.Entry{
@@ -150,84 +131,23 @@ func TestContainerRequestSetupUsesSetupPathAndInit(t *testing.T) {
 		Target:    filepath.Join(home, ".config", "opencode"),
 		SetupPath: filepath.Join(layout.Root, "mounts", "opencode-config"),
 	}
-	argv := []string{inst.TobyBinaryPath(), "sandbox", "manager"}
-	req := inst.containerRequest(RunSpec{Argv: argv, Env: environ.Environment{"HOME": home}, Mounts: []mount.Entry{m}}, phaseSetup, engine.DaemonLocalUnix)
-
-	if !slices.Equal(req.Cmd, argv) {
-		t.Fatalf("cmd = %#v", req.Cmd)
-	}
-	if cfg := applyConfig(req); cfg.WorkingDir != "/" {
-		t.Fatalf("setup workdir = %q", cfg.WorkingDir)
-	}
+	req := inst.containerRequest(RunSpec{Env: environ.Environment{"HOME": home}, Mounts: []mount.Entry{m}})
 	hc := applyHostConfig(req)
-	if hc.Init == nil || !*hc.Init {
-		t.Fatal("setup should request an init process")
-	}
 	if v, ok := findMount(hc.Mounts, m.SetupPath); !ok || v.Source != m.Volume {
-		t.Fatalf("setup should mount the provider volume at its setup path: %#v ok=%v", v, ok)
+		t.Fatalf("volume must be mounted at its setup path: %#v ok=%v", v, ok)
 	}
-	if _, ok := findMount(hc.Mounts, m.Target); ok {
-		t.Fatal("setup must not mount the final target")
-	}
-}
-
-func TestRewriteControlHost(t *testing.T) {
-	cases := []struct {
-		class engine.DaemonClass
-		want  string
-	}{
-		{engine.DaemonLocalUnix, "127.0.0.1:1234"},
-		{engine.DaemonDesktop, "host.docker.internal:1234"},
-		{engine.DaemonRemote, "host.testcontainers.internal:1234"},
-	}
-	for _, c := range cases {
-		if got := rewriteControlHost("127.0.0.1:1234", c.class); got != c.want {
-			t.Fatalf("class %d => %q, want %q", c.class, got, c.want)
-		}
+	if v, ok := findMount(hc.Mounts, m.Target); !ok || v.Source != m.Volume {
+		t.Fatalf("volume must also be mounted at its final target: %#v ok=%v", v, ok)
 	}
 }
 
-func TestContainerRequestRemoteUsesHostAccessTunnel(t *testing.T) {
+func TestContainerRequestDebugNamesContainer(t *testing.T) {
 	inst, _ := dockerInstance(t, nil)
-	env := environ.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "HOME": inst.HomeDir()}
-	req := inst.containerRequest(RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(inst.HomeDir())}, phaseRun, engine.DaemonRemote)
-
-	if !slices.Equal(req.HostAccessPorts, []int{1234}) {
-		t.Fatalf("host access ports = %#v", req.HostAccessPorts)
+	spec := RunSpec{Env: environ.Environment{}, Mounts: dockerHomeMount(inst.HomeDir()), Debug: true}
+	if got := inst.containerRequest(spec).Name; got != inst.containerName+"-run" {
+		t.Fatalf("debug name = %q, want %q", got, inst.containerName+"-run")
 	}
-	if req.Env["TOBY_CONTROL_HOST"] != "host.testcontainers.internal:1234" {
-		t.Fatalf("control host = %q", req.Env["TOBY_CONTROL_HOST"])
-	}
-	if hc := applyHostConfig(req); hc.NetworkMode == "host" {
-		t.Fatal("remote daemon must not use host networking")
-	}
-}
-
-func TestContainerRequestDesktopUsesHostDockerInternal(t *testing.T) {
-	inst, _ := dockerInstance(t, nil)
-	env := environ.Environment{"TOBY_CONTROL_HOST": "127.0.0.1:1234", "HOME": inst.HomeDir()}
-	req := inst.containerRequest(RunSpec{Argv: []string{"true"}, Env: env, Mounts: dockerHomeMount(inst.HomeDir())}, phaseRun, engine.DaemonDesktop)
-
-	if req.Env["TOBY_CONTROL_HOST"] != "host.docker.internal:1234" {
-		t.Fatalf("control host = %q", req.Env["TOBY_CONTROL_HOST"])
-	}
-	if req.HostAccessPorts != nil {
-		t.Fatalf("desktop should not use host-access tunnel: %#v", req.HostAccessPorts)
-	}
-	if hc := applyHostConfig(req); hc.NetworkMode == "host" {
-		t.Fatal("desktop must not use host networking")
-	}
-}
-
-func TestContainerRequestDebugNamesContainers(t *testing.T) {
-	inst, _ := dockerInstance(t, nil)
-	spec := RunSpec{Argv: []string{"true"}, Env: environ.Environment{}, Mounts: dockerHomeMount(inst.HomeDir()), Debug: true}
-	for phase, suffix := range map[phaseKind]string{phasePrime: "-prime", phaseSetup: "-setup", phaseRun: "-run"} {
-		if got := inst.containerRequest(spec, phase, engine.DaemonLocalUnix).Name; got != inst.containerName+suffix {
-			t.Fatalf("%s name = %q, want %q", phase, got, inst.containerName+suffix)
-		}
-	}
-	if got := inst.containerRequest(RunSpec{Argv: []string{"true"}, Env: environ.Environment{}}, phaseRun, engine.DaemonLocalUnix).Name; got != "" {
+	if got := inst.containerRequest(RunSpec{Env: environ.Environment{}}).Name; got != "" {
 		t.Fatalf("non-debug name = %q, want empty", got)
 	}
 }
@@ -255,16 +175,5 @@ func TestMountHelpers(t *testing.T) {
 	v := volumeMount("vol", "/target")
 	if v.Type != dmount.TypeVolume || v.Source != "vol" || v.Target != "/target" || v.ReadOnly {
 		t.Fatalf("volumeMount = %#v", v)
-	}
-}
-
-func TestControlEnvIncludesTermAndControlVars(t *testing.T) {
-	t.Setenv("TERM", "xterm-256color")
-	env := controlEnv(environ.Environment{"HOME": "/h", "TOBY_CONTROL_HOST": "127.0.0.1:9", "TOBY_CONTROL_TOKEN": "tok"}, engine.DaemonLocalUnix)
-	if env["TERM"] != "xterm-256color" {
-		t.Fatalf("TERM = %q", env["TERM"])
-	}
-	if env["HOME"] != "/h" || env["TOBY_CONTROL_TOKEN"] != "tok" {
-		t.Fatalf("controlEnv = %#v", env)
 	}
 }

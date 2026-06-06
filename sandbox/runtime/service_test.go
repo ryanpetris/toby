@@ -1,37 +1,12 @@
 package runtime
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/control/methods/command"
 )
-
-func TestCommandExitResultReturnsExitCodeErrors(t *testing.T) {
-	code, err := commandExitResult(command.ExitParams{ExitCode: 7})
-	var coded interface{ ExitCode() int }
-	if code != 7 || !errors.As(err, &coded) || coded.ExitCode() != 7 || err.Error() != "" {
-		t.Fatalf("code = %d, err = %#v, coded = %#v", code, err, coded)
-	}
-}
-
-func TestCommandExitResultReturnsCommandErrors(t *testing.T) {
-	code, err := commandExitResult(command.ExitParams{ExitCode: 127, Error: "not found"})
-	var coded interface{ ExitCode() int }
-	if code != 127 || !errors.As(err, &coded) || coded.ExitCode() != 127 || err.Error() != "not found" {
-		t.Fatalf("code = %d, err = %#v, coded = %#v", code, err, coded)
-	}
-}
-
-func TestCommandExitResultSuccess(t *testing.T) {
-	code, err := commandExitResult(command.ExitParams{})
-	if code != 0 || err != nil {
-		t.Fatalf("code = %d, err = %v", code, err)
-	}
-}
 
 func TestServiceTracksBindsUntilSandboxStarts(t *testing.T) {
 	svc := newService(mount.New())

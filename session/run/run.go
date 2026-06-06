@@ -1,19 +1,17 @@
 // Package run executes one Toby launch end to end: it builds the sandbox, stands
-// up the host control endpoint and Toby MCP proxy, starts the sandbox manager,
-// runs the requested tool, and tears everything down. Run is the entry point; the
-// app package's session runner supplies the resolved Params and invokes it.
+// up the host reverse proxy and Toby MCP server, starts the sandbox manager over a
+// stdio gRPC link, runs the requested tool, and tears everything down. Run is the
+// entry point; the app package's session runner supplies the resolved Params and
+// invokes it.
 package run
 
 import (
 	"context"
 	"fmt"
-	"net/http"
 
-	"petris.dev/toby/control"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/lifecycle"
 	"petris.dev/toby/platform/environ"
-	sandboxbinary "petris.dev/toby/sandbox/binary"
 	sandbox "petris.dev/toby/sandbox/runtime"
 	"petris.dev/toby/tools"
 )
@@ -68,29 +66,17 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		return fmt.Errorf("git capability is not configured")
 	}
 	params.Git.SetResolver(params.SandboxService)
-	endpoint := sbx.HostControlEndpoint()
-	routes := []control.Route{
-		{Pattern: "/control", Auth: true, Handler: control.WebSocketHandler(manager.HandleConnection)},
-		{Pattern: "/binary", Auth: true, Handler: binaryRoute(sandboxbinary.SourceBytes)},
-	}
-	if manager.HTTPProxy != nil {
-		routes = append(routes, control.Route{Pattern: "/proxy/*", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			manager.HTTPProxy.HandleHTTP(r.Context(), w, r)
-		})})
-	}
-	server, err := control.ListenEndpoint(ctx, endpoint, routes...)
-	if err != nil {
-		return err
-	}
-	defer server.Close()
-	sbx.SetupControlEndpoint(env, server.Endpoint)
-	mcpURL, err := registerTobyMCPProxy(params, manager, env[control.EnvControlHost], opts, activeTools, primary)
+
+	// Proxied URLs point at the in-container proxy listener (a fixed loopback
+	// address); the manager tunnels each connection to the host reverse proxy over
+	// the gRPC stdio link.
+	mcpURL, err := registerTobyMCPProxy(params, manager, opts, activeTools, primary)
 	if err != nil {
 		return err
 	}
 	params.SandboxService.SetTobyMCPURL(mcpURL)
 	if params.MCPProxy != nil {
-		if err := params.MCPProxy.Configure(ctx, env[control.EnvControlHost], params.TobyConfig, mcpDefaults(params.TobyConfig)); err != nil {
+		if err := params.MCPProxy.Configure(ctx, params.TobyConfig, mcpDefaults(params.TobyConfig)); err != nil {
 			return err
 		}
 		params.MCPProxy.StartAll(ctx)
@@ -99,30 +85,6 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 
 	mounts := params.SandboxService.RuntimeMounts()
 	binds := params.SandboxService.StartBinds()
-	runSpec := sandbox.RunSpec{Argv: sandboxManagerArgv(sbx), Env: env, Binds: binds, Mounts: mounts, Debug: params.TobyConfig.DebugEnabled()}
-	primeCode, primeErr := sbx.Prime(ctx, runSpec)
-	if primeErr != nil {
-		return primeErr
-	}
-	if primeCode != 0 {
-		return exitcode.Code(primeCode)
-	}
-	if err := runMountInit(ctx, params, manager, sbx, runSpec); err != nil {
-		return err
-	}
-	sandboxClient, sandboxManagerExit, err := startRunSandboxManager(ctx, params, manager, sbx, opts, runSpec, toolset, lctx)
-	if err != nil {
-		return err
-	}
-
-	var runErr error
-	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInitSandbox, toolset, lctx, false); err != nil {
-		runErr = err
-	} else {
-		runErr = launchTool(ctx, params, toolset, opts, extra, lctx)
-	}
-	if termErr := terminateSandboxManager(ctx, sandboxClient, sandboxManagerExit); runErr == nil && termErr != nil {
-		return termErr
-	}
-	return runErr
+	runSpec := sandbox.RunSpec{Env: env, Binds: binds, Mounts: mounts, Debug: params.TobyConfig.DebugEnabled()}
+	return startRunSandbox(ctx, params, manager, sbx, env, runSpec, toolset, lctx, opts, extra)
 }

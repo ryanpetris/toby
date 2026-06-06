@@ -1,35 +1,30 @@
 package runtime
 
-// Service implements the tool-facing sandbox.Service: before the sandbox starts
-// it accumulates mounts and binds; after Connect it brokers file, env, and
-// command operations over the control channel to the live container, tracking
-// per-command and manager-process exits.
+// Service implements the tool-facing sandbox.Service. Before the sandbox starts it
+// accumulates mounts and binds; after BindRun it brokers file, env, and command
+// operations against the live container — files via docker cp, commands via docker
+// exec — with the environment held here on the host and injected into each exec.
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/control"
-	"petris.dev/toby/control/host"
-	"petris.dev/toby/control/methods/command"
-	"petris.dev/toby/diagnostic/exitcode"
+	"petris.dev/toby/control/tunnel"
 	"petris.dev/toby/platform/environ"
 	sandboxapi "petris.dev/toby/sandbox"
 )
 
 type Service struct {
-	mu          sync.Mutex
-	instance    Instance
-	client      *host.SandboxClient
-	exits       *CommandExits
-	managerExit *ManagerExit
-	env         environ.Environment
-	mcpURL      string
-	mounts      *mount.Service
-	started     bool
+	mu       sync.Mutex
+	instance Instance
+	env      environ.Environment
+	mcpURL   string
+	mounts   *mount.Service
+	started  bool
 }
 
 type SandboxService = Service
@@ -50,9 +45,6 @@ var _ sandboxapi.Service = (*Service)(nil)
 func (s *Service) Prepare(instance Instance) {
 	s.mu.Lock()
 	s.instance = instance
-	s.client = nil
-	s.exits = nil
-	s.managerExit = nil
 	s.env = nil
 	s.mcpURL = ""
 	s.started = false
@@ -166,26 +158,36 @@ func (s *Service) MountSetup(ctx context.Context) error {
 	return mounts.RunSetup(ctx, mountRunner{s})
 }
 
-func (s *Service) Connect(ctx context.Context, instance Instance, client *host.SandboxClient, exits *CommandExits, managerExit *ManagerExit) error {
-	if client == nil {
-		return fmt.Errorf("sandbox client is not configured")
+// BindRun marks the service ready against the started container and seeds the
+// host-held environment from the container's base env plus any extra overrides.
+func (s *Service) BindRun(ctx context.Context, instance Instance, extra environ.Environment) error {
+	if instance == nil {
+		return fmt.Errorf("sandbox instance is not configured")
 	}
-	env, err := client.EnvironmentGet(ctx)
+	base, err := instance.RunContainerEnv(ctx)
 	if err != nil {
 		return err
 	}
-	if exits == nil {
-		exits = NewCommandExits()
+	env := environ.Environment{}
+	for _, kv := range base {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	for k, v := range extra {
+		env[k] = v
 	}
 	s.mu.Lock()
 	s.instance = instance
-	s.client = client
-	s.exits = exits
-	s.managerExit = managerExit
-	s.env = environ.Environment(env).Clone()
+	s.env = env
 	s.started = true
 	s.mu.Unlock()
 	return nil
+}
+
+// ProxyBaseURL returns the in-sandbox proxied base URL for a registered target id.
+func (s *Service) ProxyBaseURL(id string) string {
+	return tunnel.ProxyBaseURL(id)
 }
 
 func (s *Service) SetTobyMCPURL(url string) {
@@ -227,16 +229,12 @@ func (s *Service) Environment(name string) (string, bool) {
 	return value, ok
 }
 
-func (s *Service) SetEnvironment(ctx context.Context, name, value string) error {
+func (s *Service) SetEnvironment(_ context.Context, name, value string) error {
 	name = strings.TrimSpace(name)
 	if name == "" || strings.ContainsAny(name, "=\x00") || strings.ContainsRune(value, 0) {
 		return fmt.Errorf("invalid environment variable")
 	}
-	client, _, _, err := s.connected()
-	if err != nil {
-		return err
-	}
-	if err := client.EnvironmentSet(ctx, name, value); err != nil {
+	if _, err := s.ready(); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -283,186 +281,96 @@ func (s *Service) setEnvironmentPathEntry(ctx context.Context, name, value, sepa
 }
 
 func (s *Service) AddFile(ctx context.Context, path string, data []byte, mode uint32) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileCreate(ctx, path, data, mode)
+	return inst.WriteFile(ctx, path, data, mode, 0, 0)
 }
 
 func (s *Service) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileCreateOwned(ctx, path, data, mode, uid, gid)
+	return inst.WriteFile(ctx, path, data, mode, uid, gid)
 }
 
 func (s *Service) DeletePath(ctx context.Context, path string, recursive bool) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileDelete(ctx, path, recursive)
+	return inst.DeletePath(ctx, path, recursive)
 }
 
 func (s *Service) Mkdir(ctx context.Context, path string, mode uint32) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileMkdir(ctx, path, mode)
+	return inst.MakeDir(ctx, path, mode, 0, 0)
 }
 
 func (s *Service) MkdirOwned(ctx context.Context, path string, mode uint32, uid, gid int) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileMkdirOwned(ctx, path, mode, uid, gid)
+	return inst.MakeDir(ctx, path, mode, uid, gid)
 }
 
 func (s *Service) Symlink(ctx context.Context, path, target string) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileSymlink(ctx, path, target)
+	return inst.MakeSymlink(ctx, path, target, 0, 0)
 }
 
 func (s *Service) SymlinkOwned(ctx context.Context, path, target string, uid, gid int) error {
-	client, _, _, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return err
 	}
-	return client.FileSymlinkOwned(ctx, path, target, uid, gid)
+	return inst.MakeSymlink(ctx, path, target, uid, gid)
 }
 
 func (s *Service) Exec(ctx context.Context, argv []string, options sandboxapi.ExecOptions) (int, error) {
-	client, exits, managerExit, err := s.connected()
+	inst, err := s.ready()
 	if err != nil {
 		return 1, err
 	}
-	commandID, err := control.NewCommandID()
-	if err != nil {
-		return 1, err
-	}
-	exitCh := exits.watch(commandID)
-	uid := control.HostUser
-	gid := control.HostGroup
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	if options.Root {
-		uid = 0
-		gid = 0
+		user = "0:0"
 	}
-	if err := client.CommandRun(ctx, command.RunParams{CommandID: commandID, Argv: argv, Foreground: options.Foreground, HideOutput: options.HideOutput, UID: uid, GID: gid}); err != nil {
-		exits.unwatch(commandID)
-		return 1, err
-	}
-	var managerDone <-chan struct{}
-	if managerExit != nil {
-		managerDone = managerExit.Done()
-	}
-	select {
-	case result := <-exitCh:
-		return commandExitResult(result)
-	case <-managerDone:
-		result := managerExit.Result()
-		if result.Err != nil {
-			return 1, result.Err
-		}
-		return result.ExitCode, fmt.Errorf("sandbox manager exited before command completed")
-	case <-ctx.Done():
-		exits.unwatch(commandID)
-		return 130, ctx.Err()
-	}
+	return inst.Exec(ctx, ExecSpec{
+		Argv:        argv,
+		Env:         s.envSlice(),
+		User:        user,
+		Interactive: options.Foreground,
+		HideOutput:  options.HideOutput,
+	})
 }
 
-func commandExitResult(result command.ExitParams) (int, error) {
-	if result.Error != "" {
-		code := result.ExitCode
-		if code == 0 {
-			code = 1
-		}
-		return code, exitcode.New(code, "%s", result.Error)
-	}
-	if result.ExitCode != 0 {
-		return result.ExitCode, exitcode.Code(result.ExitCode)
-	}
-	return result.ExitCode, nil
-}
-
-func (s *Service) connected() (*host.SandboxClient, *CommandExits, *ManagerExit, error) {
+func (s *Service) ready() (Instance, error) {
 	s.mu.Lock()
-	client := s.client
-	exits := s.exits
-	managerExit := s.managerExit
+	inst := s.instance
+	started := s.started
 	s.mu.Unlock()
-	if client == nil || exits == nil {
-		return nil, nil, nil, fmt.Errorf("sandbox is not ready")
+	if inst == nil || !started {
+		return nil, fmt.Errorf("sandbox is not ready")
 	}
-	return client, exits, managerExit, nil
+	return inst, nil
 }
 
-type CommandExits struct {
-	mu      sync.Mutex
-	waiting map[string]chan command.ExitParams
-}
-
-func NewCommandExits() *CommandExits {
-	return &CommandExits{waiting: map[string]chan command.ExitParams{}}
-}
-
-func (e *CommandExits) watch(commandID string) chan command.ExitParams {
-	ch := make(chan command.ExitParams, 1)
-	e.mu.Lock()
-	e.waiting[commandID] = ch
-	e.mu.Unlock()
-	return ch
-}
-
-func (e *CommandExits) unwatch(commandID string) {
-	e.mu.Lock()
-	delete(e.waiting, commandID)
-	e.mu.Unlock()
-}
-
-func (e *CommandExits) Complete(params command.ExitParams) {
-	e.mu.Lock()
-	ch := e.waiting[params.CommandID]
-	delete(e.waiting, params.CommandID)
-	e.mu.Unlock()
-	if ch != nil {
-		ch <- params
-	}
-}
-
-type ProcessResult struct {
-	ExitCode int
-	Err      error
-}
-
-type ManagerExit struct {
-	done chan struct{}
-	once sync.Once
-	mu   sync.Mutex
-	res  ProcessResult
-}
-
-func NewManagerExit() *ManagerExit {
-	return &ManagerExit{done: make(chan struct{})}
-}
-
-func (s *ManagerExit) Set(result ProcessResult) {
-	s.mu.Lock()
-	s.res = result
-	s.mu.Unlock()
-	s.once.Do(func() { close(s.done) })
-}
-
-func (s *ManagerExit) Done() <-chan struct{} { return s.done }
-
-func (s *ManagerExit) Result() ProcessResult {
+func (s *Service) envSlice() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.res
+	out := make([]string, 0, len(s.env))
+	for k, v := range s.env {
+		out = append(out, k+"="+v)
+	}
+	return out
 }

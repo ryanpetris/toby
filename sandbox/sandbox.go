@@ -40,6 +40,9 @@ type Service interface {
 	SymlinkOwned(context.Context, string, string, int, int) error
 	Exec(context.Context, []string, ExecOptions) (int, error)
 	TobyMCPURL() string
+	// ProxyBaseURL returns the in-sandbox proxied base URL for a registered target
+	// id (http://<in-container proxy>/proxy/<id>).
+	ProxyBaseURL(string) string
 }
 
 // Paths reports the well-known directories inside a running sandbox.

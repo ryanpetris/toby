@@ -23,6 +23,8 @@ type Sandbox struct {
 	Symlinks map[string]string
 	ExecFunc func(context.Context, []string, sandbox.ExecOptions) (int, error)
 	MCPURL   string
+	// ProxyAddr is the host:port used to build ProxyBaseURL; defaults to 127.0.0.1:0.
+	ProxyAddr string
 }
 
 func NewSandbox(string) *Sandbox {
@@ -142,3 +144,11 @@ func (s *Sandbox) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpti
 	return 0, nil
 }
 func (s *Sandbox) TobyMCPURL() string { return s.MCPURL }
+
+func (s *Sandbox) ProxyBaseURL(id string) string {
+	addr := s.ProxyAddr
+	if addr == "" {
+		addr = "127.0.0.1:0"
+	}
+	return "http://" + addr + "/proxy/" + id
+}

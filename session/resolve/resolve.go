@@ -22,7 +22,6 @@ import (
 	configfile "petris.dev/toby/config/file"
 	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/control"
 	"petris.dev/toby/control/httpproxy"
 	"petris.dev/toby/control/mcpproxy"
 	"petris.dev/toby/diagnostic/warning"
@@ -97,12 +96,11 @@ func (r *Resolver) run(ctx context.Context, lctx lifecycle.Context) error {
 }
 
 func (r *Resolver) resolve(ctx context.Context, lctx lifecycle.Context) (sessionconfig.Config, error) {
-	controlHost, _ := r.sandbox.Environment(control.EnvControlHost)
 	mcpServers, err := r.resolveMCP()
 	if err != nil {
 		return sessionconfig.Config{}, err
 	}
-	resolvedProviders, err := r.resolveProviders(ctx, controlHost, lctx)
+	resolvedProviders, err := r.resolveProviders(ctx, lctx)
 	if err != nil {
 		return sessionconfig.Config{}, err
 	}
@@ -150,7 +148,7 @@ func (r *Resolver) resolveMCP() ([]sessionconfig.MCPServer, error) {
 // proxy and resolves its models. Provider credentials (resolved headers) and the
 // real base URL stay on the host; tools receive only the proxied URL. A model
 // fetch failure warns and omits that provider, matching prior behavior.
-func (r *Resolver) resolveProviders(ctx context.Context, controlHost string, lctx lifecycle.Context) ([]sessionconfig.Provider, error) {
+func (r *Resolver) resolveProviders(ctx context.Context, lctx lifecycle.Context) ([]sessionconfig.Provider, error) {
 	configured := r.config.Providers()
 	if len(configured) == 0 {
 		return nil, nil
@@ -165,9 +163,6 @@ func (r *Resolver) resolveProviders(ctx context.Context, controlHost string, lct
 		provider := configured[id]
 		if provider.Type != appconfig.ProviderTypeAnthropic && provider.Type != appconfig.ProviderTypeOpenAI {
 			continue
-		}
-		if controlHost == "" {
-			return nil, fmt.Errorf("provider %q requires %s", id, control.EnvControlHost)
 		}
 		if r.proxy == nil {
 			return nil, fmt.Errorf("provider %q requires http proxy service", id)
@@ -184,7 +179,7 @@ func (r *Resolver) resolveProviders(ctx context.Context, controlHost string, lct
 			ID:      id,
 			Type:    provider.Type,
 			Name:    provider.Name,
-			BaseURL: control.Endpoint{Host: controlHost}.ProxyBaseURL(proxyID),
+			BaseURL: r.sandbox.ProxyBaseURL(proxyID),
 		}
 		if provider.HasModels() {
 			resolved.Models = configfile.CloneMap(provider.Models)

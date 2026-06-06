@@ -18,9 +18,9 @@ type targetedMount struct {
 	mount  dmount.Mount
 }
 
-// finalMounts builds the mount set for the Prime and Run containers: project
-// binds, explicit binds (skipping missing optional ones), and persistent volumes,
-// ordered stably by target.
+// finalMounts builds the mount set at the final targets: project binds, explicit
+// binds (skipping missing optional ones), and persistent volumes, ordered stably
+// by target.
 func (s *instance) finalMounts(binds []mount.Bind, volumes []mount.Entry) []dmount.Mount {
 	items := make([]targetedMount, 0, len(binds)+len(volumes)+1)
 	for _, project := range s.ProjectMounts() {
@@ -40,8 +40,9 @@ func (s *instance) finalMounts(binds []mount.Bind, volumes []mount.Entry) []dmou
 	return orderedMounts(items)
 }
 
-// setupMounts mounts volumes at their setup paths so the root Setup container can
-// initialize them (the default is a chown to the host user).
+// setupMounts mounts volumes at their isolated setup paths so the host can
+// initialize them as root (the default is a chown to the host user) without
+// touching the binds layered under their final targets.
 func (s *instance) setupMounts(volumes []mount.Entry) []dmount.Mount {
 	items := make([]targetedMount, 0, len(volumes))
 	for _, m := range volumes {

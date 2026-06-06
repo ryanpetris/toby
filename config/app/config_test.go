@@ -548,3 +548,5 @@ func (s *configFakeSandbox) Exec(context.Context, []string, sandboxapi.ExecOptio
 	return 0, nil
 }
 func (s *configFakeSandbox) TobyMCPURL() string { return "" }
+
+func (s *configFakeSandbox) ProxyBaseURL(id string) string { return "http://127.0.0.1:0/proxy/" + id }

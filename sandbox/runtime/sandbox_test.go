@@ -8,8 +8,6 @@ import (
 	"petris.dev/toby/config"
 	"petris.dev/toby/container/engine"
 	"petris.dev/toby/container/layout"
-	"petris.dev/toby/control"
-	"petris.dev/toby/platform/environ"
 	"petris.dev/toby/tools"
 )
 
@@ -213,30 +211,14 @@ func TestSandboxAndProjectNamesRejectSlashes(t *testing.T) {
 
 func TestBaseInstancePathAndEndpointHelpers(t *testing.T) {
 	instance := &BaseInstance{
-		label:              "demo",
-		controlToken:       "host-token",
-		sandboxControlHost: "host.docker.internal",
-		projects:           newProjectMounts([]Project{{Name: "app", HostPath: "/host/app"}}),
+		label:    "demo",
+		projects: newProjectMounts([]Project{{Name: "app", HostPath: "/host/app"}}),
 	}
 	if path, ok := instance.ProjectPath(" app "); !ok || path != filepath.Join(layout.Workspace, "app") {
 		t.Fatalf("ProjectPath = %q, %v", path, ok)
 	}
 	if instance.TobyBinaryPath() != filepath.Join(layout.Bin, "toby") {
 		t.Fatalf("runtime binary path = %q", instance.TobyBinaryPath())
-	}
-	if got := instance.sandboxHost("127.0.0.1:1234"); got != "host.docker.internal:1234" {
-		t.Fatalf("sandboxHost ipv4 = %q", got)
-	}
-	if got := instance.sandboxHost("[::1]:1234"); got != "host.docker.internal:1234" {
-		t.Fatalf("sandboxHost ipv6 = %q", got)
-	}
-	if got := instance.sandboxHost("10.0.0.1:1234"); got != "10.0.0.1:1234" {
-		t.Fatalf("sandboxHost external = %q", got)
-	}
-	env := environ.Environment{}
-	instance.SetupControlEndpoint(env, control.Endpoint{Host: "127.0.0.1:1234", Token: "token"})
-	if env[control.EnvControlHost] != "host.docker.internal:1234" || env[control.EnvControlToken] != "token" {
-		t.Fatalf("control env = %#v", env)
 	}
 	instance.workdir = "~/work"
 	if got := instance.ChdirDir(); got != filepath.Join(layout.Home, "work") {

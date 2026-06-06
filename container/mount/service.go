@@ -6,8 +6,8 @@
 // default plus optional per-resource overrides) and derives a stable volume name
 // (toby.<profile>.<type>.<name>.<purpose>). Volumes are persistent; binds carry an
 // absolute host path supplied by the caller. Each volume gets a setup path so the
-// requester can hook into the root Setup phase to initialize it (the default is a
-// chown to the host user).
+// requester can hook into root mount initialization to initialize it (the default
+// is a chown to the host user).
 //
 // It imports nothing from internal/...; toby-sandbox path layout lives in
 // container/layout.
@@ -175,7 +175,7 @@ func (s *Service) Binds() []Bind {
 	return append([]Bind(nil), s.binds...)
 }
 
-// RunSetup initializes every volume's setup path during the Setup phase. Mounts
+// RunSetup initializes every volume at its setup path. Mounts
 // with no custom SetupFunc are chowned to the host user in a single batch; mounts
 // with a custom hook run individually.
 func (s *Service) RunSetup(ctx context.Context, run Executor) error {

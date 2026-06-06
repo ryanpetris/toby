@@ -1,128 +1,90 @@
 package run
 
-// Driving the in-sandbox Toby manager process: sandboxManagerArgv builds its
-// bootstrap argv, runMountInit runs the mount-setup pass and startRunSandboxManager
-// the launch pass (each waiting on readiness vs. early exit), and the terminate/
-// wait helpers shut the manager down and surface its exit code.
+// Driving the single sandbox container: startRunSandbox creates and starts it
+// (binary delivered via docker cp), serves the Tunnel gRPC over its stdio link,
+// waits for the in-sandbox manager's Ready, then runs mount-init, sandbox
+// configuration, and the requested tool — all via docker exec/cp — and tears the
+// container down on return.
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"petris.dev/toby/control/host"
-	"petris.dev/toby/diagnostic/exitcode"
+	"petris.dev/toby/control/stdio"
+	"petris.dev/toby/control/tunnel"
 	"petris.dev/toby/lifecycle"
+	"petris.dev/toby/platform/environ"
 	sandbox "petris.dev/toby/sandbox/runtime"
 	"petris.dev/toby/tools"
+
+	"google.golang.org/grpc"
 )
 
-type sandboxManagerReady struct {
-	client *host.SandboxClient
-	err    error
-}
+// readyTimeout bounds how long we wait for the in-sandbox manager to bind its
+// proxy listener and report Ready after the container starts.
+const readyTimeout = 30 * time.Second
 
-func sandboxManagerArgv(sbx sandbox.Instance) []string {
-	return []string{
-		"/bin/sh", "-c",
-		`set -e; mkdir -p "$1"; curl -fsSL -H "Authorization: Bearer ${TOBY_CONTROL_TOKEN:?}" "http://${TOBY_CONTROL_HOST:?}/binary" -o "$2"; chmod 755 "$2"; exec "$2" sandbox manager`,
-		"toby-startup", sbx.TobyBinDir(), sbx.TobyBinaryPath(),
+func startRunSandbox(ctx context.Context, params Params, manager *host.Service, sbx sandbox.Instance, env environ.Environment, runSpec sandbox.RunSpec, toolset *tools.Toolset, lctx lifecycle.Context, opts *tools.Options, extra []string) error {
+	if manager == nil || manager.HTTPProxy == nil {
+		return fmt.Errorf("http proxy service is not configured")
 	}
-}
+	debug := params.TobyConfig.DebugEnabled()
 
-func runMountInit(ctx context.Context, params Params, manager *host.Service, sbx sandbox.Instance, spec sandbox.RunSpec) error {
-	exits := sandbox.NewCommandExits()
-	ready := make(chan sandboxManagerReady, 1)
-	managerExit := sandbox.NewManagerExit()
-	manager.CommandExit = exits.Complete
-	manager.ContextInit = func(ctx context.Context, client *host.SandboxClient) error {
-		if err := params.SandboxService.Connect(ctx, sbx, client, exits, managerExit); err != nil {
-			return err
+	conn, err := sbx.RunStart(ctx, runSpec)
+	if err != nil {
+		return err
+	}
+	defer sbx.RunStop(ctx, debug)
+	defer conn.Close()
+
+	// Serve the Tunnel gRPC service over the container's stdio link. The manager is
+	// the client; it calls Ready once its local proxy listener is bound.
+	ready := make(chan string, 1)
+	tunnelSrv := tunnel.NewServer(manager.HTTPProxy, func(addr string) {
+		select {
+		case ready <- addr:
+		default:
 		}
-		return params.SandboxService.MountSetup(ctx)
-	}
-	manager.SandboxReady = func(client *host.SandboxClient, err error) {
-		ready <- sandboxManagerReady{client: client, err: err}
-	}
+	})
+	grpcSrv := grpc.NewServer()
+	tunnel.RegisterTunnelServer(grpcSrv, tunnelSrv)
+	serveDone := make(chan struct{})
 	go func() {
-		code, err := sbx.Setup(ctx, spec)
-		managerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
+		defer close(serveDone)
+		_ = grpcSrv.Serve(stdio.NewListener(conn))
 	}()
+	defer func() {
+		grpcSrv.Stop()
+		_ = tunnelSrv.Close()
+	}()
+
 	select {
-	case result := <-ready:
-		if result.err != nil {
-			return waitSandboxManagerAfterError(ctx, managerExit, result.client, result.err)
-		}
-		return terminateSandboxManager(ctx, result.client, managerExit)
-	case <-managerExit.Done():
-		result := managerExit.Result()
-		if result.Err != nil {
-			return result.Err
-		}
-		return exitcode.New(result.ExitCode, "sandbox setup manager exited before context init")
+	case <-ready:
+	case <-serveDone:
+		return fmt.Errorf("sandbox manager exited before reporting ready")
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-time.After(readyTimeout):
+		return fmt.Errorf("timed out waiting for sandbox manager to start")
 	}
-}
 
-func startRunSandboxManager(ctx context.Context, params Params, manager *host.Service, sbx sandbox.Instance, opts *tools.Options, spec sandbox.RunSpec, toolset *tools.Toolset, lctx lifecycle.Context) (*host.SandboxClient, *sandbox.ManagerExit, error) {
-	exits := sandbox.NewCommandExits()
-	ready := make(chan sandboxManagerReady, 1)
-	managerExit := sandbox.NewManagerExit()
-	manager.CommandExit = exits.Complete
-	manager.ContextInit = func(ctx context.Context, client *host.SandboxClient) error {
-		if err := params.SandboxService.Connect(ctx, sbx, client, exits, managerExit); err != nil {
-			return err
-		}
-		if err := params.Runner.RunPhase(ctx, lifecycle.PhaseConfigureSandbox, toolset, lctx, false); err != nil {
-			return err
-		}
-		return initSandboxContext(ctx, params, toolset, lctx)
+	if err := params.SandboxService.BindRun(ctx, sbx, env); err != nil {
+		return err
 	}
-	manager.SandboxReady = func(client *host.SandboxClient, err error) {
-		ready <- sandboxManagerReady{client: client, err: err}
+	// Mount-init: chown the provider volumes at their setup paths (root docker exec).
+	if err := params.SandboxService.MountSetup(ctx); err != nil {
+		return err
 	}
-	go func() {
-		code, err := sbx.Run(ctx, spec)
-		managerExit.Set(sandbox.ProcessResult{ExitCode: code, Err: err})
-	}()
-	select {
-	case result := <-ready:
-		if result.err != nil {
-			return nil, nil, waitSandboxManagerAfterError(ctx, managerExit, result.client, result.err)
-		}
-		return result.client, managerExit, nil
-	case <-managerExit.Done():
-		result := managerExit.Result()
-		if result.Err != nil {
-			return nil, nil, result.Err
-		}
-		return nil, nil, exitcode.New(result.ExitCode, "sandbox manager exited before context init")
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseConfigureSandbox, toolset, lctx, false); err != nil {
+		return err
 	}
-}
-
-func waitSandboxManagerAfterError(ctx context.Context, exit *sandbox.ManagerExit, client *host.SandboxClient, err error) error {
-	_ = terminateSandboxManager(ctx, client, exit)
-	return err
-}
-
-func terminateSandboxManager(ctx context.Context, client *host.SandboxClient, exit *sandbox.ManagerExit) error {
-	if client != nil {
-		if err := client.Terminate(ctx); err != nil {
-			return err
-		}
+	if err := initSandboxContext(ctx, params, toolset, lctx); err != nil {
+		return err
 	}
-	select {
-	case <-exit.Done():
-		result := exit.Result()
-		if result.Err != nil {
-			return result.Err
-		}
-		if result.ExitCode != 0 {
-			return exitcode.Code(result.ExitCode)
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInitSandbox, toolset, lctx, false); err != nil {
+		return err
 	}
+	return launchTool(ctx, params, toolset, opts, extra, lctx)
 }

@@ -1,8 +1,8 @@
 package gitservice
 
-// The default GitClient: forwards each Git tool call to the host control endpoint
-// as an encoded git method request, decodes the control response, and surfaces the
-// host Git result (so commits are signed and use the host's credentials).
+// The default GitClient: forwards each Git tool call to the host Git capability
+// as an encoded request, decodes the response, and surfaces the host Git result
+// (so commits are signed and use the host's credentials).
 
 import (
 	"context"

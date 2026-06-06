@@ -1,15 +1,13 @@
 // Package runtime is the host-side sandbox runtime: it turns a launch's
 // tools.Options into a run Spec (resolving and validating projects), constructs
-// the Docker-backed Instance that drives the container phases, and implements
-// the tool-facing sandbox.Service by brokering filesystem/env/command
-// operations over the control channel. Docker (via the Docker Engine API, which
-// also serves Podman through DOCKER_HOST) is the only backend; there is no
+// the Docker-backed Instance that drives the container, and implements the
+// tool-facing sandbox.Service by brokering filesystem/env/command operations
+// through the Docker API (docker exec/cp). Docker (via the Docker Engine API,
+// which also serves Podman through DOCKER_HOST) is the only backend; there is no
 // runtime selection.
 package runtime
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	pathpkg "path"
@@ -207,14 +205,6 @@ func (f Factory) projectName(hostPath string) (string, error) {
 		return "", err
 	}
 	return name, nil
-}
-
-func newControlToken() (string, error) {
-	var data [32]byte
-	if _, err := rand.Read(data[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(data[:]), nil
 }
 
 func validateRelativeName(label, value string) error {

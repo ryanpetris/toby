@@ -1,6 +1,6 @@
 package host
 
-// fx wiring for the host control endpoint and its method capabilities.
+// fx wiring for the host reverse proxy and its method capabilities.
 
 import (
 	"petris.dev/toby/control/httpproxy"

@@ -31,12 +31,13 @@ The sandbox runs in a container under `/toby`: `/toby/home` is `$HOME`,
 `/toby/workspace` contains mounted projects, `/toby/bin` contains the helper
 binary, and `/toby/context` contains generated configuration and instructions.
 Toby does not construct startup environment variables from host values. It sets
-calculated `HOME` for the sandbox paths, passes host `TERM` to the container
-when it is set, and otherwise lets the container supply the sandbox environment.
+calculated `HOME` for the sandbox paths and `TOBY_SANDBOX=1` for the manager,
+passes host `TERM` to the container when it is set, and otherwise lets the
+container supply the sandbox environment. Per-command environment is injected
+into each `docker exec`.
 
-The sandbox bootstrap and manager also receive `TOBY_CONTROL_HOST=host:port` and
-`TOBY_CONTROL_TOKEN` to reach the host control server. Launched sandbox commands
-do not receive those control variables.
+The host reaches the sandbox manager over a gRPC link carried on the container's
+stdio, so there is no control host or token to pass in.
 
 Path expansion: a leading `~` or `~/` expands to the relevant home directory.
 Toby does not otherwise clean, canonicalize, or resolve symlinks during config
@@ -243,8 +244,8 @@ selects a different profile for one tool.
 - The **Docker** tool is the exception: it bind-mounts `/var/run/docker.sock` and
   the `$HOME`-based `~/.docker` instead of using a managed volume.
 
-Each volume gets a private setup path so the Setup phase can initialize it as
-root (by default, `chown` to the host user). Synthetic Toby config is always
+Each volume gets a private setup path so the host can initialize it as root after
+the container starts (by default, `chown` to the host user). Synthetic Toby config is always
 generated.
 
 ## Warnings

@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"petris.dev/toby/config/app"
-	"petris.dev/toby/control"
 	"petris.dev/toby/control/httpproxy"
+	"petris.dev/toby/control/tunnel"
 
 	"go.uber.org/fx"
 )
@@ -57,15 +57,12 @@ func NewService(params ServiceParams) (*Service, error) {
 	return &Service{proxy: params.Proxy, runner: params.Runner, entries: map[string]*Entry{}}, nil
 }
 
-func (s *Service) Configure(ctx context.Context, controlHost string, cfg *appconfig.Service, defaults Defaults) error {
+func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, defaults Defaults) error {
 	if s == nil {
 		return fmt.Errorf("mcp proxy service is not configured")
 	}
 	if s.proxy == nil {
 		return fmt.Errorf("http proxy service is not configured")
-	}
-	if controlHost == "" {
-		return fmt.Errorf("%s is required", control.EnvControlHost)
 	}
 	servers := map[string]appconfig.MCPServer{}
 	if cfg != nil {
@@ -80,7 +77,7 @@ func (s *Service) Configure(ctx context.Context, controlHost string, cfg *appcon
 	sort.Strings(names)
 	entries := make(map[string]*Entry, len(names))
 	for _, name := range names {
-		entry, err := s.configureEntry(ctx, controlHost, name, servers[name], defaults)
+		entry, err := s.configureEntry(ctx, name, servers[name], defaults)
 		if err != nil {
 			return err
 		}
@@ -92,7 +89,7 @@ func (s *Service) Configure(ctx context.Context, controlHost string, cfg *appcon
 	return nil
 }
 
-func (s *Service) configureEntry(ctx context.Context, controlHost, name string, server appconfig.MCPServer, defaults Defaults) (*Entry, error) {
+func (s *Service) configureEntry(ctx context.Context, name string, server appconfig.MCPServer, defaults Defaults) (*Entry, error) {
 	if server.Remote() {
 		headers, err := server.Headers()
 		if err != nil {
@@ -102,7 +99,7 @@ func (s *Service) configureEntry(ctx context.Context, controlHost, name string, 
 		if err != nil {
 			return nil, fmt.Errorf("mcp.%s: %w", name, err)
 		}
-		return &Entry{Name: name, URL: control.Endpoint{Host: controlHost}.ProxyBaseURL(id), Server: server, Remote: true, Status: StatusRunning, UpdatedAt: time.Now()}, nil
+		return &Entry{Name: name, URL: tunnel.ProxyBaseURL(id), Server: server, Remote: true, Status: StatusRunning, UpdatedAt: time.Now()}, nil
 	}
 	if !server.Local() {
 		return nil, fmt.Errorf("mcp.%s command or url is required", name)
@@ -120,7 +117,7 @@ func (s *Service) configureEntry(ctx context.Context, controlHost, name string, 
 			return nil, fmt.Errorf("mcp.%s: %w", name, err)
 		}
 		entry.Bridge = bridge
-		entry.URL = control.Endpoint{Host: controlHost}.ProxyBaseURL(id)
+		entry.URL = tunnel.ProxyBaseURL(id)
 	case TransportHTTP:
 		baseURL, spec, err := s.runner.PrepareHTTP(ctx, spec)
 		if err != nil {
@@ -131,7 +128,7 @@ func (s *Service) configureEntry(ctx context.Context, controlHost, name string, 
 			return nil, fmt.Errorf("mcp.%s: %w", name, err)
 		}
 		entry.Spec = spec
-		entry.URL = control.Endpoint{Host: controlHost}.ProxyBaseURL(id)
+		entry.URL = tunnel.ProxyBaseURL(id)
 	default:
 		return nil, fmt.Errorf("mcp.%s.transport is unsupported", name)
 	}

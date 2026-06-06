@@ -6,14 +6,16 @@ Orientation for agents (and humans) working on the Toby codebase.
 
 Toby is a single Go binary (`petris.dev/toby`, Go 1.26+) that runs development
 tools inside private-home Linux sandboxes. The same binary runs on the host
-(`toby <tool> <env>`) and inside the sandbox (`toby sandbox manager`), talking
-over JSON-RPC 2.0 on an authenticated WebSocket.
+(`toby <tool> <env>`) and inside the sandbox (`toby sandbox manager`). The host
+talks to the sandbox over a single gRPC connection carried on the container's
+stdio, and otherwise drives the sandbox through the Docker API (`docker exec`,
+`docker cp`).
 
 Start with [docs/architecture.md](docs/architecture.md) for the full picture.
 Other references: [docs/configuration.md](docs/configuration.md),
 [docs/tools.md](docs/tools.md), [docs/examples.md](docs/examples.md),
-[docs/sandbox.md](docs/sandbox.md), and the control protocol schema in
-[docs/toby-control-openapi.yaml](docs/toby-control-openapi.yaml).
+[docs/sandbox.md](docs/sandbox.md), and
+[docs/debugging-sandbox-startup.md](docs/debugging-sandbox-startup.md).
 
 **Terminology is canonical.** [docs/glossary.md](docs/glossary.md) fixes the one meaning
 of each core term (sandbox, runtime, environment, mount/volume/bind, tool, provider, MCP
@@ -102,9 +104,9 @@ Go module in `go.mod` (direct and indirect) and the license it ships under.
 | Session | `session/run` (end-to-end launch runner), `session/resolve` (privileged session-config resolver), `config/session` (resolved, sandbox-safe config handed to tools) |
 | Context injection | `context/files`, `context/setup` |
 | Tools | tool implementations `tools/builtin/<name>`; fx composition `tools/wiring`; shared `tools/{kit,helpers,fake}` |
-| **Clean (promoted)** | `config` (XDG path resolution), `config/app` (host config: deep-merges defaults with the user config), `config/file` (JSON/YAML decode + deep merge), `container/engine`, `container/layout`, `container/mount`, `control` (transport + JSON-RPC envelope + capability `Router`), `control/host` & `control/sandbox` (the two control endpoints), `control/methods/<name>` (one self-contained capability per method family: `files`, `env`, `command`, `git`, plus `lifecycle` method names), `control/httpproxy`, `control/mcpproxy` (MCP server proxy: remote upstreams + Docker stdio/http sidecars), `control/mcpserver` (host-side MCP server framework + per-session contract) & `control/mcpserver/services/{git,session}` (the git and session-introspection tool/resource service plugins), `diagnostic/exitcode`, `diagnostic/warning`, `lifecycle` (launch phase runner), `platform/environ` (env-var helper), `platform/executil`, `providers` (+ `openai`, `anthropic`), `sandbox` (tool-facing sandbox interface), `sandbox/runtime` (host-side sandbox runtime + Docker backend), `sandbox/binary`, `tools` (`Tool` contract + `Registry`), `version` |
+| **Clean (promoted)** | `config` (XDG path resolution), `config/app` (host config: deep-merges defaults with the user config), `config/file` (JSON/YAML decode + deep merge), `container/engine`, `container/layout`, `container/mount`, `control` (JSON-RPC envelope + capability `Router` + host-identity sentinels, used in-process), `control/tunnel` (gRPC-over-stdio transport + host proxy bridge), `control/stdio` (net.Conn over stdio + one-shot listener), `control/host` (router for the in-process git capability + shared reverse proxy), `control/sandbox` (the proxy-only in-sandbox manager), `control/methods/git` (the host-side git capability), `control/httpproxy`, `control/mcpproxy` (MCP server proxy: remote upstreams + Docker stdio/http sidecars), `control/mcpserver` (host-side MCP server framework + per-session contract) & `control/mcpserver/services/{git,session}` (the git and session-introspection tool/resource service plugins), `diagnostic/exitcode`, `diagnostic/warning`, `lifecycle` (launch phase runner), `platform/environ` (env-var helper), `platform/executil`, `providers` (+ `openai`, `anthropic`), `sandbox` (tool-facing sandbox interface), `sandbox/runtime` (host-side sandbox runtime + Docker backend), `sandbox/binary`, `tools` (`Tool` contract + `Registry`), `version` |
 
-A control **capability** lives in `control/methods/<name>`: it owns its wire contract (`types.go` for params/results, `contract.go` for method-name constants, request builders, and param/result decoders) and its handler (`Service`). The `Service` is provided to fx both as a concrete injectable type and into a handler group (`control.host.handlers` or `control.sandbox.handlers`) via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`; the host/sandbox registries build a `control.Router` from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared wire sentinels (`HostUser`/`HostGroup`) live in `control` itself, not in any capability.
+The host↔sandbox transport is the gRPC `Tunnel` service (`control/tunnel`) carried over the container's stdio (`control/stdio`); the sandbox manager is proxy-only and the host drives all sandbox operations via the Docker API. The remaining **capability** is host Git in `control/methods/git`: it owns its wire contract (`types.go`, `contract.go`) and handler (`Service`), is provided into the `control.host.handlers` fx group via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`, and is dispatched in-process through the `control.Router` that `control/host` builds from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared sentinels (`HostUser`/`HostGroup`) live in `control` itself.
 
 ## Conventions
 
@@ -212,8 +214,9 @@ A control **capability** lives in `control/methods/<name>`: it owns its wire con
 
 ## Documentation sync rules
 
-- When changing the Toby control JSON-RPC protocol, update
-  `docs/toby-control-openapi.yaml` in the same change.
+- When changing the host↔sandbox transport (the gRPC `Tunnel` service in
+  `control/tunnel`, or `control/tunnel/tunnel.proto`), update
+  [docs/architecture.md](docs/architecture.md) in the same change.
 - When changing `toby mcp` / Toby MCP tools, arguments, or setup requirements,
   update the MCP section in `README.md` (and `docs/sandbox.md`) in the same
   change.

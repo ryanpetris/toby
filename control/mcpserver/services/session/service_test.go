@@ -90,7 +90,7 @@ mcp:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mcpProxy.Configure(context.Background(), "127.0.0.1:12345", cfg, mcpproxy.Defaults{}); err != nil {
+	if err := mcpProxy.Configure(context.Background(), cfg, mcpproxy.Defaults{}); err != nil {
 		t.Fatal(err)
 	}
 	session := &mcpserver.Session{State: mcpserver.SessionState{Debug: true, Paths: config.Paths{Home: "/secret-home", XDGConfigHome: "/secret-config", ProjectRoot: "/secret-projects", SandboxRoot: "/secret-sandboxes"}, Config: cfg, MCPProxy: mcpProxy}}

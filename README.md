@@ -28,9 +28,8 @@ Make sure your Go binary directory, usually `~/go/bin`, is on `PATH`.
 Runtime requirements:
 
 - A Docker-compatible daemon is required. Toby talks to it through the Docker SDK (via testcontainers-go), so Docker Engine, Docker Desktop, Podman, and remote daemons all work; Toby honors `DOCKER_HOST` and the active Docker context.
-- `curl` must be available inside the sandbox image so Toby can download its sandbox helper at startup.
 - macOS release builds embed the Linux sandbox helper used inside the container. Local Darwin builds without the release embed tag require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
-- Tool-specific installers may need common utilities such as `tar` or `npm`.
+- Tool-specific installers may need common utilities such as `curl`, `tar`, or `npm` inside the sandbox image.
 
 ## Get Started
 
@@ -190,7 +189,7 @@ toby --config myconfig.yaml -- -- --watch
 
 This runs `npm test -- --watch` in `/toby/workspace/foo`.
 
-The sandbox uses `/toby`: `$HOME` is `/toby/home`, projects mount under `/toby/workspace`, generated context lives under `/toby/context`, and the helper binary is downloaded to `/toby/bin/toby`. Only `$HOME` is persisted, in a named Docker volume. With `settings.debug: true` or `--debug`, Toby leaves main sandbox and MCP sidecar containers running after exit for inspection instead of terminating them; containers are never reused. Toby does not construct startup environment variables from host values; it explicitly sets only calculated `HOME` plus `TOBY_CONTROL_HOST` and `TOBY_CONTROL_TOKEN` for the sandbox manager, and passes host `TERM` to the container when it is set. The sandbox image is responsible for containing the tools needed by the selected Toby tools; use `container.image` when a custom image is required. Set `container.build.context` to build an image from a Dockerfile. Relative build contexts resolve from the config file directory; relative `dockerfile` values resolve from the build context and default to `Dockerfile`. If `image` is set, Toby uses it when it already exists locally and builds it otherwise. If `image` is omitted, Toby always builds and uses the resulting image ID.
+The sandbox uses `/toby`: `$HOME` is `/toby/home`, projects mount under `/toby/workspace`, generated context lives under `/toby/context`, and the helper binary is copied to `/toby/bin/toby` with `docker cp`. Only `$HOME` is persisted, in a named Docker volume. With `settings.debug: true` or `--debug`, Toby leaves the sandbox and MCP sidecar containers running after exit for inspection instead of terminating them; containers are never reused. Toby does not construct startup environment variables from host values; it explicitly sets only calculated `HOME` plus `TOBY_SANDBOX=1` for the sandbox manager, and passes host `TERM` to the container when it is set. Per-command environment is injected into each `docker exec`. The sandbox image is responsible for containing the tools needed by the selected Toby tools; use `container.image` when a custom image is required. Set `container.build.context` to build an image from a Dockerfile. Relative build contexts resolve from the config file directory; relative `dockerfile` values resolve from the build context and default to `Dockerfile`. If `image` is set, Toby uses it when it already exists locally and builds it otherwise. If `image` is omitted, Toby always builds and uses the resulting image ID.
 
 The `workdir` value is a sandbox-visible path. A leading `~` expands to the sandbox home (`/toby/home`).
 
@@ -216,7 +215,7 @@ Useful flags:
 
 Toby automatically exposes a sandbox-only MCP server to supported tools launched through `toby <client>`. The built-in server is registered as a per-run `/proxy/<uuid>` target, like configured remote MCP servers, and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, `git.tag`, `mcp.start`, `mcp.stop`, and `mcp.restart`, plus `toby://docs/...` and `toby://session/...` resources. Git tools operate on repositories already visible in the sandbox. Session resources never expose provider/MCP headers, URLs, commands, argv, or environment values; host paths, Docker volume names, container names, and local MCP host ports are included only when debug mode is enabled. For OpenCode, Claude Code, Copilot, and Grok, Toby injects this server through synthetic tool configuration generated under the context directory. Grok discovers that generated config through a `~/.grok/managed_config.toml` symlink. Codex receives Toby MCP through launch-time `-c` config overrides instead of a generated profile file.
 
-The sandbox manager uses `TOBY_CONTROL_HOST=host:port` and `TOBY_CONTROL_TOKEN` to connect back to the host and download the helper binary. Launched sandbox commands do not receive those control variables. `HOME` remains available to commands. MCP proxy URLs use the per-run control host and proxy UUID.
+The sandbox manager connects back to the host over a gRPC link carried on the container's stdio; there is no control host or token to pass in. `HOME` remains available to commands. MCP and provider proxy URLs point at the manager's in-container loopback listener (`http://127.77.0.1:47600/proxy/<uuid>`), which tunnels each connection to the host reverse proxy.
 
 Configured MCP servers are exposed through per-run HTTP proxy URLs with their original configured names. For example, an `mcp.server.docs` entry using `type: remote` and `url: https://example.com/mcp` is rendered to supported tools as a remote MCP pointing at `http://<control-host>/proxy/<uuid>`. Toby opens remote upstream connections from the host process and applies configured `headers` there, resolving any `{env:VAR}` and `{file:path}` substitutions on the host so credentials never enter the sandbox.
 
@@ -291,4 +290,4 @@ toby --config t3.yaml
 - [Tools](docs/tools.md) — per-tool install and synthetic config, including the t3 walkthrough.
 - [Examples](docs/examples.md) — end-to-end recipes.
 - [Sandbox and integration details](docs/sandbox.md) — generated artifacts and per-tool integration surface.
-- [Control protocol schema](docs/toby-control-openapi.yaml) — JSON-RPC over WebSocket OpenAPI spec.
+- [Debugging sandbox startup](docs/debugging-sandbox-startup.md) — runbook for bring-up failures, host prerequisites, and dogfooding path setup.

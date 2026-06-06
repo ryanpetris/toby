@@ -1,13 +1,13 @@
 package runtime
 
-// Instance is one sandbox: the host-side handle to a container through its prime,
-// setup, and run phases. BaseInstance provides the runtime-agnostic plumbing
-// (paths, control endpoint, project-name → host-path visibility) that the Docker
-// instance embeds.
+// Instance is one sandbox: the host-side handle to its container. BaseInstance
+// provides the runtime-agnostic plumbing (paths, project-name → host-path
+// visibility) that the Docker instance embeds.
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -15,7 +15,6 @@ import (
 
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/control"
 	"petris.dev/toby/platform/environ"
 	sandboxapi "petris.dev/toby/sandbox"
 )
@@ -41,11 +40,24 @@ type Instance interface {
 	ProjectPath(string) (string, bool)
 	TobyBinDir() string
 	TobyBinaryPath() string
-	HostControlEndpoint() control.Endpoint
-	SetupControlEndpoint(environ.Environment, control.Endpoint)
-	Prime(context.Context, RunSpec) (int, error)
-	Setup(context.Context, RunSpec) (int, error)
-	Run(context.Context, RunSpec) (int, error)
+
+	// RunStart creates the container, copies the binary in, starts the proxy-only
+	// manager, and returns the host side of the stdio gRPC link.
+	RunStart(context.Context, RunSpec) (net.Conn, error)
+	// RunStop tears the container down (removing it unless debug).
+	RunStop(context.Context, bool)
+	// RunContainerEnv returns the container's base environment for seeding execs.
+	RunContainerEnv(context.Context) ([]string, error)
+
+	// Exec runs a command in the container via docker exec.
+	Exec(context.Context, ExecSpec) (int, error)
+	// File provisioning via docker cp / root exec. uid/gid honor the host-user
+	// sentinels (control.HostUser/HostGroup).
+	WriteFile(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error
+	MakeDir(ctx context.Context, path string, mode uint32, uid, gid int) error
+	MakeSymlink(ctx context.Context, path, target string, uid, gid int) error
+	DeletePath(ctx context.Context, path string, recursive bool) error
+
 	RuntimeInfo(bool) RuntimeInfo
 	Cleanup() error
 	VisibleHostPath(string) (string, error)
@@ -58,36 +70,22 @@ type ProjectMount struct {
 }
 
 type BaseInstance struct {
-	label              string
-	controlToken       string
-	sandboxControlHost string
-	workdir            string
-	projects           []ProjectMount
+	label    string
+	workdir  string
+	projects []ProjectMount
 }
 
 type BaseInstanceParams struct {
-	Label              string
-	ControlToken       string
-	SandboxControlHost string
-	Workdir            string
-	Projects           []Project
+	Label    string
+	Workdir  string
+	Projects []Project
 }
 
 func NewBaseInstance(params BaseInstanceParams) (BaseInstance, error) {
-	controlToken := params.ControlToken
-	if controlToken == "" {
-		var err error
-		controlToken, err = newControlToken()
-		if err != nil {
-			return BaseInstance{}, err
-		}
-	}
 	return BaseInstance{
-		label:              params.Label,
-		controlToken:       controlToken,
-		sandboxControlHost: params.SandboxControlHost,
-		workdir:            params.Workdir,
-		projects:           newProjectMounts(params.Projects),
+		label:    params.Label,
+		workdir:  params.Workdir,
+		projects: newProjectMounts(params.Projects),
 	}, nil
 }
 
@@ -141,30 +139,6 @@ func (s *BaseInstance) TobyBinaryPath() string {
 
 func (s *BaseInstance) TobyOpenCodeConfigDir() string {
 	return filepath.Join(layout.Context, "opencode")
-}
-
-func (s *BaseInstance) HostControlEndpoint() control.Endpoint {
-	return control.WebSocketEndpoint("127.0.0.1:0", s.controlToken)
-}
-
-func (s *BaseInstance) SetupControlEndpoint(env environ.Environment, endpoint control.Endpoint) {
-	env[control.EnvControlHost] = s.sandboxHost(endpoint.Host)
-	env[control.EnvControlToken] = endpoint.Token
-}
-
-func (s *BaseInstance) sandboxHost(host string) string {
-	if s.sandboxControlHost == "" {
-		return host
-	}
-	old := "127.0.0.1:"
-	if strings.HasPrefix(host, old) {
-		return strings.Replace(host, old, s.sandboxControlHost+":", 1)
-	}
-	old = "[::1]:"
-	if strings.HasPrefix(host, old) {
-		return strings.Replace(host, old, s.sandboxControlHost+":", 1)
-	}
-	return host
 }
 
 func (s *BaseInstance) Cleanup() error {

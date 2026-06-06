@@ -14,9 +14,9 @@ import (
 	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/engine"
 	contextfiles "petris.dev/toby/context/files"
-	"petris.dev/toby/control"
 	"petris.dev/toby/control/httpproxy"
 	"petris.dev/toby/control/mcpproxy"
+	"petris.dev/toby/control/tunnel"
 	"petris.dev/toby/lifecycle"
 	"petris.dev/toby/providers"
 	"petris.dev/toby/providers/openai"
@@ -44,7 +44,7 @@ func loadConfig(t *testing.T, body string) *appconfig.Service {
 
 func newSandbox() *fake.Sandbox {
 	sandbox := fake.NewSandbox("")
-	sandbox.Env[control.EnvControlHost] = testControlHost
+	sandbox.ProxyAddr = testControlHost
 	sandbox.MCPURL = testTobyMCPURL
 	return sandbox
 }
@@ -74,7 +74,7 @@ func TestResolveMCPServersIncludesTobyAndProxiesConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mcpProxy.Configure(context.Background(), testControlHost, cfg, mcpproxy.Defaults{}); err != nil {
+	if err := mcpProxy.Configure(context.Background(), cfg, mcpproxy.Defaults{}); err != nil {
 		t.Fatal(err)
 	}
 	config := resolve(t, Params{Config: cfg, MCPProxy: mcpProxy, Proxy: proxy, Providers: emptyRegistry(), ContextFiles: contextfiles.NewService(), Sandbox: newSandbox()}, nil)
@@ -86,7 +86,7 @@ func TestResolveMCPServersIncludesTobyAndProxiesConfigured(t *testing.T) {
 	if byName["toby"] != testTobyMCPURL {
 		t.Fatalf("toby server = %#v", config.MCPServers)
 	}
-	if url := byName["docs"]; !strings.HasPrefix(url, "http://"+testControlHost+"/proxy/") {
+	if url := byName["docs"]; !strings.HasPrefix(url, "http://"+tunnel.ProxyAddr+"/proxy/") {
 		t.Fatalf("docs server url = %q", url)
 	}
 }

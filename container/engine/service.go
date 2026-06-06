@@ -27,11 +27,10 @@ type Service struct {
 	clientOnce sync.Once
 	client     *testcontainers.DockerClient
 	clientErr  error
-	class      DaemonClass
 }
 
-// Client lazily creates and caches the shared Docker client and classifies the
-// daemon. Safe for concurrent use.
+// Client lazily creates and caches the shared Docker client. Safe for concurrent
+// use.
 func (s *Service) Client(ctx context.Context) (*testcontainers.DockerClient, error) {
 	s.clientOnce.Do(func() {
 		cli, err := testcontainers.NewDockerClientWithOpts(ctx)
@@ -41,19 +40,9 @@ func (s *Service) Client(ctx context.Context) (*testcontainers.DockerClient, err
 		}
 
 		s.client = cli
-		s.class = classifyDaemon(cli.DaemonHost())
 	})
 
 	return s.client, s.clientErr
-}
-
-// DaemonClass returns how the daemon is reached, creating the client if needed.
-func (s *Service) DaemonClass(ctx context.Context) (DaemonClass, error) {
-	if _, err := s.Client(ctx); err != nil {
-		return 0, err
-	}
-
-	return s.class, nil
 }
 
 // Ping verifies the daemon is reachable. The session runs it as a preflight

@@ -1,6 +1,6 @@
 package mount
 
-// Setup-phase execution: Executor runs a command in the sandbox during Setup,
+// Mount initialization: Executor runs a command in the sandbox as root,
 // SetupFunc is a per-volume initializer, and defaultChown is the default
 // initializer (chown the volume's setup path to the host user).
 
@@ -10,14 +10,14 @@ import (
 	"os"
 )
 
-// Executor executes a command in the sandbox during the Setup phase.
+// Executor runs a command in the sandbox during mount initialization.
 type Executor interface {
 	Exec(ctx context.Context, argv []string, root bool) (int, error)
 }
 
-// SetupFunc initializes a freshly-created volume as root during the Setup phase.
-// setupPath is where the volume is mounted in the setup container. A nil SetupFunc
-// uses the default behavior: chown the path to the host user.
+// SetupFunc initializes a freshly-created volume as root. setupPath is where the
+// volume is mounted for initialization. A nil SetupFunc uses the default behavior:
+// chown the path to the host user.
 type SetupFunc func(ctx context.Context, setupPath string, run Executor) error
 
 func defaultChown(ctx context.Context, paths []string, run Executor) error {

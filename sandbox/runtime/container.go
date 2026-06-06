@@ -1,19 +1,28 @@
 package runtime
 
-// The Docker-backed Instance: it drives the prime, setup, and run container
-// phases through the shared engine.Service (Docker Engine API, via testcontainers
-// for creation and the moby client for wait/attach). Building containers shells
-// out to the docker CLI (see build.go); everything else goes through the SDK.
+// The Docker-backed Instance: it creates the single long-lived container, delivers
+// the toby binary with docker cp, starts it running the proxy-only manager, and
+// hands back the host side of the stdio gRPC link. Tools, mount-init, and file
+// provisioning then run against the live container via docker exec / docker cp.
+// Building images shells out to the docker CLI (see build.go); everything else
+// goes through the moby client.
 
 import (
+	"archive/tar"
 	"context"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"sync"
 
 	"petris.dev/toby/container/engine"
+	"petris.dev/toby/control/stdio"
 	"petris.dev/toby/diagnostic/exitcode"
+	sandboxbinary "petris.dev/toby/sandbox/binary"
 	"petris.dev/toby/tools"
 
+	dstdcopy "github.com/moby/moby/api/pkg/stdcopy"
 	dcontainer "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
@@ -30,7 +39,6 @@ type instance struct {
 	containerName string
 
 	mu           sync.Mutex
-	primed       bool
 	runContainer testcontainers.Container
 }
 
@@ -46,8 +54,6 @@ func (s *instance) RuntimeInfo(debug bool) RuntimeInfo {
 	if debug && s.containerName != "" {
 		info["container"] = map[string]any{
 			"baseName": s.containerName,
-			"prime":    s.phaseContainerName("prime", true),
-			"setup":    s.phaseContainerName("setup", true),
 			"run":      s.phaseContainerName("run", true),
 		}
 	}
@@ -91,89 +97,115 @@ func (s *instance) phaseContainerName(phase string, debug bool) string {
 	return s.containerName + "-" + phase
 }
 
-func (s *instance) meta(phase phaseKind, class engine.DaemonClass) engine.Meta {
+func (s *instance) meta() engine.Meta {
 	return engine.Meta{
 		Label:   s.Label(),
 		Kind:    engine.KindSandbox,
-		Phase:   phase.String(),
+		Phase:   "run",
 		Image:   s.image,
-		Network: networkLabel(class, phase),
+		Network: "bridge",
 	}
 }
 
-// Prime seeds the named volumes from image content (see containerRequest).
-func (s *instance) Prime(ctx context.Context, spec RunSpec) (int, error) {
-	s.mu.Lock()
-	primed := s.primed
-	s.mu.Unlock()
-	if primed {
-		return 0, nil
+// RunStart creates the container, copies the toby binary in, starts it running the
+// proxy-only manager, and returns the host side of the stdio gRPC link (the
+// demultiplexed stdout as reader, the attach stdin as writer). The caller serves
+// the Tunnel gRPC service over the returned conn and waits for the manager's Ready.
+func (s *instance) RunStart(ctx context.Context, spec RunSpec) (net.Conn, error) {
+	if code, err := s.resolveImage(ctx, spec); err != nil {
+		return nil, err
+	} else if code != 0 {
+		return nil, exitcode.New(code, "docker image preparation failed")
 	}
-	if code, err := s.resolveImage(ctx, spec); err != nil || code != 0 {
-		return code, err
-	}
-	class, err := s.containers.DaemonClass(ctx)
+	ctr, err := s.containers.Start(ctx, s.containerRequest(spec), s.meta())
 	if err != nil {
-		return 1, err
-	}
-	ctr, err := s.containers.Start(ctx, s.containerRequest(spec, phasePrime, class), s.meta(phasePrime, class))
-	if err != nil {
-		return 1, err
-	}
-	code, waitErr := s.waitExit(ctx, ctr)
-	s.finishPhase(ctx, ctr, spec.Debug)
-	if waitErr != nil {
-		return code, waitErr
-	}
-	if code != 0 {
-		return code, exitcode.New(code, "docker volume preparation failed")
-	}
-	s.mu.Lock()
-	s.primed = true
-	s.mu.Unlock()
-	return 0, nil
-}
-
-// Setup runs the root manager that chowns the provider volumes; the host drives
-// mount-init over the control channel and terminates it, letting it exit.
-func (s *instance) Setup(ctx context.Context, spec RunSpec) (int, error) {
-	class, err := s.containers.DaemonClass(ctx)
-	if err != nil {
-		return 1, err
-	}
-	ctr, err := s.containers.Start(ctx, s.containerRequest(spec, phaseSetup, class), s.meta(phaseSetup, class))
-	if err != nil {
-		return 1, err
-	}
-	code, waitErr := s.waitExit(ctx, ctr)
-	s.finishPhase(ctx, ctr, spec.Debug)
-	return code, waitErr
-}
-
-// Run starts the long-lived interactive container and attaches the host
-// terminal. It blocks until the container exits and returns its exit code,
-// matching the executil.Runner contract the session orchestrator relies on.
-func (s *instance) Run(ctx context.Context, spec RunSpec) (int, error) {
-	if code, err := s.Prime(ctx, spec); err != nil || code != 0 {
-		return code, err
-	}
-	class, err := s.containers.DaemonClass(ctx)
-	if err != nil {
-		return 1, err
-	}
-	ctr, err := s.containers.Start(ctx, s.containerRequest(spec, phaseRun, class), s.meta(phaseRun, class))
-	if err != nil {
-		return 1, err
+		return nil, err
 	}
 	s.mu.Lock()
 	s.runContainer = ctr
 	s.mu.Unlock()
-	code, runErr := s.attachAndWait(ctx, ctr)
-	s.finishPhase(ctx, ctr, spec.Debug)
+
+	cli, err := s.containers.Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id := ctr.GetContainerID()
+
+	// Deliver the binary into the created (not yet started) container, then start it.
+	bin, err := sandboxbinary.SourceBytes()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.copyToContainer(ctx, []copyEntry{{
+		path: s.TobyBinaryPath(),
+		mode: 0o755,
+		typ:  tar.TypeReg,
+		data: bin,
+	}}); err != nil {
+		return nil, fmt.Errorf("copy toby binary: %w", err)
+	}
+
+	// Attach BEFORE starting so the manager's first gRPC bytes (the HTTP/2 client
+	// preface) are captured rather than raced past.
+	attach, err := cli.ContainerAttach(ctx, id, client.ContainerAttachOptions{
+		Stream: true,
+		Stdin:  true,
+		Stdout: true,
+		Stderr: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// fd 1 (stdout) carries the gRPC frames; fd 2 (stderr) carries manager logs,
+	// which we forward to the host stderr for visibility.
+	pr, pw := io.Pipe()
+	go func() {
+		_, copyErr := dstdcopy.StdCopy(pw, os.Stderr, attach.Reader)
+		_ = pw.CloseWithError(copyErr)
+	}()
+
+	if err := ctr.Start(ctx); err != nil {
+		attach.Close()
+		return nil, err
+	}
+
+	conn := stdio.NewConn(pr, attach.Conn, func() error {
+		attach.Close()
+		return nil
+	})
+	return conn, nil
+}
+
+// RunStop tears down the Run container (removing it unless debug), matching the
+// finishPhase semantics the prior lifecycle used.
+func (s *instance) RunStop(ctx context.Context, debug bool) {
 	s.mu.Lock()
+	ctr := s.runContainer
 	s.runContainer = nil
 	s.mu.Unlock()
-	return code, runErr
+	s.finishPhase(ctx, ctr, debug)
+}
+
+// RunContainerEnv returns the container's base environment (image defaults plus the
+// request env), used to seed the host-held environment map for docker exec.
+func (s *instance) RunContainerEnv(ctx context.Context) ([]string, error) {
+	cli, err := s.containers.Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id := s.runContainerID()
+	if id == "" {
+		return nil, fmt.Errorf("run container is not started")
+	}
+	info, err := cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if info.Container.Config == nil {
+		return nil, nil
+	}
+	return info.Container.Config.Env, nil
 }
 
 // waitExit blocks until the container leaves the running state and returns its
@@ -197,9 +229,9 @@ func (s *instance) waitExit(ctx context.Context, ctr testcontainers.Container) (
 	}
 }
 
-// finishPhase removes the container (non-debug) or leaves it for inspection
-// while dropping it from the tracking registry (debug). On context cancellation
-// it still removes the container using a background context.
+// finishPhase removes the container (non-debug) or leaves it for inspection while
+// dropping it from the tracking registry (debug). On context cancellation it still
+// removes the container using a background context.
 func (s *instance) finishPhase(ctx context.Context, ctr testcontainers.Container, debug bool) {
 	if ctr == nil {
 		return

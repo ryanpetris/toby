@@ -56,7 +56,7 @@ code to match rather than redefining a term here.
 ## Sides
 
 - **host** — the user's machine running `toby`. Holds real credentials, host Git, the
-  control server, and the HTTP proxy.
+  gRPC tunnel server, and the HTTP reverse proxy.
 - **sandbox** — the isolated side where the tool runs. Prefer "sandbox" over "guest"
   (which Toby does not use) or "container" (Docker-specific).
 

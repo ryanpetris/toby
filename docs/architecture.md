@@ -4,7 +4,8 @@ This page describes how Toby is built and how the host and sandbox cooperate at
 runtime. For day-to-day usage see the [README](../README.md); for the sandbox
 and integration surface see [sandbox.md](sandbox.md); for configuration see
 [configuration.md](configuration.md); for per-tool behavior see
-[tools.md](tools.md).
+[tools.md](tools.md); for diagnosing bring-up failures see
+[debugging-sandbox-startup.md](debugging-sandbox-startup.md).
 
 ## Overview
 
@@ -13,29 +14,38 @@ and others) inside a private-home Linux sandbox while keeping your real `$HOME`,
 SSH keys, GPG setup, and credentials on the host. It is a single Go binary
 (`petris.dev/toby`) that plays two roles:
 
-- On the **host**, it launches a sandbox runtime, runs a small control server,
-  generates synthetic tool configuration, and brokers privileged operations
-  (host Git, HTTP proxying to upstream MCP servers and model providers).
-- Inside the **sandbox**, the same binary runs as `toby sandbox manager`,
-  connects back to the host, applies the generated context, and executes the
-  requested commands.
+- On the **host**, it launches the sandbox container, delivers the Toby binary,
+  generates synthetic tool configuration, runs the tool and writes files into the
+  container through the Docker API, and brokers privileged operations: host Git,
+  and an HTTP reverse proxy to upstream MCP servers and model providers that
+  injects credentials the sandbox never sees.
+- Inside the **sandbox**, the same binary runs as `toby sandbox manager`: a
+  proxy-only process that accepts the sandbox's outbound HTTP connections on a
+  loopback listener and tunnels them to the host.
 
-The two halves talk over a single authenticated WebSocket using JSON-RPC 2.0.
-The wire protocol is documented as an OpenAPI schema in
-[toby-control-openapi.yaml](toby-control-openapi.yaml).
+The two halves talk over a single gRPC connection carried on the container's
+**stdio** (stdin/stdout); the manager is the gRPC client and the host is the
+server. Everything else the host does to the sandbox — running the tool, writing
+context files, initializing mounts, tearing down — goes through the Docker API
+(`docker exec`, `docker cp`, stop/remove), not an in-sandbox RPC service.
 
 ```
  host process (toby <tool> <env>)                 sandbox (container)
  ┌───────────────────────────────┐                ┌─────────────────────────────┐
- │ CLI / session orchestration   │                │ /bin/sh bootstrap            │
- │ host manager (RPC handlers)   │   ws://.../control  curl /binary -> toby      │
- │ context init services         │◀──────────────▶│ toby sandbox manager         │
- │ MCP server (git.* tools)      │  JSON-RPC 2.0  │  file/command RPC handlers   │
- │ HTTP proxy  /proxy/<uuid>     │                │  runs the launched tool      │
- │ control server  127.0.0.1:0   │   GET /binary  │                              │
+ │ CLI / session orchestration   │   stdio (gRPC) │ toby sandbox manager         │
+ │ Tunnel gRPC server  ◀─────────┼────────────────┤  gRPC client                 │
+ │ HTTP reverse proxy (+creds)   │                │  local proxy listener        │
+ │ MCP server (git.* tools)      │                │   127.77.0.1:47600           │
+ │ docker exec / docker cp ──────┼───────────────▶│  launched tool (own tty)     │
  └───────────────────────────────┘                └─────────────────────────────┘
         host $HOME, SSH, GPG                          private $HOME + project bind
 ```
+
+A tool inside the sandbox reaches an MCP server or model provider by making an
+ordinary HTTP request to a proxied URL on the manager's loopback listener; the
+manager tunnels the connection to the host over the gRPC link, and the host
+attaches credentials and dials the real upstream. No host network port is opened
+to the sandbox.
 
 ## Process model
 
@@ -47,7 +57,7 @@ The root planning graph composes:
 
 - `tools.PlanningModule()` — metadata-only tools used for command generation,
   config validation, dependency expansion, and launch-tool discovery.
-- `sandbox.Module()` (`control/sandbox`) — sandbox-side control RPC handlers for
+- `sandbox.Module()` (`control/sandbox`) — the proxy-only in-sandbox manager for
   the hidden `toby sandbox manager` command.
 - Supporting providers: `config.NewPaths` (XDG path resolution),
   `appconfig.New`, `tool.NewRegistry`, and the session runner factory.
@@ -82,13 +92,15 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `config/app` | Host config schema, validation, and context-file rendering (`appconfig`). |
 | `context/files` | Context file session/builder for generated config and configured instructions. |
 | `context/setup` | Context lifecycle hooks for host config and tool context files. |
-| `control` | Control transport: WebSocket (coder/websocket), chi router, JSON-RPC peer/envelope; capability `Router`; generic param/result decoders and shared wire sentinels. |
-| `control/methods/<name>` | One self-contained control capability per method family (`files`, `env`, `command`, `git`); each owns its wire contract and handler `Service`. `control/methods/lifecycle` holds the cross-side handshake method names. |
-| `control/host` | Host-side control endpoint: registry/router, sandbox client, `context.init`/`command.exit` orchestration. |
-| `control/sandbox` | Sandbox-side control endpoint: registry/router, connection lifecycle, `sandbox.terminate`. |
-| `control/httpproxy` | `/proxy/<uuid>` reverse proxy for MCP and providers. |
+| `control` | JSON-RPC 2.0 envelope (request/response/error types, codes, decoders), the capability `Router`, and the host-identity sentinels. Used in-process by the host Git capability. |
+| `control/tunnel` | gRPC-over-stdio transport: the `Tunnel` service (proto-generated), the host server that bridges tunneled connections into the reverse proxy, the client dialer/forwarder, and the fixed in-container proxy address. |
+| `control/stdio` | `net.Conn` over an independent reader/writer pair plus a one-shot `Listener`, so gRPC runs over the container's stdin/stdout. |
+| `control/methods/git` | The host-side Git capability: wire contract and handler `Service`, dispatched in-process. |
+| `control/host` | Host router for the in-process Git capability and the shared HTTP reverse proxy (`Service.HTTPProxy`). |
+| `control/sandbox` | The proxy-only in-sandbox manager: dials the host over stdio, binds the loopback listener, and forwards each accepted connection over the tunnel. |
+| `control/httpproxy` | Host reverse proxy that injects credentials and dials upstreams (`/proxy/<uuid>` path scheme), fed by the tunnel. |
 | `control/mcpserver` | Built-in Toby MCP server framework + per-session contract; service plugins live in `control/mcpserver/services/{git,session}` (host Git tools; MCP lifecycle tools and `toby://` introspection resources). |
-| `sandbox/runtime` | Host-side sandbox runtime: the Factory, the control-channel sandbox service, and the Docker container backend (testcontainers-go) and Fx module (clean). |
+| `sandbox/runtime` | Host-side sandbox runtime: the Factory, the tool-facing sandbox service (docker exec/cp backed), and the Docker container backend (testcontainers-go for create, the moby client for cp/exec/attach). |
 | `container/engine` | Shared Docker client and container service: tracks and tears down every container Toby starts. |
 | `tools` | `Tool` contract, `Base`, `Metadata`, `Registry`, `Toolset` (clean). |
 | `lifecycle` | Launch phase runner driving the toolset through its phases (clean). |
@@ -100,153 +112,141 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `platform/executil` | Process runner with signal forwarding. |
 | `version` | Build version string. |
 
-## Control protocol
+## Control plane
 
-The control channel is JSON-RPC 2.0 over a single persistent WebSocket
-(`control/websocket.go`, `peer.go`). The host listens on `127.0.0.1`
-with an ephemeral port and a per-run bearer token; the sandbox connects to
-`ws://$TOBY_CONTROL_HOST/control` with that token. Both sides can issue
-requests over the same connection (`control/peer.go`).
+There is a single host↔sandbox channel: a gRPC connection carried over the
+container's stdio. Everything host-initiated uses the Docker API instead.
 
-The same host listener also serves:
+### The stdio gRPC link (`control/tunnel`, `control/stdio`)
 
-- `GET /binary` — the sandbox helper binary download (bearer-token protected).
-- `/proxy/<uuid>` — per-run HTTP reverse-proxy targets for remote MCP servers,
-  model providers, and the built-in Toby MCP server.
+The run container's `Cmd` is `toby sandbox manager` with **no TTY**, so its
+stdout/stderr are Docker-multiplexed. The host attaches to the container's stdio
+*before* starting it (so the manager's first gRPC bytes are not raced past),
+demultiplexes the stream (`stdcopy`) into stdout (gRPC frames) and stderr
+(manager logs), and wraps `(demuxed-stdout, attach-stdin)` as a `net.Conn`. The
+manager wraps `(os.Stdin, os.Stdout)` the same way and routes its own logging to
+stderr so fd 1 carries only gRPC frames.
 
-### Methods
+The host runs the gRPC **server** over that single conn (via a one-shot
+listener); the manager is the **client**. The link has no keepalive (a pipe
+cannot honor deadlines). The `Tunnel` service has two methods:
 
-| Method | Direction | Purpose |
-| --- | --- | --- |
-| `context.init` | sandbox → host | First message; triggers context injection. |
-| `file.create` | host → sandbox | Write a file (`path`, `data`, `mode`, `uid`, `gid`). |
-| `file.mkdir` | host → sandbox | Create a directory (`path`, `mode`, `uid`, `gid`). |
-| `file.delete` | host → sandbox | Remove a file or directory (`recursive`). |
-| `file.symlink` | host → sandbox | Create a symlink (`path`, `target`). |
-| `command.run` | host → sandbox | Run a command (`command_id`, `argv`, `foreground`, `hide_output`). |
-| `command.exit` | sandbox → host | Report a finished command (`command_id`, `exit_code`). |
-| `sandbox.terminate` | host → sandbox | Ask the sandbox manager to shut down. |
-| `git.commit` / `git.fetch` / `git.push` / `git.rebase` / `git.tag` | sandbox → host | Host Git operations for visible repositories. |
+- `Ready(addr)` — the manager calls it once, after binding its loopback proxy
+  listener, to signal it is up; the host waits for this before proceeding.
+- `Connect(stream Chunk)` — one bidirectional stream per proxied connection,
+  carrying raw bytes both ways.
 
-JSON-RPC error codes follow the standard set (`-32700` parse, `-32600` invalid
-request, `-32601` method not found, `-32602` invalid params, `-32603` internal)
-plus a Toby-specific `-32007` for "project not visible".
-
-### Host side (`control/host`)
-
-The host endpoint accepts a sandbox connection, requires the first message to be
-`context.init`, then runs the registered context lifecycle hooks to populate the
-sandbox before handing control to the launched tool. It services
-`command.exit` notifications (to track foreground completion) and the `git.*`
-methods. The `git.*` methods are a plugin capability in `control/methods/git`
-(`git.go` handler, `exec.go` execution): repository names and arguments are
-validated on the host, repositories must be visible through the project bind, and
-`git` runs on the host so host config, SSH agent, GPG signing, and credential
-helpers all apply. The host installs the repository resolver on the git
-capability at session start.
-
-### Sandbox side (`control/sandbox`)
-
-`toby sandbox manager` dials the host, sends `context.init`, and then serves the
-`file.*` (capability `control/methods/files`), `env.*` (`control/methods/env`),
-`command.run` (`control/methods/command`), and `sandbox.terminate` methods.
-`command.run` spawns a child process tracked by `command_id`; at most one command
-may be `foreground`.
-The manager applies the requested uid, gid, and supplementary groups to child
-commands when it has permission; host-driven command execution defaults to the
-host uid/gid/groups. It also removes `TOBY_CONTROL_HOST` and
-`TOBY_CONTROL_TOKEN` from child command environments. The manager forwards
-SIGINT/SIGTERM/SIGHUP/SIGQUIT to the foreground process and reports completion
-with `command.exit`. On `sandbox.terminate` it shuts down gracefully (SIGTERM
-then SIGKILL after a short grace period).
-
-### HTTP proxy (`control/httpproxy`)
+### Proxying (`control/httpproxy`)
 
 Remote MCP servers, local MCP sidecars, model providers, and the built-in Toby
-MCP server are each registered as a proxy target keyed by a random UUID and
-exposed at `http://<control-host>/proxy/<uuid>`. The host applies upstream URLs
-and credential headers when forwarding, so secrets never enter the sandbox. The
-built-in Toby MCP target dispatches to the in-process MCP handler instead of an
-upstream URL. Local stdio MCP sidecars also dispatch to an in-process handler:
-Toby connects to the sidecar command over stdin/stdout and bridges tools,
-prompts, and resources to streamable HTTP. The built-in Toby MCP server exposes
-host Git tools, MCP lifecycle tools, and `toby://docs/...` plus
-`toby://session/...` text resources. Session resources redact provider and MCP
-URLs, headers, commands, argv, and environment values regardless of debug mode.
-Runtime details are returned as runtime-defined `runtimeInfo` maps. Generic MCP
-and sandbox orchestration code passes those maps through without interpreting
-Docker or future-runtime fields.
+MCP server are each registered as a reverse-proxy target keyed by a random UUID.
+The proxied URL handed to the sandbox points at the manager's fixed loopback
+listener — `http://127.77.0.1:47600/proxy/<uuid>` (a dedicated address in
+127.0.0.0/8 so it never collides with anything a tool binds on 127.0.0.1). When
+a tool connects, the manager accepts the connection and opens a `Connect` stream;
+the host adapts that stream back into a `net.Conn`, feeds it to an in-process
+`http.Server` whose handler is the reverse proxy, looks up the target, applies
+the upstream URL and credential headers, and dials the real destination. Secrets
+never enter the sandbox. The built-in Toby MCP target and local stdio MCP
+sidecars dispatch to in-process handlers instead of an upstream URL; the built-in
+server exposes host Git tools, MCP lifecycle tools, and `toby://docs/...` plus
+`toby://session/...` text resources (session resources redact provider/MCP URLs,
+headers, commands, argv, and environment values regardless of debug mode).
+
+### Host-initiated operations (Docker API)
+
+The host does not push files or commands over an RPC channel. Instead:
+
+- **Run a command** — `docker exec` against the live container (`sandbox/runtime/exec.go`).
+  The interactive primary tool gets a TTY and the host terminal (raw mode, resize,
+  PTY-delivered signals); install/configure/mount commands run non-interactively
+  and return an exit code. The exec carries the resolved user (`uid:gid`, defaulting
+  to the host user), working directory, and the host-held environment; supplementary
+  groups come from the container's `GroupAdd` (set at create).
+- **Write/replace files** — `docker cp` of an in-memory tar carrying mode + uid/gid
+  (`sandbox/runtime/copy.go`); `*Owned` variants map directly to tar ownership.
+  Deletes run as a root `docker exec rm`.
+- **Deliver the binary** — `docker cp` into the created (not-yet-started) container.
+- **Tear down** — stop and remove the container (or leave it under `--debug`).
+
+The host-held environment lives in the sandbox service: it is seeded from the
+container's base env (image defaults + request env) and mutated by tool
+`SetEnvironment`/`Prepend`/`Append` calls, then injected into each subsequent
+`docker exec`.
+
+### Git (`control/host`, `control/methods/git`)
+
+Host Git is dispatched **in-process** through `control`'s JSON-RPC
+envelope: the built-in Toby MCP server's Git tools encode a
+request and call `host.Service.Handle`, which dispatches to the `git` capability.
+Repository names and arguments are validated on the host, repositories must be
+visible through the project bind, and `git` runs on the host so host config, SSH
+agent, GPG signing, and credential helpers all apply. The host installs the
+repository resolver on the git capability at session start.
 
 ### MCP sidecars
 
 Configured `type: local` MCP entries are owned by the host session, not by the
-tool running inside the main sandbox. During session startup Toby registers
-their proxy URLs synchronously, starts the sidecar processes asynchronously, and
-does not wait for MCP readiness before starting the main sandbox manager.
-Sidecars run as containers (the `docker` runtime); they do not use `toby sandbox
-manager`, do not run setup hooks, and do not mount project, context, or
-managed-state paths. MCP sidecars use the selected image defaults for user,
-home, and working directory.
-When debug mode is enabled, MCP sidecar containers are left running for
-inspection instead of being terminated. Restarts always create fresh container
-names and never reuse previous containers. Each MCP sidecar runtime
-implementation owns its own startup, HTTP preparation, cleanup, and
-introspection behavior; adding another runtime should only require registering a
-new runtime implementation with Fx.
+tool running inside the main sandbox. During session startup Toby registers their
+proxy URLs synchronously, starts the sidecar processes asynchronously, and does
+not wait for MCP readiness before bringing up the main sandbox manager. Sidecars
+run as their own containers; they do not use `toby sandbox manager`, do not run
+setup hooks, and do not mount project, context, or managed-state paths. They use
+the selected image defaults for user, home, and working directory. Under debug
+mode sidecar containers are left running for inspection; restarts always create
+fresh container names and never reuse previous containers. Each sidecar runtime
+owns its own startup, HTTP preparation, cleanup, and introspection; runtime
+details are returned as opaque `runtimeInfo` maps that generic code passes
+through without interpreting.
 
-## Sandbox runtimes
+## Sandbox runtime
 
-Toby runs sandboxes in containers and requires a reachable Docker-compatible
-daemon. Docker is the only backend; Podman and remote daemons work through
-the standard `DOCKER_HOST` environment variable (e.g.
+Toby runs the sandbox in containers and requires a reachable Docker-compatible
+daemon. Docker is the only backend; Podman and remote daemons work through the
+standard `DOCKER_HOST` environment variable (e.g.
 `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`), with no runtime
-selection in Toby. The runtime is implemented with the testcontainers-go library, which
-drives the Docker daemon through the Docker SDK rather than the `docker` CLI. It
-honors `DOCKER_HOST` and the active Docker context, so Docker Engine, Docker
-Desktop, Podman, and remote daemons all work. (Image building still shells out
-to `docker build`; container lifecycle goes through testcontainers-go.)
+selection in Toby. The runtime uses testcontainers-go to create the container and
+the moby client for `cp`/`exec`/`attach`/`wait`; image building still shells out
+to `docker build`.
 
-- **Container runtime** (`sandbox/runtime`): containers run as
-  `--user 0:0` with an init process and the configured image (default
-  `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`). `$HOME`
-  (`/toby/home` by default) is backed by a named Docker volume (e.g.
-  `toby.<profile>.runtime.home.default`) so private home state persists across
-  runs; provider-backed managed mounts use lazy volumes named
-  `toby.<profile>.<type>.<name>.<purpose>`. Projects bind-mount from the host
-  under `/toby/workspace`. The image can be built from
-  `container.build`. The long-lived run container hosts
-  `toby sandbox manager` and has the interactive agent's terminal attached to it.
-  Launches use prime/setup/run phases; with `settings.debug: true` or `--debug`,
-  containers are left running after exit instead of being terminated. Phase-specific
-  names prevent setup and run containers from colliding; containers are never
-  reused.
-- **Networking** (`sandbox/runtime/networking.go`): how the container
-  reaches the host control server depends on the daemon. A local Linux daemon uses
-  host networking and the unchanged `127.0.0.1`; Docker Desktop uses
-  `host.docker.internal`; remote and Podman daemons use testcontainers'
-  host-access tunnel at `host.testcontainers.internal`.
+- **One container per session** (`sandbox/runtime`). It runs as `--user 0:0`
+  with an init process and the configured image (default
+  `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`), executing the
+  proxy-only manager with its stdio as the gRPC link. `$HOME` (`/toby/home`) is
+  backed by a named Docker volume (e.g. `toby.<profile>.runtime.home.default`) so
+  private home state persists across runs; provider-backed managed mounts use lazy
+  volumes named `toby.<profile>.<type>.<name>.<purpose>`. Each volume is mounted at
+  **both** its final target and an isolated `/toby/mounts/<random>` setup path, so
+  the host can chown it (root `docker exec`) without crossing into the binds
+  layered under the final target. Projects bind-mount from the host under
+  `/toby/workspace`. Empty volumes seed from the image on first mount. Under
+  `settings.debug: true` or `--debug` the container is left running after exit for
+  inspection; containers are never reused.
+- **Networking**: the container uses **bridge** networking. The manager's proxy
+  listener is on the container's own loopback, so it stays container-private, while
+  tools still have outbound network access. The gRPC control link rides the Docker
+  attach stream (the API connection), not a network port, so it works the same for
+  local, Docker Desktop, Podman, and remote daemons with nothing to tunnel.
 
 The runtime provides `sandboxpath.Paths`. The host-side `sandbox.SandboxService`
 exposes those paths and centralizes sandbox file and command operations for tool
 setup; it does not decide path policy. Runtime-specific introspection is provided
-as an opaque `runtimeInfo` map, so the shared sandbox service does not know about
-Docker or future-runtime-specific fields.
+as an opaque `runtimeInfo` map.
 
 The `container/engine` service owns the shared Docker client and tracks every
-container Toby starts (sandbox phases and MCP sidecars), terminating them
+container Toby starts (the sandbox and MCP sidecars), terminating them
 deterministically from an fx `OnStop` hook on session exit. Because Toby owns
-teardown, testcontainers' Ryuk reaper is disabled (`TESTCONTAINERS_RYUK_DISABLED`),
-which avoids an extra reaper container that would otherwise disrupt host-network
-and Podman setups.
+teardown, testcontainers' Ryuk reaper is disabled (`TESTCONTAINERS_RYUK_DISABLED`).
 
 Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox.
 
 ### Helper binary delivery (`sandbox/binary`)
 
-The sandbox needs a Linux Toby binary to run as the manager. On Linux the host
-serves its own running binary from `/proc/self/exe`. macOS release builds embed
-a matching Linux helper; local Darwin builds without the release embed tag
-require `TOBY_LINUX_TOBY` to point at a Linux Toby binary.
+The sandbox needs a Linux Toby binary to run as the manager. The host delivers it
+with `docker cp` into the created container before starting it. On Linux the host
+copies its own running binary from `/proc/self/exe`. macOS release builds embed a
+matching Linux helper; local Darwin builds without the release embed tag require
+`TOBY_LINUX_TOBY` to point at a Linux Toby binary.
 
 ## End-to-end launch flow
 
@@ -254,42 +254,36 @@ A direct launch such as `toby claude my-app` proceeds through the app session
 runner and `session/run/run.go`:
 
 1. **Plan execution.** Parse CLI flags, merge host-config sandbox defaults, and
-   (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands
-   the requested tools to include declared dependencies and determines the
-   primary (foreground) tool. The app then builds an execution fx graph scoped to
-   that tool closure and the selected runtime.
-2. **Register host-side mounts.** Build the execution toolset, apply managed
-   mount settings, and run `toby.lifecycle.host.init` hooks. These hooks register
-   explicit binds and managed mount requests with the sandbox service before the
-   sandbox starts.
-3. **Start the control server.** Listen on `127.0.0.1:0`, mint a random
-   `TOBY_CONTROL_TOKEN`, register the binary source and HTTP-proxy routes, and
-   set calculated `HOME` plus `TOBY_CONTROL_HOST`/`TOBY_CONTROL_TOKEN` in the
-   sandbox manager startup environment. Docker launch commands also pass host
-   `TERM` when it is set.
-4. **Prepare mounts.** Docker primes volumes in their final locations, then runs
-   a setup sandbox with home and provider volumes mounted at isolated
-   `/toby/mounts/<random>` paths so runtime and `toby.lifecycle.sandbox.mount.init`
-   hooks can run setup commands as root without crossing into nested mounts.
-5. **Launch the sandbox.** The runtime runs a `/bin/sh` bootstrap that creates
-   the runtime's Toby bin directory, downloads the helper from `/binary` with
-   the bearer token, marks it executable, and `exec`s `toby sandbox manager` by
-   absolute path.
-6. **Bootstrap the manager.** Inside the sandbox the manager connects back over
-   the control WebSocket and sends `context.init`.
-7. **Inject context.** The host runs `toby.lifecycle.sandbox.context.setup`,
-   clears the generated context directory, then runs
-   `toby.lifecycle.sandbox.context.init`. Agent instructions and host config run
-   before tool-specific context hooks. Each hook writes files under the generated
-   context directory via the sandbox service and sandbox manager `file.create`
-   calls.
-8. **Install and launch.** The host runs `toby.lifecycle.sandbox.init`, then
-   `toby.lifecycle.sandbox.install` or `toby.lifecycle.sandbox.upgrade` as
-   needed. The primary tool's `Launch` runs the foreground command via
-   `command.run`.
-9. **Tear down.** When the foreground command exits, the host sends
-   `sandbox.terminate`; the host process exits with the foreground command's
-   exit code.
+   (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands the
+   requested tools to include declared dependencies and determines the primary
+   (foreground) tool. The app builds an execution fx graph scoped to that tool
+   closure and the selected runtime.
+2. **Register host-side mounts.** Build the execution toolset, apply managed mount
+   settings, and run `toby.lifecycle.host.init` hooks, which register explicit
+   binds and managed mount requests with the sandbox service before the sandbox
+   starts.
+3. **Register proxy targets.** Publish the built-in Toby MCP server and configure
+   the MCP proxy. Provider and MCP upstreams are registered with the host reverse
+   proxy; the sandbox is told their proxied URLs on the in-container listener.
+4. **Start the sandbox.** Create the container (volumes multi-mounted at their
+   final targets and setup paths), `docker cp` the Toby binary in, attach to its
+   stdio, start it, serve the `Tunnel` gRPC over the stdio link, and wait for the
+   manager's `Ready`.
+5. **Initialize mounts.** Run `toby.lifecycle.sandbox.mount.init` hooks; the
+   default chowns each provider volume to the host user via a root `docker exec` on
+   its isolated setup path.
+6. **Inject context.** Run `toby.lifecycle.sandbox.context.setup`, clear the
+   generated context directory, then run `toby.lifecycle.sandbox.context.init`.
+   Agent instructions and host config run before tool-specific hooks. Each hook
+   writes files under the generated context directory via the sandbox service,
+   which `docker cp`s them in.
+7. **Install and launch.** Run `toby.lifecycle.sandbox.init`, then
+   `toby.lifecycle.sandbox.install` or `toby.lifecycle.sandbox.upgrade` as needed
+   (each command via `docker exec`). The primary tool's `Launch` runs the
+   foreground command via `docker exec`, wired to the host terminal.
+8. **Tear down.** When the foreground command exits, the host stops the gRPC
+   server, stops and removes the container, and exits with the foreground
+   command's exit code (left running under `--debug`).
 
 ## Tool abstraction (`tools` + `lifecycle`)
 
@@ -312,7 +306,7 @@ Lifecycle hook groups:
 | Group | When | Typical use |
 | --- | --- | --- |
 | `toby.lifecycle.host.init` | before the sandbox starts | host-side setup, bind and managed-mount registration |
-| `toby.lifecycle.sandbox.mount.init` | setup sandbox after managed mounts are attached | root-owned mount setup, provider-volume ownership |
+| `toby.lifecycle.sandbox.mount.init` | after the container starts, volumes mounted at their setup paths | root-owned mount setup, provider-volume ownership |
 | `toby.lifecycle.sandbox.context.setup` | before context files are generated | set environment variables, append PATH entries |
 | `toby.lifecycle.sandbox.context.init` | context injection | emit synthetic config / instructions |
 | `toby.lifecycle.sandbox.init` | once per sandbox | run embedded install/init scripts |

@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/config/app"
 	"petris.dev/toby/container/engine"
 	"petris.dev/toby/control/httpproxy"
+	"petris.dev/toby/control/tunnel"
 
 	dcontainer "github.com/moby/moby/api/types/container"
 )
@@ -80,12 +81,12 @@ mcp:
 		t.Fatal(err)
 	}
 
-	if err := svc.Configure(context.Background(), "127.0.0.1:12345", cfg, Defaults{}); err != nil {
+	if err := svc.Configure(context.Background(), cfg, Defaults{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"docs", "remote"} {
 		url, ok := svc.URL(name)
-		if !ok || !strings.HasPrefix(url, "http://127.0.0.1:12345/proxy/") {
+		if !ok || !strings.HasPrefix(url, "http://"+tunnel.ProxyAddr+"/proxy/") {
 			t.Fatalf("url %s = %q, %v", name, url, ok)
 		}
 	}
