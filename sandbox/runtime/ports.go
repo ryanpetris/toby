@@ -10,11 +10,27 @@ package runtime
 import (
 	"fmt"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/moby/moby/api/types/network"
 )
+
+// exposedPortSpecs renders the exposed-port set into the "<port>/<proto>" specs
+// testcontainers' ContainerRequest.ExposedPorts expects, sorted for determinism.
+// Populating that field (rather than only the moby Config.ExposedPorts) is what
+// keeps testcontainers from dropping our PortBindings: it derives its own exposed
+// set from ContainerRequest.ExposedPorts and discards any binding whose port is
+// not in that set.
+func exposedPortSpecs(set network.PortSet) []string {
+	specs := make([]string, 0, len(set))
+	for port := range set {
+		specs = append(specs, port.String())
+	}
+	sort.Strings(specs)
+	return specs
+}
 
 // resolvePublishedPorts turns the trimmed `container.ports` / `--publish` specs
 // into the exposed-port set and host port-binding map. An empty input resolves to

@@ -149,12 +149,11 @@ func TestContainerRequestPublishesPorts(t *testing.T) {
 	tcp3000 := network.MustParsePort("3000/tcp")
 	udp9090 := network.MustParsePort("9090/udp")
 
-	cfg := applyConfig(req)
-	if _, ok := cfg.ExposedPorts[tcp3000]; !ok {
-		t.Fatalf("exposed ports missing 3000/tcp: %#v", cfg.ExposedPorts)
-	}
-	if _, ok := cfg.ExposedPorts[udp9090]; !ok {
-		t.Fatalf("exposed ports missing 9090/udp: %#v", cfg.ExposedPorts)
+	// testcontainers rebuilds its exposed-port set from req.ExposedPorts and drops
+	// any PortBindings whose port is not in it, so the publish specs must land on
+	// the ContainerRequest.ExposedPorts field (not just the moby Config).
+	if !slices.Equal(req.ExposedPorts, []string{"3000/tcp", "9090/udp"}) {
+		t.Fatalf("req.ExposedPorts = %#v", req.ExposedPorts)
 	}
 
 	hc := applyHostConfig(req)
@@ -169,8 +168,8 @@ func TestContainerRequestPublishesPorts(t *testing.T) {
 func TestContainerRequestWithoutPortsPublishesNone(t *testing.T) {
 	inst, _ := dockerInstance(t, nil)
 	req := inst.containerRequest(RunSpec{Env: environ.Environment{"HOME": inst.HomeDir()}})
-	if got := applyConfig(req).ExposedPorts; len(got) != 0 {
-		t.Fatalf("exposed ports = %#v, want none", got)
+	if len(req.ExposedPorts) != 0 {
+		t.Fatalf("req.ExposedPorts = %#v, want none", req.ExposedPorts)
 	}
 	if got := applyHostConfig(req).PortBindings; len(got) != 0 {
 		t.Fatalf("port bindings = %#v, want none", got)

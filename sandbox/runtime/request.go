@@ -37,9 +37,6 @@ func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContaine
 		c.Entrypoint = []string{binary}
 		c.WorkingDir = workdir
 		c.Tty = false
-		if len(s.exposedPorts) > 0 {
-			c.ExposedPorts = s.exposedPorts
-		}
 	}}
 
 	// Mount each volume at both its final target and its isolated setup path.
@@ -78,6 +75,13 @@ func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContaine
 	req.Labels = map[string]string{
 		"toby.sandbox": s.Label(),
 		"toby.phase":   "run",
+	}
+
+	// Publish ports through testcontainers' own ExposedPorts field: it rebuilds the
+	// exposed-port set from here and drops any HostConfig.PortBindings whose port is
+	// not in it, so setting only the moby Config.ExposedPorts is not enough.
+	if len(s.exposedPorts) > 0 {
+		req.ExposedPorts = exposedPortSpecs(s.exposedPorts)
 	}
 
 	// Created but not started: the caller copies the binary in, then starts it.
