@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"petris.dev/toby/internal/status"
 	"petris.dev/toby/tools"
 )
 
@@ -47,7 +48,7 @@ func TestRunPhaseRunsHooksThenToolsInOrder(t *testing.T) {
 			log = append(log, "hook:early")
 			return nil
 		}},
-	})
+	}, status.NewService())
 
 	if err := runner.RunPhase(context.Background(), PhaseHostPrepare, set, Context{}, false); err != nil {
 		t.Fatal(err)
@@ -79,7 +80,7 @@ func TestRunPhaseSkipsNonParticipatingTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := NewRunner(nil)
+	runner := NewRunner(nil, status.NewService())
 	if err := runner.RunPhase(context.Background(), PhaseContextFiles, set, Context{}, false); err != nil {
 		t.Fatal(err)
 	}

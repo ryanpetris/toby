@@ -4,11 +4,12 @@ package lifecycle
 
 import "go.uber.org/fx"
 
-// Module provides the Runner, consuming every Hook in the "lifecycle" group.
+// Module provides the Runner, consuming every Hook in the "lifecycle" group and
+// the startup-status Service.
 func Module() fx.Option {
 	return fx.Module("lifecycle",
 		fx.Provide(
-			fx.Annotate(NewRunner, fx.ParamTags(`group:"lifecycle"`)),
+			fx.Annotate(NewRunner, fx.ParamTags(`group:"lifecycle"`, ``)),
 		),
 	)
 }

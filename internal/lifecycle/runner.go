@@ -7,18 +7,20 @@ import (
 	"context"
 	"sort"
 
+	"petris.dev/toby/internal/status"
 	"petris.dev/toby/tools"
 )
 
 // Runner drives a Toolset through the lifecycle phases, merging each tool's phase
 // method with the registered non-tool Hooks for that phase.
 type Runner struct {
-	hooks []Hook
+	hooks  []Hook
+	status *status.Service
 }
 
 // NewRunner builds a Runner from the Hooks registered into the fx group.
-func NewRunner(hooks []Hook) *Runner {
-	return &Runner{hooks: append([]Hook(nil), hooks...)}
+func NewRunner(hooks []Hook, status *status.Service) *Runner {
+	return &Runner{hooks: append([]Hook(nil), hooks...), status: status}
 }
 
 type hookAction struct {
@@ -62,12 +64,28 @@ func (r *Runner) RunPhase(ctx context.Context, phase Phase, set *tools.Toolset, 
 			if run == nil {
 				continue
 			}
+			if verb := phaseVerb(phase); verb != "" {
+				r.status.Set(verb + " " + t.Name())
+			}
 			if err := run(ctx); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// phaseVerb is the human verb shown per tool while a phase runs, or "" for
+// phases that have no meaningful per-tool status (the launch's coarse status
+// stands for those). Only the install phase, which can take real time per tool,
+// reports its progress this way (e.g. "Installing claude").
+func phaseVerb(phase Phase) string {
+	switch phase {
+	case PhaseInstall:
+		return "Installing"
+	default:
+		return ""
+	}
 }
 
 // toolAction returns the tool's behavior for phase, or nil if the tool does not

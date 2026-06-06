@@ -16,6 +16,7 @@ import (
 	"petris.dev/toby/internal/control/mcpserver"
 	"petris.dev/toby/internal/control/methods/git"
 	"petris.dev/toby/internal/lifecycle"
+	"petris.dev/toby/internal/status"
 	sandbox "petris.dev/toby/sandbox/runtime"
 	"petris.dev/toby/tools"
 )
@@ -32,6 +33,7 @@ type Params struct {
 	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *appconfig.Service
+	Status         *status.Service
 	Stderr         io.Writer
 
 	Runner *lifecycle.Runner

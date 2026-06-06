@@ -32,6 +32,7 @@ func startRunSandbox(ctx context.Context, params Params, manager *host.Service, 
 	}
 	debug := params.TobyConfig.DebugEnabled()
 
+	params.Status.Set("Starting sandbox")
 	conn, err := sbx.RunStart(ctx, runSpec)
 	if err != nil {
 		return err
@@ -60,6 +61,7 @@ func startRunSandbox(ctx context.Context, params Params, manager *host.Service, 
 		_ = tunnelSrv.Close()
 	}()
 
+	params.Status.Set("Waiting for sandbox")
 	select {
 	case <-ready:
 	case <-serveDone:
@@ -74,17 +76,28 @@ func startRunSandbox(ctx context.Context, params Params, manager *host.Service, 
 		return err
 	}
 	// Mount-init: chown the provider volumes at their setup paths (root docker exec).
+	params.Status.Set("Setting up mounts")
 	if err := params.SandboxService.MountSetup(ctx); err != nil {
 		return err
 	}
+	params.Status.Set("Configuring sandbox")
 	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseConfigureSandbox, toolset, lctx, false); err != nil {
 		return err
 	}
+	params.Status.Set("Writing context files")
 	if err := initSandboxContext(ctx, params, toolset, lctx); err != nil {
 		return err
 	}
+	params.Status.Set("Initializing sandbox")
 	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInitSandbox, toolset, lctx, false); err != nil {
 		return err
 	}
-	return launchTool(ctx, params, toolset, opts, extra, lctx)
+
+	// launchTool clears the status line before the tool takes the terminal. Once it
+	// returns (the tool exited), bring the spinner back to narrate teardown: the
+	// deferred grpc shutdown, connection close, and container stop above all run
+	// after this Set, and run.Run's own defers carry it through the rest.
+	err = launchTool(ctx, params, toolset, opts, extra, lctx)
+	params.Status.Set("Stopping sandbox")
+	return err
 }

@@ -23,12 +23,20 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts, params.TobyConfig.Settings().SuppressWarnings); err != nil {
 		return err
 	}
+	// The status line erases itself once the tool execs (launchTool); the deferred
+	// Stop is the safety net that clears it on any early return or error. Under
+	// debug, switch to plain mode so each step is preserved alongside the logging
+	// instead of being overwritten by the next.
+	params.Status.SetPlain(params.TobyConfig.DebugEnabled())
+	defer params.Status.Stop()
 	if params.Engine == nil {
 		return fmt.Errorf("container engine is not configured")
 	}
+	params.Status.Set("Connecting to Docker")
 	if err := params.Engine.Ping(ctx); err != nil {
 		return exitcode.New(2, "docker socket not reachable (is the daemon running, or DOCKER_HOST set?): %v", err)
 	}
+	params.Status.Set("Building sandbox")
 	sbx, err := params.SandboxFactory.FromOptions(opts, params.TobyConfig.Image(), params.TobyConfig.Build())
 	if err != nil {
 		return err
@@ -38,6 +46,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		return fmt.Errorf("sandbox service is not configured")
 	}
 	params.SandboxService.Prepare(sbx)
+	params.Status.Set("Configuring mounts")
 	if err := params.SandboxService.ConfigureMounts(params.TobyConfig.MountProfile(), params.TobyConfig.ToolMountProfiles()); err != nil {
 		return err
 	}
@@ -48,6 +57,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	}
 	lctx := lifecycle.Context{Options: opts, Stderr: params.Stderr, SuppressWarnings: params.TobyConfig.Settings().SuppressWarnings}
 	activeTools := toolset.OrderedToolNames()
+	params.Status.Set("Preparing tools")
 	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseHostPrepare, toolset, lctx, false); err != nil {
 		return err
 	}
@@ -79,8 +89,12 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		if err := params.MCPProxy.Configure(ctx, params.TobyConfig, mcpDefaults(params.TobyConfig)); err != nil {
 			return err
 		}
+		params.Status.Set("Starting MCP servers")
 		params.MCPProxy.StartAll(ctx)
-		defer params.MCPProxy.StopAll(context.Background())
+		defer func() {
+			params.Status.Set("Stopping MCP servers")
+			params.MCPProxy.StopAll(context.Background())
+		}()
 	}
 
 	mounts := params.SandboxService.RuntimeMounts()

@@ -30,16 +30,20 @@ func launchTool(ctx context.Context, params Params, toolset *tools.Toolset, opts
 		return fmt.Errorf("toolset cannot launch without a primary tool")
 	}
 	if opts != nil && opts.Install {
-		return params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, false)
+		err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, false)
+		params.Status.Stop()
+		return err
 	}
 	if opts != nil && opts.Upgrade {
 		if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, true); err != nil {
 			return err
 		}
+		params.Status.Stop()
 		return primary.Launch(ctx, extra)
 	}
 	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, false); err != nil {
 		return err
 	}
+	params.Status.Stop()
 	return primary.Launch(ctx, extra)
 }

@@ -25,6 +25,7 @@ import (
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/session/resolve"
 	"petris.dev/toby/internal/session/run"
+	"petris.dev/toby/internal/status"
 	"petris.dev/toby/internal/tools/wiring"
 	"petris.dev/toby/platform/executil"
 	"petris.dev/toby/providers"
@@ -111,6 +112,7 @@ func sessionModules(toolModule fx.Option, stderr io.Writer) []fx.Option {
 		gitservice.Module(),
 		sessionservice.Module(),
 		sandbox.Module(),
+		status.Module(),
 		toolModule,
 		tools.Module(),
 		lifecycle.Module(),
@@ -142,6 +144,7 @@ type executionSessionParams struct {
 	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *appconfig.Service
+	Status         *status.Service
 	Runner         *lifecycle.Runner
 }
 
@@ -159,6 +162,7 @@ func newExecutionSessionParams(stderr io.Writer) func(executionSessionParams) ru
 			MCPProxy:       params.MCPProxy,
 			MCPServer:      params.MCPServer,
 			TobyConfig:     params.TobyConfig,
+			Status:         params.Status,
 			Stderr:         stderr,
 			Runner:         params.Runner,
 		}
