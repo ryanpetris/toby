@@ -231,7 +231,11 @@ to `docker build`.
   listener is on the container's own loopback, so it stays container-private, while
   tools still have outbound network access. The gRPC control link rides the Docker
   attach stream (the API connection), not a network port, so it works the same for
-  local, Docker Desktop, Podman, and remote daemons with nothing to tunnel.
+  local, Docker Desktop, Podman, and remote daemons with nothing to tunnel. A launch
+  may additionally publish sandbox ports to the host via Docker port bindings
+  (`container.ports` / `--publish`), which set the container's `ExposedPorts` and
+  `HostConfig.PortBindings` at create time; a published service must bind `0.0.0.0`
+  inside the sandbox to be reachable from the host.
 
 The runtime provides `sandboxpath.Paths`. The host-side `sandbox.SandboxService`
 exposes those paths and centralizes sandbox file and command operations for tool

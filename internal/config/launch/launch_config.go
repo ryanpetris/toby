@@ -60,6 +60,7 @@ type launchConfig struct {
 type launchContainerConfig struct {
 	Image string
 	Build tools.Build
+	Ports []string
 }
 
 type launchSettingsConfig struct {
@@ -87,11 +88,20 @@ type launchProjectConfig struct {
 // launchSchema is the strict decode target for a launch config file.
 type launchSchema struct {
 	Name      string                          `json:"name" yaml:"name"`
-	Container containerconfig.Config          `json:"container" yaml:"container"`
+	Container launchContainerSchema           `json:"container" yaml:"container"`
 	Settings  launchSettingsSchema            `json:"settings" yaml:"settings"`
 	Project   map[string]*launchProjectSchema `json:"project" yaml:"project"`
 	Workdir   string                          `json:"workdir" yaml:"workdir"`
 	Tool      map[string]*launchToolSchema    `json:"tool" yaml:"tool"`
+}
+
+// launchContainerSchema is the launch config's `container:` block: the shared
+// image/build fields plus the host ports to publish. Ports are launch-only, so
+// they extend the shared block here rather than living in containerconfig.Config
+// (which the host config also decodes).
+type launchContainerSchema struct {
+	containerconfig.Config `yaml:",inline"`
+	Ports                  []string `json:"ports" yaml:"ports"`
 }
 
 type launchSettingsSchema struct {
@@ -240,6 +250,7 @@ func overridesFromLaunchConfig(cfg launchConfig) appconfig.LaunchOverrides {
 	return appconfig.LaunchOverrides{
 		Image:            cfg.Container.Image,
 		Build:            cfg.Container.Build,
+		Ports:            cfg.Container.Ports,
 		MountProfile:     cfg.Settings.MountProfile,
 		SuppressWarnings: cfg.Settings.SuppressWarnings,
 		Debug:            cloneBool(cfg.Settings.Debug),
@@ -253,6 +264,9 @@ func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOv
 	}
 	if src.Build.IsSet() {
 		dst.Build = src.Build
+	}
+	if len(src.Ports) > 0 {
+		dst.Ports = append(dst.Ports, src.Ports...)
 	}
 	if src.MountProfile != "" {
 		dst.MountProfile = src.MountProfile
@@ -322,7 +336,7 @@ func parseLaunchConfigWithPaths(schema launchSchema, dir string, paths config.Pa
 	if err != nil {
 		return launchConfig{}, err
 	}
-	cfg.Container = launchContainerConfig{Image: strings.TrimSpace(schema.Container.Image), Build: build}
+	cfg.Container = launchContainerConfig{Image: strings.TrimSpace(schema.Container.Image), Build: build, Ports: resolvePortSpecs(schema.Container.Ports)}
 	projects, err := resolveLaunchProjects(schema.Project, dir, paths)
 	if err != nil {
 		return launchConfig{}, err
@@ -347,6 +361,24 @@ func (s launchSettingsSchema) resolve() (launchSettingsConfig, error) {
 		cfg.SuppressWarnings = suppression
 	}
 	return cfg, nil
+}
+
+// resolvePortSpecs trims each decoded `container.ports` entry and drops empties,
+// preserving order. The Docker-style spec strings are validated later, where the
+// container request is built. A nil/empty input resolves to nil.
+func resolvePortSpecs(ports []string) []string {
+	resolved := make([]string, 0, len(ports))
+	for _, port := range ports {
+		port = strings.TrimSpace(port)
+		if port == "" {
+			continue
+		}
+		resolved = append(resolved, port)
+	}
+	if len(resolved) == 0 {
+		return nil
+	}
+	return resolved
 }
 
 func cloneBool(value *bool) *bool {

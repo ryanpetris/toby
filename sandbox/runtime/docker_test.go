@@ -12,6 +12,7 @@ import (
 
 	dcontainer "github.com/moby/moby/api/types/container"
 	dmount "github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 )
 
@@ -135,6 +136,44 @@ func TestContainerRequestMultiMountsSetupAndFinal(t *testing.T) {
 	}
 	if v, ok := findMount(hc.Mounts, m.Target); !ok || v.Source != m.Volume {
 		t.Fatalf("volume must also be mounted at its final target: %#v ok=%v", v, ok)
+	}
+}
+
+func TestContainerRequestPublishesPorts(t *testing.T) {
+	inst, _ := dockerInstance(t, func(s *Spec) {
+		s.Ports = []string{"8080:3000", "127.0.0.1:9090:9090/udp"}
+	})
+	home := inst.HomeDir()
+	req := inst.containerRequest(RunSpec{Env: environ.Environment{"HOME": home}})
+
+	tcp3000 := network.MustParsePort("3000/tcp")
+	udp9090 := network.MustParsePort("9090/udp")
+
+	cfg := applyConfig(req)
+	if _, ok := cfg.ExposedPorts[tcp3000]; !ok {
+		t.Fatalf("exposed ports missing 3000/tcp: %#v", cfg.ExposedPorts)
+	}
+	if _, ok := cfg.ExposedPorts[udp9090]; !ok {
+		t.Fatalf("exposed ports missing 9090/udp: %#v", cfg.ExposedPorts)
+	}
+
+	hc := applyHostConfig(req)
+	if b := hc.PortBindings[tcp3000]; len(b) != 1 || b[0].HostPort != "8080" || b[0].HostIP.IsValid() {
+		t.Fatalf("3000/tcp binding = %#v", hc.PortBindings[tcp3000])
+	}
+	if b := hc.PortBindings[udp9090]; len(b) != 1 || b[0].HostPort != "9090" || b[0].HostIP.String() != "127.0.0.1" {
+		t.Fatalf("9090/udp binding = %#v", hc.PortBindings[udp9090])
+	}
+}
+
+func TestContainerRequestWithoutPortsPublishesNone(t *testing.T) {
+	inst, _ := dockerInstance(t, nil)
+	req := inst.containerRequest(RunSpec{Env: environ.Environment{"HOME": inst.HomeDir()}})
+	if got := applyConfig(req).ExposedPorts; len(got) != 0 {
+		t.Fatalf("exposed ports = %#v, want none", got)
+	}
+	if got := applyHostConfig(req).PortBindings; len(got) != 0 {
+		t.Fatalf("port bindings = %#v, want none", got)
 	}
 }
 

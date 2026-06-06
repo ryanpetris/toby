@@ -75,6 +75,7 @@ func newLaunchCommand(params Params, primary tools.Tool, rootConfigPath *string)
 func addSandboxFlags(cmd *cobra.Command) {
 	cmd.Flags().String("project", "", "Project directory to mount and chdir into. Defaults to $XDG_PROJECTS_DIR/<env> when omitted.")
 	cmd.Flags().String("image", "", "Container image to use for the sandbox.")
+	cmd.Flags().StringArrayP("publish", "p", nil, "Publish a sandbox port to the host, Docker -p style (e.g. 8080:3000 or 127.0.0.1:9090:9090). Repeatable.")
 }
 
 func addContextFlags(cmd *cobra.Command, primary tools.Tool, contextTools []tools.Tool) {

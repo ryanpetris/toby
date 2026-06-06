@@ -208,6 +208,8 @@ tool:
   `/toby/context`); it is not configurable.
 - Local MCP entries can set a per-server `image`. MCP sidecar image precedence is
   per-MCP `image`, then the main sandbox image, then Toby's built-in image.
+- Publishing sandbox ports to the host (`container.ports`) is launch-only — set it
+  in the project `.toby.yaml` or with `--publish`/`-p`, not in the host config.
 - `settings.autoloadProjectConfig: true` loads `<project>/.toby.yaml` on direct
   launches (see [Autoload](#autoload)).
 - `settings.debug: true` enables debug mode. In sandbox and MCP sidecar
@@ -273,6 +275,9 @@ container:
   build:                    # optional; build an image before launch
     context: .              # defaults to this config file's directory
     dockerfile: Dockerfile.toby  # optional; relative to context, defaults to Dockerfile
+  ports:                    # optional; publish sandbox ports to the host (Docker -p style)
+    - "8080:3000"           # host 8080 → sandbox 3000
+    - "127.0.0.1:9090:9090/udp"  # bind a specific host IP and protocol
 settings:
   autoUpgrade: true      # optional; defaults to false
   mountProfile: work     # optional; namespaces this launch's persistent volumes
@@ -292,6 +297,20 @@ tool:
   uv:
   npm:
 ```
+
+### `container.ports`
+
+`container.ports` is a list of Docker-style publish specs that expose a sandbox
+port on the host, the same syntax as `docker run -p`:
+`[hostIP:][hostPort:]containerPort[/proto]` (e.g. `8080:3000`,
+`127.0.0.1:9090:9090`, `5000/udp`). Each `--publish`/`-p` flag adds to the list.
+
+- This is **launch-only** — it lives in the project `.toby.yaml` (or `--config`
+  file) and the `--publish` flag, not in the host config.
+- The bare `containerPort` form lets the daemon pick the host port.
+- A published port reaches the host only if the in-sandbox service binds
+  `0.0.0.0` (not just the container's loopback). Bracketed IPv6 host addresses
+  are not supported.
 
 ### `project`
 

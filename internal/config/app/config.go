@@ -70,11 +70,14 @@ type MCPConfig struct {
 	Servers map[string]MCPServer
 }
 
-// ContainerConfig is the resolved `container:` block: the image to run and an
-// optional build that produces it.
+// ContainerConfig is the resolved `container:` block: the image to run, an
+// optional build that produces it, and the host ports to publish. Ports are
+// launch-only — they come from the project config or the --publish flag and are
+// folded in via WithOverrides; the host config schema does not carry them.
 type ContainerConfig struct {
 	Image string
 	Build tools.Build
+	Ports []string
 }
 
 type SettingsConfig struct {
@@ -552,6 +555,7 @@ func (s *Service) YoloEnabled() bool    { return s.Settings().YoloEnabled() }
 func (s *Service) DebugEnabled() bool   { return s.Settings().DebugEnabled() }
 func (s *Service) Image() string        { return s.Container().Image }
 func (s *Service) Build() tools.Build   { return s.Container().Build }
+func (s *Service) Ports() []string      { return s.Container().Ports }
 func (s *Service) MountProfile() string { return s.Settings().MountProfile }
 
 // LaunchOverrides carries the config-corresponding values a single launch may
@@ -561,6 +565,7 @@ type LaunchOverrides struct {
 	MountProfile      string
 	Image             string
 	Build             tools.Build
+	Ports             []string
 	Debug             *bool
 	Yolo              *bool
 	ToolMountProfiles map[string]string
@@ -598,6 +603,9 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	}
 	if o.Build.IsSet() {
 		container.Build = o.Build
+	}
+	if len(o.Ports) > 0 {
+		container.Ports = append(append([]string(nil), container.Ports...), o.Ports...)
 	}
 	next.config.Container = container
 

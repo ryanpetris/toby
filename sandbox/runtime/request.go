@@ -37,6 +37,9 @@ func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContaine
 		c.Entrypoint = []string{binary}
 		c.WorkingDir = workdir
 		c.Tty = false
+		if len(s.exposedPorts) > 0 {
+			c.ExposedPorts = s.exposedPorts
+		}
 	}}
 
 	// Mount each volume at both its final target and its isolated setup path.
@@ -62,9 +65,14 @@ func (s *instance) containerRequest(spec RunSpec) testcontainers.GenericContaine
 		if len(groups) > 0 {
 			h.GroupAdd = append(h.GroupAdd, groups...)
 		}
+		if len(s.portBindings) > 0 {
+			h.PortBindings = s.portBindings
+		}
 		// Bridge networking (the default): the manager binds 127.0.0.1 on the
 		// container's own loopback, so the proxy listener stays container-private.
-		// Host networking would bind the host's loopback instead.
+		// Host networking would bind the host's loopback instead. Published ports
+		// (h.PortBindings) reach the host only if the in-sandbox service binds
+		// 0.0.0.0 rather than just the container's loopback.
 	}
 
 	req.Labels = map[string]string{

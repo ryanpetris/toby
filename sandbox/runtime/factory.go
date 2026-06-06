@@ -28,6 +28,7 @@ type Spec struct {
 	Workdir  string
 	Image    string
 	Build    tools.Build
+	Ports    []string
 }
 
 type Project struct {
@@ -48,8 +49,8 @@ func NewFactory(paths config.Paths, containers *engine.Service) Factory {
 }
 
 // FromOptions resolves the sandbox spec from the launch-only options, with the
-// image and build supplied separately from the effective config.
-func (f Factory) FromOptions(opts *tools.Options, image string, build tools.Build) (Instance, error) {
+// image, build, and published ports supplied separately from the effective config.
+func (f Factory) FromOptions(opts *tools.Options, image string, build tools.Build, ports []string) (Instance, error) {
 	if opts == nil {
 		opts = &tools.Options{}
 	}
@@ -60,16 +61,23 @@ func (f Factory) FromOptions(opts *tools.Options, image string, build tools.Buil
 	}
 	spec.Image = strings.TrimSpace(image)
 	spec.Build = build
+	spec.Ports = ports
 
 	return f.newInstance(spec)
 }
 
 // newInstance constructs the Docker instance for a resolved spec, defaulting the
-// image when neither an image nor a build is configured. It touches no daemon.
+// image when neither an image nor a build is configured and validating the
+// published-port specs. It touches no daemon.
 func (f Factory) newInstance(spec Spec) (Instance, error) {
 	image := spec.Image
 	if image == "" && !spec.Build.IsSet() {
 		image = DefaultImage
+	}
+
+	exposedPorts, portBindings, err := resolvePublishedPorts(spec.Ports)
+	if err != nil {
+		return nil, exitcode.New(2, "%s", err)
 	}
 
 	base, err := NewBaseInstance(BaseInstanceParams{
@@ -86,6 +94,8 @@ func (f Factory) newInstance(spec Spec) (Instance, error) {
 		containers:   f.containers,
 		image:        image,
 		build:        spec.Build,
+		exposedPorts: exposedPorts,
+		portBindings: portBindings,
 	}, nil
 }
 

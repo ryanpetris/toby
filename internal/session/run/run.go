@@ -40,7 +40,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		return exitcode.New(2, "docker socket not reachable (is the daemon running, or DOCKER_HOST set?): %v", err)
 	}
 	params.Status.Set("Building sandbox")
-	sbx, err := params.SandboxFactory.FromOptions(opts, params.TobyConfig.Image(), params.TobyConfig.Build())
+	sbx, err := params.SandboxFactory.FromOptions(opts, params.TobyConfig.Image(), params.TobyConfig.Build(), params.TobyConfig.Ports())
 	if err != nil {
 		return err
 	}

@@ -48,6 +48,11 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 		return result, err
 	}
 	result.Overrides.Image = image
+	publish, err := flags.GetStringArray("publish")
+	if err != nil {
+		return result, err
+	}
+	result.Overrides.Ports = publish
 	applyDebugFlag(cmd, &result.Overrides)
 	applyYoloFlag(cmd, &result.Overrides)
 	for _, item := range contextTools {

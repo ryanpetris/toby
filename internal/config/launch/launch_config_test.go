@@ -413,6 +413,41 @@ func configPaths(home, projectRoot string) config.Paths {
 
 type configTestTool struct{ tools.Base }
 
+func TestLaunchConfigDecodesContainerPorts(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "toby.yaml")
+	writeTestFile(t, configPath, []byte(`
+container:
+  image: custom-node
+  ports:
+    - "8080:3000"
+    - " 127.0.0.1:9090:9090/udp "
+    - ""
+project:
+  demo:
+tool:
+  opencode:
+`))
+	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Container.Ports, []string{"8080:3000", "127.0.0.1:9090:9090/udp"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
+	}
+	if overrides := overridesFromLaunchConfig(cfg); !reflect.DeepEqual(overrides.Ports, cfg.Container.Ports) {
+		t.Fatalf("override ports = %#v, want %#v", overrides.Ports, cfg.Container.Ports)
+	}
+}
+
+func TestMergeLaunchOverridesAppendsPorts(t *testing.T) {
+	dst := appconfig.LaunchOverrides{Ports: []string{"8080:3000"}}
+	mergeLaunchOverrides(&dst, appconfig.LaunchOverrides{Ports: []string{"9090:9090"}})
+	if got, want := dst.Ports, []string{"8080:3000", "9090:9090"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged ports = %#v, want %#v", got, want)
+	}
+}
+
 func writeTestFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

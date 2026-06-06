@@ -134,6 +134,8 @@ container:
   build: # optional; build an image before launch
     context: . # defaults to this config file's directory
     dockerfile: Dockerfile.toby # optional; relative to context, defaults to Dockerfile
+  ports: # optional; publish sandbox ports to the host, Docker -p style
+    - "8080:3000" # [hostIP:][hostPort:]containerPort[/proto]
 settings:
   autoUpgrade: true # optional; defaults to false
   debug: false # optional; overrides global settings.debug for this launch
@@ -206,6 +208,7 @@ Useful flags:
 
 - `--project <dir>` selects a project directory under `XDG_PROJECTS_DIR`.
 - `--image <image>` selects the container image for direct launches.
+- `--publish`/`-p <spec>` publishes a sandbox port to the host, Docker `-p` style (e.g. `-p 8080:3000`); repeatable.
 - `--config <file>` launches from a YAML or JSON launch configuration.
 - `--debug` enables debug mode for the launch, overriding config.
 - `--install` installs the selected tool and exits.

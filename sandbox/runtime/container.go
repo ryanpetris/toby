@@ -25,6 +25,7 @@ import (
 	"petris.dev/toby/tools"
 
 	dstdcopy "github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 )
@@ -34,9 +35,11 @@ const DefaultImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookwor
 
 type instance struct {
 	BaseInstance
-	containers *engine.Service
-	image      string
-	build      tools.Build
+	containers   *engine.Service
+	image        string
+	build        tools.Build
+	exposedPorts network.PortSet
+	portBindings network.PortMap
 
 	mu           sync.Mutex
 	runContainer testcontainers.Container

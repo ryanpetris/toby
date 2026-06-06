@@ -39,6 +39,16 @@ func TestParseLaunchCommandUsesCobraFlagsAndPassthrough(t *testing.T) {
 	}
 }
 
+func TestParseLaunchCommandCollectsPublishFlags(t *testing.T) {
+	parsed, err := executeTestLaunchParser(t, []string{"proj", "-p", "8080:3000", "--publish", "127.0.0.1:9090:9090"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Overrides.Ports, []string{"8080:3000", "127.0.0.1:9090:9090"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseLaunchCommandPreservesDashAfterFirstDash(t *testing.T) {
 	parsed, err := executeTestLaunchParser(t, []string{"proj", "--", "--", "foo"}, nil)
 	if err != nil {
