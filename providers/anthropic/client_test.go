@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"petris.dev/toby/internal/version"
 	"petris.dev/toby/providers"
-	"petris.dev/toby/version"
 )
 
 func TestGetModelsRequiresHTTPClient(t *testing.T) {

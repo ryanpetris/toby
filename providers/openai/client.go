@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	"petris.dev/toby/internal/version"
 	"petris.dev/toby/providers"
-	"petris.dev/toby/version"
 )
 
 // Service queries an OpenAI-compatible /models endpoint.

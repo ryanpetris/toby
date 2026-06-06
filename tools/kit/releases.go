@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"strings"
 
-	"petris.dev/toby/version"
+	"petris.dev/toby/internal/version"
 )
 
 func GetJSON(ctx context.Context, client *http.Client, url, accept string, target any) error {

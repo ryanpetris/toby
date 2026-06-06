@@ -102,7 +102,7 @@ toby --config review.yaml
 ```
 
 The primary tool (`opencode`) launches in the foreground; `uv` and `npm` are
-installed and available. The primary project (`app`) is the working
+installed and available. The primary project (`internal/app`) is the working
 directory. In this Docker example, both projects appear inside the sandbox under
 `/toby/workspace/`.
 

@@ -46,7 +46,7 @@ path expansion.
 ## Host config
 
 Host config is loaded from `$XDG_CONFIG_HOME/toby/` in this order, and any files
-that exist are deep-merged in order (`config/file`, `config/app`):
+that exist are deep-merged in order (`config/file`, `internal/config/app`):
 
 1. `config.json`
 2. `config.yaml`

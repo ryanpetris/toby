@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"petris.dev/toby/diagnostic/exitcode"
+	"petris.dev/toby/internal/tools/fake"
 	sandboxapi "petris.dev/toby/sandbox"
-	"petris.dev/toby/tools/fake"
 	"petris.dev/toby/tools/helpers"
 )
 

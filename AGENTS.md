@@ -44,15 +44,21 @@ code, don't redefine the term.
 
 ## Package layout
 
-Every package lives in its proper home: a top-level package when it is a clean public
-API, or a plain `internal/` package when it should stay genuinely private. The
-`internal/dirty/` quarantine that once held the un-cleaned code is **gone** — the
-terminology/API cleanup it tracked is complete and the tree has been fully emptied
-(leaf-first, ending with the composition root `app`).
+Every package lives in its proper home, split by who may import it. A **top-level**
+package is part of the public surface another module could build on if it used Toby
+as a library: the `tools` plugin contract and its `helpers`/`kit`, the `sandbox`
+interface and `sandbox/runtime`, `providers`, the container and context primitives,
+the generic `platform`/`config/file` helpers, and the like. Everything that exists
+only to assemble and run the Toby binary — the composition root, the CLI, the
+host↔sandbox control plane, session orchestration, the concrete tool
+implementations, and build metadata — lives under `internal/`, where the Go
+toolchain forbids any out-of-module import.
 
-New packages start clean in their proper location: exported names follow
+New packages start in the right half of that split: put it under `internal/` unless
+an external consumer could genuinely build on it. Exported names follow
 [the glossary](docs/glossary.md), dead exports stay unexported, and the public surface
-is kept minimal. `main.go` imports only the composition root (`app`) to bootstrap.
+is kept minimal. `main.go` imports only the composition root (`internal/app`) to
+bootstrap.
 
 ## Build, test, and run
 
@@ -64,11 +70,11 @@ gofmt -l .        # should print nothing
 ```
 
 The project uses [uber-go/fx](https://github.com/uber-go/fx) for dependency
-injection; `app/module.go` is the composition root. `main.go` calls
+injection; `internal/app/module.go` is the composition root. `main.go` calls
 `app.Run()`.
 
 `version.Current` is overridden at build time with
-`-ldflags "-X petris.dev/toby/version.Current=<version>"`; release
+`-ldflags "-X petris.dev/toby/internal/version.Current=<version>"`; release
 builds are produced by `.github/workflows/release.yaml`.
 
 `support/toby/Dockerfile` is the reference sandbox image used by the
@@ -97,26 +103,36 @@ Go module in `go.mod` (direct and indirect) and the license it ships under.
 
 ## Package map
 
-| Area | Packages |
-| --- | --- |
-| Entry / wiring | `app` (composition root + `main.go` entry) |
-| CLI | `cli` (Cobra command tree) |
-| Session | `session/run` (end-to-end launch runner), `session/resolve` (privileged session-config resolver), `config/session` (resolved, sandbox-safe config handed to tools) |
-| Context injection | `context/files`, `context/setup` |
-| Tools | tool implementations `tools/builtin/<name>`; fx composition `tools/wiring`; shared `tools/{kit,helpers,fake}` |
-| **Clean (promoted)** | `config` (XDG path resolution), `config/app` (host config: deep-merges defaults with the user config), `config/file` (JSON/YAML decode + deep merge), `container/engine`, `container/layout`, `container/mount`, `control` (JSON-RPC envelope + capability `Router` + host-identity sentinels, used in-process), `control/tunnel` (gRPC-over-stdio transport + host proxy bridge), `control/stdio` (net.Conn over stdio + one-shot listener), `control/host` (router for the in-process git capability + shared reverse proxy), `control/sandbox` (the proxy-only in-sandbox manager), `control/methods/git` (the host-side git capability), `control/httpproxy`, `control/mcpproxy` (MCP server proxy: remote upstreams + Docker stdio/http sidecars), `control/mcpserver` (host-side MCP server framework + per-session contract) & `control/mcpserver/services/{git,session}` (the git and session-introspection tool/resource service plugins), `diagnostic/exitcode`, `diagnostic/warning`, `lifecycle` (launch phase runner), `platform/environ` (env-var helper), `platform/executil`, `providers` (+ `openai`, `anthropic`), `sandbox` (tool-facing sandbox interface), `sandbox/runtime` (host-side sandbox runtime + Docker backend), `sandbox/binary`, `tools` (`Tool` contract + `Registry`), `version` |
+The table is split by import boundary: **public** packages stay at the top level
+because another module could build on them if it used Toby as a library; **internal**
+packages live under `internal/` because they exist only to assemble and run the Toby
+binary, and the Go toolchain forbids importing them from outside the module.
 
-The host↔sandbox transport is the gRPC `Tunnel` service (`control/tunnel`) carried over the container's stdio (`control/stdio`); the sandbox manager is proxy-only and the host drives all sandbox operations via the Docker API. The remaining **capability** is host Git in `control/methods/git`: it owns its wire contract (`types.go`, `contract.go`) and handler (`Service`), is provided into the `control.host.handlers` fx group via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`, and is dispatched in-process through the `control.Router` that `control/host` builds from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared sentinels (`HostUser`/`HostGroup`) live in `control` itself.
+| Boundary | Area | Packages |
+| --- | --- | --- |
+| Public | Tools SDK | `tools` (`Tool` contract + `Registry`), `tools/helpers`, `tools/kit` |
+| Public | Sandbox | `sandbox` (tool-facing sandbox interface), `sandbox/runtime` (host-side sandbox runtime + Docker backend), `container/engine`, `container/layout`, `container/mount`, `context/files` |
+| Public | Providers | `providers` (+ `openai`, `anthropic`) |
+| Public | Shared helpers | `config` (XDG path resolution), `config/file` (JSON/YAML decode + deep merge), `config/session` (resolved, sandbox-safe config handed to tools), `diagnostic/exitcode`, `diagnostic/warning`, `platform/environ` (env-var helper), `platform/executil` |
+| Internal | Entry / wiring | `internal/app` (composition root + `main.go` entry), `internal/cli` (Cobra command tree), `internal/version` |
+| Internal | Session | `internal/session/run` (end-to-end launch runner), `internal/session/resolve` (privileged session-config resolver) |
+| Internal | Config / context | `internal/config/app` (host config: deep-merges defaults with the user config), `internal/config/launch`, `internal/config/container`, `internal/context/setup` |
+| Internal | Tools | tool implementations `internal/tools/builtin/<name>`; fx composition `internal/tools/wiring`; test double `internal/tools/fake` |
+| Internal | Control plane | `internal/control` (JSON-RPC envelope + capability `Router` + host-identity sentinels, used in-process), `internal/control/tunnel` (gRPC-over-stdio transport + host proxy bridge), `internal/control/stdio` (net.Conn over stdio + one-shot listener), `internal/control/host` (router for the in-process git capability + shared reverse proxy), `internal/control/sandbox` (the proxy-only in-sandbox manager), `internal/control/methods/git` (the host-side git capability), `internal/control/httpproxy`, `internal/control/mcpproxy` (MCP server proxy: remote upstreams + Docker stdio/http sidecars), `internal/control/mcpserver` (host-side MCP server framework + per-session contract) & `internal/control/mcpserver/services/{git,session}` (the git and session-introspection tool/resource service plugins) |
+| Internal | Lifecycle | `internal/lifecycle` (launch phase runner) |
+| Internal | Sandbox delivery | `internal/sandbox/binary` |
+
+The host↔sandbox transport is the gRPC `Tunnel` service (`internal/control/tunnel`) carried over the container's stdio (`internal/control/stdio`); the sandbox manager is proxy-only and the host drives all sandbox operations via the Docker API. The remaining **capability** is host Git in `internal/control/methods/git`: it owns its wire contract (`types.go`, `contract.go`) and handler (`Service`), is provided into the `control.host.handlers` fx group via `fx.Annotate(asCapability, fx.As(new(control.Capability)), fx.ResultTags(...))`, and is dispatched in-process through the `control.Router` that `internal/control/host` builds from that group. Generic envelope helpers (`DecodeParams`/`DecodeResult`/`EmptyResult`) and shared sentinels (`HostUser`/`HostGroup`) live in `internal/control` itself.
 
 ## Conventions
 
-- **Adding a tool:** create `tools/builtin/<name>` and let it own its identity —
+- **Adding a tool:** create `internal/tools/builtin/<name>` and let it own its identity —
   declare a `Name` constant and a `Meta` (`tools.Metadata`) value in the package,
   then implement the `tools.Tool` interface (embed `tools.Base{Metadata: Meta}`
   for identity + no-op lifecycle defaults, or `kit.Simple` for a config-driven
   CLI). Provide it into the `tools` fx group via a `Module()` that provides
   `tools.Tool`. Register the tool by adding one `{Meta, Module}` row to the
-  `entries` list in `tools/wiring`; the planning metadata and the name→module
+  `entries` list in `internal/tools/wiring`; the planning metadata and the name→module
   selection are both derived from that list, so there is no central name constant.
   A tool that depends on another references the dependency's exported `Name` (e.g.
   `Dependencies: []string{npm.Name}`); the `Registry` orders tools by a
@@ -215,7 +231,7 @@ The host↔sandbox transport is the gRPC `Tunnel` service (`control/tunnel`) car
 ## Documentation sync rules
 
 - When changing the host↔sandbox transport (the gRPC `Tunnel` service in
-  `control/tunnel`, or `control/tunnel/tunnel.proto`), update
+  `internal/control/tunnel`, or `internal/control/tunnel/tunnel.proto`), update
   [docs/architecture.md](docs/architecture.md) in the same change.
 - When changing `toby mcp` / Toby MCP tools, arguments, or setup requirements,
   update the MCP section in `README.md` (and `docs/sandbox.md`) in the same

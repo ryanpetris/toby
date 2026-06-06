@@ -14,7 +14,7 @@ import (
 	"path"
 	"strings"
 
-	"petris.dev/toby/control"
+	"petris.dev/toby/internal/control"
 
 	"github.com/moby/moby/client"
 )

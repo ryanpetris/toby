@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/linux-x86_64 dist/linux-arm64 dist/darwin-x86_64 dist/darwin-arm64
-          ldflags="-s -w -extldflags=-static -X petris.dev/toby/version.Current=${VERSION}"
+          ldflags="-s -w -extldflags=-static -X petris.dev/toby/internal/version.Current=${VERSION}"
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-x86_64/toby .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/linux-arm64/toby .

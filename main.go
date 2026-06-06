@@ -3,7 +3,7 @@
 package main
 
 import (
-	"petris.dev/toby/app"
+	"petris.dev/toby/internal/app"
 )
 
 func main() {

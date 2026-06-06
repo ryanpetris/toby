@@ -13,7 +13,7 @@ import (
 	"sync"
 
 	"petris.dev/toby/container/mount"
-	"petris.dev/toby/control/tunnel"
+	"petris.dev/toby/internal/control/tunnel"
 	"petris.dev/toby/platform/environ"
 	sandboxapi "petris.dev/toby/sandbox"
 )

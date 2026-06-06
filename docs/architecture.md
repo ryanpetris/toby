@@ -51,13 +51,13 @@ to the sandbox.
 
 Toby is wired together with [uber-go/fx](https://github.com/uber-go/fx)
 dependency injection. `main.go` calls `app.Run()`, which builds a planning fx
-application from `app/module.go` and executes the Cobra CLI.
+application from `internal/app/module.go` and executes the Cobra CLI.
 
 The root planning graph composes:
 
 - `tools.PlanningModule()` — metadata-only tools used for command generation,
   config validation, dependency expansion, and launch-tool discovery.
-- `sandbox.Module()` (`control/sandbox`) — the proxy-only in-sandbox manager for
+- `sandbox.Module()` (`internal/control/sandbox`) — the proxy-only in-sandbox manager for
   the hidden `toby sandbox manager` command.
 - Supporting providers: `config.NewPaths` (XDG path resolution),
   `appconfig.New`, `tool.NewRegistry`, and the session runner factory.
@@ -65,15 +65,15 @@ The root planning graph composes:
 Each launch builds a separate execution fx graph. That graph contains only the
 selected tool dependency closure from `tools.SelectedModule(...)`, the selected
 sandbox runtime module when known, and the host-side services needed for that
-run: `sandbox.Module()`, `host.Module()` (`control/host`), `mcpserver.Module()`
+run: `sandbox.Module()`, `host.Module()` (`internal/control/host`), `mcpserver.Module()`
 (plus the `gitservice`/`sessionservice` service-plugin modules),
 `contextfiles.NewService`, `executil.NewProcessRunner`, `tool.NewRegistry`, and
 the lifecycle hook providers.
 
-The CLI is built in `cli`. `NewRootCommand` registers:
+The CLI is built in `internal/cli`. `NewRootCommand` registers:
 
 - one launch subcommand per registered tool that has launch help, via
-  `Registry.LaunchTools()` (see `cli/root.go`);
+  `Registry.LaunchTools()` (see `internal/cli/root.go`);
 - the hidden `toby sandbox manager` command tree (`sandbox.go`);
 - a shell-completion command.
 
@@ -83,41 +83,41 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 
 | Package | Responsibility |
 | --- | --- |
-| `app` | fx application wiring and entry point. |
-| `cli` | Cobra commands, flag parsing, `toby sandbox` tree. |
-| `config/launch` | `--config` / `.toby.yaml` launch config parsing and resolution. |
-| `session/run` | End-to-end launch orchestration (`run.Run`). |
+| `internal/app` | fx application wiring and entry point. |
+| `internal/cli` | Cobra commands, flag parsing, `toby sandbox` tree. |
+| `internal/config/launch` | `--config` / `.toby.yaml` launch config parsing and resolution. |
+| `internal/session/run` | End-to-end launch orchestration (`run.Run`). |
 | `config` | XDG paths (`paths.go`). |
 | `config/file` | Config file decoding (JSON/YAML), deep merge. |
-| `config/app` | Host config schema, validation, and context-file rendering (`appconfig`). |
+| `internal/config/app` | Host config schema, validation, and context-file rendering (`appconfig`). |
 | `context/files` | Context file session/builder for generated config and configured instructions. |
-| `context/setup` | Context lifecycle hooks for host config and tool context files. |
-| `control` | JSON-RPC 2.0 envelope (request/response/error types, codes, decoders), the capability `Router`, and the host-identity sentinels. Used in-process by the host Git capability. |
-| `control/tunnel` | gRPC-over-stdio transport: the `Tunnel` service (proto-generated), the host server that bridges tunneled connections into the reverse proxy, the client dialer/forwarder, and the fixed in-container proxy address. |
-| `control/stdio` | `net.Conn` over an independent reader/writer pair plus a one-shot `Listener`, so gRPC runs over the container's stdin/stdout. |
-| `control/methods/git` | The host-side Git capability: wire contract and handler `Service`, dispatched in-process. |
-| `control/host` | Host router for the in-process Git capability and the shared HTTP reverse proxy (`Service.HTTPProxy`). |
-| `control/sandbox` | The proxy-only in-sandbox manager: dials the host over stdio, binds the loopback listener, and forwards each accepted connection over the tunnel. |
-| `control/httpproxy` | Host reverse proxy that injects credentials and dials upstreams (`/proxy/<uuid>` path scheme), fed by the tunnel. |
-| `control/mcpserver` | Built-in Toby MCP server framework + per-session contract; service plugins live in `control/mcpserver/services/{git,session}` (host Git tools; MCP lifecycle tools and `toby://` introspection resources). |
+| `internal/context/setup` | Context lifecycle hooks for host config and tool context files. |
+| `internal/control` | JSON-RPC 2.0 envelope (request/response/error types, codes, decoders), the capability `Router`, and the host-identity sentinels. Used in-process by the host Git capability. |
+| `internal/control/tunnel` | gRPC-over-stdio transport: the `Tunnel` service (proto-generated), the host server that bridges tunneled connections into the reverse proxy, the client dialer/forwarder, and the fixed in-container proxy address. |
+| `internal/control/stdio` | `net.Conn` over an independent reader/writer pair plus a one-shot `Listener`, so gRPC runs over the container's stdin/stdout. |
+| `internal/control/methods/git` | The host-side Git capability: wire contract and handler `Service`, dispatched in-process. |
+| `internal/control/host` | Host router for the in-process Git capability and the shared HTTP reverse proxy (`Service.HTTPProxy`). |
+| `internal/control/sandbox` | The proxy-only in-sandbox manager: dials the host over stdio, binds the loopback listener, and forwards each accepted connection over the tunnel. |
+| `internal/control/httpproxy` | Host reverse proxy that injects credentials and dials upstreams (`/proxy/<uuid>` path scheme), fed by the tunnel. |
+| `internal/control/mcpserver` | Built-in Toby MCP server framework + per-session contract; service plugins live in `internal/control/mcpserver/services/{git,session}` (host Git tools; MCP lifecycle tools and `toby://` introspection resources). |
 | `sandbox/runtime` | Host-side sandbox runtime: the Factory, the tool-facing sandbox service (docker exec/cp backed), and the Docker container backend (testcontainers-go for create, the moby client for cp/exec/attach). |
 | `container/engine` | Shared Docker client and container service: tracks and tears down every container Toby starts. |
 | `tools` | `Tool` contract, `Base`, `Metadata`, `Registry`, `Toolset` (clean). |
-| `lifecycle` | Launch phase runner driving the toolset through its phases (clean). |
+| `internal/lifecycle` | Launch phase runner driving the toolset through its phases (clean). |
 | `sandbox` | Tool-facing sandbox interface (`Service`, `Paths`, `ExecOptions`) (clean). |
-| `tools/wiring` | Fx composition of the tool modules + planning metadata (clean). |
-| `tools/builtin/<name>` | One package per tool (claude, codex, t3, …) (clean). |
+| `internal/tools/wiring` | Fx composition of the tool modules + planning metadata (clean). |
+| `internal/tools/builtin/<name>` | One package per tool (claude, codex, t3, …) (clean). |
 | `providers` (+ `openai`, `anthropic`) | Upstream `/models` discovery, fx-grouped provider clients behind a caching registry. |
 | `diagnostic` | Exit-code mapping and suppressible warnings. |
 | `platform/executil` | Process runner with signal forwarding. |
-| `version` | Build version string. |
+| `internal/version` | Build version string. |
 
 ## Control plane
 
 There is a single host↔sandbox channel: a gRPC connection carried over the
 container's stdio. Everything host-initiated uses the Docker API instead.
 
-### The stdio gRPC link (`control/tunnel`, `control/stdio`)
+### The stdio gRPC link (`internal/control/tunnel`, `internal/control/stdio`)
 
 The run container's `Cmd` is `toby sandbox manager` with **no TTY**, so its
 stdout/stderr are Docker-multiplexed. The host attaches to the container's stdio
@@ -136,7 +136,7 @@ cannot honor deadlines). The `Tunnel` service has two methods:
 - `Connect(stream Chunk)` — one bidirectional stream per proxied connection,
   carrying raw bytes both ways.
 
-### Proxying (`control/httpproxy`)
+### Proxying (`internal/control/httpproxy`)
 
 Remote MCP servers, local MCP sidecars, model providers, and the built-in Toby
 MCP server are each registered as a reverse-proxy target keyed by a random UUID.
@@ -174,9 +174,9 @@ container's base env (image defaults + request env) and mutated by tool
 `SetEnvironment`/`Prepend`/`Append` calls, then injected into each subsequent
 `docker exec`.
 
-### Git (`control/host`, `control/methods/git`)
+### Git (`internal/control/host`, `internal/control/methods/git`)
 
-Host Git is dispatched **in-process** through `control`'s JSON-RPC
+Host Git is dispatched **in-process** through `internal/control`'s JSON-RPC
 envelope: the built-in Toby MCP server's Git tools encode a
 request and call `host.Service.Handle`, which dispatches to the `git` capability.
 Repository names and arguments are validated on the host, repositories must be
@@ -240,7 +240,7 @@ teardown, testcontainers' Ryuk reaper is disabled (`TESTCONTAINERS_RYUK_DISABLED
 
 Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox.
 
-### Helper binary delivery (`sandbox/binary`)
+### Helper binary delivery (`internal/sandbox/binary`)
 
 The sandbox needs a Linux Toby binary to run as the manager. The host delivers it
 with `docker cp` into the created container before starting it. On Linux the host
@@ -251,7 +251,7 @@ matching Linux helper; local Darwin builds without the release embed tag require
 ## End-to-end launch flow
 
 A direct launch such as `toby claude my-app` proceeds through the app session
-runner and `session/run/run.go`:
+runner and `internal/session/run/run.go`:
 
 1. **Plan execution.** Parse CLI flags, merge host-config sandbox defaults, and
    (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands the
@@ -285,11 +285,11 @@ runner and `session/run/run.go`:
    server, stops and removes the container, and exits with the foreground
    command's exit code (left running under `--debug`).
 
-## Tool abstraction (`tools` + `lifecycle`)
+## Tool abstraction (`tools` + `internal/lifecycle`)
 
 Every full tool implements the `Tool` interface. Each tool package declares its
 own identity (a `Name` constant and a `Meta` value) alongside its fx `Module`;
-`tools/wiring` enumerates those packages in one place. Tool implementations
+`internal/tools/wiring` enumerates those packages in one place. Tool implementations
 register into the `tools` fx group in the execution graph and are looked up by
 name in the `Registry`. Planning uses metadata-only `Tool` values built from the
 same per-tool `Meta` (same names, CLI names, groups, and declared dependencies),

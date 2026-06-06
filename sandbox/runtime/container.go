@@ -17,9 +17,9 @@ import (
 	"sync"
 
 	"petris.dev/toby/container/engine"
-	"petris.dev/toby/control/stdio"
 	"petris.dev/toby/diagnostic/exitcode"
-	sandboxbinary "petris.dev/toby/sandbox/binary"
+	"petris.dev/toby/internal/control/stdio"
+	sandboxbinary "petris.dev/toby/internal/sandbox/binary"
 	"petris.dev/toby/tools"
 
 	dstdcopy "github.com/moby/moby/api/pkg/stdcopy"

@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
+	"petris.dev/toby/internal/version"
 	"petris.dev/toby/providers"
-	"petris.dev/toby/version"
 )
 
 // Service queries the Anthropic /models endpoint.
