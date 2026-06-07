@@ -159,25 +159,27 @@ permissions:
 
 `permissions.actions` maps an action id — its RPC method name, e.g. `git.push` or
 `git.commit` — to a rule that governs whether Toby runs it: `allow` (run without
-asking), `deny` (refuse without asking), or `ask` (prompt for approval in the
-terminal). An explicit rule always wins over the action's built-in default; an
-explicit `ask` forces a prompt even where the default would allow it. Each service
-owns the default for its own actions, so there is no fixed list — anything you put
-here is honoured by id.
+asking), `deny` (refuse without asking), `ask` (prompt for approval in the terminal),
+or `always-ask` (prompt even under `settings.yolo`). An explicit rule always wins over
+the action's built-in default; an explicit `ask` forces a prompt even where the default
+would allow it. Each service owns the default for its own actions, so there is no fixed
+list — anything you put here is honoured by id.
 
 ```yaml
 permissions:
   actions:
-    git.push: ask    # the default; modifies remote state
+    git.push: ask          # the default; modifies remote state
     git.commit: allow
     some.action: deny
+    secrets.write: always-ask  # always confirm, even in yolo mode
 ```
 
 Resolution order for an action: an explicit `deny` always wins (even under
-`settings.yolo`); otherwise `settings.yolo` approves it; otherwise an explicit
-`allow`/`ask` rule, then the service's built-in default. When the result is to ask
-but there is no interactive terminal (or `settings.managedTerminal` is off), the action
-is denied — see `settings.managedTerminal` below.
+`settings.yolo`); an explicit `always-ask` always prompts (even under `settings.yolo`);
+otherwise `settings.yolo` approves it; otherwise an explicit `allow`/`ask` rule, then the
+service's built-in default. When the result is to ask but there is no interactive
+terminal (or `settings.managedTerminal` is off), the action is denied — see
+`settings.managedTerminal` below.
 
 ### `providers`
 

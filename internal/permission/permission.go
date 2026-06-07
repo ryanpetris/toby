@@ -14,15 +14,21 @@ package permission
 // Precedence:
 //
 //  1. an explicit deny rule always wins, even under yolo;
-//  2. yolo approves everything else;
-//  3. an explicit allow rule;
-//  4. an explicit ask rule, otherwise the caller's default;
-//  5. an ask outcome (and an unspecified default) becomes a prompt when canAsk,
+//  2. an explicit always-ask rule prompts, even under yolo;
+//  3. yolo approves everything else;
+//  4. an explicit allow rule;
+//  5. an explicit ask rule, otherwise the caller's default;
+//  6. an ask outcome (and an unspecified default) becomes a prompt when canAsk,
 //     otherwise a deny.
+//
+// always-ask overrides yolo only as an explicit config rule; a caller default of
+// always-ask does not, since yolo is the user's own override.
 func Resolve(rule, defaultRule Rule, yolo, canAsk bool) (decision Decision, mustAsk bool) {
 	switch {
 	case rule == RuleDeny:
 		return Deny, false
+	case rule == RuleAlwaysAsk:
+		return ask(canAsk)
 	case yolo:
 		return Allow, false
 	case rule == RuleAllow:
@@ -38,10 +44,15 @@ func Resolve(rule, defaultRule Rule, yolo, canAsk bool) (decision Decision, must
 		return Allow, false
 	case RuleDeny:
 		return Deny, false
-	default: // RuleAsk, or an unspecified default — prompt when possible
-		if canAsk {
-			return Deny, true
-		}
-		return Deny, false
+	default: // RuleAsk, RuleAlwaysAsk as a default, or an unspecified default
+		return ask(canAsk)
 	}
+}
+
+// ask returns a prompt outcome when prompting is possible, otherwise a deny.
+func ask(canAsk bool) (Decision, bool) {
+	if canAsk {
+		return Deny, true
+	}
+	return Deny, false
 }

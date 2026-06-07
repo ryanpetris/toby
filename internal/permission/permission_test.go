@@ -22,6 +22,12 @@ func TestResolve(t *testing.T) {
 		{"yolo approves explicit ask", RuleAsk, RuleAllow, true, true, Allow, false},
 		{"yolo approves default-deny", RuleUnset, RuleDeny, true, false, Allow, false},
 
+		// Explicit always-ask overrides yolo and prompts; a default of always-ask does not.
+		{"always-ask overrides yolo", RuleAlwaysAsk, RuleAllow, true, true, Deny, true},
+		{"always-ask without terminal denies under yolo", RuleAlwaysAsk, RuleAllow, true, false, Deny, false},
+		{"always-ask prompts without yolo", RuleAlwaysAsk, RuleAllow, false, true, Deny, true},
+		{"default always-ask still yields to yolo", RuleUnset, RuleAlwaysAsk, true, true, Allow, false},
+
 		// Explicit allow.
 		{"explicit allow", RuleAllow, RuleAsk, false, true, Allow, false},
 

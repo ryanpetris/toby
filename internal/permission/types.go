@@ -8,13 +8,14 @@ import "fmt"
 type Rule int
 
 const (
-	RuleUnset Rule = iota // nothing configured for the action
-	RuleAllow             // permit without asking
-	RuleDeny              // refuse without asking
-	RuleAsk               // prompt the user
+	RuleUnset     Rule = iota // nothing configured for the action
+	RuleAllow                 // permit without asking
+	RuleDeny                  // refuse without asking
+	RuleAsk                   // prompt the user (yolo approves it)
+	RuleAlwaysAsk             // prompt the user even under yolo
 )
 
-// ParseRule parses a configured rule value: "allow", "deny", or "ask".
+// ParseRule parses a configured rule value: "allow", "deny", "ask", or "always-ask".
 func ParseRule(value string) (Rule, error) {
 	switch value {
 	case "allow":
@@ -23,8 +24,10 @@ func ParseRule(value string) (Rule, error) {
 		return RuleDeny, nil
 	case "ask":
 		return RuleAsk, nil
+	case "always-ask":
+		return RuleAlwaysAsk, nil
 	}
-	return RuleUnset, fmt.Errorf("invalid permission rule %q (want allow, deny, or ask)", value)
+	return RuleUnset, fmt.Errorf("invalid permission rule %q (want allow, deny, ask, or always-ask)", value)
 }
 
 func (r Rule) String() string {
@@ -35,6 +38,8 @@ func (r Rule) String() string {
 		return "deny"
 	case RuleAsk:
 		return "ask"
+	case RuleAlwaysAsk:
+		return "always-ask"
 	default:
 		return "unset"
 	}
