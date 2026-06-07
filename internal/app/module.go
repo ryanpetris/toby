@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"petris.dev/toby/config"
 	"petris.dev/toby/internal/cli"
@@ -24,10 +26,21 @@ import (
 )
 
 func Run() {
-	os.Exit(runApp(fx.New(Module()), os.Stderr))
+	var result *cliResult
+	app := fx.New(Module(), fx.Populate(&result))
+	os.Exit(runApp(app, result, os.Stderr))
 }
 
-func runApp(app *fx.App, stderr io.Writer) int {
+// cliResult carries the CLI's exit code from the runCLI goroutine back to runApp.
+// runApp blocks on the channel so the process stays alive until the command — and
+// the deferred sandbox teardown it unwinds on a signal — has fully completed. The
+// buffer of one keeps the goroutine from blocking on send if runApp has already
+// bailed out on a start error and is no longer receiving.
+type cliResult struct{ ch chan int }
+
+func newCLIResult() *cliResult { return &cliResult{ch: make(chan int, 1)} }
+
+func runApp(app *fx.App, result *cliResult, stderr io.Writer) int {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
@@ -42,7 +55,13 @@ func runApp(app *fx.App, stderr io.Writer) int {
 		reportAppError(stderr, startErr)
 		return 1
 	}
-	signal := <-app.Wait()
+
+	// Block until the command finishes — including, on SIGTERM, the teardown that
+	// stops the sandbox container. fx is deliberately not given the signal (we never
+	// call app.Wait), so it cannot race that teardown to os.Exit and orphan the
+	// container; runCLI owns SIGTERM and reports the code here.
+	code := <-result.ch
+
 	stopCtx, cancel := context.WithTimeout(context.Background(), app.StopTimeout())
 	stopErr := app.Stop(stopCtx)
 	cancel()
@@ -50,7 +69,7 @@ func runApp(app *fx.App, stderr io.Writer) int {
 		reportAppError(stderr, stopErr)
 		return 1
 	}
-	return signal.ExitCode
+	return code
 }
 
 func reportAppError(stderr io.Writer, err error) {
@@ -77,6 +96,7 @@ func Module() fx.Option {
 			newArgs,
 			newSessionRunner,
 			newRootCommand,
+			newCLIResult,
 		),
 		fx.Invoke(runCLI),
 	)
@@ -114,12 +134,19 @@ func newRootCommand(params rootCommandParams) *cobra.Command {
 	return cli.NewRootCommand(cliParams)
 }
 
-func runCLI(lc fx.Lifecycle, shutdowner fx.Shutdowner, cmd *cobra.Command) {
+func runCLI(lc fx.Lifecycle, cmd *cobra.Command, result *cliResult) {
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
 			go func() {
-				code := cli.ExecuteAndReport(cmd)
-				_ = shutdowner.Shutdown(fx.ExitCode(code))
+				// The launch owns SIGTERM: a stop (e.g. systemd stopping the service)
+				// cancels the command's context, so run.Run unwinds and its deferred
+				// RunStop tears the sandbox container down before the process exits.
+				// runApp blocks on result.ch until that completes. SIGINT (Ctrl-C) is
+				// left alone — in an interactive launch the terminal is in raw mode, so
+				// Ctrl-C reaches the tool as a PTY byte rather than a signal to toby.
+				ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+				defer stop()
+				result.ch <- cli.ExecuteAndReport(ctx, cmd)
 			}()
 			return nil
 		},

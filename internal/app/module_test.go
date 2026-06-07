@@ -63,11 +63,12 @@ func TestRunAppReportsInvalidConfig(t *testing.T) {
 			appconfig.New,
 			newSessionRunner,
 			newRootCommand,
+			newCLIResult,
 		),
 		fx.Invoke(runCLI),
 	)
 
-	if code := runApp(app, &stderr); code == 0 {
+	if code := runApp(app, newCLIResult(), &stderr); code == 0 {
 		t.Fatal("expected invalid config to fail")
 	}
 	got := strings.TrimSpace(stderr.String())

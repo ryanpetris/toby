@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -74,9 +75,20 @@ func NewRootCommand(params Params) *cobra.Command {
 	return cmd
 }
 
-func ExecuteAndReport(cmd *cobra.Command) int {
-	err := cmd.Execute()
-	if err != nil && err.Error() != "" {
+func ExecuteAndReport(ctx context.Context, cmd *cobra.Command) int {
+	err := cmd.ExecuteContext(ctx)
+	if err == nil {
+		return 0
+	}
+
+	// A signal cancelled the context while the command was running: it unwound and
+	// tore the sandbox down cleanly, so this is a requested shutdown, not a failure.
+	// Report success and stay quiet instead of surfacing "context canceled".
+	if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		return 0
+	}
+
+	if err.Error() != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 	}
 	return exitcode.FromError(err)

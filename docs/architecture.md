@@ -297,7 +297,11 @@ runner and `internal/session/run/run.go`:
 8. **Tear down.** When the foreground command exits, the host stops the gRPC
    server, stops and removes the container, and exits with the foreground
    command's exit code (under `--debug` the container is stopped but left on the
-   host, not removed).
+   host, not removed). A `SIGTERM` to the host process (e.g. `systemctl stop`)
+   cancels the command's context, which unwinds the foreground command and runs
+   this same teardown before the process exits, so the container is never left
+   orphaned; the launch leaves `SIGINT` alone so an interactive Ctrl-C reaches the
+   tool through its PTY instead.
 
 ## Tool abstraction (`tools` + `internal/lifecycle`)
 
