@@ -20,6 +20,7 @@ const (
 	CodeInvalidParams     = -32602
 	CodeInternalError     = -32603
 	CodeProjectNotVisible = -32007
+	CodePermissionDenied  = -32008
 )
 
 type RPCRequest struct {

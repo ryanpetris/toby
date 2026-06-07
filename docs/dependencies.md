@@ -20,6 +20,8 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 
 | Module | Version | License |
 | --- | --- | --- |
+| charm.land/lipgloss/v2 | v2.0.3 | MIT |
+| github.com/charmbracelet/x/vt | v0.0.0-20260305213658-fe36e8c10185 | MIT |
 | github.com/google/uuid | v1.6.0 | BSD-3-Clause |
 | github.com/moby/moby/api | v1.54.1 | Apache-2.0 |
 | github.com/moby/moby/client | v0.4.0 | Apache-2.0 |
@@ -43,6 +45,15 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/Microsoft/go-winio | v0.6.2 | MIT |
 | github.com/cenkalti/backoff/v4 | v4.3.0 | MIT |
 | github.com/cespare/xxhash/v2 | v2.3.0 | MIT |
+| github.com/charmbracelet/colorprofile | v0.4.3 | MIT |
+| github.com/charmbracelet/ultraviolet | v0.0.0-20260525132238-948f4557a654 | MIT |
+| github.com/charmbracelet/x/ansi | v0.11.7 | MIT |
+| github.com/charmbracelet/x/exp/ordered | v0.1.0 | MIT |
+| github.com/charmbracelet/x/term | v0.2.2 | MIT |
+| github.com/charmbracelet/x/termios | v0.1.1 | MIT |
+| github.com/charmbracelet/x/windows | v0.2.2 | MIT |
+| github.com/clipperhouse/displaywidth | v0.11.0 | MIT |
+| github.com/clipperhouse/uax29/v2 | v2.7.0 | MIT |
 | github.com/containerd/errdefs | v1.0.0 | Apache-2.0 |
 | github.com/containerd/errdefs/pkg | v0.3.0 | Apache-2.0 |
 | github.com/containerd/log | v0.1.0 | Apache-2.0 |
@@ -60,8 +71,10 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/google/jsonschema-go | v0.3.0 | MIT |
 | github.com/inconshreveable/mousetrap | v1.1.0 | Apache-2.0 |
 | github.com/klauspost/compress | v1.18.5 | Apache-2.0 |
+| github.com/lucasb-eyer/go-colorful | v1.4.0 | MIT |
 | github.com/lufia/plan9stats | v0.0.0-20211012122336-39d0f177ccd0 | BSD-3-Clause |
 | github.com/magiconair/properties | v1.8.10 | BSD-2-Clause |
+| github.com/mattn/go-runewidth | v0.0.23 | MIT |
 | github.com/moby/docker-image-spec | v1.3.1 | Apache-2.0 |
 | github.com/moby/go-archive | v0.2.0 | Apache-2.0 |
 | github.com/moby/patternmatcher | v0.6.1 | Apache-2.0 |
@@ -69,16 +82,19 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/moby/sys/user | v0.4.0 | Apache-2.0 |
 | github.com/moby/sys/userns | v0.1.0 | Apache-2.0 |
 | github.com/moby/term | v0.5.2 | Apache-2.0 |
+| github.com/muesli/cancelreader | v0.2.2 | MIT |
 | github.com/opencontainers/go-digest | v1.0.0 | Apache-2.0 |
 | github.com/opencontainers/image-spec | v1.1.1 | Apache-2.0 |
 | github.com/pmezard/go-difflib | v1.0.0 | BSD-2-Clause |
 | github.com/power-devops/perfstat | v0.0.0-20240221224432-82ca36839d55 | MIT |
+| github.com/rivo/uniseg | v0.4.7 | MIT |
 | github.com/shirou/gopsutil/v4 | v4.26.3 | BSD-3-Clause |
 | github.com/sirupsen/logrus | v1.9.4 | MIT |
 | github.com/spf13/pflag | v1.0.9 | BSD-3-Clause |
 | github.com/stretchr/testify | v1.11.1 | MIT |
 | github.com/tklauser/go-sysconf | v0.3.16 | BSD-3-Clause |
 | github.com/tklauser/numcpus | v0.11.0 | Apache-2.0 |
+| github.com/xo/terminfo | v0.0.0-20220910002029-abceb7e1c41e | MIT |
 | github.com/yosida95/uritemplate/v3 | v3.0.2 | BSD-3-Clause |
 | github.com/yusufpapurcu/wmi | v1.2.4 | MIT |
 | go.opentelemetry.io/auto/sdk | v1.2.1 | Apache-2.0 |
@@ -91,6 +107,7 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | golang.org/x/crypto | v0.48.0 | BSD-3-Clause |
 | golang.org/x/net | v0.49.0 | BSD-3-Clause |
 | golang.org/x/oauth2 | v0.34.0 | BSD-3-Clause |
-| golang.org/x/sys | v0.44.0 | BSD-3-Clause |
+| golang.org/x/sync | v0.20.0 | BSD-3-Clause |
+| golang.org/x/sys | v0.45.0 | BSD-3-Clause |
 | golang.org/x/text | v0.34.0 | BSD-3-Clause |
 | google.golang.org/genproto/googleapis/rpc | v0.0.0-20260120221211-b8f7ae30c516 | Apache-2.0 |

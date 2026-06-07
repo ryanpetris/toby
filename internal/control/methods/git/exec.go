@@ -21,6 +21,9 @@ import (
 // ErrProjectNotVisible is returned when a repository is not visible in the sandbox.
 var ErrProjectNotVisible = errors.New("repository is not visible in the sandbox")
 
+// ErrPermissionDenied is returned when the user (or policy) denies the operation.
+var ErrPermissionDenied = errors.New("permission denied")
+
 func wrapProjectNotVisible(err error) error {
 	return fmt.Errorf("%w: %v", ErrProjectNotVisible, err)
 }
@@ -81,7 +84,7 @@ func runGit(ctx context.Context, repository, repoPath string, args []string) Res
 }
 
 func errnoFor(err error) error {
-	if errors.Is(err, ErrProjectNotVisible) {
+	if errors.Is(err, ErrProjectNotVisible) || errors.Is(err, ErrPermissionDenied) {
 		return syscall.EACCES
 	}
 	var errno syscall.Errno
@@ -92,6 +95,9 @@ func errnoFor(err error) error {
 }
 
 func rpcErrorCode(err error) int {
+	if errors.Is(err, ErrPermissionDenied) {
+		return control.CodePermissionDenied
+	}
 	if errors.Is(err, ErrProjectNotVisible) {
 		return control.CodeProjectNotVisible
 	}

@@ -12,7 +12,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"petris.dev/toby/internal/approval"
 	"petris.dev/toby/internal/control/mcpserver"
+	"petris.dev/toby/internal/permission"
 	"petris.dev/toby/internal/version"
 )
 
@@ -21,10 +23,31 @@ type handler struct {
 	session *mcpserver.Session
 }
 
+// approve consults the approval service for an action, supplying its default rule; it
+// returns an error (denying the tool call) when refused, or nil when allowed or when no
+// approval service is wired.
+func (h handler) approve(ctx context.Context, action, name, message string, def permission.Rule) error {
+	svc := h.session.State.Approval
+	if svc == nil {
+		return nil
+	}
+	decision, err := svc.Request(ctx, approval.Request{Action: action, Name: name, Message: message, Default: def})
+	if err != nil {
+		return err
+	}
+	if decision != permission.Allow {
+		return fmt.Errorf("permission denied")
+	}
+	return nil
+}
+
 // resourcesRead returns the contents of the named toby:// resources, mirroring
 // the MCP resources/read path for clients that do not surface resources as
 // readable. Unknown or failing URIs are reported per item.
 func (h handler) resourcesRead(ctx context.Context, _ *mcp.CallToolRequest, input ResourcesReadInput) (*mcp.CallToolResult, ResourcesReadOutput, error) {
+	if err := h.approve(ctx, "resources.read", "Read resources", "Read Toby session resources", permission.RuleAllow); err != nil {
+		return nil, ResourcesReadOutput{}, err
+	}
 	byURI := make(map[string]mcpserver.Resource, len(h.session.Resources))
 	all := make([]string, 0, len(h.session.Resources))
 	for _, resource := range h.session.Resources {
@@ -106,6 +129,9 @@ func (h handler) mcpLifecycle(ctx context.Context, action, name string) (*mcp.Ca
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, MCPActionOutput{}, fmt.Errorf("mcp name is required")
+	}
+	if err := h.approve(ctx, "mcp."+action, "MCP "+action, fmt.Sprintf("%s MCP server %q", action, name), permission.RuleAsk); err != nil {
+		return nil, MCPActionOutput{}, err
 	}
 	proxy := h.session.State.MCPProxy
 	if proxy == nil {

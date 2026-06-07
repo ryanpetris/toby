@@ -5,11 +5,14 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"syscall"
 
+	"petris.dev/toby/internal/approval"
 	"petris.dev/toby/internal/control"
+	"petris.dev/toby/internal/permission"
 )
 
 // RepositoryResolver maps a sandbox-visible repository name to its host path.
@@ -17,13 +20,19 @@ type RepositoryResolver interface {
 	VisibleHostPath(string) (string, error)
 }
 
+// Approver decides whether an action may proceed, prompting the user when needed.
+type Approver interface {
+	Request(ctx context.Context, req approval.Request) (permission.Decision, error)
+}
+
 var _ control.Capability = (*Service)(nil)
 
-// Service handles the git.* methods. The resolver is injected after construction
-// (once the sandbox is prepared) via SetResolver.
+// Service handles the git.* methods. The resolver and approver are injected after
+// construction (once the sandbox is prepared) via SetResolver and SetApprover.
 type Service struct {
 	mu       sync.RWMutex
 	resolver RepositoryResolver
+	approver Approver
 }
 
 // New creates a git capability with no resolver; call SetResolver before use.
@@ -34,6 +43,33 @@ func (s *Service) SetResolver(resolver RepositoryResolver) {
 	s.mu.Lock()
 	s.resolver = resolver
 	s.mu.Unlock()
+}
+
+// SetApprover installs the approver consulted before each git operation runs.
+func (s *Service) SetApprover(approver Approver) {
+	s.mu.Lock()
+	s.approver = approver
+	s.mu.Unlock()
+}
+
+// approve consults the approver for an action, supplying the action's default rule; it
+// returns ErrPermissionDenied when the action is refused, or nil when allowed (or when
+// no approver is wired).
+func (s *Service) approve(ctx context.Context, action, name, message string, def permission.Rule) error {
+	s.mu.RLock()
+	approver := s.approver
+	s.mu.RUnlock()
+	if approver == nil {
+		return nil
+	}
+	decision, err := approver.Request(ctx, approval.Request{Action: action, Name: name, Message: message, Default: def})
+	if err != nil {
+		return err
+	}
+	if decision != permission.Allow {
+		return ErrPermissionDenied
+	}
+	return nil
 }
 
 // Methods registers the git.* handlers into the host router.
@@ -52,6 +88,9 @@ func (s *Service) handleGitCommit(ctx context.Context, req control.RPCRequest) (
 	if err != nil {
 		return control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil), syscall.EINVAL
 	}
+	if err := s.approve(ctx, MethodCommit, "Git commit", fmt.Sprintf("Commit in %s", params.Repository), permission.RuleAllow); err != nil {
+		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
+	}
 	result, err := s.gitCommit(ctx, params.Repository, params.Message, params.Amend)
 	if err != nil {
 		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
@@ -63,6 +102,9 @@ func (s *Service) handleGitFetch(ctx context.Context, req control.RPCRequest) ([
 	params, err := DecodeRepositoryParams(req.Params)
 	if err != nil {
 		return control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil), syscall.EINVAL
+	}
+	if err := s.approve(ctx, MethodFetch, "Git fetch", fmt.Sprintf("Fetch in %s", params.Repository), permission.RuleAllow); err != nil {
+		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
 	}
 	result, err := s.gitFetch(ctx, params.Repository)
 	if err != nil {
@@ -76,6 +118,14 @@ func (s *Service) handleGitPush(ctx context.Context, req control.RPCRequest) ([]
 	if err != nil {
 		return control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil), syscall.EINVAL
 	}
+	origin := params.Origin
+	if strings.TrimSpace(origin) == "" {
+		origin = "origin"
+	}
+	message := fmt.Sprintf("Push %s to %s in %s", params.Branch, origin, params.Repository)
+	if err := s.approve(ctx, MethodPush, "Git push", message, permission.RuleAsk); err != nil {
+		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
+	}
 	result, err := s.gitPush(ctx, params.Repository, params.Branch, params.Origin, params.Tags)
 	if err != nil {
 		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
@@ -88,6 +138,9 @@ func (s *Service) handleGitRebase(ctx context.Context, req control.RPCRequest) (
 	if err != nil {
 		return control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil), syscall.EINVAL
 	}
+	if err := s.approve(ctx, MethodRebase, "Git rebase", fmt.Sprintf("Rebase in %s", params.Repository), permission.RuleAllow); err != nil {
+		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
+	}
 	result, err := s.gitRebase(ctx, params.Repository, params.Base, params.Continue, params.Abort)
 	if err != nil {
 		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
@@ -99,6 +152,9 @@ func (s *Service) handleGitTag(ctx context.Context, req control.RPCRequest) ([]b
 	params, err := DecodeTagParams(req.Params)
 	if err != nil {
 		return control.ResponseError(req.ID, control.CodeInvalidParams, err.Error(), nil), syscall.EINVAL
+	}
+	if err := s.approve(ctx, MethodTag, "Git tag", fmt.Sprintf("Tag %s in %s", params.Tag, params.Repository), permission.RuleAllow); err != nil {
+		return control.ResponseError(req.ID, rpcErrorCode(err), err.Error(), nil), errnoFor(err)
 	}
 	result, err := s.gitTag(ctx, params.Repository, params.Tag, params.Message, params.Target)
 	if err != nil {

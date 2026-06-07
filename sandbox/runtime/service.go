@@ -19,17 +19,22 @@ import (
 )
 
 type Service struct {
-	mu       sync.Mutex
-	instance Instance
-	env      environ.Environment
-	mcpURL   string
-	mounts   *mount.Service
-	started  bool
+	mu               sync.Mutex
+	instance         Instance
+	env              environ.Environment
+	mcpURL           string
+	mounts           *mount.Service
+	started          bool
+	managedTerminal  bool
+	approvalPrompter sandboxapi.ApprovalPrompter
 }
 
 type SandboxService = Service
 
-func newService(mounts *mount.Service) *Service { return &Service{mounts: mounts} }
+// newService starts with the managed terminal on; the session toggles it from config.
+func newService(mounts *mount.Service) *Service {
+	return &Service{mounts: mounts, managedTerminal: true}
+}
 
 // mountRunner adapts the sandbox service to mount.Executor for setup hooks.
 type mountRunner struct{ s *Service }
@@ -190,6 +195,30 @@ func (s *Service) ProxyBaseURL(id string) string {
 	return tunnel.ProxyBaseURL(id)
 }
 
+// SetManagedTerminal selects whether an interactive foreground tool runs under Toby's
+// managed terminal (raw-passthrough shadow plus the approval modal) or a plain raw
+// passthrough. Set once per session from config.
+func (s *Service) SetManagedTerminal(enabled bool) {
+	s.mu.Lock()
+	s.managedTerminal = enabled
+	s.mu.Unlock()
+}
+
+// SetApprovalPrompter registers (or clears, with nil) the prompter that shows the
+// approval modal. The interactive foreground sets it while it owns the terminal.
+func (s *Service) SetApprovalPrompter(p sandboxapi.ApprovalPrompter) {
+	s.mu.Lock()
+	s.approvalPrompter = p
+	s.mu.Unlock()
+}
+
+// ApprovalPrompter returns the active approval prompter, or nil when none is running.
+func (s *Service) ApprovalPrompter() sandboxapi.ApprovalPrompter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.approvalPrompter
+}
+
 func (s *Service) SetTobyMCPURL(url string) {
 	s.mu.Lock()
 	s.mcpURL = url
@@ -345,12 +374,17 @@ func (s *Service) Exec(ctx context.Context, argv []string, options sandboxapi.Ex
 	if options.Root {
 		user = "0:0"
 	}
+	s.mu.Lock()
+	managed := s.managedTerminal
+	s.mu.Unlock()
 	return inst.Exec(ctx, ExecSpec{
-		Argv:        argv,
-		Env:         s.envSlice(),
-		User:        user,
-		Interactive: options.Foreground,
-		HideOutput:  options.HideOutput,
+		Argv:             argv,
+		Env:              s.envSlice(),
+		User:             user,
+		Interactive:      options.Foreground,
+		HideOutput:       options.HideOutput,
+		Managed:          managed,
+		RegisterPrompter: s.SetApprovalPrompter,
 	})
 }
 

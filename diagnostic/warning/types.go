@@ -17,14 +17,15 @@ const (
 	ProjectAutoloadDisabled ID = "project.autoload-disabled"
 	ProjectDuplicate        ID = "project.duplicate"
 	ProjectMissing          ID = "project.missing"
+	PermissionAutoDeny      ID = "permission.auto-deny"
 )
 
 func ParseID(value string) (ID, error) {
 	switch id := ID(strings.TrimSpace(value)); id {
-	case MountHostBacking, ModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing:
+	case MountHostBacking, ModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing, PermissionAutoDeny:
 		return id, nil
 	default:
-		return "", fmt.Errorf("warning id must be one of %q, %q, %q, %q, or %q", MountHostBacking, ModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing)
+		return "", fmt.Errorf("warning id must be one of %q, %q, %q, %q, %q, or %q", MountHostBacking, ModelDiscovery, ProjectAutoloadDisabled, ProjectDuplicate, ProjectMissing, PermissionAutoDeny)
 	}
 }
 

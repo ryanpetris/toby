@@ -10,6 +10,7 @@ import (
 	"petris.dev/toby/config"
 	"petris.dev/toby/container/engine"
 	contextfiles "petris.dev/toby/context/files"
+	"petris.dev/toby/internal/approval"
 	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/control/host"
 	"petris.dev/toby/internal/control/mcpproxy"
@@ -30,6 +31,7 @@ type Params struct {
 	ContextFiles   *contextfiles.Service
 	HostManager    *host.Service
 	Git            *git.Service
+	Approval       *approval.Service
 	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *appconfig.Service

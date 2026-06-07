@@ -31,6 +31,7 @@ func NewRootCommand(params Params) *cobra.Command {
 	var configPath string
 	var debug bool
 	var yolo bool
+	var managedTerminal bool
 	cmd := &cobra.Command{
 		Use:              "toby",
 		Short:            "Run Toby Sandbox development environments.",
@@ -56,6 +57,7 @@ func NewRootCommand(params Params) *cobra.Command {
 			}
 			applyDebugFlag(cmd, &launch.Overrides)
 			applyYoloFlag(cmd, &launch.Overrides)
+			applyManagedTerminalFlag(cmd, &launch.Overrides)
 			return runSession(cmd.Context(), params, &launch.Options, launch.Overrides, launch.Extra, launch.RequestedTools, launch.Primary)
 		},
 	}
@@ -66,6 +68,7 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Launch from a YAML or JSON configuration file.")
 	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable Toby debug mode for this launch.")
 	cmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Launch the tool with its permission-bypass flag for this launch.")
+	cmd.PersistentFlags().BoolVar(&managedTerminal, "managed-terminal", true, "Run the foreground tool under Toby's managed terminal (approval prompts); --managed-terminal=false uses a plain passthrough.")
 
 	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {

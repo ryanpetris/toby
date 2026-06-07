@@ -24,6 +24,8 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	"golang.org/x/term"
+
+	sandboxapi "petris.dev/toby/sandbox"
 )
 
 // defaultCols and defaultRows seed a headless foreground PTY (no host terminal to
@@ -41,6 +43,11 @@ type ExecSpec struct {
 	WorkingDir  string
 	Interactive bool // foreground: attach stdin and run under a container PTY
 	HideOutput  bool // discard stdout/stderr
+	Managed     bool // foreground: use Toby's managed terminal (shadow + approval modal)
+	// RegisterPrompter, when set, registers (and on exit clears) the foreground's
+	// approval prompter so host-side services can ask the user during an interactive
+	// run.
+	RegisterPrompter func(sandboxapi.ApprovalPrompter)
 }
 
 // Exec runs spec in the Run container and returns its exit code.
@@ -72,12 +79,20 @@ func (s *instance) Exec(ctx context.Context, spec ExecSpec) (int, error) {
 		Cmd:          spec.Argv,
 	}
 	attachOpts := client.ExecAttachOptions{TTY: tty}
-	// With no host terminal there is no size to track, so seed the PTY with a sane
-	// default; the host-terminal path resizes to the real terminal immediately after
-	// attach instead.
-	if tty && !hostTerminal {
-		createOpts.ConsoleSize = client.ConsoleSize{Height: defaultRows, Width: defaultCols}
-		attachOpts.ConsoleSize = client.ConsoleSize{Height: defaultRows, Width: defaultCols}
+	// Seed the PTY with its size at creation so the tool reads a correct terminal size
+	// from its very first byte instead of Docker's 80x24 default. With a host terminal
+	// that is the real terminal size — matching the host-side emulator, so a tool that
+	// probes its size at startup gets a consistent answer and does not stall; without
+	// one there is no size to measure, so a sane default is used.
+	if tty {
+		cols, rows := defaultCols, defaultRows
+		if hostTerminal {
+			if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
+				cols, rows = w, h
+			}
+		}
+		createOpts.ConsoleSize = client.ConsoleSize{Height: uint(rows), Width: uint(cols)}
+		attachOpts.ConsoleSize = client.ConsoleSize{Height: uint(rows), Width: uint(cols)}
 	}
 	created, err := cli.ExecCreate(ctx, id, createOpts)
 	if err != nil {
@@ -100,7 +115,10 @@ func (s *instance) Exec(ctx context.Context, spec ExecSpec) (int, error) {
 	}()
 
 	switch {
+	case tty && hostTerminal && spec.Managed:
+		s.runExecForeground(ctx, cli, created.ID, attach.HijackedResponse, spec.RegisterPrompter)
 	case tty && hostTerminal:
+		// Managed terminal disabled: plain raw passthrough, no shadow or approval modal.
 		s.runExecTTY(ctx, cli, created.ID, attach.HijackedResponse)
 	case tty:
 		runExecHeadlessTTY(attach.HijackedResponse, spec)

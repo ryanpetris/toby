@@ -34,7 +34,7 @@ func registerTobyMCPProxy(params Params, manager *host.Service, opts *tools.Opti
 	if manager == nil || manager.HTTPProxy == nil {
 		return "", fmt.Errorf("http proxy service is not configured")
 	}
-	state := mcpserver.SessionState{Debug: params.TobyConfig.DebugEnabled(), Paths: params.Paths, Sandbox: params.SandboxService, MCPProxy: params.MCPProxy, Config: params.TobyConfig, Registry: params.Registry, ActiveTools: activeTools, PrimaryTool: primary}
+	state := mcpserver.SessionState{Debug: params.TobyConfig.DebugEnabled(), Paths: params.Paths, Sandbox: params.SandboxService, MCPProxy: params.MCPProxy, Approval: params.Approval, Config: params.TobyConfig, Registry: params.Registry, ActiveTools: activeTools, PrimaryTool: primary}
 	if opts != nil {
 		state.Options = *opts
 	}

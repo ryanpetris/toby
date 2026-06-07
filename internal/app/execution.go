@@ -14,6 +14,7 @@ import (
 	"petris.dev/toby/container/engine"
 	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
+	"petris.dev/toby/internal/approval"
 	"petris.dev/toby/internal/config/app"
 	contextinit "petris.dev/toby/internal/context/setup"
 	"petris.dev/toby/internal/control/host"
@@ -105,6 +106,7 @@ func (r *executionSessionRunner) Run(ctx context.Context, opts *tools.Options, o
 func sessionModules(toolModule fx.Option, stderr io.Writer) []fx.Option {
 	return []fx.Option{
 		host.Module(),
+		approval.Module(),
 		engine.Module(),
 		mount.Module(),
 		mcpproxy.Module(),
@@ -141,6 +143,7 @@ type executionSessionParams struct {
 	ContextFiles   *contextfiles.Service
 	HostManager    *host.Service
 	Git            *git.Service
+	Approval       *approval.Service
 	MCPProxy       *mcpproxy.Service
 	MCPServer      *mcpserver.Runner
 	TobyConfig     *appconfig.Service
@@ -159,6 +162,7 @@ func newExecutionSessionParams(stderr io.Writer) func(executionSessionParams) ru
 			ContextFiles:   params.ContextFiles,
 			HostManager:    params.HostManager,
 			Git:            params.Git,
+			Approval:       params.Approval,
 			MCPProxy:       params.MCPProxy,
 			MCPServer:      params.MCPServer,
 			TobyConfig:     params.TobyConfig,

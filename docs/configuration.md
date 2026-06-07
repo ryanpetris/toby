@@ -157,6 +157,28 @@ permissions:
     ~/shared/**: allow
 ```
 
+`permissions.actions` maps an action id — its RPC method name, e.g. `git.push` or
+`git.commit` — to a rule that governs whether Toby runs it: `allow` (run without
+asking), `deny` (refuse without asking), or `ask` (prompt for approval in the
+terminal). An explicit rule always wins over the action's built-in default; an
+explicit `ask` forces a prompt even where the default would allow it. Each service
+owns the default for its own actions, so there is no fixed list — anything you put
+here is honoured by id.
+
+```yaml
+permissions:
+  actions:
+    git.push: ask    # the default; modifies remote state
+    git.commit: allow
+    some.action: deny
+```
+
+Resolution order for an action: an explicit `deny` always wins (even under
+`settings.yolo`); otherwise `settings.yolo` approves it; otherwise an explicit
+`allow`/`ask` rule, then the service's built-in default. When the result is to ask
+but there is no interactive terminal (or `settings.managedTerminal` is off), the action
+is denied — see `settings.managedTerminal` below.
+
 ### `providers`
 
 `providers.servers` is a map of provider name to declaration, mirroring the
@@ -207,6 +229,7 @@ settings:
   autoloadProjectConfig: true
   debug: false
   yolo: false
+  managedTerminal: true
 tools:
   opencode:
     mountProfile: work       # namespaces this tool's volumes separately
@@ -241,6 +264,15 @@ tools:
   with `settings.yolo: false` overrides a global `settings.yolo: true`, mirroring
   `settings.debug` precedence. The `--yolo` launch flag overrides config for a
   single launch, the same way `--debug` does.
+- `settings.managedTerminal` controls whether Toby interposes its managed terminal for
+  the interactive foreground tool — a raw-passthrough shadow that powers the approval
+  modal for sensitive actions (e.g. `git.push`), governed by `permissions.actions`.
+  Defaults to `true`. With `settings.managedTerminal: false` — or the
+  `--managed-terminal=false` launch flag — Toby runs the tool under a plain passthrough
+  with no shadow and no modal, so approval prompts cannot be shown: any action that is
+  not explicitly allowed is denied, the same as when there is no interactive terminal.
+  Toby emits the `permission.auto-deny` warning at startup in that case (unless
+  `settings.yolo` is on, which approves everything bar an explicit `deny`).
 
 ## Managed Mounts
 

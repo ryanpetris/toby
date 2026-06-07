@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"petris.dev/toby/config"
+	"petris.dev/toby/internal/approval"
 	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/control/mcpproxy"
 	sandbox "petris.dev/toby/sandbox/runtime"
@@ -39,6 +40,7 @@ type SessionState struct {
 	Options     tools.Options
 	Sandbox     *sandbox.SandboxService
 	MCPProxy    *mcpproxy.Service
+	Approval    *approval.Service
 	Config      *appconfig.Service
 	Registry    *tools.Registry
 	ActiveTools []string

@@ -8,13 +8,38 @@ package run
 import (
 	"context"
 	"fmt"
+	"os"
+
+	"golang.org/x/term"
 
 	"petris.dev/toby/diagnostic/exitcode"
+	"petris.dev/toby/diagnostic/warning"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/platform/environ"
 	sandbox "petris.dev/toby/sandbox/runtime"
 	"petris.dev/toby/tools"
 )
+
+// warnIfAutoDeny warns once at startup when approval prompts cannot be shown — the
+// managed terminal is off, or there is no interactive terminal — and yolo is off, so
+// the user knows that any action which isn't explicitly allowed will be denied rather
+// than asked.
+func warnIfAutoDeny(params Params) {
+	if params.TobyConfig.YoloEnabled() {
+		return
+	}
+	managed := params.TobyConfig.ManagedTerminalEnabled()
+	interactive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	if managed && interactive {
+		return
+	}
+	reason := "unavailable without an interactive terminal"
+	if !managed {
+		reason = "off (settings.managedTerminal is false)"
+	}
+	warning.Fprintf(params.Stderr, params.TobyConfig.Settings().SuppressWarnings, warning.PermissionAutoDeny,
+		"approval prompts are %s; actions that are not explicitly allowed will be denied", reason)
+}
 
 func Run(ctx context.Context, params Params, opts *tools.Options, extra, requestedTools []string, primary string) error {
 	if opts == nil {
@@ -23,6 +48,7 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 	if err := prepareConfiguredProjects(params.Stderr, params.Paths.Home, opts, params.TobyConfig.Settings().SuppressWarnings); err != nil {
 		return err
 	}
+	warnIfAutoDeny(params)
 	// The status line erases itself once the tool execs (launchTool); the deferred
 	// Stop is the safety net that clears it on any early return or error. Under
 	// debug, switch to plain mode so each step is preserved alongside the logging
@@ -79,6 +105,11 @@ func Run(ctx context.Context, params Params, opts *tools.Options, extra, request
 		return fmt.Errorf("git capability is not configured")
 	}
 	params.Git.SetResolver(params.SandboxService)
+	params.SandboxService.SetManagedTerminal(params.TobyConfig.ManagedTerminalEnabled())
+	if params.Approval != nil {
+		params.Approval.SetPrompterSource(params.SandboxService)
+		params.Git.SetApprover(params.Approval)
+	}
 
 	// Proxied URLs point at the in-container proxy listener (a fixed loopback
 	// address); the manager tunnels each connection to the host reverse proxy over

@@ -163,10 +163,16 @@ The host does not push files or commands over an RPC channel. Instead:
 
 - **Run a command** — `docker exec` against the live container (`sandbox/runtime/exec.go`).
   The foreground primary tool always runs under a container PTY so it line-buffers
-  and flushes its output; when the host is itself a terminal that PTY is wired to it
-  (raw mode, resize, PTY-delivered signals), and when it is not — a systemd service or
-  a redirected run — the PTY stream is copied straight through to the host stdout so
-  the output still reaches the journal. Install/configure/mount commands run
+  and flushes its output; when the host is itself a terminal the exec stream is driven
+  by `sandbox/runtime/foreground.go`, which puts the host terminal in raw mode and
+  passes stdio straight through (so the tool talks to the real terminal directly and
+  every capability query is answered by it). Alongside the passthrough it keeps a
+  passive shadow terminal emulator (`charmbracelet/x/vt`) fed only by the tool's output
+  — it never answers queries or sees input — so the host can overlay a popup (e.g. a
+  permission prompt) over the live screen and then repaint the exact screen from the
+  shadow when the popup is dismissed. When the host is not a terminal — a systemd
+  service or a redirected run — the PTY stream is copied straight through to the host
+  stdout so the output still reaches the journal. Install/configure/mount commands run
   non-interactively and return an exit code. The exec carries the resolved user
   (`uid:gid`, defaulting to the host user), working directory, and the host-held
   environment; supplementary groups come from the container's `GroupAdd` (set at create).
@@ -190,6 +196,17 @@ Repository names and arguments are validated on the host, repositories must be
 visible through the project bind, and `git` runs on the host so host config, SSH
 agent, GPG signing, and credential helpers all apply. The host installs the
 repository resolver on the git capability at session start.
+
+Before running a sensitive operation, the capability asks the **approval service**
+(`internal/approval`) for a decision, identified by the action's method name (e.g.
+`git.push`) and the caller's default rule. The service resolves the decision with
+`internal/permission`: an explicit `permissions.actions` rule wins, then
+`settings.yolo`, then the explicit rule or the caller's default. When the outcome is
+to ask, it prompts the user through the active interactive foreground — Toby's managed
+terminal registers itself as the `sandbox.ApprovalPrompter`. The modal defaults to Deny,
+and any session without that prompter — non-interactive, or with the managed terminal off
+(`settings.managedTerminal: false`, which falls back to a plain passthrough) — denies
+without prompting. A denied operation never runs.
 
 ### MCP sidecars
 

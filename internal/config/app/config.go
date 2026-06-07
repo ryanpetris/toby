@@ -25,6 +25,7 @@ import (
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/diagnostic/warning"
 	containerconfig "petris.dev/toby/internal/config/container"
+	"petris.dev/toby/internal/permission"
 	"petris.dev/toby/tools"
 )
 
@@ -89,6 +90,7 @@ type SettingsConfig struct {
 	AutoloadProjectConfig *bool
 	Debug                 *bool
 	Yolo                  *bool
+	ManagedTerminal       *bool
 }
 
 type ToolConfig struct {
@@ -112,6 +114,9 @@ type ProviderConfig struct {
 
 type PermissionConfig struct {
 	Paths map[string]string
+	// Actions maps an action id (its RPC method name, e.g. "git.commit") to the
+	// configured rule that governs whether it is allowed, denied, or asked.
+	Actions map[string]permission.Rule
 }
 
 // fileSchema is the strict decode target for a merged config. Open passthrough
@@ -143,7 +148,8 @@ type mcpSchema struct {
 }
 
 type permissionSchema struct {
-	Paths map[string]string `json:"paths" yaml:"paths"`
+	Paths   map[string]string `json:"paths" yaml:"paths"`
+	Actions map[string]string `json:"actions" yaml:"actions"`
 }
 
 type providerSchema struct {
@@ -160,6 +166,7 @@ type settingsSchema struct {
 	AutoloadProjectConfig *bool    `json:"autoloadProjectConfig" yaml:"autoloadProjectConfig"`
 	Debug                 *bool    `json:"debug" yaml:"debug"`
 	Yolo                  *bool    `json:"yolo" yaml:"yolo"`
+	ManagedTerminal       *bool    `json:"managedTerminal" yaml:"managedTerminal"`
 }
 
 type toolSchema struct {
@@ -251,7 +258,7 @@ func emptyConfig() Config {
 	return Config{
 		MCP:         MCPConfig{Servers: map[string]MCPServer{}},
 		Providers:   map[string]ProviderConfig{},
-		Permissions: PermissionConfig{Paths: map[string]string{}},
+		Permissions: PermissionConfig{Paths: map[string]string{}, Actions: map[string]permission.Rule{}},
 		Tools:       map[string]ToolConfig{},
 	}
 }
@@ -280,6 +287,14 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 
 	for pattern, mode := range schema.Permissions.Paths {
 		result.Permissions.Paths[config.ExpandHome(pattern, home)] = mode
+	}
+
+	for action, value := range schema.Permissions.Actions {
+		rule, err := permission.ParseRule(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("permissions.actions.%s: %w", action, err)
+		}
+		result.Permissions.Actions[action] = rule
 	}
 
 	for name, provider := range schema.Providers.Servers {
@@ -364,6 +379,10 @@ func (s settingsSchema) resolve() (SettingsConfig, error) {
 		yolo := *s.Yolo
 		cfg.Yolo = &yolo
 	}
+	if s.ManagedTerminal != nil {
+		managed := *s.ManagedTerminal
+		cfg.ManagedTerminal = &managed
+	}
 	return cfg, nil
 }
 
@@ -410,6 +429,15 @@ func (c SettingsConfig) DebugEnabled() bool {
 
 func (c SettingsConfig) YoloEnabled() bool {
 	return c.Yolo != nil && *c.Yolo
+}
+
+// ManagedTerminalEnabled reports whether Toby interposes its managed terminal for the
+// interactive foreground tool (raw-passthrough shadow plus the approval modal). It
+// defaults to on; only an explicit `settings.managedTerminal: false` (or
+// --managed-terminal=false) turns it off, falling back to a plain passthrough — which
+// means approval prompts cannot be shown, so anything not explicitly allowed is denied.
+func (c SettingsConfig) ManagedTerminalEnabled() bool {
+	return c.ManagedTerminal == nil || *c.ManagedTerminal
 }
 
 func (s *Service) Instructions() []string {
@@ -485,14 +513,17 @@ func (s *Service) ResolveProviderHeaders(name string, provider ProviderConfig) (
 }
 
 func (s *Service) Permission() PermissionConfig {
-	permission := PermissionConfig{Paths: map[string]string{}}
+	out := PermissionConfig{Paths: map[string]string{}, Actions: map[string]permission.Rule{}}
 	if s == nil {
-		return permission
+		return out
 	}
 	for pattern, mode := range s.config.Permissions.Paths {
-		permission.Paths[pattern] = mode
+		out.Paths[pattern] = mode
 	}
-	return permission
+	for action, rule := range s.config.Permissions.Actions {
+		out.Actions[action] = rule
+	}
+	return out
 }
 
 // defaultPermissionMode is the mode applied to the paths Toby injects by default.
@@ -580,8 +611,18 @@ func (s *Service) mcpConfig() MCPConfig {
 // Service-level reads of config-corresponding launch values. These are the single
 // source of truth: a launch's CLI flags and launch-config overrides are folded in
 // via WithOverrides before the per-launch graph reads them.
-func (s *Service) YoloEnabled() bool     { return s.Settings().YoloEnabled() }
-func (s *Service) DebugEnabled() bool    { return s.Settings().DebugEnabled() }
+func (s *Service) YoloEnabled() bool            { return s.Settings().YoloEnabled() }
+func (s *Service) DebugEnabled() bool           { return s.Settings().DebugEnabled() }
+func (s *Service) ManagedTerminalEnabled() bool { return s.Settings().ManagedTerminalEnabled() }
+
+// PermissionRule returns the configured rule for an action (by its method-name id,
+// e.g. "git.commit"), or RuleUnset when nothing is configured.
+func (s *Service) PermissionRule(action string) permission.Rule {
+	if s == nil {
+		return permission.RuleUnset
+	}
+	return s.config.Permissions.Actions[action]
+}
 func (s *Service) Image() string         { return s.Container().Image }
 func (s *Service) Build() tools.Build    { return s.Container().Build }
 func (s *Service) Ports() []string       { return s.Container().Ports }
@@ -599,6 +640,7 @@ type LaunchOverrides struct {
 	Ports             []string
 	Debug             *bool
 	Yolo              *bool
+	ManagedTerminal   *bool
 	ToolMountProfiles map[string]string
 	SuppressWarnings  warning.Suppression
 }
@@ -625,6 +667,10 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	if o.Yolo != nil {
 		yolo := *o.Yolo
 		settings.Yolo = &yolo
+	}
+	if o.ManagedTerminal != nil {
+		managed := *o.ManagedTerminal
+		settings.ManagedTerminal = &managed
 	}
 	next.config.Settings = settings
 
