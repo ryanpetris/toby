@@ -19,6 +19,10 @@ service Tunnel {
   // reverse proxy and streams the upstream response bytes back. A Chunk with
   // close=true signals a half-close in that direction.
   rpc Connect(stream Chunk) returns (stream Chunk);
+
+  // Control is opened once by the in-sandbox manager. It carries newline-framed
+  // JSON-RPC control messages in both directions.
+  rpc Control(stream Chunk) returns (stream Chunk);
 }
 
 message ReadyRequest {

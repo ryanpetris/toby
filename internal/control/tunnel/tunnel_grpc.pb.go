@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Tunnel_Ready_FullMethodName   = "/toby.tunnel.v1.Tunnel/Ready"
 	Tunnel_Connect_FullMethodName = "/toby.tunnel.v1.Tunnel/Connect"
+	Tunnel_Control_FullMethodName = "/toby.tunnel.v1.Tunnel/Control"
 )
 
 // TunnelClient is the client API for Tunnel service.
@@ -41,6 +42,9 @@ type TunnelClient interface {
 	// reverse proxy and streams the upstream response bytes back. A Chunk with
 	// close=true signals a half-close in that direction.
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Chunk, Chunk], error)
+	// Control is opened once by the in-sandbox manager. It carries newline-framed
+	// JSON-RPC control messages in both directions.
+	Control(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Chunk, Chunk], error)
 }
 
 type tunnelClient struct {
@@ -74,6 +78,19 @@ func (c *tunnelClient) Connect(ctx context.Context, opts ...grpc.CallOption) (gr
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tunnel_ConnectClient = grpc.BidiStreamingClient[Chunk, Chunk]
 
+func (c *tunnelClient) Control(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Chunk, Chunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Tunnel_ServiceDesc.Streams[1], Tunnel_Control_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[Chunk, Chunk]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tunnel_ControlClient = grpc.BidiStreamingClient[Chunk, Chunk]
+
 // TunnelServer is the server API for Tunnel service.
 // All implementations must embed UnimplementedTunnelServer
 // for forward compatibility.
@@ -92,6 +109,9 @@ type TunnelServer interface {
 	// reverse proxy and streams the upstream response bytes back. A Chunk with
 	// close=true signals a half-close in that direction.
 	Connect(grpc.BidiStreamingServer[Chunk, Chunk]) error
+	// Control is opened once by the in-sandbox manager. It carries newline-framed
+	// JSON-RPC control messages in both directions.
+	Control(grpc.BidiStreamingServer[Chunk, Chunk]) error
 	mustEmbedUnimplementedTunnelServer()
 }
 
@@ -107,6 +127,9 @@ func (UnimplementedTunnelServer) Ready(context.Context, *ReadyRequest) (*ReadyRe
 }
 func (UnimplementedTunnelServer) Connect(grpc.BidiStreamingServer[Chunk, Chunk]) error {
 	return status.Error(codes.Unimplemented, "method Connect not implemented")
+}
+func (UnimplementedTunnelServer) Control(grpc.BidiStreamingServer[Chunk, Chunk]) error {
+	return status.Error(codes.Unimplemented, "method Control not implemented")
 }
 func (UnimplementedTunnelServer) mustEmbedUnimplementedTunnelServer() {}
 func (UnimplementedTunnelServer) testEmbeddedByValue()                {}
@@ -154,6 +177,13 @@ func _Tunnel_Connect_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Tunnel_ConnectServer = grpc.BidiStreamingServer[Chunk, Chunk]
 
+func _Tunnel_Control_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(TunnelServer).Control(&grpc.GenericServerStream[Chunk, Chunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Tunnel_ControlServer = grpc.BidiStreamingServer[Chunk, Chunk]
+
 // Tunnel_ServiceDesc is the grpc.ServiceDesc for Tunnel service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -170,6 +200,12 @@ var Tunnel_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Connect",
 			Handler:       _Tunnel_Connect_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "Control",
+			Handler:       _Tunnel_Control_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

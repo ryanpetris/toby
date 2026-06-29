@@ -77,11 +77,11 @@ tools:
 
 Toby mounts only the paths the sandbox requires: provider-backed volumes and selected projects under `/toby/workspace`. Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox. Operations that need host credentials should go through Toby's host-side brokers (the reverse proxy and host Git) instead of copying keys into the environment.
 
-For each sandbox session the host creates one container, `docker cp`s the sandbox-facing Toby binary into `/toby/bin`, and starts it on the idle `toby sandbox idle` main process (which only blocks until teardown, so `docker logs` stays empty). The host then runs `toby sandbox manager` as a `docker exec`. The manager is proxy-only: its stdin/stdout are a single gRPC connection to the host (the manager is the client, the host the server), and it binds a loopback HTTP listener that tunnels the sandbox's outbound connections to the host. Everything the host does to the sandbox — running the tool, writing files, initializing mounts — goes through the Docker API (`docker exec`, `docker cp`), not an in-sandbox RPC service. Host-written files default to root-owned regular files (`0644`) and directories (`0755`); host-run commands default to the host uid, gid, and supplementary groups.
+For each sandbox session the host creates one container, `docker cp`s the sandbox-facing Toby binary into `/toby/bin`, and starts it on the idle `toby sandbox idle` main process (which only blocks until teardown, so `docker logs` stays empty). The host then runs `toby sandbox manager` as a `docker exec`. The manager's stdin/stdout are a single gRPC connection to the host (the manager is the client, the host the server); it binds a loopback HTTP listener that tunnels the sandbox's outbound connections to the host and handles file operations requested by the host. Host-run commands still use Docker exec. Host-written files default to root-owned regular files (`0644`) and directories (`0755`); host-run commands default to the host uid, gid, and supplementary groups.
 
 The host↔sandbox link is a single gRPC connection carried on the manager exec's stdio (the Docker exec attach stream), so it needs no network port and works the same for local, Docker Desktop, Podman, and remote daemons. The container uses bridge networking; the manager's proxy listener (`127.77.0.1:47600`) stays on the container's own loopback while tools keep outbound network access. Proxied URLs handed to the sandbox point at that listener. The container receives a calculated `HOME`, `TOBY_SANDBOX=1`, and host `TERM` when set; per-command environment is injected into each `docker exec`.
 
-Context init hooks run after the manager reports ready; they add context through the context service, which `docker cp`s the generated files in. When the foreground command (the launched tool's `docker exec`) exits, the host stops and removes the container and exits with that command's exit code.
+Context init hooks run after the manager reports ready; they add context through the context service, which sends file requests through the manager. When the foreground command (the launched tool's `docker exec`) exits, the host stops and removes the container and exits with that command's exit code.
 
 ### Container Runtime
 
@@ -107,7 +107,7 @@ Toby loads host configuration from `$XDG_CONFIG_HOME/toby/config.json`, `config.
 
 Toby config is its own format. Supported top-level keys are `instructions`, `mcps`, `permissions`, `providers`, `settings`, `tools`, and `container`; unsupported top-level keys fail config loading. Some nested shapes intentionally mirror OpenCode for convenience:
 
-- `mcps.servers` config is rendered into supported synthetic tool config files under the generated context directory. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`; both are rendered as remote MCP URLs through `http://<control-host>/proxy/<uuid>`. `mcps.image`/`mcps.build` (mirroring `container`) set a default sidecar image for local servers without their own `image`. Toby keeps remote upstream URLs and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Grok uses a `~/.grok/managed_config.toml` symlink back to the generated Grok config.
+- `mcps.servers` config is rendered into supported synthetic tool config files under the generated context directory. Local entries use `type: local` with `command`; remote entries use `type: remote` with `url`; both are rendered as remote MCP URLs through `http://<control-host>/proxy/<uuid>`. `mcps.image`/`mcps.build` (mirroring `container`) set a default sidecar image for local servers without their own `image`. Toby keeps remote upstream URLs and authentication headers on the host. Toby's own MCP server is always injected as `toby` after host config is merged. Toby does not write generated config into regular tool config files such as `~/.codex`, `~/.copilot`, or `~/.grok/config.toml`; Deep Agents Code receives MCP via `--mcp-config`; Grok uses a `~/.grok/managed_config.toml` symlink back to the generated Grok config.
 - `instructions` is an array of host instruction file paths or glob patterns. Relative paths resolve from `$XDG_CONFIG_HOME/toby`. During context init, Toby writes matching files under the generated context directory using the source basename. If two included files share a basename, later files receive a short random suffix before the extension, for example `foobar.1a2b3c.md`.
 - `permissions.paths` entries are path patterns and permission modes rendered into supported tool configs. Leading `~` expands to the host home directory. Toby also injects default permissions for the sandbox projects root, `/tmp`, and the common sandbox `$HOME` cache/state directories used by Go, npm, and pip (`~/go` and `~/.cache`). Configured entries override generated defaults for the same path.
 - `providers.servers` config uses Toby's provider schema. Supported types are `openai` and `anthropic`. Toby keeps the upstream `url` and credential `headers` on the host and exposes each provider to tools through `http://<control-host>/proxy/<uuid>`. OpenCode receives these entries translated to `@ai-sdk/openai-compatible` or `@ai-sdk/anthropic`; configured `models` are kept verbatim, otherwise Toby queries `/models` during sandbox startup. If discovery fails, Toby emits `provider.model-discovery` and excludes only that provider from generated OpenCode config.
@@ -239,6 +239,32 @@ Generated `copilot/mcp-config.json`:
       "type": "http",
       "url": "http://<control-host>/proxy/<uuid>",
       "tools": ["*"]
+    }
+  }
+}
+```
+
+## Deep Agents Code
+
+For Deep Agents Code sandboxes, Toby generates `dcode/mcp.json` and
+`dcode/AGENTS.md` under the generated context directory. It launches `dcode`
+with `--mcp-config <generated-context>/dcode/mcp.json`. Unless the user passes
+`--agent`, `--agent=...`, or `-a`, Toby also selects `--agent toby` and links
+`~/.deepagents/toby/AGENTS.md` to the generated instruction file. When the user
+selects an agent explicitly, Toby does not add `--agent toby` and does not alter
+that agent's `AGENTS.md`. When the user explicitly launches with `--model openai:...`
+or `--model anthropic:...` and exactly one matching Toby provider is configured,
+Toby sets Deep Agents' provider API-key and base-URL environment variables to
+point at the proxied provider without writing `~/.deepagents/config.toml`.
+
+Generated `dcode/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "toby": {
+      "type": "http",
+      "url": "http://<control-host>/proxy/<uuid>"
     }
   }
 }

@@ -163,10 +163,11 @@ const file_internal_control_tunnel_tunnel_proto_rawDesc = "" +
 	"\rReadyResponse\"1\n" +
 	"\x05Chunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
-	"\x05close\x18\x02 \x01(\bR\x05close2\x8b\x01\n" +
+	"\x05close\x18\x02 \x01(\bR\x05close2\xc8\x01\n" +
 	"\x06Tunnel\x12D\n" +
 	"\x05Ready\x12\x1c.toby.tunnel.v1.ReadyRequest\x1a\x1d.toby.tunnel.v1.ReadyResponse\x12;\n" +
-	"\aConnect\x12\x15.toby.tunnel.v1.Chunk\x1a\x15.toby.tunnel.v1.Chunk(\x010\x01B)Z'petris.dev/toby/internal/control/tunnelb\x06proto3"
+	"\aConnect\x12\x15.toby.tunnel.v1.Chunk\x1a\x15.toby.tunnel.v1.Chunk(\x010\x01\x12;\n" +
+	"\aControl\x12\x15.toby.tunnel.v1.Chunk\x1a\x15.toby.tunnel.v1.Chunk(\x010\x01B)Z'petris.dev/toby/internal/control/tunnelb\x06proto3"
 
 var (
 	file_internal_control_tunnel_tunnel_proto_rawDescOnce sync.Once
@@ -189,10 +190,12 @@ var file_internal_control_tunnel_tunnel_proto_goTypes = []any{
 var file_internal_control_tunnel_tunnel_proto_depIdxs = []int32{
 	0, // 0: toby.tunnel.v1.Tunnel.Ready:input_type -> toby.tunnel.v1.ReadyRequest
 	2, // 1: toby.tunnel.v1.Tunnel.Connect:input_type -> toby.tunnel.v1.Chunk
-	1, // 2: toby.tunnel.v1.Tunnel.Ready:output_type -> toby.tunnel.v1.ReadyResponse
-	2, // 3: toby.tunnel.v1.Tunnel.Connect:output_type -> toby.tunnel.v1.Chunk
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	2, // 2: toby.tunnel.v1.Tunnel.Control:input_type -> toby.tunnel.v1.Chunk
+	1, // 3: toby.tunnel.v1.Tunnel.Ready:output_type -> toby.tunnel.v1.ReadyResponse
+	2, // 4: toby.tunnel.v1.Tunnel.Connect:output_type -> toby.tunnel.v1.Chunk
+	2, // 5: toby.tunnel.v1.Tunnel.Control:output_type -> toby.tunnel.v1.Chunk
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name

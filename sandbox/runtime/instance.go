@@ -52,13 +52,6 @@ type Instance interface {
 
 	// Exec runs a command in the container via docker exec.
 	Exec(context.Context, ExecSpec) (int, error)
-	// File provisioning via docker cp / root exec. uid/gid honor the host-user
-	// sentinels (control.HostUser/HostGroup).
-	WriteFile(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error
-	MakeDir(ctx context.Context, path string, mode uint32, uid, gid int) error
-	MakeSymlink(ctx context.Context, path, target string, uid, gid int) error
-	DeletePath(ctx context.Context, path string, recursive bool) error
-
 	RuntimeInfo(bool) RuntimeInfo
 	Cleanup() error
 	VisibleHostPath(string) (string, error)

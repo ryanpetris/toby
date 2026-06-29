@@ -2,7 +2,7 @@
 // tools.Options into a run Spec (resolving and validating projects), constructs
 // the Docker-backed Instance that drives the container, and implements the
 // tool-facing sandbox.Service by brokering filesystem/env/command operations
-// through the Docker API (docker exec/cp). Docker (via the Docker Engine API,
+// through the Docker API and sandbox manager control session. Docker (via the Docker Engine API,
 // which also serves Podman through DOCKER_HOST) is the only backend; there is no
 // runtime selection.
 package runtime

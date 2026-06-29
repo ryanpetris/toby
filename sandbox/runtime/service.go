@@ -2,8 +2,9 @@ package runtime
 
 // Service implements the tool-facing sandbox.Service. Before the sandbox starts it
 // accumulates mounts and binds; after BindRun it brokers file, env, and command
-// operations against the live container — files via docker cp, commands via docker
-// exec — with the environment held here on the host and injected into each exec.
+// operations against the live container — files through the sandbox manager control
+// session, commands via docker exec — with the environment held here on the host
+// and injected into each exec.
 
 import (
 	"context"
@@ -13,6 +14,7 @@ import (
 	"sync"
 
 	"petris.dev/toby/container/mount"
+	"petris.dev/toby/internal/control/host"
 	"petris.dev/toby/internal/control/tunnel"
 	"petris.dev/toby/platform/environ"
 	sandboxapi "petris.dev/toby/sandbox"
@@ -23,6 +25,7 @@ type Service struct {
 	instance         Instance
 	env              environ.Environment
 	mcpURL           string
+	client           *host.SandboxClient
 	mounts           *mount.Service
 	started          bool
 	managedTerminal  bool
@@ -52,6 +55,7 @@ func (s *Service) Prepare(instance Instance) {
 	s.instance = instance
 	s.env = nil
 	s.mcpURL = ""
+	s.client = nil
 	s.started = false
 	s.mu.Unlock()
 }
@@ -225,6 +229,12 @@ func (s *Service) SetTobyMCPURL(url string) {
 	s.mu.Unlock()
 }
 
+func (s *Service) SetSandboxClient(client *host.SandboxClient) {
+	s.mu.Lock()
+	s.client = client
+	s.mu.Unlock()
+}
+
 func (s *Service) TobyMCPURL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,59 +320,59 @@ func (s *Service) setEnvironmentPathEntry(ctx context.Context, name, value, sepa
 }
 
 func (s *Service) AddFile(ctx context.Context, path string, data []byte, mode uint32) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.WriteFile(ctx, path, data, mode, 0, 0)
+	return client.FileCreate(ctx, path, data, mode)
 }
 
 func (s *Service) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, uid, gid int) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.WriteFile(ctx, path, data, mode, uid, gid)
+	return client.FileCreateOwned(ctx, path, data, mode, uid, gid)
 }
 
 func (s *Service) DeletePath(ctx context.Context, path string, recursive bool) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.DeletePath(ctx, path, recursive)
+	return client.FileDelete(ctx, path, recursive)
 }
 
 func (s *Service) Mkdir(ctx context.Context, path string, mode uint32) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.MakeDir(ctx, path, mode, 0, 0)
+	return client.FileMkdir(ctx, path, mode)
 }
 
 func (s *Service) MkdirOwned(ctx context.Context, path string, mode uint32, uid, gid int) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.MakeDir(ctx, path, mode, uid, gid)
+	return client.FileMkdirOwned(ctx, path, mode, uid, gid)
 }
 
 func (s *Service) Symlink(ctx context.Context, path, target string) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.MakeSymlink(ctx, path, target, 0, 0)
+	return client.FileSymlink(ctx, path, target)
 }
 
 func (s *Service) SymlinkOwned(ctx context.Context, path, target string, uid, gid int) error {
-	inst, err := s.ready()
+	client, err := s.readyClient()
 	if err != nil {
 		return err
 	}
-	return inst.MakeSymlink(ctx, path, target, uid, gid)
+	return client.FileSymlinkOwned(ctx, path, target, uid, gid)
 }
 
 func (s *Service) Exec(ctx context.Context, argv []string, options sandboxapi.ExecOptions) (int, error) {
@@ -397,6 +407,17 @@ func (s *Service) ready() (Instance, error) {
 		return nil, fmt.Errorf("sandbox is not ready")
 	}
 	return inst, nil
+}
+
+func (s *Service) readyClient() (*host.SandboxClient, error) {
+	s.mu.Lock()
+	client := s.client
+	started := s.started
+	s.mu.Unlock()
+	if client == nil || !started {
+		return nil, fmt.Errorf("sandbox is not ready")
+	}
+	return client, nil
 }
 
 func (s *Service) envSlice() []string {

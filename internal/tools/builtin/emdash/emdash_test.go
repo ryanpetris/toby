@@ -32,6 +32,18 @@ func TestRegisterContextFilesWritesInstaller(t *testing.T) {
 	}
 }
 
+func TestConfigureSandboxAddsLocalBinToPath(t *testing.T) {
+	sandbox := fake.NewSandbox("/toby/context")
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
+
+	if err := svc.ConfigureSandbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sandbox.Env["PATH"], filepath.Join(layout.Home, ".local", "bin"); got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+}
+
 func TestInstallLaunchPathUsesSandboxContext(t *testing.T) {
 	contextDir := filepath.Join(t.TempDir(), "context")
 	sandbox := fake.NewSandbox(contextDir)

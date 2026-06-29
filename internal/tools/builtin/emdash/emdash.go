@@ -58,6 +58,10 @@ type emdashTool struct {
 
 var _ tools.Tool = (*emdashTool)(nil)
 
+func (t *emdashTool) ConfigureSandbox(ctx context.Context) error {
+	return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":")
+}
+
 func (t *emdashTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptions) error {
 	data, err := emdashFiles.ReadFile("resources/install.sh")
 	if err != nil {

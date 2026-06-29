@@ -40,6 +40,12 @@ func newStreamConn(stream chunkStream, onClose func()) *streamConn {
 	return &streamConn{stream: stream, done: make(chan struct{}), onClose: onClose}
 }
 
+// NewStreamConn adapts a Chunk stream into a net.Conn for higher-level protocols
+// carried over the tunnel, such as the JSON-RPC control peer.
+func NewStreamConn(stream chunkStream, onClose func()) net.Conn {
+	return newStreamConn(stream, onClose)
+}
+
 func (c *streamConn) Read(p []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()

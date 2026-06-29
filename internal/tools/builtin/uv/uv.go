@@ -82,19 +82,26 @@ func (t *uvTool) ConfigureSandbox(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":"); err != nil {
+		return err
+	}
 	return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(shared, "bin"), ":")
 }
 
 func (t *uvTool) InitSandbox(ctx context.Context) error {
-	if err := t.Install(ctx, false); err != nil {
+	shared := filepath.Join(layout.Home, ".local", "share", "toby", "uv")
+	if err := t.sandbox.MkdirOwned(ctx, shared, 0o755, control.HostUser, control.HostGroup); err != nil {
 		return err
 	}
-
 	for _, key := range []string{"UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR"} {
 		dir, _ := t.sandbox.Environment(key)
 		if err := t.sandbox.MkdirOwned(ctx, dir, 0o755, control.HostUser, control.HostGroup); err != nil {
 			return err
 		}
+	}
+
+	if err := t.Install(ctx, false); err != nil {
+		return err
 	}
 	return nil
 }
@@ -121,8 +128,14 @@ func (t *uvTool) Install(ctx context.Context, force bool) error {
 		log.Printf("%s", err)
 		return exitcode.Code(1)
 	}
-	_, err = t.sandbox.Exec(ctx, []string{t.contextPath(uvInstallPath), archiveURL}, sandbox.ExecOptions{})
-	return err
+	code, err := t.sandbox.Exec(ctx, []string{t.contextPath(uvInstallPath), archiveURL}, sandbox.ExecOptions{})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return exitcode.New(code, "uv install failed")
+	}
+	return nil
 }
 
 func (t *uvTool) contextPath(path string) string {

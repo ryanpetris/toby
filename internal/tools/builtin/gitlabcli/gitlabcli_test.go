@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"testing"
 
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/internal/tools/fake"
 	sandboxapi "petris.dev/toby/sandbox"
@@ -34,6 +35,18 @@ func TestProvideMetadataAndLaunch(t *testing.T) {
 	}
 	if want := []string{"glab", "mr", "list"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigureSandboxAddsLocalBinToPath(t *testing.T) {
+	sandbox := fake.NewSandbox("/toby/context")
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
+
+	if err := svc.ConfigureSandbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sandbox.Env["PATH"], filepath.Join(layout.Home, ".local", "bin"); got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
 	}
 }
 

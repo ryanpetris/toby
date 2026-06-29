@@ -17,6 +17,7 @@ through launch config `tool:` entries.
 | `claude` | `claude` | AI | `npm i -g @anthropic-ai/claude-code` | MCP, settings, instructions |
 | `codex` | `codex` | AI | `npm i -g @openai/codex` | MCP, instructions |
 | `copilot` | `copilot` | AI | `npm i -g @github/copilot` | MCP, instructions |
+| `dcode` | `dcode` | AI | `uv tool install deepagents-code` | MCP, default Toby agent instructions |
 | `grok` | `grok` | AI | download from `x.ai/cli` | MCP, rules |
 | `speckit` | `specify` | AI | `uv tool install` from spec-kit | — |
 | `t3` | `t3` | UI | `npm i -g t3` | inherits coding-tool config (see below) |
@@ -48,8 +49,9 @@ sources:
 - **Downloaded binaries** (`uv`, `gh`, `glab`, `fj`, `grok`, `emdash`): embedded
   shell installers fetch the latest release with `curl` and unpack it into the
   sandbox home. These need `curl` (and usually `tar`) in the sandbox image.
-- **uv-based** (`speckit`): installed with `uv tool install` from the GitHub
-  `spec-kit` repository; depends on the `uv` tool.
+- **uv-based** (`dcode`, `speckit`): installed with `uv tool install`; `dcode`
+  installs `deepagents-code`, while `speckit` installs from the GitHub `spec-kit`
+  repository. These depend on the `uv` tool.
 - **Host tools** (`docker`): not installed; the sandbox uses the host Docker
   socket and config via bind mounts.
 
@@ -99,6 +101,19 @@ configured MCP entries, and `developer_instructions`. It does not write to
 Toby generates `copilot/mcp-config.json` and `copilot/AGENTS.md`, sets
 `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` to include the generated directory, and
 launches with `--additional-mcp-config @.../copilot/mcp-config.json`.
+
+### Deep Agents Code
+
+Toby generates `dcode/mcp.json` and launches with
+`--mcp-config .../dcode/mcp.json`, so Toby MCP and configured MCP servers are
+loaded as a highest-precedence Deep Agents MCP overlay. By default Toby also
+selects `--agent toby` and links `~/.deepagents/toby/AGENTS.md` to the generated
+`dcode/AGENTS.md` instruction file. If the user passes `--agent`, `--agent=...`,
+or `-a`, Toby does not add `--agent toby` and does not modify the selected
+agent's `AGENTS.md`. When the user explicitly launches with `--model openai:...`
+or `--model anthropic:...` and exactly one matching Toby provider is configured,
+Toby sets Deep Agents' provider API-key and base-URL environment variables to
+point at the proxied provider without writing `~/.deepagents/config.toml`.
 
 ### Grok
 

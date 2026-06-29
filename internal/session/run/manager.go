@@ -70,6 +70,7 @@ func startRunSandbox(ctx context.Context, params Params, manager *host.Service, 
 	case <-time.After(readyTimeout):
 		return fmt.Errorf("timed out waiting for sandbox manager to start")
 	}
+	params.SandboxService.SetSandboxClient(host.NewSandboxClient(tunnelSrv))
 
 	if err := params.SandboxService.BindRun(ctx, sbx, env); err != nil {
 		return err

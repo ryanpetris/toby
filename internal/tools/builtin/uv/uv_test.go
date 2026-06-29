@@ -36,7 +36,7 @@ func TestSandboxContextSetupConfiguresEnvironment(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", key, sandbox.Env[key], want)
 		}
 	}
-	if got, want := sandbox.Env["PATH"], filepath.Join(shared, "bin"); got != want {
+	if got, want := sandbox.Env["PATH"], strings.Join([]string{filepath.Join(layout.Home, ".local", "bin"), filepath.Join(shared, "bin")}, ":"); got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
 	}
 }
@@ -132,6 +132,27 @@ func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
 	want := [][]string{{filepath.Join(layout.Context, filepath.FromSlash(uvInstallPath)), archiveURL}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestInitSandboxCreatesManagedDirsBeforeInstallCheck(t *testing.T) {
+	sandbox := fake.NewSandbox(filepath.Join(t.TempDir(), "context"))
+	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
+	if err := svc.ConfigureSandbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	shared := filepath.Join(layout.Home, ".local", "share", "toby", "uv")
+	wantDirs := []string{shared, filepath.Join(shared, "tools"), filepath.Join(shared, "bin"), filepath.Join(shared, "cache")}
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
+		if !reflect.DeepEqual(sandbox.Dirs, wantDirs) {
+			t.Fatalf("dirs before %v = %#v, want %#v", argv, sandbox.Dirs, wantDirs)
+		}
+		return 0, nil
+	}
+
+	if err := svc.InitSandbox(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

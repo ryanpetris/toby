@@ -5,7 +5,7 @@ package runtime
 // proxy-only manager as a docker exec and hands back the host side of that exec's
 // stdio gRPC link. Keeping the manager off the container's main process leaves
 // `docker logs` empty instead of full of gRPC frames. Tools, mount-init, and file
-// provisioning then run against the live container via docker exec / docker cp.
+// provisioning then run against the live container via docker exec / manager RPC.
 // Building images shells out to the docker CLI (see build.go); everything else
 // goes through the moby client.
 

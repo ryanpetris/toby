@@ -2,9 +2,12 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
+
+	"petris.dev/toby/internal/control"
 
 	"google.golang.org/grpc"
 )
@@ -27,15 +30,20 @@ type Server struct {
 
 	lis     *chanListener
 	httpSrv *http.Server
+
+	controlMu sync.Mutex
+	control   *control.Peer
+	controlCh chan *control.Peer
 }
 
 // NewServer wires a tunnel server to proxy. onReady (optional) fires when the
 // sandbox manager reports its local listener is bound.
 func NewServer(proxy ProxyHandler, onReady func(addr string)) *Server {
 	s := &Server{
-		proxy:   proxy,
-		onReady: onReady,
-		lis:     &chanListener{conns: make(chan net.Conn), done: make(chan struct{})},
+		proxy:     proxy,
+		onReady:   onReady,
+		lis:       &chanListener{conns: make(chan net.Conn), done: make(chan struct{})},
+		controlCh: make(chan *control.Peer, 1),
 	}
 	s.httpSrv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.proxy.HandleHTTP(r.Context(), w, r)
@@ -70,8 +78,69 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[Chunk, Chunk]) error {
 	}
 }
 
+// Control is the manager-initiated JSON-RPC control stream.
+func (s *Server) Control(stream grpc.BidiStreamingServer[Chunk, Chunk]) error {
+	conn := newStreamConn(stream, nil)
+	peer := control.NewPeer(stream.Context(), conn, nil)
+	peer.Start(nil)
+
+	s.controlMu.Lock()
+	old := s.control
+	s.control = peer
+	select {
+	case s.controlCh <- peer:
+	default:
+	}
+	s.controlMu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	defer func() {
+		s.controlMu.Lock()
+		if s.control == peer {
+			s.control = nil
+		}
+		s.controlMu.Unlock()
+		_ = peer.Close()
+	}()
+	<-peer.Done()
+	return peer.Err()
+}
+
+// Call sends one JSON-RPC request to the sandbox manager over the control stream.
+func (s *Server) Call(ctx context.Context, method string, params any) (control.RPCResponse, error) {
+	peer, err := s.controlPeer(ctx)
+	if err != nil {
+		return control.RPCResponse{}, err
+	}
+	return peer.Call(ctx, method, params)
+}
+
+func (s *Server) controlPeer(ctx context.Context) (*control.Peer, error) {
+	s.controlMu.Lock()
+	peer := s.control
+	s.controlMu.Unlock()
+	if peer != nil {
+		return peer, nil
+	}
+
+	select {
+	case peer := <-s.controlCh:
+		return peer, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.lis.done:
+		return nil, fmt.Errorf("sandbox manager control stream is not connected")
+	}
+}
+
 // Close stops the embedded http.Server and its listener.
 func (s *Server) Close() error {
+	s.controlMu.Lock()
+	if s.control != nil {
+		_ = s.control.Close()
+	}
+	s.controlMu.Unlock()
 	s.lis.Close()
 	return s.httpSrv.Close()
 }

@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/internal/tools/builtin/claude"
 	"petris.dev/toby/internal/tools/builtin/codex"
 	"petris.dev/toby/internal/tools/builtin/copilot"
+	"petris.dev/toby/internal/tools/builtin/dcode"
 	"petris.dev/toby/internal/tools/builtin/docker"
 	"petris.dev/toby/internal/tools/builtin/emdash"
 	"petris.dev/toby/internal/tools/builtin/exectool"
@@ -44,6 +45,7 @@ var entries = []entry{
 	{claude.Meta, claude.Module},
 	{copilot.Meta, copilot.Module},
 	{codex.Meta, codex.Module},
+	{dcode.Meta, dcode.Module},
 	{t3.Meta, t3.Module},
 	{opencode.Meta, opencode.Module},
 	{uv.Meta, uv.Module},

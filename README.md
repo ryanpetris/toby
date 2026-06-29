@@ -4,7 +4,7 @@
 
 Toby sandboxes software development tools so agents can work on code without inheriting your real home directory.
 
-Run OpenCode, Claude Code, Codex, Copilot, Grok, Docker, package managers, and VCS CLIs in private Linux homes with access only to the project you choose. Your host `~/.ssh`, `~/.gnupg`, and other personal files stay outside the sandbox.
+Run OpenCode, Claude Code, Codex, Copilot, Deep Agents Code, Grok, Docker, package managers, and VCS CLIs in private Linux homes with access only to the project you choose. Your host `~/.ssh`, `~/.gnupg`, and other personal files stay outside the sandbox.
 
 When a sandboxed agent needs to do something that really should happen on the host, like signing a commit or pushing over SSH, Toby exposes a narrow MCP bridge. The agent can ask Toby to run selected host Git operations for visible repositories without mounting your keys into the sandbox.
 
@@ -223,7 +223,7 @@ Useful flags:
 
 ## MCP
 
-Toby automatically exposes a sandbox-only MCP server to supported tools launched through `toby <client>`. The built-in server is registered as a per-run `/proxy/<uuid>` target, like configured remote MCP servers, and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, `git.tag`, `mcp.start`, `mcp.stop`, and `mcp.restart`, plus `toby://docs/...` and `toby://session/...` resources. Git tools operate on repositories already visible in the sandbox. Session resources never expose provider/MCP headers, URLs, commands, argv, or environment values; host paths, Docker volume names, container names, and local MCP host ports are included only when debug mode is enabled. For OpenCode, Claude Code, Copilot, and Grok, Toby injects this server through synthetic tool configuration generated under the context directory. Grok discovers that generated config through a `~/.grok/managed_config.toml` symlink. Codex receives Toby MCP through launch-time `-c` config overrides instead of a generated profile file.
+Toby automatically exposes a sandbox-only MCP server to supported tools launched through `toby <client>`. The built-in server is registered as a per-run `/proxy/<uuid>` target, like configured remote MCP servers, and provides `git.commit`, `git.fetch`, `git.push`, `git.rebase`, `git.tag`, `mcp.start`, `mcp.stop`, and `mcp.restart`, plus `toby://docs/...` and `toby://session/...` resources. Git tools operate on repositories already visible in the sandbox. Session resources never expose provider/MCP headers, URLs, commands, argv, or environment values; host paths, Docker volume names, container names, and local MCP host ports are included only when debug mode is enabled. For OpenCode, Claude Code, Copilot, Deep Agents Code, and Grok, Toby injects this server through synthetic tool configuration generated under the context directory. Grok discovers that generated config through a `~/.grok/managed_config.toml` symlink. Codex receives Toby MCP through launch-time `-c` config overrides instead of a generated profile file.
 
 The sandbox manager runs as a `docker exec` (the container's main process just idles, so `docker logs` stays clean) and connects back to the host over a gRPC link carried on that exec's stdio; there is no control host or token to pass in. `HOME` remains available to commands. MCP and provider proxy URLs point at the manager's in-container loopback listener (`http://127.77.0.1:47600/proxy/<uuid>`), which tunnels each connection to the host reverse proxy.
 
@@ -246,6 +246,7 @@ alongside it. Available tools:
 | `claude` | `claude` | AI | Claude Code |
 | `codex` | `codex` | AI | OpenAI Codex |
 | `copilot` | `copilot` | AI | GitHub Copilot CLI |
+| `dcode` | `dcode` | AI | Deep Agents Code |
 | `grok` | `grok` | AI | Grok CLI |
 | `speckit` | `specify` | AI | GitHub Spec Kit |
 | `t3` | `t3` | UI | T3 Code launcher (drives the coding tools) |
@@ -258,7 +259,7 @@ alongside it. Available tools:
 | `fj` | `fj` | VCS | Forgejo CLI |
 | `exec` | (command) | Command | Run an arbitrary sandbox command |
 
-For OpenCode, Claude Code, Codex, Copilot, and Grok, Toby generates synthetic
+For OpenCode, Claude Code, Codex, Copilot, Deep Agents Code, and Grok, Toby generates synthetic
 configuration (MCP servers, providers, and instructions) without touching the
 tools' normal config files. See [docs/tools.md](docs/tools.md) for the install
 mechanism and config injection per tool.

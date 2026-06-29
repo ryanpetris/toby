@@ -1,9 +1,7 @@
-// Package sandbox is the in-sandbox manager: a proxy-only process. It carries a
-// single gRPC connection to the host over its stdio (stdin/stdout), binds a local
-// HTTP listener, and tunnels every accepted connection to the host, which owns the
-// upstream credentials and dials the real destinations. It runs no commands and
-// serves no control RPCs — the host drives exec/file/mount operations directly via
-// docker exec/cp.
+// Package sandbox is the in-sandbox manager. It carries a single gRPC connection
+// to the host over stdio (stdin/stdout), binds a local HTTP listener, tunnels every
+// accepted proxy connection to the host, and executes manager-scoped filesystem
+// control requests inside the sandbox.
 package sandbox
 
 import (
@@ -16,6 +14,8 @@ import (
 	"os"
 	"strings"
 
+	"petris.dev/toby/internal/control"
+	filescap "petris.dev/toby/internal/control/methods/files"
 	"petris.dev/toby/internal/control/stdio"
 	"petris.dev/toby/internal/control/tunnel"
 )
@@ -37,15 +37,23 @@ func benignConnErr(err error) bool {
 
 // Runner is the fx-provided entry point for the hidden `toby sandbox manager`
 // command.
-type Runner struct{}
+type Runner struct {
+	router *control.Router
+}
 
-func NewRunner() *Runner { return &Runner{} }
+func NewRunner() (*Runner, error) {
+	router, err := control.NewRouter([]control.Capability{filescap.New()})
+	if err != nil {
+		return nil, err
+	}
+	return &Runner{router: router}, nil
+}
 
 // Run dials the host over stdio, binds the local proxy listener, reports readiness,
 // and forwards every accepted connection to the host until the context is cancelled
 // (the host stops the container) or the listener closes.
 func (r *Runner) Run(ctx context.Context) error {
-	if r == nil {
+	if r == nil || r.router == nil {
 		return fmt.Errorf("sandbox manager is not configured")
 	}
 	// stdout (fd 1) carries only gRPC frames; route all logging to stderr (fd 2).
@@ -69,6 +77,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	go func() {
+		if err := r.runControl(ctx, client); err != nil && ctx.Err() == nil {
+			log.Printf("control stream: %v", err)
+		}
+	}()
+
+	go func() {
 		<-ctx.Done()
 		_ = lis.Close()
 	}()
@@ -90,4 +104,29 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}()
 	}
+}
+
+func (r *Runner) runControl(ctx context.Context, client tunnel.TunnelClient) error {
+	stream, err := client.Control(ctx)
+	if err != nil {
+		return err
+	}
+	conn := tunnel.NewStreamConn(stream, nil)
+	peer := control.NewPeer(ctx, conn, r.handleControl)
+	peer.Start(nil)
+	select {
+	case <-peer.Done():
+		return peer.Err()
+	case <-ctx.Done():
+		_ = peer.Close()
+		return ctx.Err()
+	}
+}
+
+func (r *Runner) handleControl(ctx context.Context, data []byte) ([]byte, error) {
+	req, err := control.DecodeRequest(data)
+	if err != nil {
+		return control.ResponseError(nil, control.CodeInvalidRequest, err.Error(), nil), err
+	}
+	return r.router.Handle(ctx, req)
 }

@@ -69,6 +69,10 @@ type gitlabCLITool struct {
 
 var _ tools.Tool = (*gitlabCLITool)(nil)
 
+func (t *gitlabCLITool) ConfigureSandbox(ctx context.Context) error {
+	return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":")
+}
+
 func (t *gitlabCLITool) InitSandbox(ctx context.Context) error {
 	return t.Install(ctx, false)
 }
