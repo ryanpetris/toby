@@ -249,8 +249,8 @@ Generated `copilot/mcp-config.json`:
 For Deep Agents Code sandboxes, Toby generates `dcode/mcp.json` and
 `dcode/AGENTS.md` under the generated context directory. It launches `dcode`
 with `--mcp-config <generated-context>/dcode/mcp.json`. Unless the user passes
-`--agent`, `--agent=...`, or `-a`, Toby also selects `--agent toby` and links
-`~/.deepagents/toby/AGENTS.md` to the generated instruction file. When the user
+`--agent`, `--agent=...`, or `-a`, Toby also selects `--agent toby` and writes
+the generated instructions to `~/.deepagents/toby/AGENTS.md`. When the user
 selects an agent explicitly, Toby does not add `--agent toby` and does not alter
 that agent's `AGENTS.md`. When the user explicitly launches with `--model openai:...`
 or `--model anthropic:...` and exactly one matching Toby provider is configured,

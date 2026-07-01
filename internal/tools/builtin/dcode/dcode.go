@@ -117,7 +117,7 @@ func (t *deepAgentsTool) Install(ctx context.Context, force bool) error {
 
 func (t *deepAgentsTool) Launch(ctx context.Context, extra []string) error {
 	if !hasAgentArg(extra) {
-		if err := t.linkTobyAgent(ctx); err != nil {
+		if err := t.writeTobyAgent(ctx); err != nil {
 			return err
 		}
 	}
@@ -137,12 +137,13 @@ func (t *deepAgentsTool) Launch(ctx context.Context, extra []string) error {
 	return err
 }
 
-func (t *deepAgentsTool) linkTobyAgent(ctx context.Context) error {
+func (t *deepAgentsTool) writeTobyAgent(ctx context.Context) error {
 	agentDir := filepath.Join(layout.Home, ".deepagents", "toby")
 	if err := t.Sandbox.MkdirOwned(ctx, agentDir, 0o755, control.HostUser, control.HostGroup); err != nil {
 		return err
 	}
-	return t.Sandbox.SymlinkOwned(ctx, filepath.Join(agentDir, "AGENTS.md"), dcodeconfig.InstructionsPath(layout.Context), control.HostUser, control.HostGroup)
+
+	return t.Sandbox.AddFileOwned(ctx, filepath.Join(agentDir, "AGENTS.md"), dcodeconfig.Instructions(t.sessionConfig.Get()), 0o644, control.HostUser, control.HostGroup)
 }
 
 func (t *deepAgentsTool) configureSelectedProvider(ctx context.Context, args []string) error {

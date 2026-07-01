@@ -102,7 +102,7 @@ func TestInstallFailsWhenUVToolInstallFails(t *testing.T) {
 	}
 }
 
-func TestLaunchDefaultsToTobyAgentAndLinksInstructions(t *testing.T) {
+func TestLaunchDefaultsToTobyAgentAndWritesInstructions(t *testing.T) {
 	dc, sandbox, _ := newTestDcode(t, testConfig(t, false))
 	var got []string
 	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
@@ -118,7 +118,10 @@ func TestLaunchDefaultsToTobyAgentAndLinksInstructions(t *testing.T) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
 	agentsPath := filepath.Join(layout.Home, ".deepagents", "toby", "AGENTS.md")
-	if sandbox.Symlinks[agentsPath] != dcodeconfig.InstructionsPath(layout.Context) {
+	if !hasFile(sandbox.Files, agentsPath) {
+		t.Fatalf("files = %#v", sandbox.Files)
+	}
+	if len(sandbox.Symlinks) != 0 {
 		t.Fatalf("symlinks = %#v", sandbox.Symlinks)
 	}
 }
@@ -140,6 +143,9 @@ func TestLaunchRespectsExplicitAgent(t *testing.T) {
 		}
 		if len(sandbox.Symlinks) != 0 {
 			t.Fatalf("symlinks = %#v, extra = %#v", sandbox.Symlinks, extra)
+		}
+		if hasFile(sandbox.Files, filepath.Join(layout.Home, ".deepagents", "toby", "AGENTS.md")) {
+			t.Fatalf("files = %#v, extra = %#v", sandbox.Files, extra)
 		}
 	}
 }

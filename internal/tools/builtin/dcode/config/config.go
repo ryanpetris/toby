@@ -1,7 +1,6 @@
 // Package config generates Deep Agents Code synthetic configuration files Toby
 // writes into the sandbox context directory: the MCP server list passed via
-// --mcp-config and the optional Toby agent AGENTS.md linked only for default
-// launches.
+// --mcp-config and the optional Toby agent AGENTS.md copied for default launches.
 package config
 
 import (
@@ -27,7 +26,11 @@ func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Co
 	if err := registrar.AddBytes(StaticMCPPath, mcp, 0o644); err != nil {
 		return err
 	}
-	return registrar.AddBytes(StaticInstructionsPath, helpers.JoinInstructions(cfg.Instructions.Contents), 0o644)
+	return registrar.AddBytes(StaticInstructionsPath, Instructions(cfg), 0o644)
+}
+
+func Instructions(cfg sessionconfig.Config) []byte {
+	return helpers.JoinInstructions(cfg.Instructions.Contents)
 }
 
 func MCPConfigPath(contextDir string) string {

@@ -107,8 +107,8 @@ launches with `--additional-mcp-config @.../copilot/mcp-config.json`.
 Toby generates `dcode/mcp.json` and launches with
 `--mcp-config .../dcode/mcp.json`, so Toby MCP and configured MCP servers are
 loaded as a highest-precedence Deep Agents MCP overlay. By default Toby also
-selects `--agent toby` and links `~/.deepagents/toby/AGENTS.md` to the generated
-`dcode/AGENTS.md` instruction file. If the user passes `--agent`, `--agent=...`,
+selects `--agent toby` and writes the generated instructions to
+`~/.deepagents/toby/AGENTS.md`. If the user passes `--agent`, `--agent=...`,
 or `-a`, Toby does not add `--agent toby` and does not modify the selected
 agent's `AGENTS.md`. When the user explicitly launches with `--model openai:...`
 or `--model anthropic:...` and exactly one matching Toby provider is configured,
