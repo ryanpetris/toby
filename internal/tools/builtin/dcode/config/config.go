@@ -1,20 +1,23 @@
-// Package config generates Deep Agents Code synthetic configuration files Toby
-// writes into the sandbox context directory: the MCP server list passed via
-// --mcp-config and the optional Toby agent AGENTS.md copied for default launches.
+// Package config generates Deep Agents Code synthetic configuration files Toby writes
+// into dcode's real agent dir (~/.deepagents/toby): the MCP server list passed via
+// --mcp-config and the Toby agent AGENTS.md written for default launches.
 package config
 
 import (
 	"encoding/json"
-	"path/filepath"
 
 	"petris.dev/toby/config/session"
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/tools/helpers"
 )
 
+// AgentDir is dcode's real Toby-agent directory.
+const AgentDir = layout.Home + "/.deepagents/toby"
+
 const (
-	StaticMCPPath          = "dcode/mcp.json"
-	StaticInstructionsPath = "dcode/AGENTS.md"
+	MCPConfigPath    = AgentDir + "/mcp.json"
+	InstructionsPath = AgentDir + "/AGENTS.md"
 )
 
 func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Config) error {
@@ -22,23 +25,11 @@ func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Co
 	if err != nil {
 		return err
 	}
-
-	if err := registrar.AddBytes(StaticMCPPath, mcp, 0o644); err != nil {
-		return err
-	}
-	return registrar.AddBytes(StaticInstructionsPath, Instructions(cfg), 0o644)
+	return registrar.AddBytes(MCPConfigPath, mcp, 0o644)
 }
 
 func Instructions(cfg sessionconfig.Config) []byte {
 	return helpers.JoinInstructions(cfg.Instructions.Contents)
-}
-
-func MCPConfigPath(contextDir string) string {
-	return filepath.Join(contextDir, filepath.FromSlash(StaticMCPPath))
-}
-
-func InstructionsPath(contextDir string) string {
-	return filepath.Join(contextDir, filepath.FromSlash(StaticInstructionsPath))
 }
 
 func syntheticMCP(servers []sessionconfig.MCPServer) map[string]any {

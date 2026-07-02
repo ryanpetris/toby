@@ -18,10 +18,11 @@ type Caller interface {
 
 type SandboxClient struct {
 	caller Caller
+	exec   *execDispatch
 }
 
 func NewSandboxClient(caller Caller) *SandboxClient {
-	return &SandboxClient{caller: caller}
+	return &SandboxClient{caller: caller, exec: newExecDispatch()}
 }
 
 func (c *SandboxClient) FileCreate(ctx context.Context, path string, data []byte, mode uint32) error {

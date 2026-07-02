@@ -1,8 +1,9 @@
 package run
 
-// Running the requested tool inside the prepared sandbox: initSandboxContext
-// clears and re-renders the generated context files, and launchTool drives the
-// install/upgrade phases before handing control to the primary tool.
+// renderGeneratedConfig re-renders the generated tool config + instruction files for a
+// toolset. Tool config is written to each tool's real home path (overwritten in place);
+// only the Toby-owned artifact dirs (instructions, scripts) are wiped first so stale
+// entries don't accumulate.
 
 import (
 	"context"
@@ -13,37 +14,14 @@ import (
 	"petris.dev/toby/tools"
 )
 
-func initSandboxContext(ctx context.Context, params Params, toolset *tools.Toolset, lctx lifecycle.Context) error {
+func renderGeneratedConfig(ctx context.Context, params Params, toolset *tools.Toolset, lctx lifecycle.Context) error {
 	if params.ContextFiles == nil {
 		return fmt.Errorf("context files service is not configured")
 	}
-	contextDir := layout.Context
-	if err := params.SandboxService.DeletePath(ctx, contextDir, true); err != nil {
-		return err
-	}
-	return params.Runner.RunPhase(ctx, lifecycle.PhaseContextFiles, toolset, lctx, false)
-}
-
-func launchTool(ctx context.Context, params Params, toolset *tools.Toolset, opts *tools.Options, extra []string, lctx lifecycle.Context) error {
-	primary := toolset.Primary()
-	if primary == nil {
-		return fmt.Errorf("toolset cannot launch without a primary tool")
-	}
-	if opts != nil && opts.Install {
-		err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, false)
-		params.Status.Stop()
-		return err
-	}
-	if opts != nil && opts.Upgrade {
-		if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, true); err != nil {
+	for _, dir := range []string{layout.Instructions, layout.Scripts} {
+		if err := params.SandboxService.DeletePath(ctx, dir, true); err != nil {
 			return err
 		}
-		params.Status.Stop()
-		return primary.Launch(ctx, extra)
 	}
-	if err := params.Runner.RunPhase(ctx, lifecycle.PhaseInstall, toolset, lctx, false); err != nil {
-		return err
-	}
-	params.Status.Stop()
-	return primary.Launch(ctx, extra)
+	return params.Runner.RunPhase(ctx, lifecycle.PhaseContextFiles, toolset, lctx, false)
 }

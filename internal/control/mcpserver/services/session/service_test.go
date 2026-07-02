@@ -14,6 +14,7 @@ import (
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/control/mcpserver"
+	"petris.dev/toby/internal/daemon/resource"
 )
 
 func TestDynamicRuntimeResourceIncludesVersion(t *testing.T) {
@@ -87,7 +88,7 @@ mcps:
         Authorization: Bearer secret-mcp-token
 `))
 	proxy := httpproxy.NewService(nil)
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runner: mcpproxy.NewDockerRunner(engine.New())})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Registry: resource.NewRegistry(resource.NewDockerRunner(engine.New()))})
 	if err != nil {
 		t.Fatal(err)
 	}

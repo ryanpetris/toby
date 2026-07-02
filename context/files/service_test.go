@@ -2,23 +2,21 @@ package contextfiles
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"testing/fstest"
 
-	"petris.dev/toby/container/layout"
 	"petris.dev/toby/sandbox"
 )
 
-// fakeSandbox records the files written through the sandbox service. Embedding
-// the interface satisfies the full surface; only AddFile is exercised here.
+// fakeSandbox records the files written through the sandbox service. Embedding the
+// interface satisfies the full surface; only AddFileOwned is exercised here.
 type fakeSandbox struct {
 	sandbox.Service
 	files []File
 }
 
-func (f *fakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
+func (f *fakeSandbox) AddFileOwned(_ context.Context, path string, data []byte, mode uint32, _, _ int) error {
 	f.files = append(f.files, File{Path: path, Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
@@ -30,13 +28,13 @@ func newServiceWithSandbox() (*Service, *fakeSandbox) {
 	return service, sink
 }
 
-func TestAddFileWritesUnderContextRootWithDefaultMode(t *testing.T) {
+func TestAddFileWritesToAbsolutePathWithDefaultMode(t *testing.T) {
 	service, sink := newServiceWithSandbox()
-	target, err := service.AddFile(context.Background(), "dir/file.txt", []byte("hi"), 0)
+	target, err := service.AddFile(context.Background(), "~/.config/tool/file.txt", []byte("hi"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(layout.Context, "dir", "file.txt")
+	want := "/toby/home/.config/tool/file.txt"
 	if target != want {
 		t.Fatalf("target = %q, want %q", target, want)
 	}
@@ -49,17 +47,23 @@ func TestAddFileWritesUnderContextRootWithDefaultMode(t *testing.T) {
 	}
 }
 
-func TestAddFileRejectsInvalidPaths(t *testing.T) {
+func TestAddFileRejectsNonAbsolutePaths(t *testing.T) {
 	service, _ := newServiceWithSandbox()
-	for _, path := range []string{"", ".", "/absolute", "../escape"} {
+	for _, path := range []string{"", ".", "dir/file.txt", "../escape"} {
 		if _, err := service.AddFile(context.Background(), path, []byte("bad"), 0); err == nil {
 			t.Fatalf("expected path %q to fail", path)
+		}
+	}
+	// Absolute and ~-relative paths are accepted.
+	for _, path := range []string{"/toby/home/x", "~/x"} {
+		if _, err := service.AddFile(context.Background(), path, []byte("ok"), 0); err != nil {
+			t.Fatalf("expected path %q to succeed: %v", path, err)
 		}
 	}
 }
 
 func TestAddFileRequiresSandbox(t *testing.T) {
-	if _, err := NewService().AddFile(context.Background(), "file.txt", []byte("x"), 0); err == nil {
+	if _, err := NewService().AddFile(context.Background(), "~/file.txt", []byte("x"), 0); err == nil {
 		t.Fatal("expected missing sandbox to fail")
 	}
 }
@@ -67,13 +71,13 @@ func TestAddFileRequiresSandbox(t *testing.T) {
 func TestAddInstructionTracksPathsAndContents(t *testing.T) {
 	service, sink := newServiceWithSandbox()
 	data := []byte("instructions")
-	target, err := service.AddInstruction(context.Background(), "instructions/AGENTS.md", data, 0o600)
+	target, err := service.AddInstruction(context.Background(), "/toby/home/.toby/instructions/AGENTS.md", data, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data[0] = 'I' // caller mutation must not bleed into tracked contents.
 
-	want := filepath.Join(layout.Context, "instructions", "AGENTS.md")
+	want := "/toby/home/.toby/instructions/AGENTS.md"
 	if !reflect.DeepEqual(service.InstructionPaths(), []string{want}) {
 		t.Fatalf("instruction paths = %#v, want %#v", service.InstructionPaths(), []string{want})
 	}
@@ -104,14 +108,14 @@ func TestAddInstructionFSValidatesAndReadsFile(t *testing.T) {
 	service, _ := newServiceWithSandbox()
 	fsy := fstest.MapFS{"dir/file.txt": {Data: []byte("from fs")}}
 	for _, name := range []string{"", ".", "missing", "dir"} {
-		if _, err := service.AddInstructionFS(context.Background(), "instructions/fs.md", fsy, name, 0); err == nil {
+		if _, err := service.AddInstructionFS(context.Background(), "~/.toby/instructions/fs.md", fsy, name, 0); err == nil {
 			t.Fatalf("expected fs name %q to fail", name)
 		}
 	}
-	if _, err := service.AddInstructionFS(context.Background(), "instructions/fs.md", nil, "dir/file.txt", 0); err == nil {
+	if _, err := service.AddInstructionFS(context.Background(), "~/.toby/instructions/fs.md", nil, "dir/file.txt", 0); err == nil {
 		t.Fatal("expected nil fs to fail")
 	}
-	if _, err := service.AddInstructionFS(context.Background(), "instructions/fs.md", fsy, "dir/file.txt", 0); err != nil {
+	if _, err := service.AddInstructionFS(context.Background(), "~/.toby/instructions/fs.md", fsy, "dir/file.txt", 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := service.InstructionContents(); len(got) != 1 || string(got[0]) != "from fs" {
@@ -121,10 +125,10 @@ func TestAddInstructionFSValidatesAndReadsFile(t *testing.T) {
 
 func TestRegistrarAddsBytesThroughService(t *testing.T) {
 	service, sink := newServiceWithSandbox()
-	if err := service.Registrar(context.Background()).AddBytes("config.json", []byte("{}"), 0o644); err != nil {
+	if err := service.Registrar(context.Background()).AddBytes("~/.config/tool/config.json", []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(layout.Context, "config.json")
+	want := "/toby/home/.config/tool/config.json"
 	if len(sink.files) != 1 || sink.files[0].Path != want || string(sink.files[0].Data) != "{}" {
 		t.Fatalf("sink files = %#v", sink.files)
 	}

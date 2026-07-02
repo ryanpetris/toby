@@ -58,7 +58,6 @@ func (t *dockerTool) PrepareHost(_ context.Context, opts *tools.Options) error {
 	return t.sandbox.AddBind(mount.Bind{HostPath: layout.DockerSocket, Target: layout.DockerSocket, Access: mount.AccessDev, Optional: true})
 }
 
-func (t *dockerTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"docker"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *dockerTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"docker"}, extra...), nil
 }

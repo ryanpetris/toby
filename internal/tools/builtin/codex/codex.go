@@ -50,7 +50,6 @@ func Provide(params Params) Result {
 		Simple: kit.NewSimple(
 			params.Sandbox,
 			tools.Base{Metadata: Meta},
-			[]string{".codex"},
 			[]string{"npm", "install", "-g", "@openai/codex"},
 			nil,
 		),
@@ -87,13 +86,12 @@ func (t *codexTool) RegisterContextFiles(ctx context.Context, opts tools.Context
 	return nil
 }
 
-func (t *codexTool) Launch(ctx context.Context, extra []string) error {
+func (t *codexTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
 	args, err := t.launchArgs(extra)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = t.Sandbox.Exec(ctx, append([]string{"codex"}, args...), sandbox.ExecOptions{Foreground: true})
-	return err
+	return append([]string{"codex"}, args...), nil
 }
 
 func (t *codexTool) launchArgs(extra []string) ([]string, error) {

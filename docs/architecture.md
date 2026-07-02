@@ -14,34 +14,46 @@ and others) inside a private-home Linux sandbox while keeping your real `$HOME`,
 SSH keys, GPG setup, and credentials on the host. It is a single Go binary
 (`petris.dev/toby`) that plays two roles:
 
-- On the **host**, it launches the sandbox container, delivers the Toby binary,
-  generates synthetic tool configuration, asks the sandbox manager to write files,
-  runs the tool, and brokers privileged operations: host Git,
-  and an HTTP reverse proxy to upstream MCP servers and model providers that
-  injects credentials the sandbox never sees.
-- Inside the **sandbox**, the same binary runs as `toby sandbox manager`: a
-  control process that accepts the sandbox's outbound HTTP connections on a
-  loopback listener, tunnels them to the host, and executes file operations
-  requested by the host. The container's own main
-  process is just `toby sandbox idle`, so the manager runs as a `docker exec`
-  alongside it and `docker logs` stays empty.
+- On the **host**, it runs as a long-lived **daemon** plus thin **clients**. The
+  daemon owns Docker and manages three kinds of container (see below): a shared
+  **home** container per profile, a **netns** container per project+profile, and an
+  ephemeral **tool** container per invocation. It delivers the Toby binary (in a
+  read-only per-version volume), generates synthetic tool configuration, asks the
+  home manager to write files and run installs, and brokers privileged operations:
+  host Git, and an HTTP reverse proxy to upstream MCP servers and model providers
+  that injects credentials the sandbox never sees. A client is any other `toby`
+  invocation; it asks the daemon to bring a project up and then attaches to the
+  tool container the daemon creates.
+- Inside a sandbox, the same binary runs one of three `toby sandbox <role>`
+  managers. The **home** manager (`sandbox home`, root) owns the shared `/toby/home`
+  volume and serves file operations and streamed installs/exec. The **netns**
+  manager (`sandbox netns`, root) owns the published ports and the network
+  namespace, and accepts the sandbox's outbound HTTP connections on a loopback
+  listener and tunnels them to the host. The **tool** container's main process is
+  `toby sandbox launch <descriptor>`, which sets the environment, `chdir`s, and
+  `syscall.Exec`s the actual tool as PID 1 — the client attaches to it directly. The
+  home and netns containers' own main process is `toby sandbox idle`, so their
+  managers run as a `docker exec` alongside and `docker logs` stays empty.
 
-The two halves talk over a single gRPC connection carried on the **manager
-exec's stdio** (its stdin/stdout); the manager is the gRPC client and the host is
-the server. The host runs tools through Docker exec, but file operations are JSON-RPC
-requests over the manager control stream. Docker cp is only used to bootstrap-copy
-the Toby binary before the manager exists.
+The home and netns managers each talk to the host over a single gRPC connection
+carried on the **manager exec's stdio**; the manager is the gRPC client and the host
+is the server. Installs and file operations are JSON-RPC requests over the home
+manager's control stream (install output streams back to the client); the tool
+container joins the netns via Docker's `NetworkMode=container:<netns>`. The Toby
+binary is delivered once per version in a read-only `toby.bin.<key>` volume mounted
+into every container, so there is no per-container `docker cp`.
 
 ```
- host process (toby <tool> <env>)                 sandbox (container)
+ host daemon                                      containers
  ┌───────────────────────────────┐                ┌─────────────────────────────┐
- │ CLI / session orchestration   │   stdio (gRPC) │ toby sandbox manager         │
- │ Tunnel gRPC server  ◀─────────┼────────────────┤  gRPC client                 │
- │ HTTP reverse proxy (+creds)   │                │  local proxy listener        │
- │ MCP server (git.* tools)      │                │   127.77.0.1:47600           │
- │ docker exec / file RPC ───────┼───────────────▶│  launched tool (own tty)     │
+ │ session orchestration         │   stdio (gRPC) │ home  (root, per profile)    │
+ │ home registry (files+exec) ◀──┼────────────────┤  sandbox home: files + exec  │
+ │ netns registry (proxy/mcp)  ◀─┼────────────────┤ netns (root, per proj+prof)  │
+ │ HTTP reverse proxy (+creds)   │                │  sandbox netns: proxy 127.77 │
+ │ MCP server (git.* tools)      │   attach (pty) │ tool  (uid:gid, ephemeral)   │
+ │ tool container create ────────┼───────────────▶│  sandbox launch → the tool   │
  └───────────────────────────────┘                └─────────────────────────────┘
-        host $HOME, SSH, GPG                          private $HOME + project bind
+        host $HOME, SSH, GPG            shared /toby/home + netns + project bind
 ```
 
 A tool inside the sandbox reaches an MCP server or model provider by making an
@@ -50,11 +62,72 @@ manager tunnels the connection to the host over the gRPC link, and the host
 attaches credentials and dials the real upstream. No host network port is opened
 to the sandbox.
 
+## Daemon and clients
+
+The first `toby` invocation auto-spawns a background **daemon** (`toby daemon`),
+and every later invocation is a thin **client** that connects to it. The daemon
+binds a control endpoint under `XDG_RUNTIME_DIR` (by default a unix socket at
+`$XDG_RUNTIME_DIR/toby/daemon.sock`), owns Docker, and keeps the **shared home**
+container (per profile) and the **netns** container (per project+profile) warm and
+reused across invocations. A launch (`toby <tool> <env>`) becomes a client that asks
+the daemon to acquire the netns unit + the profile's shared home, run the tool
+lifecycle (install/configure/context) against the home manager, write a launch
+descriptor into the home volume, and create a **tool** container joined to the
+netns; the daemon returns that container's id and the **client attaches to it and
+starts it**, so the interactive PTY, raw mode, resize, and the approval modal attach
+to the user's real terminal — the daemon never allocates a PTY. When the tool exits
+the client releases its session: the daemon terminates the ephemeral tool container
+and drops both holds. The home and netns containers are kept warm and torn down
+after an idle timeout (default 15m), and the daemon auto-shuts-down when it has no
+live projects unless it was started with `--no-idle-shutdown` (supervised/systemd
+mode).
+
+The daemon's control surface is a small set of JSON-RPC methods carried over a
+transport abstraction (see [Control plane](#control-plane) below): `daemon.ping`
+(ensure-up + version), `daemon.status` (list projects), `daemon.stop` (shut down,
+tearing down every project container), `session.start` (bring the project up and
+return the exec plan), and `session.release` (drop a session's hold). Approval
+prompts round-trip the other way — the daemon calls back to the owning client with
+`approval.prompt`, which drives that client's foreground modal.
+
+The daemon watches the config file (mtime/size polling in
+`internal/daemon/configwatch`, no filesystem-notify dependency) and reloads it on
+change; **new** project launches pick up the change, while an **already-running**
+project keeps the config it launched with — its configuration is frozen at the
+launch that created its container.
+
+Local **MCP sidecar containers are shared across projects**: the daemon-root
+`internal/daemon/resource` registry runs one container per configured local MCP
+server (keyed by its resolved config, so identical config shares one container and a
+changed config yields a new one), refcounted; each project's `mcpproxy` layer
+acquires a lease and registers the shared backend on its own reverse proxy under a
+fresh URL. The container stops when the last project holding a lease exits. Remote
+MCP servers and providers are direct upstreams with no container.
+
 ## Process model
 
 Toby is wired together with [uber-go/fx](https://github.com/uber-go/fx)
-dependency injection. `main.go` calls `app.Run()`, which builds a planning fx
-application from `internal/app/module.go` and executes the Cobra CLI.
+dependency injection. `main.go` calls `app.Run()`. `toby daemon [ping|status|stop]`
+is dispatched first (`internal/app/daemon.go`) into its own lighter fx graph; every
+other invocation builds the launch graph from `internal/app/module.go` and executes
+the Cobra CLI, whose session runner is the daemon **client**
+(`internal/app/client_runner.go`).
+
+The **daemon** graph composes `wiring.PlanningModule()`, `tools.Module()`, the
+config watcher, a transport module, and `daemon.Module()` — which collects the
+`daemon.*`/`session.*` control capabilities into a `control.Router`, builds the
+`daemon.Service` accept loop over the transport listener, and stands up the
+project registry. Each project the daemon serves gets its own **per-project fx
+graph** built from `internal/session/graph` (the host services, the selected tool
+closure, the sandbox runtime, the lifecycle runner, the providers, and the
+session-config resolver); `run.BringUp` (`internal/session/run`) then stands the
+container up and holds it open across launches (`BringUp`/`Install`/`LaunchPlan`/
+`Close`).
+
+The **launch/client** graph composes `sandbox.Module()`, the planning tools, a
+transport module, and `client.Module()`; its Cobra session runner marshals the
+resolved options into a `session.start` request, runs the returned plan against
+Docker, and releases the session on exit.
 
 The root planning graph composes:
 
@@ -63,22 +136,26 @@ The root planning graph composes:
 - `sandbox.Module()` (`internal/control/sandbox`) — the in-sandbox manager for
   the hidden `toby sandbox manager` command.
 - Supporting providers: `config.NewPaths` (XDG path resolution),
-  `appconfig.New`, `tool.NewRegistry`, and the session runner factory.
+  `appconfig.New`, `tool.NewRegistry`, the transport, and the client-backed
+  session runner factory.
 
-Each launch builds a separate execution fx graph. That graph contains only the
-selected tool dependency closure from `tools.SelectedModule(...)`, the selected
-sandbox runtime module when known, and the host-side services needed for that
-run: `sandbox.Module()`, `host.Module()` (`internal/control/host`), `mcpserver.Module()`
-(plus the `gitservice`/`sessionservice` service-plugin modules),
-`contextfiles.NewService`, `executil.NewProcessRunner`, `tool.NewRegistry`, and
-the lifecycle hook providers.
+Each project builds a separate per-project fx graph (`internal/session/graph`).
+That graph contains only the selected tool dependency closure from
+`wiring.SelectedModule(...)`, the sandbox runtime module, and the host-side services
+needed for that project: `host.Module()` (`internal/control/host`),
+`mcpserver.Module()` (plus the `gitservice`/`sessionservice` service-plugin modules),
+`mcpproxy.Module()`, `contextfiles.NewService`, `executil.NewProcessRunner`,
+`tool.NewRegistry`, and the lifecycle hook providers.
 
 The CLI is built in `internal/cli`. `NewRootCommand` registers:
 
 - one launch subcommand per registered tool that has launch help, via
   `Registry.LaunchTools()` (see `internal/cli/root.go`);
-- the hidden `toby sandbox manager` command tree (`sandbox.go`);
 - a shell-completion command.
+
+The hidden `toby sandbox <role>` commands (`home`/`netns`/`launch`/`idle`) are not
+Cobra subcommands — they are dispatched early in `app.Run` (`internal/app/sandbox.go`),
+before the launch CLI is built, since they run inside containers and need no fx graph.
 
 The root `--config <file>` flag turns the invocation into a config-owned launch.
 
@@ -86,10 +163,18 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 
 | Package | Responsibility |
 | --- | --- |
-| `internal/app` | fx application wiring and entry point. |
+| `internal/app` | fx application wiring, entry point, daemon/client dispatch (`daemon.go`), and the client-backed session runner (`client_runner.go`). |
 | `internal/cli` | Cobra commands, flag parsing, `toby sandbox` tree. |
 | `internal/config/launch` | `--config` / `.toby.yaml` launch config parsing and resolution. |
-| `internal/session/run` | End-to-end launch orchestration (`run.Run`). |
+| `internal/daemon` | The long-lived daemon: `Service` accept loop, the `daemon.*`/`session.*` control capabilities, and the per-project+profile netns bring-up `Lifecycle`. |
+| `internal/daemon/project` | Race-safe registry and container state machine for the per-project+profile **netns** unit (bring-up/idle-teardown/stop). |
+| `internal/daemon/home` | Daemon-root registry of the shared per-profile **home** containers (one home per profile, shared across projects, with a per-home install mutex). |
+| `internal/daemon/protocol` | Dependency-free client↔daemon wire contract (JSON-RPC method names + param/result DTOs). |
+| `internal/daemon/transport` (+ `transport/unixsocket`, `transport/websocket`) | Swappable client↔daemon transport seam and its two implementations. |
+| `internal/daemon/configwatch` | Polls the config files' mtime/size and reloads the daemon's config, holding the last-good config through a bad edit. |
+| `internal/client` | Thin client: dials/spawns the daemon, issues control requests, **attaches to** the ephemeral tool container, streams install output, and hosts the approval prompter. |
+| `internal/session/graph` | The shared per-project+profile fx graph (host services, tool closure, runtime, lifecycle), consumed by the daemon. |
+| `internal/session/run` | The netns unit held open across launches (`BringUp` + `PreLaunch`/`Install`/`Close`): stands up the netns container + proxy/MCP and, per session, runs the tool lifecycle against the shared home and creates the tool container. |
 | `config` | XDG paths (`paths.go`). |
 | `config/file` | Config file decoding (JSON/YAML), deep merge. |
 | `internal/config/app` | Host config schema, validation, and context-file rendering (`appconfig`). |
@@ -100,10 +185,11 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 | `internal/control/stdio` | `net.Conn` over an independent reader/writer pair plus a one-shot `Listener`, so gRPC runs over the container's stdin/stdout. |
 | `internal/control/methods/git` | The host-side Git capability: wire contract and handler `Service`, dispatched in-process. |
 | `internal/control/host` | Host router for the in-process Git capability and the shared HTTP reverse proxy (`Service.HTTPProxy`). |
-| `internal/control/sandbox` | The in-sandbox manager: dials the host over stdio, binds the loopback listener, forwards each accepted connection over the tunnel, and handles sandbox-side file methods. |
+| `internal/control/sandbox` | The three in-sandbox manager roles: `home` (files + streamed exec over the control stream), `netns` (binds the loopback listener and forwards each accepted connection over the tunnel), and `launch` (reads the descriptor and `syscall.Exec`s the tool). |
+| `internal/control/methods/exec` | The sandbox-side streamed exec capability (`exec.run` → run as uid:gid, `exec.output` notifications) used by the home manager for installs. |
 | `internal/control/httpproxy` | Host reverse proxy that injects credentials and dials upstreams (`/proxy/<uuid>` path scheme), fed by the tunnel. |
 | `internal/control/mcpserver` | Built-in Toby MCP server framework + per-session contract; service plugins live in `internal/control/mcpserver/services/{git,session}` (host Git tools; MCP lifecycle tools and `toby://` introspection resources). |
-| `sandbox/runtime` | Host-side sandbox runtime: the Factory, the tool-facing sandbox service (manager-backed file ops plus docker exec commands), and the Docker container backend (testcontainers-go for create, the moby client for exec/attach/bootstrap cp). |
+| `sandbox/runtime` | Host-side sandbox runtime: the Factory (options→Spec), the tool-facing sandbox service (home-manager file/exec ops + netns-proxied URLs), the three container builders (home/netns manager stand-up + tool container create), the read-only bin volume, and the client attach driver. |
 | `container/engine` | Shared Docker client and container service: tracks and tears down every container Toby starts. |
 | `tools` | `Tool` contract, `Base`, `Metadata`, `Registry`, `Toolset` (clean). |
 | `internal/lifecycle` | Launch phase runner driving the toolset through its phases (clean). |
@@ -117,8 +203,35 @@ The root `--config <file>` flag turns the invocation into a config-owned launch.
 
 ## Control plane
 
-There is a single host↔sandbox channel: a gRPC connection carried over the
-manager exec's stdio. Everything host-initiated uses the Docker API instead.
+There are two distinct channels. The **client↔daemon** channel carries the
+JSON-RPC control methods between a `toby` client and the daemon. The
+**host↔sandbox** channel is a single gRPC connection carried over the manager
+exec's stdio, owned by the daemon per project; everything the daemon initiates
+against a sandbox otherwise uses the Docker API.
+
+### The client↔daemon transport (`internal/daemon/transport`)
+
+The client↔daemon channel is a JSON-RPC peer connection (the same `control.Peer`
+framing used in-process) carried over a swappable **transport**. The `transport`
+package defines only the interfaces both ends depend on — `Listener` (daemon
+accepts connections), `Connector` (client dials), and `Bootstrap` (client's
+detect-or-spawn step) — so a concrete transport only has to yield `net.Conn`s and
+own its endpoint. Two implementations exist, selected by the `TOBY_TRANSPORT`
+environment variable and wired at the composition root (`internal/app/daemon.go`):
+
+- **unix socket** (default, `transport/unixsocket`) — binds
+  `$XDG_RUNTIME_DIR/toby/daemon.sock` (0700 dir). `EnsureDaemon` does a
+  flock-guarded detect / stale-socket-cleanup / detached `toby daemon` spawn /
+  poll dance so exactly one daemon binds even under concurrent first invocations.
+- **WebSocket** (`transport/websocket`, `golang.org/x/net/websocket`) — a single
+  `/rpc` upgrade endpoint on a loopback address (default `127.0.0.1:47700`,
+  overridable with `TOBY_WS_ADDRESS`).
+
+Because `control.Peer` carries the framing, both transports carry the exact same
+JSON-RPC payloads; only the byte carrier differs. The channel is bidirectional:
+client-initiated methods (`daemon.*`, `session.*`) drive a session, and
+daemon-initiated methods (`approval.prompt`, `status.progress`) call back to the
+client that owns a session.
 
 ### The stdio gRPC link (`internal/control/tunnel`, `internal/control/stdio`)
 
@@ -235,28 +348,33 @@ selection in Toby. The runtime uses testcontainers-go to create the container an
 the moby client for `cp`/`exec`/`attach`/`wait`; image building still shells out
 to `docker build`.
 
-- **One container per session** (`sandbox/runtime`). It runs as `--user 0:0`
-  with an init process and the configured image (default
-  `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`), executing the
-  proxy-only manager with its stdio as the gRPC link. `$HOME` (`/toby/home`) is
-  backed by a named Docker volume (e.g. `toby.<profile>.runtime.home.default`) so
-  private home state persists across runs; provider-backed managed mounts use lazy
-  volumes named `toby.<profile>.<type>.<name>.<purpose>`. Each volume is mounted at
-  **both** its final target and an isolated `/toby/mounts/<random>` setup path, so
-  the host can chown it (root `docker exec`) without crossing into the binds
-  layered under the final target. Projects bind-mount from the host under
-  `/toby/workspace`. Empty volumes seed from the image on first mount. Under
-  `settings.debug: true` or `--debug` the container is stopped on exit but left on
-  the host (not removed) for inspection; containers are never reused.
-- **Networking**: the container uses **bridge** networking. The manager's proxy
-  listener is on the container's own loopback, so it stays container-private, while
-  tools still have outbound network access. The gRPC control link rides the Docker
-  attach stream (the API connection), not a network port, so it works the same for
-  local, Docker Desktop, Podman, and remote daemons with nothing to tunnel. A launch
-  may additionally publish sandbox ports to the host via Docker port bindings
-  (`container.ports` / `--publish`), which set the container's `ExposedPorts` and
-  `HostConfig.PortBindings` at create time; a published service must bind `0.0.0.0`
-  inside the sandbox to be reachable from the host.
+- **Three container kinds** (`sandbox/runtime`), all mounting the read-only
+  `toby.bin.<key>` volume at `/toby/bin` and the configured image (default
+  `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`):
+  - **home** (per profile, `toby.home.<profile>`, `--user 0:0`, init): owns the
+    shared `$HOME` (`/toby/home`) volume `toby.<profile>.runtime.home`, so
+    installed tools and tool state persist and are shared across every project on the
+    profile. Runs the `sandbox home` manager (files + streamed exec) over its exec
+    stdio; the daemon chowns `/toby/home` to the invoking user once (marker-guarded).
+  - **netns** (per project+profile, `toby.net.<digest>.<profile>`, `--user 0:0`,
+    init): owns the published ports and the network namespace, and runs the
+    `sandbox netns` proxy manager. Brought up once and reused across launches.
+  - **tool** (per invocation, `toby.tool.<sid>`, `--user uid:gid`, ephemeral): joins
+    the netns via `NetworkMode=container:<netns>`, mounts the home volume + the
+    workspace project binds, and runs `sandbox launch <descriptor>` as its main
+    process. The client attaches to it; the daemon terminates it on release.
+
+  Under `settings.debug: true` or `--debug` the home/netns containers are stopped on
+  exit but left on the host (not removed) for inspection; containers are never reused.
+- **Networking**: the netns container uses **bridge** networking and owns the shared
+  namespace the tool container joins. The netns manager's proxy listener is on the
+  namespace's loopback (`127.77.0.1:47600`), so it stays private while tools still
+  have outbound network access. The gRPC control links ride the Docker exec/attach
+  stream, not a network port, so they work the same for local, Docker Desktop,
+  Podman, and remote daemons. A launch may publish sandbox ports to the host via
+  Docker port bindings (`container.ports` / `--publish`), which are set on the
+  **netns** container at create time (Docker forbids them on a `container:`-networked
+  tool container); a published service must bind `0.0.0.0` inside the sandbox.
 
 The runtime provides `sandboxpath.Paths`. The host-side `sandbox.SandboxService`
 exposes those paths and centralizes sandbox file and command operations for tool
@@ -272,54 +390,63 @@ Host secrets such as `~/.ssh` and `~/.gnupg` are not mounted into the sandbox.
 
 ### Helper binary delivery (`internal/sandbox/binary`)
 
-The sandbox needs a Linux Toby binary to run as the manager. The host delivers it
-with `docker cp` into the created container before starting it. On Linux the host
-copies its own running binary from `/proc/self/exe`. macOS release builds embed a
-matching Linux helper; local Darwin builds without the release embed tag require
-`TOBY_LINUX_TOBY` to point at a Linux Toby binary.
+The sandbox needs a Linux Toby binary to run the managers and the tool launcher.
+The host delivers it **once per version** into a read-only `toby.bin.<key>` volume
+(key = `version.Current` for a release, else `dev-<sha256[:12]>` of the binary):
+the daemon creates the volume if absent, `docker cp`s the binary into it via a
+throwaway container, then mounts it read-only at `/toby/bin` in every container — so
+there is no per-container `docker cp`. On Linux the host copies its own running
+binary from `/proc/self/exe`. macOS release builds embed a matching Linux helper;
+local Darwin builds without the release embed tag require `TOBY_LINUX_TOBY` to point
+at a Linux Toby binary.
 
 ## End-to-end launch flow
 
-A direct launch such as `toby claude my-app` proceeds through the app session
-runner and `internal/session/run/run.go`:
+A direct launch such as `toby claude my-app` runs as a client against the daemon.
+The client resolves the launch, sends a `session.start` request, and the daemon
+acquires the netns unit + shared home, runs the tool lifecycle, and creates a tool
+container the client attaches to:
 
 1. **Plan execution.** Parse CLI flags, merge host-config sandbox defaults, and
    (if enabled) autoload `<project>/.toby.yaml`. The planning registry expands the
    requested tools to include declared dependencies and determines the primary
-   (foreground) tool. The app builds an execution fx graph scoped to that tool
-   closure and the selected runtime.
-2. **Register host-side mounts.** Build the execution toolset, apply managed mount
-   settings, and run `toby.lifecycle.host.init` hooks, which register explicit
-   binds and managed mount requests with the sandbox service before the sandbox
-   starts.
-3. **Register proxy targets.** Publish the built-in Toby MCP server and configure
-   the MCP proxy. Provider and MCP upstreams are registered with the host reverse
-   proxy; the sandbox is told their proxied URLs on the in-container listener.
-4. **Start the sandbox.** Create the container (volumes multi-mounted at their
-   final targets and setup paths), `docker cp` the Toby binary in, attach to its
-   stdio, start it, serve the `Tunnel` gRPC over the stdio link, and wait for the
-   manager's `Ready`.
-5. **Initialize mounts.** Run `toby.lifecycle.sandbox.mount.init` hooks; the
-   default chowns each provider volume to the host user via a root `docker exec` on
-   its isolated setup path.
-6. **Inject context.** Run `toby.lifecycle.sandbox.context.setup`, clear the
-   generated context directory, then run `toby.lifecycle.sandbox.context.init`.
-   Agent instructions and host config run before tool-specific hooks. Each hook
-   writes files under the generated context directory via the sandbox service,
-   which sends `file.*` requests to the sandbox manager.
-7. **Install and launch.** Run `toby.lifecycle.sandbox.init`, then
-   `toby.lifecycle.sandbox.install` or `toby.lifecycle.sandbox.upgrade` as needed
-   (each command via `docker exec`). The primary tool's `Launch` runs the
-   foreground command via `docker exec` under a container PTY, wired to the host
-   terminal when there is one and otherwise streamed straight to the host stdout.
-8. **Tear down.** When the foreground command exits, the host stops the gRPC
-   server, stops and removes the container, and exits with the foreground
-   command's exit code (under `--debug` the container is stopped but left on the
-   host, not removed). A `SIGTERM` to the host process (e.g. `systemctl stop`)
-   cancels the command's context, which unwinds the foreground command and runs
-   this same teardown before the process exits, so the container is never left
-   orphaned; the launch leaves `SIGINT` alone so an interactive Ctrl-C reaches the
-   tool through its PTY instead.
+   (foreground) tool. The client marshals the resolved options/overrides into a
+   `session.start` request and dials the daemon, spawning one if none is running.
+2. **Acquire the netns unit.** The daemon keys the netns unit by label + project
+   sources + home profile; if it is already up it reuses it, otherwise it builds the
+   per-project+profile fx graph (frozen at the current config), ensures the bin
+   volume + image, stands up the netns container, serves the `Tunnel` gRPC over its
+   manager stdio, publishes the built-in Toby MCP server, and configures the MCP/
+   provider proxies (upstreams registered with the host reverse proxy; the sandbox
+   is told their proxied loopback URLs). The host phase (`toby.lifecycle.host.init`)
+   registers the tool container's binds (docker socket, `~/.docker`).
+3. **Acquire the shared home.** The daemon acquires the profile's home container
+   (standing it up on first use with the same image + bin volume, chowning
+   `/toby/home` once), giving a `SandboxClient` for files + streamed exec.
+4. **Run the tool lifecycle (against the home).** Under the per-home install mutex,
+   the daemon runs `toby.lifecycle.sandbox.install`/`upgrade` (each command via the
+   home manager's `exec.run`, output streamed to the client as `install.output`),
+   then `configure`, `context.setup`/`context.init` (context files written into the
+   per-session `/toby/home/.toby/run/<sid>/` via `file.*`), and `init`. For
+   `--install` the daemon runs install only and reports back with nothing to launch.
+5. **Create the tool container.** The daemon writes a launch descriptor (argv, env,
+   working dir) into the home volume and creates — but does not start — a tool
+   container that joins the netns (`NetworkMode=container:<netns>`), mounts the home
+   volume + bin volume + workspace binds, runs as the invoking `uid:gid`, and whose
+   entrypoint is `sandbox launch <descriptor>`. It returns that container's id and
+   whether the managed terminal is enabled.
+6. **Attach and run (client).** The client attaches to the tool container and starts
+   it; `sandbox launch` sets the env, `chdir`s, and `syscall.Exec`s the tool as PID
+   1, so the PTY, raw mode, and approval modal attach to the user's real terminal.
+   Approval prompts the daemon raises during the run round-trip to this client over
+   `approval.prompt`. `SIGINT` (Ctrl-C) reaches the tool through its PTY.
+7. **Release and idle teardown (daemon).** When the tool exits, the client sends
+   `session.release` and exits with the tool's exit code. The daemon terminates the
+   ephemeral tool container, removes the session's run directory, and drops the home
+   + netns holds; when the last session for a netns unit is released it arms an idle
+   timer (default 15m) and tears the netns + shared home down when it fires.
+   `daemon.stop`, an explicit project stop, or idle auto-shutdown tear containers
+   down the same way (under `--debug` a container is stopped but left on the host).
 
 ## Tool abstraction (`tools` + `internal/lifecycle`)
 

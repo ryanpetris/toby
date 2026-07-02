@@ -1,11 +1,10 @@
-// Package mcpproxy exposes a session's configured MCP servers to the agent
-// through a single proxy: remote servers are registered as upstreams, local
-// servers run as Docker sidecars (stdio bridged to streamable HTTP, or HTTP
-// reached through a mapped port), each surfaced at a control-host proxy URL.
-//
-// This file holds the Service that owns the per-server entries: Configure
-// builds them from config, URL looks one up, StartAll/StopAll/Status drive and
-// report the local sidecars.
+// Package mcpproxy publishes a project's configured MCP servers to its agent through
+// the project's reverse proxy. It is the per-project registration layer: for each
+// enabled server it acquires a lease on the shared, daemon-root backend
+// (internal/daemon/resource) and registers that backend on this project's proxy under
+// a fresh URL — so identical servers across projects share one container while each
+// project gets its own proxy URL. The containers themselves live in the shared
+// registry; this layer owns only the per-project registrations.
 package mcpproxy
 
 import (
@@ -13,50 +12,49 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"time"
 
-	"petris.dev/toby/internal/config/app"
+	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/tunnel"
+	"petris.dev/toby/internal/daemon/resource"
 
 	"go.uber.org/fx"
 )
 
+// Defaults are the sidecar defaults threaded to the shared registry.
+type Defaults = resource.Defaults
+
+// StatusSnapshot is the per-server status reported to the session MCP tools.
+type StatusSnapshot = resource.StatusSnapshot
+
 type ServiceParams struct {
 	fx.In
 
-	Proxy  *httpproxy.Service `optional:"true"`
-	Runner *DockerRunner
+	Proxy    *httpproxy.Service `optional:"true"`
+	Registry *resource.Registry
 }
 
+// Service registers this project's MCP backends on its proxy.
 type Service struct {
-	proxy  *httpproxy.Service
-	runner *DockerRunner
+	proxy    *httpproxy.Service
+	registry *resource.Registry
 
-	mu      sync.RWMutex
-	entries map[string]*Entry
+	mu      sync.Mutex
+	entries map[string]*entry
 }
 
-type Entry struct {
-	Name      string
-	URL       string
-	Server    appconfig.MCPServer
-	Spec      SidecarSpec
-	Bridge    *StdioBridge
-	Remote    bool
-	Status    Status
-	LastError string
-	ExitCode  int
-	UpdatedAt time.Time
-
-	cancel context.CancelFunc
-	handle *ProcessHandle
+type entry struct {
+	name  string
+	url   string
+	lease *resource.Lease
 }
 
 func NewService(params ServiceParams) (*Service, error) {
-	return &Service{proxy: params.Proxy, runner: params.Runner, entries: map[string]*Entry{}}, nil
+	return &Service{proxy: params.Proxy, registry: params.Registry, entries: map[string]*entry{}}, nil
 }
 
+// Configure acquires a shared backend for every enabled server and registers it on this
+// project's proxy. Re-configuring releases the previous leases first.
 func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, defaults Defaults) error {
 	if s == nil {
 		return fmt.Errorf("mcp proxy service is not configured")
@@ -64,6 +62,10 @@ func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, default
 	if s.proxy == nil {
 		return fmt.Errorf("http proxy service is not configured")
 	}
+	if s.registry == nil {
+		return fmt.Errorf("mcp backend registry is not configured")
+	}
+
 	servers := map[string]appconfig.MCPServer{}
 	if cfg != nil {
 		servers = cfg.MCPServers()
@@ -76,25 +78,14 @@ func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, default
 	}
 	sort.Strings(names)
 
-	// Resolve (and build, if mcp.build is set) the default sidecar image once,
-	// but only when an enabled local server will actually fall back to it.
-	if needsDefaultImage(servers, names) {
-		image, err := resolveDefaultImage(ctx, defaults)
-		if err != nil {
-			return err
-		}
-		defaults.Image = image
-	} else {
-		defaults.Image = ""
-	}
-
-	entries := make(map[string]*Entry, len(names))
+	s.releaseAll()
+	entries := make(map[string]*entry, len(names))
 	for _, name := range names {
-		entry, err := s.configureEntry(ctx, name, servers[name], defaults)
+		e, err := s.configureEntry(ctx, name, servers[name], defaults)
 		if err != nil {
 			return err
 		}
-		entries[name] = entry
+		entries[name] = e
 	}
 	s.mu.Lock()
 	s.entries = entries
@@ -102,82 +93,52 @@ func (s *Service) Configure(ctx context.Context, cfg *appconfig.Service, default
 	return nil
 }
 
-func (s *Service) configureEntry(ctx context.Context, name string, server appconfig.MCPServer, defaults Defaults) (*Entry, error) {
-	if server.Remote() {
-		headers, err := server.Headers()
-		if err != nil {
-			return nil, fmt.Errorf("mcp.%s: %w", name, err)
-		}
-		id, err := s.proxy.RegisterUpstream(server.URL(), headers)
-		if err != nil {
-			return nil, fmt.Errorf("mcp.%s: %w", name, err)
-		}
-		return &Entry{Name: name, URL: tunnel.ProxyBaseURL(id), Server: server, Remote: true, Status: StatusRunning, UpdatedAt: time.Now()}, nil
-	}
-	if !server.Local() {
-		return nil, fmt.Errorf("mcp.%s command or url is required", name)
-	}
-	spec, err := sidecarSpec(name, server, defaults)
+func (s *Service) configureEntry(ctx context.Context, name string, server appconfig.MCPServer, defaults Defaults) (*entry, error) {
+	lease, err := s.registry.Acquire(ctx, name, server, defaults)
 	if err != nil {
 		return nil, err
 	}
-	entry := &Entry{Name: name, Server: server, Spec: spec, Status: StatusRegistered, UpdatedAt: time.Now()}
-	switch spec.Transport {
-	case TransportStdio:
-		bridge := NewStdioBridge(name)
-		id, err := s.proxy.RegisterHandler(bridge.Handler())
-		if err != nil {
-			return nil, fmt.Errorf("mcp.%s: %w", name, err)
-		}
-		entry.Bridge = bridge
-		entry.URL = tunnel.ProxyBaseURL(id)
-	case TransportHTTP:
-		baseURL, spec, err := s.runner.PrepareHTTP(ctx, spec)
-		if err != nil {
-			return nil, fmt.Errorf("mcp.%s: %w", name, err)
-		}
-		id, err := s.proxy.RegisterUpstream(baseURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("mcp.%s: %w", name, err)
-		}
-		entry.Spec = spec
-		entry.URL = tunnel.ProxyBaseURL(id)
-	default:
-		return nil, fmt.Errorf("mcp.%s.transport is unsupported", name)
+	id, err := s.register(lease)
+	if err != nil {
+		lease.Release()
+		return nil, fmt.Errorf("mcp.%s: %w", name, err)
 	}
-	return entry, nil
+	return &entry{name: name, url: tunnel.ProxyBaseURL(id), lease: lease}, nil
 }
 
+// register installs the lease's backend on this project's proxy: the streamable-HTTP
+// handler for stdio, or the upstream URL + headers for http/remote.
+func (s *Service) register(lease *resource.Lease) (string, error) {
+	if handler := lease.Handler(); handler != nil {
+		return s.proxy.RegisterHandler(handler)
+	}
+	url, headers := lease.Upstream()
+	if url == "" {
+		return "", fmt.Errorf("backend %q has no upstream", lease.Name())
+	}
+	return s.proxy.RegisterUpstream(url, headers)
+}
+
+// URL returns the proxied URL for a configured server.
 func (s *Service) URL(name string) (string, bool) {
 	if s == nil {
 		return "", false
 	}
-	s.mu.RLock()
-	entry, ok := s.entries[name]
-	s.mu.RUnlock()
-	if !ok || entry == nil || entry.URL == "" {
+	s.mu.Lock()
+	e, ok := s.entries[name]
+	s.mu.Unlock()
+	if !ok || e == nil || e.url == "" {
 		return "", false
 	}
-	return entry.URL, true
+	return e.url, true
 }
 
-func (s *Service) StartAll(ctx context.Context) {
-	for _, entry := range s.localEntries() {
-		go s.start(ctx, entry)
-	}
-}
-
-func (s *Service) StopAll(ctx context.Context) {
-	for _, entry := range s.localEntries() {
-		_ = s.stop(ctx, entry)
-	}
-}
-
+// Status reports each configured server's backend status.
 func (s *Service) Status() []StatusSnapshot {
 	if s == nil {
 		return nil
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	names := make([]string, 0, len(s.entries))
 	for name := range s.entries {
 		names = append(names, name)
@@ -185,47 +146,46 @@ func (s *Service) Status() []StatusSnapshot {
 	sort.Strings(names)
 	result := make([]StatusSnapshot, 0, len(names))
 	for _, name := range names {
-		result = append(result, s.statusSnapshot(s.entries[name]))
+		result = append(result, s.entries[name].lease.Snapshot())
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	return result
 }
 
-func (s *Service) localEntries() []*Entry {
-	if s == nil {
-		return nil
+// Start, Stop, and Restart act on the shared backend for a server, affecting every
+// project using it.
+func (s *Service) Start(ctx context.Context, name string) error {
+	return s.act(ctx, name, s.registry.Start)
+}
+func (s *Service) Stop(ctx context.Context, name string) error {
+	return s.act(ctx, name, s.registry.Stop)
+}
+func (s *Service) Restart(ctx context.Context, name string) error {
+	return s.act(ctx, name, s.registry.Restart)
+}
+
+func (s *Service) act(ctx context.Context, name string, fn func(context.Context, string) error) error {
+	s.mu.Lock()
+	e, ok := s.entries[name]
+	s.mu.Unlock()
+	if !ok || e == nil {
+		return fmt.Errorf("mcp %q is not configured", name)
 	}
-	s.mu.RLock()
-	entries := make([]*Entry, 0, len(s.entries))
-	for _, entry := range s.entries {
-		if entry != nil && !entry.Remote {
-			entries = append(entries, entry)
+	return fn(ctx, e.lease.Key())
+}
+
+// Close releases every lease this project holds; the shared backends stop when their
+// last project releases them.
+func (s *Service) Close() { s.releaseAll() }
+
+func (s *Service) releaseAll() {
+	s.mu.Lock()
+	entries := s.entries
+	s.entries = map[string]*entry{}
+	s.mu.Unlock()
+	for _, e := range entries {
+		if e.lease != nil {
+			e.lease.Release()
 		}
 	}
-	s.mu.RUnlock()
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries
-}
-
-func (s *Service) statusSnapshot(entry *Entry) StatusSnapshot {
-	if entry == nil {
-		return StatusSnapshot{}
-	}
-	pid := 0
-	if entry.handle != nil {
-		pid = entry.handle.PID()
-	}
-	debug := entry.Spec.Debug
-	return StatusSnapshot{Name: entry.Name, Status: entry.Status, URL: entry.URL, Transport: entry.Spec.Transport, PID: pid, ExitCode: entry.ExitCode, LastError: entry.LastError, UpdatedAt: entry.UpdatedAt, RuntimeInfo: cloneRuntimeInfo(s.runner.RuntimeInfo(entry.Spec, debug))}
-}
-
-func cloneRuntimeInfo(src map[string]any) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
 }

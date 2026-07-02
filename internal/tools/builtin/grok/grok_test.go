@@ -9,11 +9,9 @@ import (
 
 	"petris.dev/toby/config/session"
 	"petris.dev/toby/container/layout"
-	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	grokconfig "petris.dev/toby/internal/tools/builtin/grok/config"
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 )
 
@@ -26,9 +24,6 @@ func TestGrokHostInitRegistersManagedMount(t *testing.T) {
 	}
 	if len(sandbox.Binds) != 0 {
 		t.Fatalf("binds = %#v", sandbox.Binds)
-	}
-	if len(sandbox.Mounts) != 1 || sandbox.Mounts[0].Key != (mount.Key{Type: mount.TypeTool, Name: Name, Purpose: "state"}) || sandbox.Mounts[0].Target != filepath.Join(layout.Home, ".grok") {
-		t.Fatalf("mounts = %#v", sandbox.Mounts)
 	}
 }
 
@@ -45,7 +40,7 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 	}
 	files := sandbox.Files
 	for _, file := range files {
-		if file.Path != grokconfig.StaticConfigPath {
+		if file.Path != layout.Expand(grokconfig.ConfigPath) {
 			continue
 		}
 		config := string(file.Data)
@@ -57,37 +52,15 @@ func TestRegisterContextFilesWritesGrokConfig(t *testing.T) {
 	t.Fatalf("config file not registered: %#v", files)
 }
 
-func TestSandboxInitLinksManagedConfig(t *testing.T) {
-	home := t.TempDir()
-	contextDir := filepath.Join(home, "context")
-	gr, sandbox, _ := newTestGrok(t, contextDir)
-
-	if err := gr.InitSandbox(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	wantDir := filepath.Join(layout.Home, ".grok")
-	if !reflect.DeepEqual(sandbox.Dirs, []string{wantDir}) {
-		t.Fatalf("dirs = %#v, want %#v", sandbox.Dirs, []string{wantDir})
-	}
-	wantLink := filepath.Join(layout.Home, ".grok", "managed_config.toml")
-	if sandbox.Symlinks[wantLink] != grokconfig.ConfigPath(layout.Context) {
-		t.Fatalf("symlinks = %#v", sandbox.Symlinks)
-	}
-}
-
 func TestLaunchAddsRules(t *testing.T) {
 	home := t.TempDir()
-	gr, sandbox, holder := newTestGrok(t, filepath.Join(home, "context"))
+	gr, _, holder := newTestGrok(t, filepath.Join(home, "context"))
 	holder.Set(sessionconfig.Config{
 		Instructions: sessionconfig.Instructions{Contents: [][]byte{[]byte("# user instructions\n")}},
 	})
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 
-	if err := gr.Launch(context.Background(), []string{"--model", "grok-code-fast-1"}); err != nil {
+	got, err := gr.LaunchCommand(context.Background(), []string{"--model", "grok-code-fast-1"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"grok", "--rules", "# user instructions\n", "--model", "grok-code-fast-1"}

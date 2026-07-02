@@ -35,7 +35,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupSystem, tools.GroupVCS},
 }
 
-const uvInstallPath = "uv/install.sh"
+const uvInstallPath = layout.Scripts + "/uv/install.sh"
 
 type Result struct {
 	fx.Out
@@ -128,7 +128,7 @@ func (t *uvTool) Install(ctx context.Context, force bool) error {
 		log.Printf("%s", err)
 		return exitcode.Code(1)
 	}
-	code, err := t.sandbox.Exec(ctx, []string{t.contextPath(uvInstallPath), archiveURL}, sandbox.ExecOptions{})
+	code, err := t.sandbox.Exec(ctx, []string{uvInstallPath, archiveURL}, sandbox.ExecOptions{})
 	if err != nil {
 		return err
 	}
@@ -138,13 +138,8 @@ func (t *uvTool) Install(ctx context.Context, force bool) error {
 	return nil
 }
 
-func (t *uvTool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *uvTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"uv"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *uvTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"uv"}, extra...), nil
 }
 
 func (t *uvTool) latestRelease(ctx context.Context) (string, string, error) {

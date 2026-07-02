@@ -60,6 +60,12 @@ func NewRequest(id int64, method string, params json.RawMessage) ([]byte, error)
 	return json.Marshal(RPCRequest{JSONRPC: JSONRPCVersion, ID: idBytes, Method: method, Params: params})
 }
 
+// NewNotification builds a JSON-RPC notification (a method call with no id, expecting
+// no response) — used for one-way streaming such as exec output.
+func NewNotification(method string, params json.RawMessage) ([]byte, error) {
+	return json.Marshal(RPCRequest{JSONRPC: JSONRPCVersion, Method: method, Params: params})
+}
+
 func DecodeRequest(data []byte) (RPCRequest, error) {
 	var req RPCRequest
 	if err := json.Unmarshal(data, &req); err != nil {

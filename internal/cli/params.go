@@ -8,18 +8,16 @@ import (
 
 	"petris.dev/toby/config"
 	"petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/control/sandbox"
 	"petris.dev/toby/internal/session/run"
 	"petris.dev/toby/tools"
 )
 
 type Params struct {
-	Registry       *tools.Registry
-	Paths          config.Paths
-	TobyConfig     *appconfig.Service
-	SandboxManager *sandbox.Runner
-	SessionRunner  run.Runner
-	Args           []string
-	Stdout         io.Writer
-	Stderr         io.Writer
+	Registry      *tools.Registry
+	Paths         config.Paths
+	TobyConfig    *appconfig.Service
+	SessionRunner run.Runner
+	Args          []string
+	Stdout        io.Writer
+	Stderr        io.Writer
 }

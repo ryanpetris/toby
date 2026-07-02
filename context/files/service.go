@@ -1,5 +1,6 @@
-// Package contextfiles writes context files into the sandbox's context directory
-// and tracks the instruction files among them so agents can be pointed at them.
+// Package contextfiles writes generated tool configuration and instruction files
+// into the sandbox at their real destination paths (owned by the invoking user) and
+// tracks the instruction files among them so agents can be pointed at them.
 package contextfiles
 
 import (
@@ -27,11 +28,12 @@ type File struct {
 	Mode uint32
 }
 
-// Service writes context files into the sandbox and tracks instruction files so
+// Service writes generated files into the sandbox and tracks instruction files so
 // agents can be pointed at them.
 type Service struct {
 	mu                  sync.Mutex
 	sandbox             sandbox.Service
+	uid, gid            int
 	instructionPaths    []string
 	instructionContents [][]byte
 }
@@ -43,6 +45,14 @@ func NewService() *Service {
 func (s *Service) SetSandbox(sandbox sandbox.Service) {
 	s.mu.Lock()
 	s.sandbox = sandbox
+	s.mu.Unlock()
+}
+
+// SetOwner records the uid:gid generated files are written as, so the launched tool
+// (running as the invoking user) can read and update its own config.
+func (s *Service) SetOwner(uid, gid int) {
+	s.mu.Lock()
+	s.uid, s.gid = uid, gid
 	s.mu.Unlock()
 }
 
@@ -100,7 +110,7 @@ func (s *Service) InstructionContents() [][]byte {
 }
 
 func (s *Service) addFile(ctx context.Context, path string, data []byte, mode uint32, instruction bool) (string, error) {
-	path, err := cleanPath(path)
+	target, err := cleanPath(path)
 	if err != nil {
 		return "", err
 	}
@@ -110,13 +120,13 @@ func (s *Service) addFile(ctx context.Context, path string, data []byte, mode ui
 
 	s.mu.Lock()
 	sandbox := s.sandbox
+	uid, gid := s.uid, s.gid
 	s.mu.Unlock()
 	if sandbox == nil {
 		return "", fmt.Errorf("sandbox service is not configured")
 	}
 
-	target := filepath.Join(layout.Context, filepath.FromSlash(path))
-	if err := sandbox.AddFile(ctx, target, data, mode); err != nil {
+	if err := sandbox.AddFileOwned(ctx, target, data, mode, uid, gid); err != nil {
 		return "", err
 	}
 
@@ -129,12 +139,14 @@ func (s *Service) addFile(ctx context.Context, path string, data []byte, mode ui
 	return target, nil
 }
 
+// cleanPath resolves a destination path to an absolute container path: "~"/"~/"
+// expand to the container home; any other value must already be absolute.
 func cleanPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" || path == "." || !fs.ValidPath(path) {
-		return "", fmt.Errorf("invalid context file path: %q", path)
+	target := layout.Expand(strings.TrimSpace(path))
+	if target == "" || !filepath.IsAbs(target) || strings.ContainsRune(target, 0) {
+		return "", fmt.Errorf("invalid generated file path: %q", path)
 	}
-	return path, nil
+	return filepath.Clean(target), nil
 }
 
 func readFSFile(fsys fs.FS, name string) ([]byte, error) {

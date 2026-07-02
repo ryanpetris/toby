@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
 	"petris.dev/toby/context/files"
 	"petris.dev/toby/diagnostic/warning"
@@ -39,14 +38,11 @@ func TestLoadDeepMergesConfigFiles(t *testing.T) {
     }
   },
   "settings": {
-    "mountProfile": "default",
+    "homeProfile": "default",
     "suppressWarnings": ["provider.model-discovery"],
     "autoloadProjectConfig": true,
     "debug": true,
     "yolo": false
-  },
-  "tools": {
-    "opencode": { "mountProfile": "default" }
   },
   "container": { "image": "node:base" }
 }`))
@@ -71,11 +67,6 @@ settings:
   autoloadProjectConfig: false
   debug: false
   yolo: true
-tools:
-  opencode:
-    mountProfile: shared
-  claude:
-    mountProfile: default
 container:
   image: node:custom
   build: {}
@@ -118,13 +109,9 @@ container:
 	if container.Build.Context != dir || container.Build.Dockerfile != filepath.Join(dir, "Dockerfile") {
 		t.Fatalf("container build = %#v", container.Build)
 	}
-	toolProfiles := cfg.ToolMountProfiles()
-	if toolProfiles["opencode"] != "shared" || toolProfiles["claude"] != "default" {
-		t.Fatalf("tool mount profiles = %#v", toolProfiles)
-	}
 	settings := cfg.Settings()
-	if settings.MountProfile != "default" {
-		t.Fatalf("mount profile = %q", settings.MountProfile)
+	if settings.HomeProfile != "default" || cfg.HomeProfile() != "default" {
+		t.Fatalf("home profile = %q", settings.HomeProfile)
 	}
 	// suppressWarnings lists union across files: json's [provider.model-discovery]
 	// plus yaml's [mount.host-backing] suppresses both.
@@ -236,14 +223,11 @@ func TestWithOverridesPrecedenceAndMerges(t *testing.T) {
 	dir := filepath.Join(home, ".config", "toby")
 	writeFile(t, filepath.Join(dir, "config.yaml"), []byte(`
 settings:
-  mountProfile: base
+  homeProfile: base
   suppressWarnings:
     - mount.host-backing
 container:
   image: node:host
-tools:
-  claude:
-    mountProfile: shared
 `))
 	cfg, err := Load(dir, home)
 	if err != nil {
@@ -252,27 +236,21 @@ tools:
 
 	debug := true
 	effective := cfg.WithOverrides(LaunchOverrides{
-		Image:             "node:launch",
-		MountProfile:      "launch",
-		Debug:             &debug,
-		ToolMountProfiles: map[string]string{"codex": "private"},
-		SuppressWarnings:  warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ModelDiscovery: true}},
+		Image:            "node:launch",
+		HomeProfile:      "launch",
+		Debug:            &debug,
+		SuppressWarnings: warning.Suppression{Set: true, IDs: map[warning.ID]bool{warning.ModelDiscovery: true}},
 	})
 
 	// Scalar overrides win.
 	if effective.Image() != "node:launch" {
 		t.Fatalf("image = %q", effective.Image())
 	}
-	if effective.MountProfile() != "launch" {
-		t.Fatalf("mount profile = %q", effective.MountProfile())
+	if effective.HomeProfile() != "launch" {
+		t.Fatalf("home profile = %q", effective.HomeProfile())
 	}
 	if !effective.DebugEnabled() {
 		t.Fatalf("debug should be enabled")
-	}
-	// Tool mount profiles merge config base with the override.
-	profiles := effective.ToolMountProfiles()
-	if profiles["claude"] != "shared" || profiles["codex"] != "private" {
-		t.Fatalf("tool mount profiles = %#v", profiles)
 	}
 	// Suppressed warnings union the config base with the launch override.
 	suppress := effective.Settings().SuppressWarnings
@@ -280,8 +258,8 @@ tools:
 		t.Fatalf("suppress should union config and override: %#v", suppress)
 	}
 	// The receiver is unchanged.
-	if cfg.Image() != "node:host" || cfg.MountProfile() != "base" {
-		t.Fatalf("receiver mutated: image=%q profile=%q", cfg.Image(), cfg.MountProfile())
+	if cfg.Image() != "node:host" || cfg.HomeProfile() != "base" {
+		t.Fatalf("receiver mutated: image=%q profile=%q", cfg.Image(), cfg.HomeProfile())
 	}
 }
 
@@ -438,10 +416,10 @@ instructions:
 	if len(files) != 2 {
 		t.Fatalf("files = %#v", files)
 	}
-	if files[0].Path != "instructions/foobar.md" || string(files[0].Data) != "first" {
+	if files[0].Path != "/toby/home/.toby/instructions/foobar.md" || string(files[0].Data) != "first" {
 		t.Fatalf("first file = %#v", files[0])
 	}
-	matched, err := regexp.MatchString(`^instructions/foobar\.[0-9a-f]{6}\.md$`, files[1].Path)
+	matched, err := regexp.MatchString(`^/toby/home/\.toby/instructions/foobar\.[0-9a-f]{6}\.md$`, files[1].Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,15 +548,8 @@ func (s *configFakeSandbox) AppendEnvironment(context.Context, string, string, s
 	return nil
 }
 func (s *configFakeSandbox) AddBind(mount.Bind) error { return nil }
-func (s *configFakeSandbox) AddMount(req mount.Request) (mount.Entry, error) {
-	return mount.Entry{Key: req.Key}, nil
-}
-func (s *configFakeSandbox) Mount(mount.Key) (mount.Entry, bool) {
-	return mount.Entry{}, false
-}
 func (s *configFakeSandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
-	rel := strings.TrimPrefix(path, layout.Context+string(os.PathSeparator))
-	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
+	s.files = append(s.files, contextfiles.File{Path: filepath.ToSlash(path), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
 func (s *configFakeSandbox) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, _, _ int) error {

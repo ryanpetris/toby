@@ -17,6 +17,7 @@ import (
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/mcpproxy"
 	"petris.dev/toby/internal/control/tunnel"
+	"petris.dev/toby/internal/daemon/resource"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/tools/fake"
 	"petris.dev/toby/providers"
@@ -70,7 +71,7 @@ func resolveWithOptions(t *testing.T, p Params, opts *tools.Options, stderr *byt
 func TestResolveMCPServersIncludesTobyAndProxiesConfigured(t *testing.T) {
 	cfg := loadConfig(t, `{"mcps":{"servers":{"docs":{"type":"remote","url":"https://example.com/mcp"}}}}`)
 	proxy := httpproxy.NewService(nil)
-	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Runner: mcpproxy.NewDockerRunner(engine.New())})
+	mcpProxy, err := mcpproxy.NewService(mcpproxy.ServiceParams{Proxy: proxy, Registry: resource.NewRegistry(resource.NewDockerRunner(engine.New()))})
 	if err != nil {
 		t.Fatal(err)
 	}

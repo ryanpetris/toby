@@ -46,7 +46,6 @@ type execTool struct {
 
 var _ tools.Tool = (*execTool)(nil)
 
-func (t *execTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, extra, sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *execTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return extra, nil
 }

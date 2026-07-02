@@ -11,30 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestSandboxCommandHiddenOnHost(t *testing.T) {
-	t.Setenv("TOBY_SANDBOX", "")
-	cmd := NewRootCommand(Params{Registry: emptyRegistry(t)})
-	sandbox := findCommand(cmd, "sandbox")
-	if sandbox == nil {
-		t.Fatal("sandbox command missing")
-	}
-	if !sandbox.Hidden {
-		t.Fatal("sandbox command should be hidden on host")
-	}
-}
-
-func TestSandboxCommandVisibleInsideSandbox(t *testing.T) {
-	t.Setenv("TOBY_SANDBOX", "1")
-	cmd := NewRootCommand(Params{Registry: emptyRegistry(t)})
-	sandbox := findCommand(cmd, "sandbox")
-	if sandbox == nil {
-		t.Fatal("sandbox command missing")
-	}
-	if sandbox.Hidden {
-		t.Fatal("sandbox command should be visible inside sandbox")
-	}
-}
-
 func TestExecCommandGeneratedFromRegisteredTool(t *testing.T) {
 	registry, err := tools.NewRegistry([]tools.Tool{
 		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "exec", Group: tools.GroupCommand, LaunchHelp: "Run a command"}}},

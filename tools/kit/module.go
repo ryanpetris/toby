@@ -20,11 +20,10 @@ func NewHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-func NewSimple(sbx sandbox.Service, base tools.Base, sandboxSubpath []string, install []string, sandboxEnv map[string]string) *Simple {
+func NewSimple(sbx sandbox.Service, base tools.Base, install []string, sandboxEnv map[string]string) *Simple {
 	return &Simple{
 		Base:           base,
 		Sandbox:        sbx,
-		SandboxSubpath: sandboxSubpath,
 		InstallCommand: install,
 		SandboxEnv:     sandboxEnv,
 	}

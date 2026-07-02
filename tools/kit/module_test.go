@@ -12,13 +12,10 @@ func TestSimpleMapsConfiguration(t *testing.T) {
 	install := []string{"npm", "install", "-g", "example"}
 	env := map[string]string{"EXAMPLE": "1"}
 
-	simple := NewSimple(nil, base, []string{".config", "example"}, install, env)
+	simple := NewSimple(nil, base, install, env)
 
 	if simple.Name() != "example" || simple.LaunchHelp() != "Launch Example" {
 		t.Fatalf("simple metadata = %#v", simple)
-	}
-	if !reflect.DeepEqual(simple.SandboxSubpath, []string{".config", "example"}) {
-		t.Fatalf("simple paths = %#v", simple)
 	}
 	if !reflect.DeepEqual(simple.InstallCommand, install) || !reflect.DeepEqual(simple.SandboxEnv, env) {
 		t.Fatalf("simple config = %#v", simple)

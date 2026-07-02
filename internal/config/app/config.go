@@ -29,7 +29,9 @@ import (
 	"petris.dev/toby/tools"
 )
 
-const InstructionsDir = "instructions"
+// DefaultHomeProfile is the shared-home profile a launch uses when none is
+// configured — the one home volume + home container every project shares by default.
+const DefaultHomeProfile = "default"
 
 const (
 	ProviderTypeAnthropic = "anthropic"
@@ -50,9 +52,6 @@ type Service struct {
 	Dir    string
 	Home   string
 	config Config
-	// toolMountProfileOverrides are per-tool mount profiles folded in from a
-	// launch (CLI/launch-config), layered over the config-derived profiles.
-	toolMountProfileOverrides map[string]string
 }
 
 // Config is the resolved Toby host configuration.
@@ -62,7 +61,6 @@ type Config struct {
 	Permissions  PermissionConfig
 	Providers    map[string]ProviderConfig
 	Settings     SettingsConfig
-	Tools        map[string]ToolConfig
 	Container    ContainerConfig
 }
 
@@ -85,16 +83,12 @@ type ContainerConfig struct {
 }
 
 type SettingsConfig struct {
-	MountProfile          string
+	HomeProfile           string
 	SuppressWarnings      warning.Suppression
 	AutoloadProjectConfig *bool
 	Debug                 *bool
 	Yolo                  *bool
 	ManagedTerminal       *bool
-}
-
-type ToolConfig struct {
-	MountProfile string
 }
 
 type MCPServer struct {
@@ -129,7 +123,6 @@ type fileSchema struct {
 	Permissions  permissionSchema       `json:"permissions" yaml:"permissions"`
 	Providers    providerBlockSchema    `json:"providers" yaml:"providers"`
 	Settings     settingsSchema         `json:"settings" yaml:"settings"`
-	Tools        map[string]*toolSchema `json:"tools" yaml:"tools"`
 }
 
 // providerBlockSchema is the `providers` block: the map of provider definitions
@@ -161,16 +154,12 @@ type providerSchema struct {
 }
 
 type settingsSchema struct {
-	MountProfile          string   `json:"mountProfile" yaml:"mountProfile"`
+	HomeProfile           string   `json:"homeProfile" yaml:"homeProfile"`
 	SuppressWarnings      []string `json:"suppressWarnings" yaml:"suppressWarnings"`
 	AutoloadProjectConfig *bool    `json:"autoloadProjectConfig" yaml:"autoloadProjectConfig"`
 	Debug                 *bool    `json:"debug" yaml:"debug"`
 	Yolo                  *bool    `json:"yolo" yaml:"yolo"`
 	ManagedTerminal       *bool    `json:"managedTerminal" yaml:"managedTerminal"`
-}
-
-type toolSchema struct {
-	MountProfile string `json:"mountProfile" yaml:"mountProfile"`
 }
 
 func New(paths config.Paths) (*Service, error) {
@@ -259,7 +248,6 @@ func emptyConfig() Config {
 		MCP:         MCPConfig{Servers: map[string]MCPServer{}},
 		Providers:   map[string]ProviderConfig{},
 		Permissions: PermissionConfig{Paths: map[string]string{}, Actions: map[string]permission.Rule{}},
-		Tools:       map[string]ToolConfig{},
 	}
 }
 
@@ -314,18 +302,6 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 	}
 	result.Settings = settings
 
-	for rawName, tool := range schema.Tools {
-		name := strings.TrimSpace(rawName)
-		if name == "" {
-			return Config{}, fmt.Errorf("tools keys must not be empty")
-		}
-		cfg := ToolConfig{}
-		if tool != nil {
-			cfg.MountProfile = strings.TrimSpace(tool.MountProfile)
-		}
-		result.Tools[name] = cfg
-	}
-
 	build, err := containerconfig.ResolveBuild(schema.Container.Build, dir, home)
 	if err != nil {
 		return Config{}, err
@@ -359,7 +335,7 @@ func (p *providerSchema) resolve(name string) (ProviderConfig, error) {
 }
 
 func (s settingsSchema) resolve() (SettingsConfig, error) {
-	cfg := SettingsConfig{MountProfile: strings.TrimSpace(s.MountProfile)}
+	cfg := SettingsConfig{HomeProfile: strings.TrimSpace(s.HomeProfile)}
 	if s.SuppressWarnings != nil {
 		suppression, err := warning.SuppressionFromList(s.SuppressWarnings, "settings.suppressWarnings")
 		if err != nil {
@@ -568,22 +544,6 @@ func (s *Service) PermissionPaths() map[string]string {
 	return result
 }
 
-func (s *Service) ToolMountProfiles() map[string]string {
-	profiles := map[string]string{}
-	if s == nil {
-		return profiles
-	}
-	for name, cfg := range s.config.Tools {
-		if strings.TrimSpace(cfg.MountProfile) != "" {
-			profiles[name] = strings.TrimSpace(cfg.MountProfile)
-		}
-	}
-	for name, profile := range s.toolMountProfileOverrides {
-		profiles[name] = profile
-	}
-	return profiles
-}
-
 func (s *Service) Settings() SettingsConfig {
 	if s == nil {
 		return SettingsConfig{}
@@ -628,26 +588,34 @@ func (s *Service) Build() tools.Build    { return s.Container().Build }
 func (s *Service) Ports() []string       { return s.Container().Ports }
 func (s *Service) MCPImage() string      { return s.mcpConfig().Image }
 func (s *Service) MCPBuild() tools.Build { return s.mcpConfig().Build }
-func (s *Service) MountProfile() string  { return s.Settings().MountProfile }
+
+// HomeProfile is the shared-home profile name a launch runs under, defaulting to
+// "default" when unset. It keys the shared home volume + home container.
+func (s *Service) HomeProfile() string {
+	profile := strings.TrimSpace(s.Settings().HomeProfile)
+	if profile == "" {
+		return DefaultHomeProfile
+	}
+	return profile
+}
 
 // LaunchOverrides carries the config-corresponding values a single launch may
 // override (from CLI flags and the launch-config file). Folding these into the
 // config via WithOverrides keeps the Service the single source of truth.
 type LaunchOverrides struct {
-	MountProfile      string
-	Image             string
-	Build             tools.Build
-	Ports             []string
-	Debug             *bool
-	Yolo              *bool
-	ManagedTerminal   *bool
-	ToolMountProfiles map[string]string
-	SuppressWarnings  warning.Suppression
+	HomeProfile      string
+	Image            string
+	Build            tools.Build
+	Ports            []string
+	Debug            *bool
+	Yolo             *bool
+	ManagedTerminal  *bool
+	SuppressWarnings warning.Suppression
 }
 
 // WithOverrides returns a new Service whose config has the launch overrides folded
-// in (override wins; ToolMountProfiles and SuppressWarnings merge over the config
-// base). The receiver is not mutated, so the process-wide singleton is unaffected.
+// in (override wins; SuppressWarnings merges over the config base). The receiver is
+// not mutated, so the process-wide singleton is unaffected.
 func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	if s == nil {
 		return nil
@@ -657,8 +625,8 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	settings := s.config.Settings
 	settings.SuppressWarnings = s.config.Settings.SuppressWarnings.Clone()
 	settings.SuppressWarnings.Merge(o.SuppressWarnings)
-	if o.MountProfile != "" {
-		settings.MountProfile = o.MountProfile
+	if o.HomeProfile != "" {
+		settings.HomeProfile = o.HomeProfile
 	}
 	if o.Debug != nil {
 		debug := *o.Debug
@@ -686,17 +654,6 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	}
 	next.config.Container = container
 
-	if len(o.ToolMountProfiles) > 0 {
-		merged := make(map[string]string, len(s.toolMountProfileOverrides)+len(o.ToolMountProfiles))
-		for name, profile := range s.toolMountProfileOverrides {
-			merged[name] = profile
-		}
-		for name, profile := range o.ToolMountProfiles {
-			merged[name] = profile
-		}
-		next.toolMountProfileOverrides = merged
-	}
-
 	return &next
 }
 
@@ -718,8 +675,8 @@ func (s *Service) RegisterContextFiles(ctx context.Context, service *contextfile
 		if err != nil {
 			return err
 		}
-		rel := filepath.ToSlash(filepath.Join(InstructionsDir, name))
-		if _, err := service.AddInstruction(ctx, rel, data, 0o644); err != nil {
+		dest := filepath.Join(layout.Instructions, name)
+		if _, err := service.AddInstruction(ctx, dest, data, 0o644); err != nil {
 			return err
 		}
 	}

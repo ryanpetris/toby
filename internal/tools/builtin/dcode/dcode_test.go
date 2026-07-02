@@ -40,8 +40,8 @@ func TestRegisterContextFilesWritesDcodeFiles(t *testing.T) {
 	if err := registrar.RegisterContextFiles(context.Background(), tools.ContextOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if !hasFile(sandbox.Files, dcodeconfig.StaticMCPPath) || !hasFile(sandbox.Files, dcodeconfig.StaticInstructionsPath) {
-		t.Fatalf("dcode context files not registered: %#v", sandbox.Files)
+	if !hasFile(sandbox.Files, dcodeconfig.MCPConfigPath) {
+		t.Fatalf("dcode mcp config not registered: %#v", sandbox.Files)
 	}
 }
 
@@ -104,16 +104,12 @@ func TestInstallFailsWhenUVToolInstallFails(t *testing.T) {
 
 func TestLaunchDefaultsToTobyAgentAndWritesInstructions(t *testing.T) {
 	dc, sandbox, _ := newTestDcode(t, testConfig(t, false))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 
-	if err := dc.Launch(context.Background(), []string{"--model", "openai:gpt-5.5"}); err != nil {
+	got, err := dc.LaunchCommand(context.Background(), []string{"--model", "openai:gpt-5.5"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"dcode", "--mcp-config", dcodeconfig.MCPConfigPath(layout.Context), "--agent", "toby", "--model", "openai:gpt-5.5"}
+	want := []string{"dcode", "--mcp-config", dcodeconfig.MCPConfigPath, "--agent", "toby", "--model", "openai:gpt-5.5"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -129,13 +125,9 @@ func TestLaunchDefaultsToTobyAgentAndWritesInstructions(t *testing.T) {
 func TestLaunchRespectsExplicitAgent(t *testing.T) {
 	for _, extra := range [][]string{{"--agent", "custom"}, {"--agent=custom"}, {"-a", "custom"}} {
 		dc, sandbox, _ := newTestDcode(t, testConfig(t, false))
-		var got []string
-		sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-			got = append([]string(nil), argv...)
-			return 0, nil
-		}
 
-		if err := dc.Launch(context.Background(), extra); err != nil {
+		got, err := dc.LaunchCommand(context.Background(), extra)
+		if err != nil {
 			t.Fatal(err)
 		}
 		if slices.Contains(got, "toby") || slices.Contains(got, "--agent") && !slices.Contains(extra, "--agent") {
@@ -151,17 +143,13 @@ func TestLaunchRespectsExplicitAgent(t *testing.T) {
 }
 
 func TestLaunchYoloAppendsAutoApprove(t *testing.T) {
-	dc, sandbox, _ := newTestDcode(t, testConfig(t, true))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	dc, _, _ := newTestDcode(t, testConfig(t, true))
 
 	if err := dc.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := dc.Launch(context.Background(), nil); err != nil {
+	got, err := dc.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, "-y") {
@@ -173,7 +161,7 @@ func TestLaunchConfiguresExplicitOpenAIModelProvider(t *testing.T) {
 	dc, sandbox, holder := newTestDcode(t, testConfig(t, false))
 	holder.Set(sessionconfig.Config{Providers: []sessionconfig.Provider{{Type: providerTypeOpenAI, URL: "http://127.0.0.1:12345/proxy/openai"}}})
 
-	if err := dc.Launch(context.Background(), []string{"--model", "openai:gpt-5.5"}); err != nil {
+	if _, err := dc.LaunchCommand(context.Background(), []string{"--model", "openai:gpt-5.5"}); err != nil {
 		t.Fatal(err)
 	}
 	if sandbox.Env["DEEPAGENTS_CODE_OPENAI_API_KEY"] != "toby" {
@@ -191,7 +179,7 @@ func TestLaunchDoesNotGuessProviderWhenAmbiguous(t *testing.T) {
 		{Type: providerTypeOpenAI, URL: "http://127.0.0.1:12345/proxy/two"},
 	}})
 
-	if err := dc.Launch(context.Background(), []string{"--model=openai:gpt-5.5"}); err != nil {
+	if _, err := dc.LaunchCommand(context.Background(), []string{"--model=openai:gpt-5.5"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := sandbox.Env["DEEPAGENTS_CODE_OPENAI_BASE_URL"]; ok {
@@ -210,7 +198,7 @@ func newTestDcode(t *testing.T, cfg *appconfig.Service) (tools.Tool, *fake.Sandb
 }
 
 func newTestSimple(sandbox *fake.Sandbox) *kit.Simple {
-	return kit.NewSimple(sandbox, tools.Base{Metadata: Meta}, []string{".deepagents"}, nil, nil)
+	return kit.NewSimple(sandbox, tools.Base{Metadata: Meta}, nil, nil)
 }
 
 func testConfig(t *testing.T, yolo bool) *appconfig.Service {

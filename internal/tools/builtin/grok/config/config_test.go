@@ -24,7 +24,7 @@ func TestContextFilesIncludeTobyConfig(t *testing.T) {
 	files := render(t, sessionconfig.Config{
 		MCPServers: []sessionconfig.MCPServer{{Name: "toby", URL: "http://127.0.0.1:12345/proxy/toby"}},
 	})
-	config := string(fileByPath(t, files, StaticConfigPath).Data)
+	config := string(fileByPath(t, files, ConfigPath).Data)
 	for _, want := range []string{`[mcp_servers.toby]`, `url = 'http://127.0.0.1:12345/proxy/toby'`, `enabled = true`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
@@ -43,7 +43,7 @@ func TestContextFilesRenderMCPServers(t *testing.T) {
 			{Name: "toby", URL: "http://127.0.0.1:12345/proxy/toby"},
 		},
 	})
-	config := string(fileByPath(t, files, StaticConfigPath).Data)
+	config := string(fileByPath(t, files, ConfigPath).Data)
 	for _, want := range []string{`[mcp_servers.docs]`, `url = 'http://127.0.0.1:12345/proxy/docs'`, `[mcp_servers.remote]`, `url = 'http://127.0.0.1:12345/proxy/remote'`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)

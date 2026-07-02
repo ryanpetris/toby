@@ -4,11 +4,9 @@ package dcode
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/config/session"
-	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/diagnostic/exitcode"
 	appconfig "petris.dev/toby/internal/config/app"
@@ -62,7 +60,6 @@ func Provide(params Params) Result {
 		Simple: kit.NewSimple(
 			params.Sandbox,
 			tools.Base{Metadata: Meta},
-			[]string{".deepagents"},
 			nil,
 			nil,
 		),
@@ -115,17 +112,19 @@ func (t *deepAgentsTool) Install(ctx context.Context, force bool) error {
 	return nil
 }
 
-func (t *deepAgentsTool) Launch(ctx context.Context, extra []string) error {
+func (t *deepAgentsTool) LaunchCommand(ctx context.Context, extra []string) ([]string, error) {
+	// The agent-file write and provider configuration are daemon-side setup; they run
+	// here (before returning the argv) so the container is ready when the client execs.
 	if !hasAgentArg(extra) {
 		if err := t.writeTobyAgent(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := t.configureSelectedProvider(ctx, extra); err != nil {
-		return err
+		return nil, err
 	}
 
-	argv := []string{"dcode", "--mcp-config", dcodeconfig.MCPConfigPath(layout.Context)}
+	argv := []string{"dcode", "--mcp-config", dcodeconfig.MCPConfigPath}
 	if !hasAgentArg(extra) {
 		argv = append(argv, "--agent", "toby")
 	}
@@ -133,17 +132,15 @@ func (t *deepAgentsTool) Launch(ctx context.Context, extra []string) error {
 		argv = append(argv, "-y")
 	}
 	argv = append(argv, extra...)
-	_, err := t.Sandbox.Exec(ctx, argv, sandbox.ExecOptions{Foreground: true})
-	return err
+	return argv, nil
 }
 
 func (t *deepAgentsTool) writeTobyAgent(ctx context.Context) error {
-	agentDir := filepath.Join(layout.Home, ".deepagents", "toby")
-	if err := t.Sandbox.MkdirOwned(ctx, agentDir, 0o755, control.HostUser, control.HostGroup); err != nil {
+	if err := t.Sandbox.MkdirOwned(ctx, dcodeconfig.AgentDir, 0o755, control.HostUser, control.HostGroup); err != nil {
 		return err
 	}
 
-	return t.Sandbox.AddFileOwned(ctx, filepath.Join(agentDir, "AGENTS.md"), dcodeconfig.Instructions(t.sessionConfig.Get()), 0o644, control.HostUser, control.HostGroup)
+	return t.Sandbox.AddFileOwned(ctx, dcodeconfig.InstructionsPath, dcodeconfig.Instructions(t.sessionConfig.Get()), 0o644, control.HostUser, control.HostGroup)
 }
 
 func (t *deepAgentsTool) configureSelectedProvider(ctx context.Context, args []string) error {

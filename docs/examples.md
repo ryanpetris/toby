@@ -201,24 +201,22 @@ Repository names are relative to the sandbox project root and must already be vi
 in the sandbox. `git.commit` commits only already-staged files; it does not add
 files. See [sandbox.md](sandbox.md#mcp) for the full tool reference.
 
-## Isolate state with a mount profile
+## Isolate state with a home profile
 
-Persistent tool and runtime state lives in container-native Docker named volumes
-keyed by a mount *profile*. Selecting a different profile gives a launch (or a
-single tool) a separate, isolated set of volumes — useful for keeping, say, a
-"work" login separate from a "personal" one:
+Persistent tool and runtime state lives in one shared home volume per *home
+profile*. Projects on the same profile share that home (installed tools and tool
+state persist and are shared); selecting a different profile gives a launch a
+separate, isolated home — useful for keeping, say, a "work" login separate from a
+"personal" one:
 
 ```yaml
 # ~/.config/toby/config.yaml
 settings:
-  mountProfile: work   # volumes become toby.work.<type>.<name>.<purpose>
-tools:
-  opencode:
-    mountProfile: personal   # opencode gets its own toby.personal.* volumes
+  homeProfile: work   # shared home volume becomes toby.work.runtime.home
 ```
 
-Switching `mountProfile` back to `default` (or omitting it) returns to the
-default volume set. Volumes persist across runs and are managed by Docker.
+Switching `homeProfile` back to `default` (or omitting it) returns to the default
+shared home. The home volume persists across runs and is managed by Docker.
 
 ## Build a custom Docker image for the sandbox
 

@@ -45,8 +45,8 @@ func (b Base) ConfigureSandbox(context.Context) error      { return nil }
 func (b Base) InitSandbox(context.Context) error           { return nil }
 func (b Base) Install(context.Context, bool) error         { return nil }
 
-func (b Base) Launch(context.Context, []string) error {
-	return ErrNotLaunchable(b.Name())
+func (b Base) LaunchCommand(context.Context, []string) ([]string, error) {
+	return nil, ErrNotLaunchable(b.Name())
 }
 
 // ErrNotLaunchable reports that a tool has no launch behavior.

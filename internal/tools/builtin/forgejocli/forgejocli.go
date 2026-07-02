@@ -34,7 +34,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupVCS, tools.GroupSystem},
 }
 
-const forgejoCLIInstallPath = "fj/install.sh"
+const forgejoCLIInstallPath = layout.Scripts + "/fj/install.sh"
 
 type Result struct {
 	fx.Out
@@ -99,17 +99,12 @@ func (t *forgejoCLITool) Install(ctx context.Context, force bool) error {
 		log.Printf("%s", err)
 		return exitcode.Code(1)
 	}
-	_, err = t.sandbox.Exec(ctx, []string{t.contextPath(forgejoCLIInstallPath), archiveURL}, sandbox.ExecOptions{})
+	_, err = t.sandbox.Exec(ctx, []string{forgejoCLIInstallPath, archiveURL}, sandbox.ExecOptions{})
 	return err
 }
 
-func (t *forgejoCLITool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *forgejoCLITool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"fj"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *forgejoCLITool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"fj"}, extra...), nil
 }
 
 func (t *forgejoCLITool) archiveURL(ctx context.Context) (string, error) {

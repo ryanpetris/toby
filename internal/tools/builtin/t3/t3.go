@@ -4,7 +4,6 @@ package t3
 
 import (
 	"context"
-	"path/filepath"
 	"petris.dev/toby/container/layout"
 
 	contextfiles "petris.dev/toby/context/files"
@@ -30,7 +29,7 @@ var Meta = tools.Metadata{
 	Dependencies:  []string{npm.Name},
 }
 
-const t3WrapperPath = "t3/t3-wrapper.sh"
+const t3WrapperPath = layout.Scripts + "/t3/t3-wrapper.sh"
 
 type Params struct {
 	fx.In
@@ -49,7 +48,6 @@ func Provide(params Params) Result {
 	simple := kit.NewSimple(
 		params.Sandbox,
 		tools.Base{Metadata: Meta},
-		nil,
 		[]string{"npm", "install", "-g", "t3"},
 		map[string]string{"T3CODE_NO_BROWSER": "1"},
 	)
@@ -89,8 +87,6 @@ func (t *t3Tool) InitSandbox(ctx context.Context) error {
 	return t.Simple.InitSandbox(ctx)
 }
 
-func (t *t3Tool) Launch(ctx context.Context, extra []string) error {
-	path := filepath.Join(layout.Context, filepath.FromSlash(t3WrapperPath))
-	_, err := t.Sandbox.Exec(ctx, append([]string{path}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *t3Tool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{t3WrapperPath}, extra...), nil
 }

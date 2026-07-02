@@ -5,7 +5,6 @@ package copilot
 
 import (
 	"context"
-	"petris.dev/toby/container/layout"
 
 	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
@@ -53,7 +52,6 @@ func Provide(params Params) Result {
 		Simple: kit.NewSimple(
 			params.Sandbox,
 			tools.Base{Metadata: Meta},
-			[]string{".copilot"},
 			[]string{"npm", "install", "-g", "@github/copilot"},
 			nil,
 		),
@@ -85,8 +83,7 @@ func (t *copilotTool) ConfigureSandbox(ctx context.Context) error {
 		return err
 	}
 
-	contextDir := copilotconfig.InstructionsDir(layout.Context)
-	return t.Sandbox.PrependEnvironment(ctx, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", contextDir, ",")
+	return t.Sandbox.PrependEnvironment(ctx, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", copilotconfig.InstructionsDir(), ",")
 }
 
 func (t *copilotTool) InitSandbox(ctx context.Context) error {
@@ -97,16 +94,15 @@ func (t *copilotTool) RegisterContextFiles(ctx context.Context, opts tools.Conte
 	return copilotconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.sessionConfig.Get())
 }
 
-func (t *copilotTool) Launch(ctx context.Context, extra []string) error {
-	argv := append([]string{"copilot"}, contextFlags(layout.Context)...)
+func (t *copilotTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	argv := append([]string{"copilot"}, contextFlags()...)
 	if t.yolo {
 		argv = append(argv, "--allow-all-tools")
 	}
 	argv = append(argv, extra...)
-	_, err := t.Sandbox.Exec(ctx, argv, sandbox.ExecOptions{Foreground: true})
-	return err
+	return argv, nil
 }
 
-func contextFlags(contextDir string) []string {
-	return []string{"--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(contextDir)}
+func contextFlags() []string {
+	return []string{"--additional-mcp-config", "@" + copilotconfig.MCPConfigPath()}
 }

@@ -29,8 +29,6 @@ type Service interface {
 	PrependEnvironment(context.Context, string, string, string) error
 	AppendEnvironment(context.Context, string, string, string) error
 	AddBind(mount.Bind) error
-	AddMount(mount.Request) (mount.Entry, error)
-	Mount(mount.Key) (mount.Entry, bool)
 	AddFile(context.Context, string, []byte, uint32) error
 	AddFileOwned(context.Context, string, []byte, uint32, int, int) error
 	DeletePath(context.Context, string, bool) error
@@ -50,6 +48,4 @@ type Paths interface {
 	HomeDir() string
 	Projects() string
 	TobyRuntimeDir() string
-	TobyContextDir() string
-	TobyOpenCodeConfigDir() string
 }

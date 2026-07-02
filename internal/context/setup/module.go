@@ -1,6 +1,6 @@
-// Package contextinit contributes Toby's own (non-tool) context-file steps to the
+// Package contextinit contributes Toby's own (non-tool) generated-file steps to the
 // launch lifecycle: writing the bundled agent instructions and the rendered Toby
-// config into the sandbox context directory. They run in the context-files phase
+// config into the Toby instructions directory. They run in the context-files phase
 // before tools (negative priority) so tool config can build on them.
 package contextinit
 

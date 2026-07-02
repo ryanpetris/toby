@@ -26,6 +26,9 @@ Toby follows XDG conventions (`config/paths.go`):
 | --- | --- | --- |
 | `XDG_PROJECTS_DIR` | `~/Projects` | Host project root used to resolve default project sources. |
 | `XDG_CONFIG_HOME` | `~/.config` | Host config dir is `$XDG_CONFIG_HOME/toby`. |
+| `XDG_RUNTIME_DIR` | uid-scoped temp dir | Where the daemon binds its control endpoint (e.g. the unix socket `$XDG_RUNTIME_DIR/toby/daemon.sock`). |
+| `TOBY_TRANSPORT` | `unix` | Selects the client↔daemon transport: `unix` or `websocket`. Set it the same for the client and the daemon. |
+| `TOBY_WS_ADDRESS` | `127.0.0.1:47700` | WebSocket listen/dial address when `TOBY_TRANSPORT=websocket`. |
 
 The sandbox runs in a container under `/toby`: `/toby/home` is `$HOME`,
 `/toby/workspace` contains mounted projects, `/toby/bin` contains the helper
@@ -42,6 +45,39 @@ stdio, so there is no control host or token to pass in.
 Path expansion: a leading `~` or `~/` expands to the relevant home directory.
 Toby does not otherwise clean, canonicalize, or resolve symlinks during config
 path expansion.
+
+## Daemon
+
+Toby runs as a background **daemon** (owning Docker and one long-lived container
+per project) plus thin **clients** (each `toby` launch). The first invocation
+auto-spawns the daemon; you can also run and manage it explicitly:
+
+| Command | Effect |
+| --- | --- |
+| `toby daemon` | Run the daemon in the foreground (normally auto-spawned). |
+| `toby daemon --no-idle-shutdown` | Run without idle auto-shutdown, for a supervisor (systemd) that owns the lifecycle. |
+| `toby daemon ping` | Ensure a daemon is running (spawning one if needed) and report its version and pid. |
+| `toby daemon status` | List active projects without spawning a daemon. |
+| `toby daemon stop` | Shut the daemon down, tearing down every project container. |
+
+- **Transport.** The client↔daemon channel uses the transport chosen by
+  `TOBY_TRANSPORT` (`unix` default, or `websocket` with `TOBY_WS_ADDRESS`); set it
+  the same for the daemon and every client. See the table above.
+- **Idle lifecycle.** A project container is kept warm after its last session
+  exits and torn down after an idle timeout (default **15 minutes**). When no
+  projects remain the daemon auto-shuts-down — unless it was started with
+  `--no-idle-shutdown`, in which case the supervisor owns its lifecycle. The
+  `support/systemd/` units (`toby-daemon.service` user unit and `toby-daemon@.service`
+  system template) run it supervised with that flag.
+- **Config is frozen per project at first launch.** The daemon watches the host
+  config files and reloads them on change, but a reload only affects **new**
+  project launches. An **already-running** project keeps the exact config it
+  launched with; restart its container (let it idle out, or `toby daemon stop`) to
+  pick up config changes. **MCP sidecar containers are shared across projects**: the
+  daemon runs one container per configured local MCP server (keyed by its resolved
+  config), refcounted, and gives each project its own proxy URL for it; the container
+  stops when the last project using it exits. Remote MCP servers and providers are
+  direct upstreams with no container.
 
 ## Host config
 
@@ -218,7 +254,7 @@ providers:
 ### `container` and `settings`
 
 Global container defaults live under `container`. Warning/autoload settings
-and the mount-profile selection are top-level `settings` keys. Every field can be
+and the home-profile selection are top-level `settings` keys. Every field can be
 overridden per launch.
 
 ```yaml
@@ -227,14 +263,11 @@ container:
   build:
     context: ~/docker/toby
 settings:
-  mountProfile: default      # namespaces persistent volumes; defaults to default
+  homeProfile: default       # selects the shared home; defaults to default
   autoloadProjectConfig: true
   debug: false
   yolo: false
   managedTerminal: true
-tools:
-  opencode:
-    mountProfile: work       # namespaces this tool's volumes separately
 ```
 
 - A reachable Docker socket is required. Podman and remote daemons work through
@@ -276,22 +309,22 @@ tools:
   Toby emits the `permission.auto-deny` warning at startup in that case (unless
   `settings.yolo` is on, which approves everything bar an explicit `deny`).
 
-## Managed Mounts
+## Home profiles
 
-Persistent runtime and tool state lives in container-native Docker named volumes.
-A mount *profile* is just a namespace label on those volume names, so different
-profiles keep separate sets of state. `settings.mountProfile` selects the profile
-for a launch (default `default`), and a host or launch `tools.<tool>.mountProfile`
-selects a different profile for one tool.
+Persistent state lives in one shared home volume per *home profile*. Every project
+launched on the same profile shares that profile's home container and its
+`/toby/home` volume, so installed tools (npm/uv into the home) and tool state
+(`~/.config/claude`, `~/.codex`, `~/.local/share/opencode`, …) persist and are
+shared across projects. `settings.homeProfile` selects the profile for a launch
+(default `default`); a different profile gives a project its own isolated home.
 
-- A tool requests a mount by `type`/`name`/`purpose` at a container path
-  (`~/…` expands to the container `$HOME`, `/toby/home`). Toby never bind-mounts
-  the user's host tool configuration.
-- Each request resolves to a lazy Docker volume named
-  `toby.<mountProfile>.<type>.<name>.<purpose>`, managed by Docker. Runtime home
-  uses `toby.<mountProfile>.runtime.home.<sandboxName>`.
+- The shared home volume is named `toby.<homeProfile>.runtime.home`, managed
+  by Docker. There are no per-tool state volumes — tool state lives under the shared
+  home. Tools address paths as container paths (`~/…` expands to the container
+  `$HOME`, `/toby/home`); Toby never bind-mounts the user's host tool configuration.
 - The **Docker** tool is the exception: it bind-mounts `/var/run/docker.sock` and
-  the `$HOME`-based `~/.docker` instead of using a managed volume.
+  the `$HOME`-based `~/.docker` onto the tool container instead of using the home
+  volume.
 
 Each volume gets a private setup path so the host can initialize it as root after
 the container starts (by default, `chown` to the host user). Synthetic Toby config is always
@@ -327,7 +360,7 @@ container:
     - "127.0.0.1:9090:9090/udp"  # bind a specific host IP and protocol
 settings:
   autoUpgrade: true      # optional; defaults to false
-  mountProfile: work     # optional; namespaces this launch's persistent volumes
+  homeProfile: work      # optional; selects this launch's shared home profile
   suppressWarnings: ["*"] # optional; list of warning IDs, or ["*"] to suppress all
 workdir: ~/tmp           # optional; defaults to the primary project path in the sandbox
 projects:
@@ -340,7 +373,6 @@ tools:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"]  # only valid on the primary tool
-    mountProfile: work  # optional; namespaces this tool's persistent volumes
   uv:
   npm:
 ```
@@ -378,12 +410,11 @@ with defaults. An object can set `path` and `primary`.
 
 ### `tools`
 
-Host config `tools` entries are defaults only and currently support
-`mountProfile`. Launch config `tools` entries are enabled tools, keyed by tool
-name. A null value enables the tool with defaults. An object can set
-`mountProfile`, `primary`, and `params`. `params` is only honored when that tool
-is the resolved primary tool: either it has `primary: true` in a config-owned
-launch, it is the only configured tool, or it was selected on the CLI in an
+Launch config `tools` entries are enabled tools, keyed by tool name. A null value
+enables the tool with defaults. An object can set `primary` and `params`. `params`
+is only honored when that tool is the resolved primary tool: either it has
+`primary: true` in a config-owned launch, it is the only configured tool, or it was
+selected on the CLI in an
 overlay launch.
 
 ### `workdir`

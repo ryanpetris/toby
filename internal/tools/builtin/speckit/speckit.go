@@ -98,9 +98,8 @@ func (t *speckitTool) Install(ctx context.Context, force bool) error {
 	return err
 }
 
-func (t *speckitTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"specify"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *speckitTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"specify"}, extra...), nil
 }
 
 func (t *speckitTool) latestReleaseTag(ctx context.Context) (string, error) {

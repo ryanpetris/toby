@@ -13,7 +13,6 @@ import (
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 	"petris.dev/toby/tools/kit"
 )
@@ -24,13 +23,8 @@ func TestProvideMetadataAndLaunch(t *testing.T) {
 	if svc.Name() != Name || svc.CommandName() != "glab" || svc.LaunchHelp() == "" {
 		t.Fatalf("metadata = name %q command %q help %q", svc.Name(), svc.CommandName(), svc.LaunchHelp())
 	}
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
-
-	if err := svc.Launch(context.Background(), []string{"mr", "list"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"mr", "list"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"glab", "mr", "list"}; !reflect.DeepEqual(got, want) {

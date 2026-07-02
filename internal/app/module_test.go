@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"petris.dev/toby/config"
+	"petris.dev/toby/internal/client"
 	"petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/control/sandbox"
 	"petris.dev/toby/internal/tools/wiring"
 	"petris.dev/toby/tools"
 
@@ -23,13 +23,14 @@ func TestRootCommandWiresRequiredServicesThroughFx(t *testing.T) {
 	paths := config.Paths{Home: home, XDGConfigHome: filepath.Join(home, ".config"), ProjectRoot: filepath.Join(home, "Projects"), SandboxRoot: filepath.Join(home, "sandboxes")}
 	var cmd *cobra.Command
 	app := fxtest.New(t,
-		sandbox.Module(),
 		wiring.PlanningModule(),
 		tools.Module(),
+		transportModule(),
+		client.Module(),
 		fx.Supply(paths, args(nil)),
 		fx.Provide(
 			appconfig.New,
-			newSessionRunner,
+			newClientSessionRunner,
 			newRootCommand,
 		),
 		fx.Populate(&cmd),
@@ -55,13 +56,14 @@ func TestRunAppReportsInvalidConfig(t *testing.T) {
 	var stderr bytes.Buffer
 	app := fx.New(
 		fx.NopLogger,
-		sandbox.Module(),
 		wiring.PlanningModule(),
 		tools.Module(),
+		transportModule(),
+		client.Module(),
 		fx.Supply(paths, args([]string{"--help"})),
 		fx.Provide(
 			appconfig.New,
-			newSessionRunner,
+			newClientSessionRunner,
 			newRootCommand,
 			newCLIResult,
 		),

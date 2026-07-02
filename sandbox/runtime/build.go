@@ -16,23 +16,26 @@ import (
 	"petris.dev/toby/tools"
 )
 
-// resolveImage ensures s.image refers to a runnable image, building from the
-// configured Dockerfile when needed. Image building still shells out to the
-// `docker` CLI (BuildKit via the SDK is a much larger surface); running
+// EnsureImage resolves spec to a runnable image reference, building from the
+// configured Dockerfile when the target image is missing. Image building shells out
+// to the `docker` CLI (BuildKit via the SDK is a much larger surface); running
 // containers goes through testcontainers-go.
-func (s *instance) resolveImage(ctx context.Context, spec RunSpec) (int, error) {
-	if !s.build.IsSet() {
-		if s.image == "" {
-			return 2, exitcode.New(2, "docker image is required")
+func EnsureImage(ctx context.Context, spec Spec, hideOutput bool) (string, error) {
+	if !spec.Build.IsSet() {
+		image := spec.ResolvedImage()
+		if image == "" {
+			return "", exitcode.New(2, "docker image is required")
 		}
-		return 0, nil
+		return image, nil
 	}
-	image, code, err := BuildImage(ctx, s.build, s.image, spec.ExecOptions.HideOutput)
-	if err != nil || code != 0 {
-		return code, err
+	image, code, err := BuildImage(ctx, spec.Build, spec.Image, hideOutput)
+	if err != nil {
+		return "", err
 	}
-	s.image = image
-	return 0, nil
+	if code != 0 {
+		return "", exitcode.New(code, "docker image preparation failed")
+	}
+	return image, nil
 }
 
 // BuildImage builds the Dockerfile context described by build (which must be set)

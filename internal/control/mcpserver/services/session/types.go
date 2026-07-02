@@ -47,7 +47,6 @@ type EnvironmentSandbox struct {
 	Home        string            `json:"home,omitempty" jsonschema:"sandbox home path"`
 	Workspace   string            `json:"workspace,omitempty" jsonschema:"sandbox project workspace path"`
 	Root        string            `json:"root,omitempty" jsonschema:"sandbox runtime root path"`
-	Context     string            `json:"context,omitempty" jsonschema:"generated Toby context path inside the sandbox"`
 	Bin         string            `json:"bin,omitempty" jsonschema:"Toby helper binary directory inside the sandbox"`
 	Workdir     string            `json:"workdir,omitempty" jsonschema:"configured sandbox working directory"`
 	Environment map[string]string `json:"environment,omitempty" jsonschema:"selected non-secret sandbox manager environment variables"`

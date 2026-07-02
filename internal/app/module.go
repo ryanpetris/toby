@@ -14,8 +14,8 @@ import (
 
 	"petris.dev/toby/config"
 	"petris.dev/toby/internal/cli"
+	"petris.dev/toby/internal/client"
 	"petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/control/sandbox"
 	"petris.dev/toby/internal/session/run"
 	"petris.dev/toby/internal/tools/wiring"
 	"petris.dev/toby/tools"
@@ -26,6 +26,13 @@ import (
 )
 
 func Run() {
+	// In-container roles run tiny runners directly, without the launch CLI graph;
+	// they are gated by TOBY_SANDBOX and must not build the host graph. The daemon
+	// and its control clients are ordinary Cobra commands (see newRootCommand).
+	if len(os.Args) > 1 && os.Args[1] == "sandbox" {
+		os.Exit(runSandboxCommand(os.Args[2:]))
+	}
+
 	var result *cliResult
 	app := fx.New(Module(), fx.Populate(&result))
 	os.Exit(runApp(app, result, os.Stderr))
@@ -87,14 +94,15 @@ type args []string
 func Module() fx.Option {
 	return fx.Options(
 		fx.NopLogger,
-		sandbox.Module(),
 		wiring.PlanningModule(),
 		tools.Module(),
+		transportModule(),
+		client.Module(),
 		fx.Provide(
 			config.NewPaths,
 			appconfig.New,
 			newArgs,
-			newSessionRunner,
+			newClientSessionRunner,
 			newRootCommand,
 			newCLIResult,
 		),
@@ -112,26 +120,26 @@ func newArgs() args {
 type rootCommandParams struct {
 	fx.In
 
-	Registry       *tools.Registry
-	Paths          config.Paths
-	Config         *appconfig.Service
-	SandboxManager *sandbox.Runner
-	SessionRunner  run.Runner
-	Args           args
+	Registry      *tools.Registry
+	Paths         config.Paths
+	Config        *appconfig.Service
+	SessionRunner run.Runner
+	Args          args
 }
 
 func newRootCommand(params rootCommandParams) *cobra.Command {
 	cliParams := cli.Params{
-		Registry:       params.Registry,
-		Paths:          params.Paths,
-		TobyConfig:     params.Config,
-		SandboxManager: params.SandboxManager,
-		SessionRunner:  params.SessionRunner,
-		Args:           []string(params.Args),
-		Stdout:         os.Stdout,
-		Stderr:         os.Stderr,
+		Registry:      params.Registry,
+		Paths:         params.Paths,
+		TobyConfig:    params.Config,
+		SessionRunner: params.SessionRunner,
+		Args:          []string(params.Args),
+		Stdout:        os.Stdout,
+		Stderr:        os.Stderr,
 	}
-	return cli.NewRootCommand(cliParams)
+	cmd := cli.NewRootCommand(cliParams)
+	cmd.AddCommand(newDaemonCommand(), newStopCommand())
+	return cmd
 }
 
 func runCLI(lc fx.Lifecycle, cmd *cobra.Command, result *cliResult) {

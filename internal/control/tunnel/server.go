@@ -31,9 +31,10 @@ type Server struct {
 	lis     *chanListener
 	httpSrv *http.Server
 
-	controlMu sync.Mutex
-	control   *control.Peer
-	controlCh chan *control.Peer
+	controlMu      sync.Mutex
+	control        *control.Peer
+	controlCh      chan *control.Peer
+	controlHandler control.Handler
 }
 
 // NewServer wires a tunnel server to proxy. onReady (optional) fires when the
@@ -45,11 +46,23 @@ func NewServer(proxy ProxyHandler, onReady func(addr string)) *Server {
 		lis:       &chanListener{conns: make(chan net.Conn), done: make(chan struct{})},
 		controlCh: make(chan *control.Peer, 1),
 	}
-	s.httpSrv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.proxy.HandleHTTP(r.Context(), w, r)
-	})}
-	go func() { _ = s.httpSrv.Serve(s.lis) }()
+	// The home tunnel carries only the Control stream (files + exec) — no reverse
+	// proxy — so the http server is started only when a proxy is wired (the netns side).
+	if proxy != nil {
+		s.httpSrv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.proxy.HandleHTTP(r.Context(), w, r)
+		})}
+		go func() { _ = s.httpSrv.Serve(s.lis) }()
+	}
 	return s
+}
+
+// SetControlHandler installs the handler for inbound Control-stream messages from the
+// manager (e.g. streamed exec.output notifications). Set before the manager connects.
+func (s *Server) SetControlHandler(h control.Handler) {
+	s.controlMu.Lock()
+	s.controlHandler = h
+	s.controlMu.Unlock()
 }
 
 // Ready signals the sandbox is up; req.Addr is the manager's bound proxy address.
@@ -81,7 +94,10 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[Chunk, Chunk]) error {
 // Control is the manager-initiated JSON-RPC control stream.
 func (s *Server) Control(stream grpc.BidiStreamingServer[Chunk, Chunk]) error {
 	conn := newStreamConn(stream, nil)
-	peer := control.NewPeer(stream.Context(), conn, nil)
+	s.controlMu.Lock()
+	handler := s.controlHandler
+	s.controlMu.Unlock()
+	peer := control.NewPeer(stream.Context(), conn, handler)
 	peer.Start(nil)
 
 	s.controlMu.Lock()
@@ -142,7 +158,10 @@ func (s *Server) Close() error {
 	}
 	s.controlMu.Unlock()
 	s.lis.Close()
-	return s.httpSrv.Close()
+	if s.httpSrv != nil {
+		return s.httpSrv.Close()
+	}
+	return nil
 }
 
 // chanListener feeds tunneled conns to the embedded http.Server.

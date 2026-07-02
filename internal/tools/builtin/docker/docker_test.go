@@ -10,7 +10,6 @@ import (
 	"petris.dev/toby/container/layout"
 	"petris.dev/toby/container/mount"
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 )
 
@@ -32,21 +31,14 @@ func TestProvideMetadataAndHostInitBinds(t *testing.T) {
 	if !reflect.DeepEqual(sandbox.Binds, want) {
 		t.Fatalf("Binds = %#v, want %#v", sandbox.Binds, want)
 	}
-	if len(sandbox.Mounts) != 0 {
-		t.Fatalf("Mounts = %#v", sandbox.Mounts)
-	}
 }
 
 func TestLaunchRunsDockerWithExtras(t *testing.T) {
-	var got []string
 	sandbox := fake.NewSandbox("/toby/context")
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 	svc := Provide(config.Paths{Home: t.TempDir()}, sandbox).Service
 
-	if err := svc.Launch(context.Background(), []string{"ps", "--format", "json"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"ps", "--format", "json"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"docker", "ps", "--format", "json"}

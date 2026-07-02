@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"petris.dev/toby/container/layout"
 	"reflect"
 	"testing"
 
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 )
 
@@ -43,18 +41,14 @@ func TestRegisterContextFilesWritesWrapper(t *testing.T) {
 
 func TestLaunchRunsContextWrapper(t *testing.T) {
 	contextDir := filepath.Join(t.TempDir(), "context")
-	var got []string
-	svc, sandbox := newTestT3(t, contextDir)
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	svc, _ := newTestT3(t, contextDir)
 
-	if err := svc.Launch(context.Background(), []string{"--foo", "bar"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"--foo", "bar"})
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := []string{filepath.Join(layout.Context, filepath.FromSlash(t3WrapperPath)), "--foo", "bar"}
+	want := []string{t3WrapperPath, "--foo", "bar"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}

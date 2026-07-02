@@ -28,7 +28,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupSystem, tools.GroupVCS},
 }
 
-const npmSandboxInitPath = "npm/sandbox-init.sh"
+const npmSandboxInitPath = layout.Scripts + "/npm/sandbox-init.sh"
 
 type Result struct {
 	fx.Out
@@ -79,7 +79,7 @@ func (t *npmTool) ConfigureSandbox(ctx context.Context) error {
 }
 
 func (t *npmTool) InitSandbox(ctx context.Context) error {
-	_, err := t.sandbox.Exec(ctx, []string{t.contextPath(npmSandboxInitPath)}, sandbox.ExecOptions{})
+	_, err := t.sandbox.Exec(ctx, []string{npmSandboxInitPath}, sandbox.ExecOptions{})
 	return err
 }
 
@@ -92,11 +92,6 @@ func (t *npmTool) RegisterContextFiles(ctx context.Context, _ tools.ContextOptio
 	return err
 }
 
-func (t *npmTool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *npmTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"npm"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *npmTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"npm"}, extra...), nil
 }

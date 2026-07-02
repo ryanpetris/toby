@@ -11,6 +11,7 @@ import (
 	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	appconfig "petris.dev/toby/internal/config/app"
+	claudeconfig "petris.dev/toby/internal/tools/builtin/claude/config"
 	"petris.dev/toby/internal/tools/builtin/npm"
 	"petris.dev/toby/internal/tools/fake"
 	sandboxapi "petris.dev/toby/sandbox"
@@ -57,33 +58,25 @@ func TestClaudeSetsConfigDir(t *testing.T) {
 
 func TestLaunchYoloAppendsSkipPermissions(t *testing.T) {
 	home := t.TempDir()
-	claude, sandbox := newTestClaude(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, true))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	claude, _ := newTestClaude(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, true))
 
 	if err := claude.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := claude.Launch(context.Background(), []string{"--model", "opus"}); err != nil {
+	got, err := claude.LaunchCommand(context.Background(), []string{"--model", "opus"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, "--dangerously-skip-permissions") {
 		t.Fatalf("argv = %#v, missing --dangerously-skip-permissions", got)
 	}
 
-	got = nil
-	plain, plainSandbox := newTestClaude(t, filepath.Join(home, "runtime2", "toby", "context"), testConfig(t, false))
-	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	plain, _ := newTestClaude(t, filepath.Join(home, "runtime2", "toby", "context"), testConfig(t, false))
 	if err := plain.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := plain.Launch(context.Background(), nil); err != nil {
+	got, err = plain.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(got, "--dangerously-skip-permissions") {
@@ -116,14 +109,12 @@ func testConfig(t *testing.T, yolo bool) *appconfig.Service {
 }
 
 func TestContextFlags(t *testing.T) {
-	contextDir := "/run/user/1000/toby/context"
-	base := filepath.Join(contextDir, "claude")
-	flags := contextFlags(contextDir)
+	flags := contextFlags()
 
 	for _, want := range [][2]string{
-		{"--mcp-config", filepath.Join(base, "mcp.json")},
-		{"--settings", filepath.Join(base, "settings.json")},
-		{"--append-system-prompt-file", filepath.Join(base, "instructions.md")},
+		{"--mcp-config", claudeconfig.StaticMcpPath},
+		{"--settings", claudeconfig.StaticSettingsPath},
+		{"--append-system-prompt-file", claudeconfig.StaticInstructionsPath},
 	} {
 		i := slices.Index(flags, want[0])
 		if i == -1 || i+1 >= len(flags) || flags[i+1] != want[1] {

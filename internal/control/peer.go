@@ -110,6 +110,24 @@ func (p *Peer) Call(ctx context.Context, method string, params any) (RPCResponse
 	}
 }
 
+// Notify sends a one-way JSON-RPC notification (no id, no response awaited) — used for
+// streaming output such as exec chunks back to the peer.
+func (p *Peer) Notify(method string, params any) error {
+	var raw json.RawMessage
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		raw = data
+	}
+	msg, err := NewNotification(method, raw)
+	if err != nil {
+		return err
+	}
+	return p.writeLine(append(msg, '\n'))
+}
+
 func (p *Peer) writeResponse(response []byte) error {
 	return p.writeLine(response)
 }

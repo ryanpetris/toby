@@ -26,7 +26,7 @@ func (s stateView) environmentSandbox() EnvironmentSandbox {
 	if s.Sandbox != nil {
 		runtime = s.Sandbox.RuntimeInfo(s.Debug)
 	}
-	info := EnvironmentSandbox{Name: s.Options.Env, Runtime: runtime.Runtime, RuntimeInfo: sanitizeRuntimeInfo(runtime.Info), Home: layout.Home, Workspace: layout.Workspace, Root: layout.Root, Context: layout.Context, Bin: layout.Bin, Workdir: s.Options.Workdir, Environment: map[string]string{}}
+	info := EnvironmentSandbox{Name: s.Options.Env, Runtime: runtime.Runtime, RuntimeInfo: sanitizeRuntimeInfo(runtime.Info), Home: layout.Home, Workspace: layout.Workspace, Root: layout.Root, Bin: layout.Bin, Workdir: s.Options.Workdir, Environment: map[string]string{}}
 	if s.Sandbox != nil {
 		for _, name := range []string{"HOME"} {
 			if value, ok := s.Sandbox.Environment(name); ok {
@@ -81,10 +81,9 @@ func (s stateView) environmentMounts() []EnvironmentMount {
 	mounts := s.Sandbox.MountInfos()
 	result := make([]EnvironmentMount, 0, len(mounts))
 	for _, m := range mounts {
-		item := EnvironmentMount{Key: m.Key.String(), Profile: m.Profile, Target: m.Target, Access: string(m.Access), Optional: m.Optional}
+		item := EnvironmentMount{Key: m.Key, Profile: m.Profile, Target: m.Target, Access: m.Access, Optional: m.Optional}
 		if s.Debug {
 			item.Volume = m.Volume
-			item.SetupPath = m.SetupPath
 		}
 		result = append(result, item)
 	}

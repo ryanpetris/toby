@@ -10,14 +10,13 @@ import (
 	contextfiles "petris.dev/toby/context/files"
 )
 
-func TestRegisterContextFilesWritesMCPAndInstructions(t *testing.T) {
+func TestRegisterContextFilesWritesMCPConfig(t *testing.T) {
 	registrar := &memoryRegistrar{}
 	cfg := sessionconfig.Config{
 		MCPServers: []sessionconfig.MCPServer{
 			{Name: "docs", URL: "http://127.0.0.1:12345/proxy/docs"},
 			{Name: "toby", URL: "http://127.0.0.1:12345/proxy/toby"},
 		},
-		Instructions: sessionconfig.Instructions{Contents: [][]byte{[]byte("# Toby instructions\n")}},
 	}
 
 	if err := RegisterContextFiles(registrar, cfg); err != nil {
@@ -25,12 +24,16 @@ func TestRegisterContextFilesWritesMCPAndInstructions(t *testing.T) {
 	}
 
 	files := registrar.Files()
-	mcp := decodeMCP(t, fileByPath(t, files, StaticMCPPath).Data)
+	mcp := decodeMCP(t, fileByPath(t, files, MCPConfigPath).Data)
 	servers := mcp["mcpServers"].(map[string]any)
 	if servers["docs"].(map[string]any)["url"] != "http://127.0.0.1:12345/proxy/docs" {
 		t.Fatalf("mcp servers = %#v", servers)
 	}
-	if got := string(fileByPath(t, files, StaticInstructionsPath).Data); got != "# Toby instructions\n" {
+}
+
+func TestInstructionsJoinsContents(t *testing.T) {
+	cfg := sessionconfig.Config{Instructions: sessionconfig.Instructions{Contents: [][]byte{[]byte("# Toby instructions\n")}}}
+	if got := string(Instructions(cfg)); got != "# Toby instructions\n" {
 		t.Fatalf("instructions = %q", got)
 	}
 }

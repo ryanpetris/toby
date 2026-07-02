@@ -64,7 +64,7 @@ type launchContainerConfig struct {
 }
 
 type launchSettingsConfig struct {
-	MountProfile     string
+	HomeProfile      string
 	AutoUpgrade      bool
 	SuppressWarnings warning.Suppression
 	Debug            *bool
@@ -72,11 +72,10 @@ type launchSettingsConfig struct {
 }
 
 type launchToolConfig struct {
-	Name         string
-	Label        string
-	MountProfile string
-	Params       []string
-	Primary      bool
+	Name    string
+	Label   string
+	Params  []string
+	Primary bool
 }
 
 type launchProjectConfig struct {
@@ -105,7 +104,7 @@ type launchContainerSchema struct {
 }
 
 type launchSettingsSchema struct {
-	MountProfile     string   `json:"mountProfile" yaml:"mountProfile"`
+	HomeProfile      string   `json:"homeProfile" yaml:"homeProfile"`
 	AutoUpgrade      bool     `json:"autoUpgrade" yaml:"autoUpgrade"`
 	SuppressWarnings []string `json:"suppressWarnings" yaml:"suppressWarnings"`
 	Debug            *bool    `json:"debug" yaml:"debug"`
@@ -118,9 +117,8 @@ type launchProjectSchema struct {
 }
 
 type launchToolSchema struct {
-	MountProfile string   `json:"mountProfile" yaml:"mountProfile"`
-	Params       []string `json:"params" yaml:"params"`
-	Primary      bool     `json:"primary" yaml:"primary"`
+	Params  []string `json:"params" yaml:"params"`
+	Primary bool     `json:"primary" yaml:"primary"`
 }
 
 func BuildConfiguredLaunch(params Params, configPath string, extra []string) (ConfiguredLaunch, error) {
@@ -149,11 +147,6 @@ func BuildConfiguredLaunch(params Params, configPath string, extra []string) (Co
 	options := commandOptionsFromLaunchConfig(cfg)
 	options.Projects = orderedProjectMounts(cfg.Projects, primaryProject)
 	overrides := overridesFromLaunchConfig(cfg)
-	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
-	if err != nil {
-		return ConfiguredLaunch{}, err
-	}
-	overrides.ToolMountProfiles = profiles
 	return ConfiguredLaunch{
 		Options:        options,
 		Overrides:      overrides,
@@ -178,11 +171,6 @@ func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed Direc
 	}
 	options := commandOptionsFromLaunchConfig(cfg)
 	overrides := overridesFromLaunchConfig(cfg)
-	profiles, err := resolveConfiguredToolMountProfiles(params.Registry, cfg.Tools)
-	if err != nil {
-		return ConfiguredLaunch{}, err
-	}
-	overrides.ToolMountProfiles = profiles
 	if options.Env == "" {
 		options.Env = parsed.Options.Env
 	}
@@ -251,7 +239,7 @@ func overridesFromLaunchConfig(cfg launchConfig) appconfig.LaunchOverrides {
 		Image:            cfg.Container.Image,
 		Build:            cfg.Container.Build,
 		Ports:            cfg.Container.Ports,
-		MountProfile:     cfg.Settings.MountProfile,
+		HomeProfile:      cfg.Settings.HomeProfile,
 		SuppressWarnings: cfg.Settings.SuppressWarnings,
 		Debug:            cloneBool(cfg.Settings.Debug),
 		Yolo:             cloneBool(cfg.Settings.Yolo),
@@ -268,16 +256,8 @@ func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOv
 	if len(src.Ports) > 0 {
 		dst.Ports = append(dst.Ports, src.Ports...)
 	}
-	if src.MountProfile != "" {
-		dst.MountProfile = src.MountProfile
-	}
-	if len(src.ToolMountProfiles) > 0 {
-		if dst.ToolMountProfiles == nil {
-			dst.ToolMountProfiles = map[string]string{}
-		}
-		for name, profile := range src.ToolMountProfiles {
-			dst.ToolMountProfiles[name] = profile
-		}
+	if src.HomeProfile != "" {
+		dst.HomeProfile = src.HomeProfile
 	}
 	if src.Debug != nil {
 		debug := *src.Debug
@@ -352,7 +332,7 @@ func parseLaunchConfigWithPaths(schema launchSchema, dir string, paths config.Pa
 }
 
 func (s launchSettingsSchema) resolve() (launchSettingsConfig, error) {
-	cfg := launchSettingsConfig{MountProfile: strings.TrimSpace(s.MountProfile), AutoUpgrade: s.AutoUpgrade, Debug: cloneBool(s.Debug), Yolo: cloneBool(s.Yolo)}
+	cfg := launchSettingsConfig{HomeProfile: strings.TrimSpace(s.HomeProfile), AutoUpgrade: s.AutoUpgrade, Debug: cloneBool(s.Debug), Yolo: cloneBool(s.Yolo)}
 	if s.SuppressWarnings != nil {
 		suppression, err := warning.SuppressionFromList(s.SuppressWarnings, "settings.suppressWarnings")
 		if err != nil {
@@ -450,7 +430,7 @@ func resolveLaunchTool(t *launchToolSchema, label, name string) (launchToolConfi
 		return launchToolConfig{Name: name, Label: label}, nil
 	}
 	params := append([]string(nil), t.Params...)
-	return launchToolConfig{Name: name, Label: label, MountProfile: strings.TrimSpace(t.MountProfile), Params: params, Primary: t.Primary}, nil
+	return launchToolConfig{Name: name, Label: label, Params: params, Primary: t.Primary}, nil
 }
 
 func resolveLaunchProjectPath(path, dir, home string) (string, error) {
@@ -657,24 +637,6 @@ func configuredParamsForPrimary(registry *tools.Registry, configured []launchToo
 		}
 	}
 	return params, nil
-}
-
-func resolveConfiguredToolMountProfiles(registry *tools.Registry, configured []launchToolConfig) (map[string]string, error) {
-	profiles := map[string]string{}
-	for _, item := range configured {
-		if strings.TrimSpace(item.MountProfile) == "" {
-			continue
-		}
-		toolName, err := resolveConfiguredTool(registry, item.Name)
-		if err != nil {
-			return nil, err
-		}
-		profiles[toolName] = strings.TrimSpace(item.MountProfile)
-	}
-	if len(profiles) == 0 {
-		return nil, nil
-	}
-	return profiles, nil
 }
 
 func resolveConfiguredTool(registry *tools.Registry, name string) (string, error) {

@@ -27,7 +27,7 @@ container:
     context: docker/context
     dockerfile: ../Dockerfile.toby
 settings:
-  mountProfile: review
+  homeProfile: review
   autoUpgrade: true
   debug: true
   yolo: true
@@ -46,7 +46,6 @@ projects:
     path: ~/tilde-source/../raw
 tools:
   opencode:
-    mountProfile: review
   uv:
   npm:
 `))
@@ -55,7 +54,7 @@ tools:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Name != "" || !cfg.Settings.AutoUpgrade || cfg.Settings.MountProfile != "review" || cfg.Settings.Debug == nil || !*cfg.Settings.Debug || cfg.Settings.Yolo == nil || !*cfg.Settings.Yolo {
+	if cfg.Name != "" || !cfg.Settings.AutoUpgrade || cfg.Settings.HomeProfile != "review" || cfg.Settings.Debug == nil || !*cfg.Settings.Debug || cfg.Settings.Yolo == nil || !*cfg.Settings.Yolo {
 		t.Fatalf("settings/name = %#v %q", cfg.Settings, cfg.Name)
 	}
 	wantWorkdir := "~/literal-workdir/../raw"
@@ -82,7 +81,7 @@ tools:
 	if !reflect.DeepEqual(projectMounts(cfg.Projects), wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", cfg.Projects, wantProjects)
 	}
-	wantTools := []launchToolConfig{{Name: "npm", Label: "tools.npm"}, {Name: "opencode", Label: "tools.opencode", MountProfile: "review"}, {Name: "uv", Label: "tools.uv"}}
+	wantTools := []launchToolConfig{{Name: "npm", Label: "tools.npm"}, {Name: "opencode", Label: "tools.opencode"}, {Name: "uv", Label: "tools.uv"}}
 	if !reflect.DeepEqual(cfg.Tools, wantTools) {
 		t.Fatalf("tools = %#v, want %#v", cfg.Tools, wantTools)
 	}
@@ -117,7 +116,7 @@ projects:
   foo:
 workdir: /tmp/work
 settings:
-  mountProfile: shared
+  homeProfile: shared
   debug: false
   yolo: true
   suppressWarnings:
@@ -126,7 +125,6 @@ tools:
   gh:
     primary: true
   npm:
-    mountProfile: shared
 `))
 	registry, err := tools.NewRegistry([]tools.Tool{
 		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "github_cli", CLIName: "gh", LaunchHelp: "Launch GitHub CLI"}}},
@@ -156,14 +154,11 @@ tools:
 	if launch.Overrides.Yolo == nil || !*launch.Overrides.Yolo {
 		t.Fatalf("yolo = %#v", launch.Overrides.Yolo)
 	}
-	if launch.Overrides.MountProfile != "shared" {
-		t.Fatalf("mount profile = %q", launch.Overrides.MountProfile)
+	if launch.Overrides.HomeProfile != "shared" {
+		t.Fatalf("home profile = %q", launch.Overrides.HomeProfile)
 	}
 	if !launch.Overrides.SuppressWarnings.Suppresses(warning.ModelDiscovery) || launch.Overrides.SuppressWarnings.Suppresses(warning.MountHostBacking) {
 		t.Fatalf("suppress warnings = %#v", launch.Overrides.SuppressWarnings)
-	}
-	if launch.Overrides.ToolMountProfiles["npm"] != "shared" {
-		t.Fatalf("tool mount profiles = %#v", launch.Overrides.ToolMountProfiles)
 	}
 	if got, want := launch.Extra, []string{"--repo", "x"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("extra = %#v, want %#v", got, want)

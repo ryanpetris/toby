@@ -1,89 +1,60 @@
 package runtime
 
-// Instance is one sandbox: the host-side handle to its container. BaseInstance
-// provides the runtime-agnostic plumbing (paths, project-name → host-path
-// visibility) that the Docker instance embeds.
+// Project mounts and container-interior path resolution for a session. Projects
+// holds the resolved project→host-path mounts (from the launch spec) and answers
+// the tool-facing path queries: project-name → sandbox path, repository visibility
+// (host path behind a visible project), and the well-known sandbox directories.
 
 import (
-	"context"
 	"fmt"
-	"net"
 	"os"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/container/layout"
-	"petris.dev/toby/container/mount"
-	"petris.dev/toby/platform/environ"
-	sandboxapi "petris.dev/toby/sandbox"
 )
 
-type RunSpec struct {
-	Argv        []string
-	Env         environ.Environment
-	Binds       []mount.Bind
-	Mounts      []mount.Entry
-	ExecOptions sandboxapi.ExecOptions
-	Debug       bool
-}
+// DefaultImage is the image used when no image or build is configured.
+const DefaultImage = "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm"
 
+// defaultCols and defaultRows seed a headless foreground PTY (no host terminal to
+// measure) so the tool sees a plausible terminal size instead of zero.
+const (
+	defaultCols = 80
+	defaultRows = 24
+)
+
+// RuntimeInfo is the runtime's self-description for session introspection.
 type RuntimeInfo struct {
 	Runtime string
 	Info    map[string]any
 }
 
-type Instance interface {
-	sandboxapi.Paths
-
-	Label() string
-	ProjectPath(string) (string, bool)
-	TobyBinDir() string
-	TobyBinaryPath() string
-
-	// RunStart creates the container, copies the binary in, starts the proxy-only
-	// manager, and returns the host side of the stdio gRPC link.
-	RunStart(context.Context, RunSpec) (net.Conn, error)
-	// RunStop tears the container down; the engine's keep-stopped policy decides
-	// whether it is removed or only stopped (kept for inspection under debug).
-	RunStop(context.Context)
-	// RunContainerEnv returns the container's base environment for seeding execs.
-	RunContainerEnv(context.Context) ([]string, error)
-
-	// Exec runs a command in the container via docker exec.
-	Exec(context.Context, ExecSpec) (int, error)
-	RuntimeInfo(bool) RuntimeInfo
-	Cleanup() error
-	VisibleHostPath(string) (string, error)
+// MountInfo is a persistent volume mount reported for session introspection.
+type MountInfo struct {
+	Key      string
+	Profile  string
+	Volume   string
+	Target   string
+	Access   string
+	Optional bool
 }
 
+// ProjectMount is one project mounted into the sandbox workspace.
 type ProjectMount struct {
 	Name        string
 	HostPath    string
 	SandboxPath string
 }
 
-type BaseInstance struct {
-	label    string
+// Projects resolves tool-facing paths against a session's mounted projects.
+type Projects struct {
 	workdir  string
 	projects []ProjectMount
 }
 
-type BaseInstanceParams struct {
-	Label    string
-	Workdir  string
-	Projects []Project
-}
-
-func NewBaseInstance(params BaseInstanceParams) (BaseInstance, error) {
-	return BaseInstance{
-		label:    params.Label,
-		workdir:  params.Workdir,
-		projects: newProjectMounts(params.Projects),
-	}, nil
-}
-
-func newProjectMounts(projects []Project) []ProjectMount {
+func newProjects(workdir string, projects []Project) Projects {
 	mounts := make([]ProjectMount, 0, len(projects))
 	for _, project := range projects {
 		mounts = append(mounts, ProjectMount{
@@ -92,22 +63,19 @@ func newProjectMounts(projects []Project) []ProjectMount {
 			SandboxPath: filepath.Join(layout.Workspace, filepath.FromSlash(project.Name)),
 		})
 	}
-	return mounts
+	return Projects{workdir: workdir, projects: mounts}
 }
 
-func (s *BaseInstance) ProjectMounts() []ProjectMount {
-	return append([]ProjectMount(nil), s.projects...)
+func (p Projects) ProjectMounts() []ProjectMount {
+	return append([]ProjectMount(nil), p.projects...)
 }
 
-func (s *BaseInstance) HomeDir() string { return layout.Home }
+func (p Projects) HomeDir() string  { return layout.Home }
+func (p Projects) Projects() string { return layout.Workspace }
 
-func (s *BaseInstance) Label() string { return s.label }
-
-func (s *BaseInstance) Projects() string { return layout.Workspace }
-
-func (s *BaseInstance) ProjectPath(name string) (string, bool) {
+func (p Projects) ProjectPath(name string) (string, bool) {
 	name = filepath.ToSlash(strings.TrimSpace(name))
-	for _, project := range s.projects {
+	for _, project := range p.projects {
 		if project.Name == name {
 			return project.SandboxPath, true
 		}
@@ -115,51 +83,32 @@ func (s *BaseInstance) ProjectPath(name string) (string, bool) {
 	return "", false
 }
 
-func (s *BaseInstance) TobyRuntimeDir() string {
-	return layout.Root
-}
+func (p Projects) TobyRuntimeDir() string { return layout.Root }
+func (p Projects) TobyBinDir() string     { return layout.Bin }
+func (p Projects) TobyBinaryPath() string { return filepath.Join(layout.Bin, "toby") }
 
-func (s *BaseInstance) TobyContextDir() string {
-	return layout.Context
-}
-
-func (s *BaseInstance) TobyBinDir() string {
-	return layout.Bin
-}
-
-func (s *BaseInstance) TobyBinaryPath() string {
-	return filepath.Join(layout.Bin, "toby")
-}
-
-func (s *BaseInstance) TobyOpenCodeConfigDir() string {
-	return filepath.Join(layout.Context, "opencode")
-}
-
-func (s *BaseInstance) Cleanup() error {
-	return nil
-}
-
-func (s *BaseInstance) ChdirDir() string {
-	if s.workdir != "" {
-		return layout.Expand(s.workdir)
+// ChdirDir is the working directory a launched tool starts in.
+func (p Projects) ChdirDir() string {
+	if p.workdir != "" {
+		return layout.Expand(p.workdir)
 	}
-	if len(s.projects) > 0 {
-		return s.projects[0].SandboxPath
+	if len(p.projects) > 0 {
+		return p.projects[0].SandboxPath
 	}
 	return layout.Workspace
 }
 
-func (s *BaseInstance) VisibleHostPath(repository string) (string, error) {
+func (p Projects) VisibleHostPath(repository string) (string, error) {
 	repository, err := repositoryName(repository)
 	if err != nil {
 		return "", err
 	}
 	var selected *ProjectMount
 	selectedName := ""
-	for i := range s.projects {
-		if nameWithin(s.projects[i].Name, repository) && len(s.projects[i].Name) > len(selectedName) {
-			selected = &s.projects[i]
-			selectedName = s.projects[i].Name
+	for i := range p.projects {
+		if nameWithin(p.projects[i].Name, repository) && len(p.projects[i].Name) > len(selectedName) {
+			selected = &p.projects[i]
+			selectedName = p.projects[i].Name
 		}
 	}
 	if selected == nil {
@@ -212,4 +161,12 @@ func validateVisibleHostPath(source, hostPath string) (string, error) {
 		return "", fmt.Errorf("repository path escapes visible project: %w", err)
 	}
 	return resolvedHostPath, nil
+}
+
+func stdinIsTerminal() bool  { return isCharDevice(os.Stdin) }
+func stdoutIsTerminal() bool { return isCharDevice(os.Stdout) }
+
+func isCharDevice(file *os.File) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

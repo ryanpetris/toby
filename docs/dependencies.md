@@ -31,6 +31,7 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | github.com/testcontainers/testcontainers-go | v0.42.0 | MIT |
 | go.uber.org/dig | v1.19.0 | MIT |
 | go.uber.org/fx | v1.24.0 | MIT |
+| golang.org/x/net | v0.49.0 | BSD-3-Clause |
 | golang.org/x/term | v0.43.0 | BSD-3-Clause |
 | google.golang.org/grpc | v1.80.0 | Apache-2.0 |
 | google.golang.org/protobuf | v1.36.11 | BSD-3-Clause |
@@ -105,7 +106,6 @@ directory (`$(go env GOMODCACHE)/<escaped-module-path>@<version>/`).
 | go.uber.org/multierr | v1.10.0 | MIT |
 | go.uber.org/zap | v1.26.0 | MIT |
 | golang.org/x/crypto | v0.48.0 | BSD-3-Clause |
-| golang.org/x/net | v0.49.0 | BSD-3-Clause |
 | golang.org/x/oauth2 | v0.34.0 | BSD-3-Clause |
 | golang.org/x/sync | v0.20.0 | BSD-3-Clause |
 | golang.org/x/sys | v0.45.0 | BSD-3-Clause |

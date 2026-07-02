@@ -6,18 +6,13 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 )
 
 func TestExecLaunchRunsExtraCommand(t *testing.T) {
-	var got []string
 	sandbox := fake.NewSandbox("/toby/context")
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 	svc := Provide(sandbox).Service
-	if err := svc.Launch(context.Background(), []string{"npm", "test"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"npm", "test"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"npm", "test"}; !reflect.DeepEqual(got, want) {
@@ -26,14 +21,10 @@ func TestExecLaunchRunsExtraCommand(t *testing.T) {
 }
 
 func TestExecLaunchPassesEmptyCommandThrough(t *testing.T) {
-	var got []string
 	sandbox := fake.NewSandbox("/toby/context")
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 	svc := Provide(sandbox).Service
-	if err := svc.Launch(context.Background(), nil); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {

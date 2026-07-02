@@ -34,7 +34,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupVCS, tools.GroupSystem},
 }
 
-const gitlabCLIInstallPath = "gitlab_cli/install.sh"
+const gitlabCLIInstallPath = layout.Scripts + "/gitlab_cli/install.sh"
 
 type Result struct {
 	fx.Out
@@ -99,17 +99,12 @@ func (t *gitlabCLITool) Install(ctx context.Context, force bool) error {
 		log.Printf("%s", err)
 		return exitcode.Code(1)
 	}
-	_, err = t.sandbox.Exec(ctx, []string{t.contextPath(gitlabCLIInstallPath), archiveURL}, sandbox.ExecOptions{})
+	_, err = t.sandbox.Exec(ctx, []string{gitlabCLIInstallPath, archiveURL}, sandbox.ExecOptions{})
 	return err
 }
 
-func (t *gitlabCLITool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *gitlabCLITool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"glab"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *gitlabCLITool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"glab"}, extra...), nil
 }
 
 func (t *gitlabCLITool) archiveURL(ctx context.Context) (string, error) {

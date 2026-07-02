@@ -1,32 +1,28 @@
-// Package config generates the synthetic Grok CLI configuration Toby writes into
-// the sandbox context directory: a config.toml listing the MCP servers, and the
-// combined instructions passed at launch via --rules. The input is the
-// pre-resolved, sandbox-safe sessionconfig.Config; this package never sees the
-// raw host config, the proxy, or any credential.
+// Package config generates the synthetic Grok CLI configuration Toby writes to the
+// tool's real home config path: managed_config.toml listing the MCP servers, and the
+// combined instructions passed at launch via --rules. The input is the pre-resolved,
+// sandbox-safe sessionconfig.Config; this package never sees the raw host config, the
+// proxy, or any credential.
 package config
 
 import (
-	"path/filepath"
-
 	"github.com/pelletier/go-toml/v2"
 
 	"petris.dev/toby/config/session"
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/tools/helpers"
 )
 
-const StaticConfigPath = "grok/config.toml"
+// ConfigPath is grok's real config file that the CLI reads.
+const ConfigPath = layout.Home + "/.grok/managed_config.toml"
 
 func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Config) error {
 	config, err := marshalConfig(syntheticMCPServers(cfg.MCPServers))
 	if err != nil {
 		return err
 	}
-	return registrar.AddBytes(StaticConfigPath, config, 0o644)
-}
-
-func ConfigPath(contextDir string) string {
-	return filepath.Join(contextDir, filepath.FromSlash(StaticConfigPath))
+	return registrar.AddBytes(ConfigPath, config, 0o644)
 }
 
 func Rules(instructions [][]byte) string {

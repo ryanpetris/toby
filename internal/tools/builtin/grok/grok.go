@@ -12,7 +12,6 @@ import (
 	"petris.dev/toby/config/session"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/diagnostic/exitcode"
-	"petris.dev/toby/internal/control"
 	grokconfig "petris.dev/toby/internal/tools/builtin/grok/config"
 	"petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
@@ -37,7 +36,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
 }
 
-const grokInstallPath = "grok/install.sh"
+const grokInstallPath = layout.Scripts + "/grok/install.sh"
 
 type Params struct {
 	fx.In
@@ -55,9 +54,8 @@ type Result struct {
 
 func Provide(params Params) Result {
 	svc := &grokTool{Simple: &kit.Simple{
-		Base:           tools.Base{Metadata: Meta},
-		Sandbox:        params.Sandbox,
-		SandboxSubpath: []string{".grok"},
+		Base:    tools.Base{Metadata: Meta},
+		Sandbox: params.Sandbox,
 	}, sessionConfig: params.SessionConfig, contextFiles: params.ContextFiles}
 	return Result{Service: svc}
 }
@@ -90,20 +88,6 @@ func (t *grokTool) ConfigureSandbox(ctx context.Context) error {
 	return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".grok", "bin"), ":")
 }
 
-func (t *grokTool) InitSandbox(ctx context.Context) error {
-	if err := t.Simple.InitSandbox(ctx); err != nil {
-		return err
-	}
-
-	contextDir := layout.Context
-	home := layout.Home
-	grokHome := filepath.Join(home, ".grok")
-	if err := t.Sandbox.MkdirOwned(ctx, grokHome, 0o755, control.HostUser, control.HostGroup); err != nil {
-		return err
-	}
-	return t.Sandbox.SymlinkOwned(ctx, filepath.Join(grokHome, "managed_config.toml"), grokconfig.ConfigPath(contextDir), control.HostUser, control.HostGroup)
-}
-
 func (t *grokTool) Install(ctx context.Context, force bool) error {
 	if !force {
 		exists, err := helpers.CommandExists(ctx, t.Sandbox.Exec, sandbox.ExecOptions{HideOutput: true}, "grok")
@@ -117,21 +101,16 @@ func (t *grokTool) Install(ctx context.Context, force bool) error {
 		log.Printf("%s", err)
 		return exitcode.Code(1)
 	}
-	_, err = t.Sandbox.Exec(ctx, []string{t.contextPath(grokInstallPath), baseURL, arch}, sandbox.ExecOptions{})
+	_, err = t.Sandbox.Exec(ctx, []string{grokInstallPath, baseURL, arch}, sandbox.ExecOptions{})
 	return err
 }
 
-func (t *grokTool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *grokTool) Launch(ctx context.Context, extra []string) error {
+func (t *grokTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
 	args, err := t.launchArgs(extra)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = t.Sandbox.Exec(ctx, append([]string{"grok"}, args...), sandbox.ExecOptions{Foreground: true})
-	return err
+	return append([]string{"grok"}, args...), nil
 }
 
 func (t *grokTool) launchArgs(extra []string) ([]string, error) {

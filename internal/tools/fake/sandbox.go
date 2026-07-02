@@ -19,7 +19,6 @@ type Sandbox struct {
 	Files    []contextfiles.File
 	Dirs     []string
 	Binds    []mount.Bind
-	Mounts   []mount.Entry
 	Symlinks map[string]string
 	ExecFunc func(context.Context, []string, sandbox.ExecOptions) (int, error)
 	MCPURL   string
@@ -64,33 +63,6 @@ func (s *Sandbox) AddBind(bind mount.Bind) error {
 	return nil
 }
 
-func (s *Sandbox) AddMount(req mount.Request) (mount.Entry, error) {
-	access := req.Access
-	if access == "" {
-		access = mount.AccessRegular
-	}
-	m := mount.Entry{
-		Key:       req.Key,
-		Profile:   "test",
-		Volume:    mount.Volume("test", req.Key),
-		Target:    layout.Expand(req.Target),
-		Access:    access,
-		Optional:  req.Optional,
-		SetupPath: "/toby/mounts/test-" + req.Key.Type + "-" + req.Key.Name + "-" + req.Key.Purpose,
-	}
-	s.Mounts = append(s.Mounts, m)
-	return m, nil
-}
-
-func (s *Sandbox) Mount(key mount.Key) (mount.Entry, bool) {
-	for _, item := range s.Mounts {
-		if item.Key == key {
-			return item, true
-		}
-	}
-	return mount.Entry{}, false
-}
-
 func (s *Sandbox) setPathEntry(ctx context.Context, name, value, separator string, atStart bool) error {
 	if separator == "" {
 		separator = ":"
@@ -112,8 +84,7 @@ func (s *Sandbox) setPathEntry(ctx context.Context, name, value, separator strin
 	return s.SetEnvironment(ctx, name, strings.Join(entries, separator))
 }
 func (s *Sandbox) AddFile(_ context.Context, path string, data []byte, mode uint32) error {
-	rel := strings.TrimPrefix(path, layout.Context+string(filepath.Separator))
-	s.Files = append(s.Files, contextfiles.File{Path: filepath.ToSlash(rel), Data: append([]byte(nil), data...), Mode: mode})
+	s.Files = append(s.Files, contextfiles.File{Path: filepath.ToSlash(path), Data: append([]byte(nil), data...), Mode: mode})
 	return nil
 }
 func (s *Sandbox) AddFileOwned(ctx context.Context, path string, data []byte, mode uint32, _, _ int) error {

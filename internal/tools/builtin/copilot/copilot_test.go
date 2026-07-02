@@ -9,12 +9,10 @@ import (
 	"testing"
 
 	"petris.dev/toby/config/session"
-	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	appconfig "petris.dev/toby/internal/config/app"
 	copilotconfig "petris.dev/toby/internal/tools/builtin/copilot/config"
 	"petris.dev/toby/internal/tools/fake"
-	sandboxapi "petris.dev/toby/sandbox"
 	"petris.dev/toby/tools"
 )
 
@@ -26,7 +24,7 @@ func TestSandboxContextSetupAddsCustomInstructionsDir(t *testing.T) {
 	if err := cp.ConfigureSandbox(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := copilotconfig.InstructionsDir(layout.Context) + ","
+	wantPrefix := copilotconfig.InstructionsDir() + ","
 	got := sandbox.Env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]
 	if !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "/existing") {
 		t.Fatalf("COPILOT_CUSTOM_INSTRUCTIONS_DIRS = %q", got)
@@ -53,17 +51,13 @@ func TestRegisterContextFilesWritesCopilotFiles(t *testing.T) {
 
 func TestLaunchAddsAdditionalMCPConfig(t *testing.T) {
 	home := t.TempDir()
-	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, false))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	cp, _, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, false))
 
-	if err := cp.Launch(context.Background(), []string{"--allow-all-tools"}); err != nil {
+	got, err := cp.LaunchCommand(context.Background(), []string{"--allow-all-tools"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(layout.Context), "--allow-all-tools"}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -71,34 +65,26 @@ func TestLaunchAddsAdditionalMCPConfig(t *testing.T) {
 
 func TestLaunchYoloAppendsAllowAllTools(t *testing.T) {
 	home := t.TempDir()
-	cp, sandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, true))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	cp, _, _ := newTestCopilot(t, filepath.Join(home, "runtime", "toby", "context"), testConfig(t, true))
 
 	if err := cp.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.Launch(context.Background(), nil); err != nil {
+	got, err := cp.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(layout.Context), "--allow-all-tools"}
+	want := []string{"copilot", "--additional-mcp-config", "@" + copilotconfig.MCPConfigPath(), "--allow-all-tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
 
-	got = nil
-	plain, plainSandbox, _ := newTestCopilot(t, filepath.Join(home, "runtime2", "toby", "context"), testConfig(t, false))
-	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	plain, _, _ := newTestCopilot(t, filepath.Join(home, "runtime2", "toby", "context"), testConfig(t, false))
 	if err := plain.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := plain.Launch(context.Background(), nil); err != nil {
+	got, err = plain.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(got, "--allow-all-tools") {

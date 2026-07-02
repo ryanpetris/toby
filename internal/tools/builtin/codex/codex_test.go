@@ -16,18 +16,14 @@ import (
 
 func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	home := t.TempDir()
-	cdx, sandbox, holder := newTestCodex(t, filepath.Join(home, "context"), testConfig(t, false))
+	cdx, _, holder := newTestCodex(t, filepath.Join(home, "context"), testConfig(t, false))
 	holder.Set(sessionconfig.Config{
 		MCPServers:   []sessionconfig.MCPServer{{Name: "toby", URL: "http://127.0.0.1:12345/proxy/toby"}},
 		Instructions: sessionconfig.Instructions{Contents: [][]byte{[]byte("# user instructions\n")}},
 	})
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 
-	if err := cdx.Launch(context.Background(), []string{"--model", "gpt-5"}); err != nil {
+	got, err := cdx.LaunchCommand(context.Background(), []string{"--model", "gpt-5"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -61,33 +57,25 @@ func TestSandboxInitDoesNotLinkProfile(t *testing.T) {
 
 func TestLaunchYoloBypassesApprovals(t *testing.T) {
 	home := t.TempDir()
-	cdx, sandbox, _ := newTestCodex(t, filepath.Join(home, "context"), testConfig(t, true))
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	cdx, _, _ := newTestCodex(t, filepath.Join(home, "context"), testConfig(t, true))
 
 	if err := cdx.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cdx.Launch(context.Background(), []string{"--model", "gpt-5"}); err != nil {
+	got, err := cdx.LaunchCommand(context.Background(), []string{"--model", "gpt-5"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("argv = %#v, missing --dangerously-bypass-approvals-and-sandbox", got)
 	}
 
-	got = nil
-	plain, plainSandbox, _ := newTestCodex(t, filepath.Join(home, "context2"), testConfig(t, false))
-	plainSandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
+	plain, _, _ := newTestCodex(t, filepath.Join(home, "context2"), testConfig(t, false))
 	if err := plain.PrepareHost(context.Background(), &tools.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := plain.Launch(context.Background(), nil); err != nil {
+	got, err = plain.LaunchCommand(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(got, "--dangerously-bypass-approvals-and-sandbox") {

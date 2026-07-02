@@ -21,8 +21,20 @@ const (
 	Workspace = "/toby/workspace"
 	// Bin is where the Toby helper binary lives.
 	Bin = "/toby/bin"
-	// Context is where generated configuration and instructions live.
-	Context = "/toby/context"
+	// TobyDir is the Toby runtime directory inside the shared home volume. It holds
+	// Toby-owned artifacts (aggregated instructions, install scripts, launch
+	// descriptors); because it lives under Home, both the home container (which writes
+	// it) and the tool container (which mounts the same home volume) see the same files.
+	// Generated tool config is written to each tool's real home path, not here.
+	TobyDir = "/toby/home/.toby"
+	// Instructions holds the aggregated instruction files (bundled + host-configured)
+	// that tools reference by path or inline; Toby-owned, wiped and re-rendered per launch.
+	Instructions = "/toby/home/.toby/instructions"
+	// Scripts holds Toby's internal install/wrapper scripts; Toby-owned, run in the home
+	// container during install.
+	Scripts = "/toby/home/.toby/scripts"
+	// Run holds per-session launch descriptors under the shared home volume.
+	Run = "/toby/home/.toby/run"
 	// DockerSocket is the Docker daemon socket path (host and container).
 	DockerSocket = "/var/run/docker.sock"
 )

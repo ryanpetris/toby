@@ -47,7 +47,12 @@ type Tool interface {
 	ConfigureSandbox(ctx context.Context) error
 	InitSandbox(ctx context.Context) error
 	Install(ctx context.Context, force bool) error
-	Launch(ctx context.Context, args []string) error
+
+	// LaunchCommand returns the foreground command to run for this tool (its argv),
+	// performing any daemon-side setup it needs first, but does NOT run it. The
+	// runtime executes the returned argv — in daemon mode the client runs it against
+	// the container directly, attaching the interactive PTY to the user's terminal.
+	LaunchCommand(ctx context.Context, args []string) ([]string, error)
 }
 
 // ContextFileRegistrar is an optional capability: a tool that writes generated

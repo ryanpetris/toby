@@ -30,7 +30,7 @@ var Meta = tools.Metadata{
 	ContextGroups: []string{tools.GroupUI, tools.GroupAI, tools.GroupSystem, tools.GroupVCS},
 }
 
-const emdashInstallPath = "emdash/install.sh"
+const emdashInstallPath = layout.Scripts + "/emdash/install.sh"
 
 type Result struct {
 	fx.Out
@@ -79,15 +79,10 @@ func (t *emdashTool) Install(ctx context.Context, force bool) error {
 		}
 	}
 
-	_, err := t.sandbox.Exec(ctx, []string{t.contextPath(emdashInstallPath), appImageURL}, sandbox.ExecOptions{})
+	_, err := t.sandbox.Exec(ctx, []string{emdashInstallPath, appImageURL}, sandbox.ExecOptions{})
 	return err
 }
 
-func (t *emdashTool) contextPath(path string) string {
-	return filepath.Join(layout.Context, filepath.FromSlash(path))
-}
-
-func (t *emdashTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"emdash"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *emdashTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"emdash"}, extra...), nil
 }

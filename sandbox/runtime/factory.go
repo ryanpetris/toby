@@ -1,10 +1,10 @@
-// Package runtime is the host-side sandbox runtime: it turns a launch's
-// tools.Options into a run Spec (resolving and validating projects), constructs
-// the Docker-backed Instance that drives the container, and implements the
-// tool-facing sandbox.Service by brokering filesystem/env/command operations
-// through the Docker API and sandbox manager control session. Docker (via the Docker Engine API,
-// which also serves Podman through DOCKER_HOST) is the only backend; there is no
-// runtime selection.
+// Package runtime is the host-side sandbox runtime for the profile-home topology.
+// It resolves a launch's tools.Options into a Spec (validated projects, image), and
+// implements the tool-facing sandbox.Service by brokering filesystem/env/command
+// operations through the shared home manager and the per-project netns proxy. The
+// daemon stands up the home, netns, and tool containers from these primitives.
+// Docker (via the Docker Engine API, which also serves Podman through DOCKER_HOST)
+// is the only backend; there is no runtime selection.
 package runtime
 
 import (
@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"petris.dev/toby/config"
-	"petris.dev/toby/container/engine"
 	"petris.dev/toby/diagnostic/exitcode"
 	"petris.dev/toby/tools"
 )
@@ -36,67 +35,45 @@ type Project struct {
 	HostPath string
 }
 
-// Factory turns tools.Options into a runnable Docker Instance.
+// ResolvedImage returns the spec's image, defaulting to DefaultImage when neither
+// an image nor a build is configured.
+func (s Spec) ResolvedImage() string {
+	if s.Image == "" && !s.Build.IsSet() {
+		return DefaultImage
+	}
+	return s.Image
+}
+
+// Factory resolves tools.Options into a runnable Spec.
 type Factory struct {
-	paths      config.Paths
-	containers *engine.Service
+	paths config.Paths
 }
 
 // NewFactory builds the sandbox Factory. It is the fx constructor for the
 // runtime module.
-func NewFactory(paths config.Paths, containers *engine.Service) Factory {
-	return Factory{paths: paths, containers: containers}
+func NewFactory(paths config.Paths) Factory {
+	return Factory{paths: paths}
 }
 
-// FromOptions resolves the sandbox spec from the launch-only options, with the
-// image, build, and published ports supplied separately from the effective config.
-func (f Factory) FromOptions(opts *tools.Options, image string, build tools.Build, ports []string) (Instance, error) {
+// Resolve turns the launch-only options into a Spec, with the image, build, and
+// published ports supplied separately from the effective config.
+func (f Factory) Resolve(opts *tools.Options, image string, build tools.Build, ports []string) (Spec, error) {
 	if opts == nil {
 		opts = &tools.Options{}
 	}
 
 	spec, err := f.specFromOptions(opts)
 	if err != nil {
-		return nil, err
+		return Spec{}, err
 	}
 	spec.Image = strings.TrimSpace(image)
 	spec.Build = build
 	spec.Ports = ports
 
-	return f.newInstance(spec)
-}
-
-// newInstance constructs the Docker instance for a resolved spec, defaulting the
-// image when neither an image nor a build is configured and validating the
-// published-port specs. It touches no daemon.
-func (f Factory) newInstance(spec Spec) (Instance, error) {
-	image := spec.Image
-	if image == "" && !spec.Build.IsSet() {
-		image = DefaultImage
+	if _, err := NewPortSpec(spec.Ports); err != nil {
+		return Spec{}, exitcode.New(2, "%s", err)
 	}
-
-	exposedPorts, portBindings, err := resolvePublishedPorts(spec.Ports)
-	if err != nil {
-		return nil, exitcode.New(2, "%s", err)
-	}
-
-	base, err := NewBaseInstance(BaseInstanceParams{
-		Label:    spec.Label,
-		Workdir:  spec.Workdir,
-		Projects: spec.Projects,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &instance{
-		BaseInstance: base,
-		containers:   f.containers,
-		image:        image,
-		build:        spec.Build,
-		exposedPorts: exposedPorts,
-		portBindings: portBindings,
-	}, nil
+	return spec, nil
 }
 
 func (f Factory) specFromOptions(opts *tools.Options) (Spec, error) {

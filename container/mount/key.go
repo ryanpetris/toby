@@ -1,69 +1,25 @@
 package mount
 
-// Mount keys and volume naming. A Key (type/name/purpose) uniquely identifies a
-// managed mount; Volume derives the stable Docker volume name from a profile and
-// Key as toby.<profile>.<type>.<name>.<purpose>.
+// Shared-home volume naming. HomeVolume derives the stable Docker volume name for a
+// profile's shared home as toby.<profile>.runtime.home.
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 const (
-	TypeRuntime    = "runtime"
-	TypeTool       = "tool"
-	NameHome       = "home"
+	TypeRuntime = "runtime"
+	NameHome    = "home"
+	// PurposeDefault is the fallback profile name when none is configured.
 	PurposeDefault = "default"
 )
 
-// Key uniquely identifies a managed mount.
-type Key struct {
-	Type    string
-	Name    string
-	Purpose string
-}
-
-var _ fmt.Stringer = Key{}
-
-func (k Key) String() string {
-	if k.Purpose == "" {
-		return k.Type + "." + k.Name
-	}
-	return k.Type + "." + k.Name + "." + k.Purpose
-}
-
-// RuntimeHomeKey is the key for the per-sandbox home volume.
-func RuntimeHomeKey(sandboxName string) Key {
-	purpose := strings.TrimSpace(sandboxName)
-	if purpose == "" {
-		purpose = PurposeDefault
-	}
-	return Key{Type: TypeRuntime, Name: NameHome, Purpose: purpose}
-}
-
-func validateKey(key Key) error {
-	key.Type = strings.TrimSpace(key.Type)
-	key.Name = strings.TrimSpace(key.Name)
-	key.Purpose = strings.TrimSpace(key.Purpose)
-	if key.Type == "" || key.Name == "" || key.Purpose == "" {
-		return fmt.Errorf("mount key type, name, and purpose are required")
-	}
-	if strings.ContainsAny(key.Type+key.Name+key.Purpose, "\x00") {
-		return fmt.Errorf("mount key contains invalid NUL byte")
-	}
-
-	return nil
-}
-
-// Volume returns the stable volume name for a profile and key:
-// toby.<profile>.<type>.<name>.<purpose>.
-func Volume(profile string, key Key) string {
+// HomeVolume returns the stable shared-home volume name for a profile:
+// toby.<profile>.runtime.home.
+func HomeVolume(profile string) string {
 	return strings.Join([]string{
 		"toby",
-		namePart(profile, "default"),
-		namePart(key.Type, "mount"),
-		namePart(key.Name, "default"),
-		namePart(key.Purpose, "default"),
+		namePart(profile, PurposeDefault),
+		TypeRuntime,
+		NameHome,
 	}, ".")
 }
 

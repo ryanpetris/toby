@@ -45,13 +45,47 @@ Launch OpenCode in a persistent sandbox named `my-app`:
 toby opencode my-app
 ```
 
-Toby maps the environment name to `~/Projects/my-app`, creates a private sandbox home for that environment, installs missing tool dependencies inside that home, then launches the tool in the project.
+The first `toby` invocation auto-spawns a background daemon that owns Docker and keeps the sandbox container warm; this launch and every later one connect to it as thin clients. Toby maps the environment name to `~/Projects/my-app`, creates a private sandbox home for that environment, installs missing tool dependencies inside that home, then launches the tool in the project. The client runs the tool itself, so the interactive terminal is yours.
 
 Run any command in the same environment:
 
 ```sh
 toby exec my-app -- npm test
 ```
+
+The second command reuses the same warm project container rather than starting a new one.
+
+## Daemon
+
+Toby runs as a long-lived host **daemon** plus thin **clients**. The daemon owns Docker, brings up **one long-lived container per project** (reused across invocations), runs setup once, and hands each launch a foreground plan the client runs itself. The first `toby` command auto-spawns the daemon; it binds a control endpoint under `XDG_RUNTIME_DIR` (a unix socket at `$XDG_RUNTIME_DIR/toby/daemon.sock` by default). A project container is kept warm and torn down after an idle timeout (default 15 minutes), and the daemon itself auto-shuts-down once it has no active projects.
+
+Manage the daemon explicitly with `toby daemon`:
+
+```sh
+toby daemon                  # run the daemon in the foreground (usually auto-spawned)
+toby daemon --no-idle-shutdown  # stay running when idle (for supervisors like systemd)
+toby daemon ping             # ensure a daemon is up and report its version and pid
+toby daemon status           # list active projects (label, container, session count)
+toby daemon stop             # shut the daemon down, tearing down all project containers
+```
+
+The daemon watches your host config file and reloads it on change: a **new** project launch picks up the change, while an **already-running** project keeps the config it launched with (frozen at first launch). Restart the project's container (let it idle out, or `toby daemon stop`) to apply config changes to it.
+
+### Transport
+
+The client↔daemon channel runs over a transport selected with the `TOBY_TRANSPORT` environment variable, set the same on both ends:
+
+- `TOBY_TRANSPORT=unix` (default) — a unix-domain socket under `$XDG_RUNTIME_DIR/toby`.
+- `TOBY_TRANSPORT=websocket` — a loopback WebSocket; `TOBY_WS_ADDRESS` sets the address (default `127.0.0.1:47700`).
+
+Both carry the identical JSON-RPC payloads.
+
+### systemd
+
+To run the daemon supervised instead of auto-spawned, `support/systemd/` ships two units that start it with `--no-idle-shutdown`:
+
+- `toby-daemon.service` — a **user** unit (recommended for a single-user machine): `cp` it into `~/.config/systemd/user/`, then `systemctl --user enable --now toby-daemon`.
+- `toby-daemon@.service` — a **system** template for multi-user hosts, one instance per user (`toby-daemon@alice`); enable lingering (`loginctl enable-linger alice`) so the user's runtime dir exists without a login.
 
 ## Projects Directory
 
@@ -95,19 +129,16 @@ permissions:
     ~/shared/**: allow
 ```
 
-Persistent tool and runtime state lives in container-native Docker named volumes. A mount *profile* namespaces those volumes so you can keep separate sets of state: the default profile is `default`, `settings.mountProfile` selects another for a launch, and `tools.<tool>.mountProfile` selects a different one for a single tool. The Docker tool is an exception — it bind-mounts `/var/run/docker.sock` and the `$HOME`-based `~/.docker` instead of using a managed volume.
+Persistent tool and runtime state lives in one shared home volume per *home profile*. Every project launched on the same profile shares that profile's home container and `/toby/home` volume, so installed tools and tool state (`~/.config/claude`, `~/.codex`, …) persist and are shared across projects: the default profile is `default` and `settings.homeProfile` selects another for a launch. The Docker tool is an exception — it bind-mounts `/var/run/docker.sock` and the `$HOME`-based `~/.docker` onto the tool container instead of using the home volume.
 
 ```yaml
 settings:
-  mountProfile: default # optional; namespaces persistent volumes (default: default)
+  homeProfile: default # optional; selects the shared home profile (default: default)
   autoloadProjectConfig: true # optional; load <project>/.toby.yaml on direct launches
   debug: false # optional; when true, preserve Docker containers and expose host/container debug info through Toby MCP
-tools:
-  opencode:
-    mountProfile: work # optional; namespaces this tool's volumes separately
 ```
 
-Tool volumes are named `toby.<mountProfile>.tool.<tool>.<purpose>` and the runtime home volume `toby.<mountProfile>.runtime.home.<sandboxName>`; Docker manages them and they persist across runs. A tool addresses its mounts with container paths (`~/…` expands to the container `$HOME`); Toby never bind-mounts the user's host tool configuration. Set `settings.suppressWarnings: ["*"]` to suppress all warnings, or set it to a list of warning IDs such as `provider.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Toby still generates synthetic tool config in all modes.
+The shared home volume is named `toby.<homeProfile>.runtime.home`; Docker manages it and it persists across runs. There are no per-tool state volumes — tool state lives under the shared home. A tool addresses paths as container paths (`~/…` expands to the container `$HOME`); Toby never bind-mounts the user's host tool configuration. Set `settings.suppressWarnings: ["*"]` to suppress all warnings, or set it to a list of warning IDs such as `provider.model-discovery`, `project.autoload-disabled`, `project.duplicate`, or `project.missing`. Toby still generates synthetic tool config in all modes.
 
 Set `settings.autoloadProjectConfig: true` in host config to load `<project>/.toby.yaml` during direct launches such as `toby opencode my-app`. If `.toby.yaml` exists and autoload is disabled, Toby emits `project.autoload-disabled`. In autoload mode, the CLI tool and project stay foreground and primary; tools and projects from `.toby.yaml` are added, with duplicate project names skipped after warning.
 
@@ -146,7 +177,7 @@ container:
 settings:
   autoUpgrade: true # optional; defaults to false
   debug: false # optional; overrides global settings.debug for this launch
-  mountProfile: work # optional; namespaces this launch's persistent volumes
+  homeProfile: work # optional; selects this launch's shared home profile
   suppressWarnings: ["*"] # optional; list of warning IDs, or ["*"] to suppress all
 workdir: ~/tmp # optional; defaults to the primary project path inside the sandbox
 projects:
@@ -159,7 +190,6 @@ tools:
   opencode:
     primary: true
     params: ["--model", "anthropic/claude-sonnet-4-5"] # optional; only valid on the primary tool
-    mountProfile: work # optional; namespaces this tool's persistent volumes
   uv:
   npm:
 ```
@@ -209,6 +239,9 @@ toby opencode <env>
 toby claude <env>
 toby codex <env>
 toby exec <env> -- <command arguments>
+toby daemon ping     # ensure the daemon is up
+toby daemon status   # list active projects
+toby daemon stop     # shut the daemon down
 ```
 
 Useful flags:

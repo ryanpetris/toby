@@ -5,11 +5,8 @@ package opencode
 
 import (
 	"context"
-	"path/filepath"
 
 	"petris.dev/toby/config/session"
-	"petris.dev/toby/container/layout"
-	"petris.dev/toby/container/mount"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/internal/tools/builtin/npm"
 	opencodeconfig "petris.dev/toby/internal/tools/builtin/opencode/config"
@@ -67,30 +64,6 @@ type openCodeTool struct {
 
 var _ tools.Tool = (*openCodeTool)(nil)
 
-func (t *openCodeTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	for _, req := range t.mounts() {
-		if _, err := t.sandbox.AddMount(req); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (t *openCodeTool) mounts() []mount.Request {
-	return []mount.Request{
-		{Key: mount.Key{Type: mount.TypeTool, Name: t.Name(), Purpose: "config"}, Target: "~/.config/opencode"},
-		{Key: mount.Key{Type: mount.TypeTool, Name: t.Name(), Purpose: "data"}, Target: "~/.local/share/opencode"},
-	}
-}
-
-func (t *openCodeTool) ConfigureSandbox(ctx context.Context) error {
-	return t.sandbox.SetEnvironment(ctx, "OPENCODE_CONFIG_DIR", filepath.Join(layout.Context, "opencode"))
-}
-
-func (t *openCodeTool) InitSandbox(ctx context.Context) error {
-	return nil
-}
-
 func (t *openCodeTool) RegisterContextFiles(ctx context.Context, opts tools.ContextOptions) error {
 	return opencodeconfig.RegisterContextFiles(t.contextFiles.Registrar(ctx), t.sessionConfig.Get())
 }
@@ -106,7 +79,6 @@ func (t *openCodeTool) Install(ctx context.Context, force bool) error {
 	return err
 }
 
-func (t *openCodeTool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"opencode"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
+func (t *openCodeTool) LaunchCommand(_ context.Context, extra []string) ([]string, error) {
+	return append([]string{"opencode"}, extra...), nil
 }

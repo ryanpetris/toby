@@ -17,6 +17,23 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
+// PortSpec is the resolved set of published ports for the netns container.
+type PortSpec struct {
+	exposed  network.PortSet
+	bindings network.PortMap
+}
+
+// NewPortSpec resolves docker-style publish specs into a PortSpec.
+func NewPortSpec(specs []string) (PortSpec, error) {
+	exposed, bindings, err := resolvePublishedPorts(specs)
+	if err != nil {
+		return PortSpec{}, err
+	}
+	return PortSpec{exposed: exposed, bindings: bindings}, nil
+}
+
+func (p PortSpec) exposedSpecs() []string { return exposedPortSpecs(p.exposed) }
+
 // exposedPortSpecs renders the exposed-port set into the "<port>/<proto>" specs
 // testcontainers' ContainerRequest.ExposedPorts expects, sorted for determinism.
 // Populating that field (rather than only the moby Config.ExposedPorts) is what

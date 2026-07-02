@@ -1,22 +1,26 @@
-// Package config generates the synthetic GitHub Copilot CLI configuration Toby
-// writes into the sandbox context directory: the MCP server list (passed via
-// --additional-mcp-config) and the combined AGENTS.md instructions. The input is
-// the pre-resolved, sandbox-safe sessionconfig.Config; this package never sees
-// the raw host config, the proxy, or any credential.
+// Package config generates the synthetic GitHub Copilot CLI configuration Toby writes
+// into Copilot's real config dir (~/.config/copilot): the MCP server list (passed via
+// --additional-mcp-config) and the combined AGENTS.md instructions (pointed at via
+// COPILOT_CUSTOM_INSTRUCTIONS_DIRS). The input is the pre-resolved, sandbox-safe
+// sessionconfig.Config; this package never sees the raw host config, the proxy, or any
+// credential.
 package config
 
 import (
 	"encoding/json"
-	"path/filepath"
 
 	"petris.dev/toby/config/session"
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 	"petris.dev/toby/tools/helpers"
 )
 
+// ConfigDir is Copilot's real config directory.
+const ConfigDir = layout.Home + "/.config/copilot"
+
 const (
-	StaticMCPPath          = "copilot/mcp-config.json"
-	StaticInstructionsPath = "copilot/AGENTS.md"
+	StaticMCPPath          = ConfigDir + "/mcp-config.json"
+	StaticInstructionsPath = ConfigDir + "/AGENTS.md"
 )
 
 func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Config) error {
@@ -31,13 +35,11 @@ func RegisterContextFiles(registrar contextfiles.Registrar, cfg sessionconfig.Co
 	return registrar.AddBytes(StaticInstructionsPath, helpers.JoinInstructions(cfg.Instructions.Contents), 0o644)
 }
 
-func MCPConfigPath(contextDir string) string {
-	return filepath.Join(contextDir, filepath.FromSlash(StaticMCPPath))
-}
+// MCPConfigPath is the generated MCP config file (--additional-mcp-config).
+func MCPConfigPath() string { return StaticMCPPath }
 
-func InstructionsDir(contextDir string) string {
-	return filepath.Join(contextDir, "copilot")
-}
+// InstructionsDir is the dir holding AGENTS.md (COPILOT_CUSTOM_INSTRUCTIONS_DIRS).
+func InstructionsDir() string { return ConfigDir }
 
 func syntheticMCP(servers []sessionconfig.MCPServer) map[string]any {
 	out := map[string]any{}

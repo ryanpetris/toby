@@ -8,7 +8,10 @@ import (
 	"go.uber.org/fx"
 
 	"petris.dev/toby/config"
+	"petris.dev/toby/container/engine"
 	appconfig "petris.dev/toby/internal/config/app"
+	"petris.dev/toby/internal/daemon/resource"
+	"petris.dev/toby/internal/session/graph"
 	"petris.dev/toby/internal/session/run"
 	"petris.dev/toby/internal/tools/wiring"
 )
@@ -30,8 +33,9 @@ func TestSessionGraphIsValid(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			options := append(sessionModules(toolModule, io.Discard),
+			options := append(graph.Modules(toolModule, io.Discard),
 				fx.Supply(paths),
+				fx.Supply(resource.NewRegistry(resource.NewDockerRunner(engine.New()))),
 				fx.Provide(appconfig.New),
 				fx.Invoke(func(run.Params) {}),
 			)

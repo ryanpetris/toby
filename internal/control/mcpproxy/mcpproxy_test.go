@@ -4,80 +4,29 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"petris.dev/toby/container/engine"
-	"petris.dev/toby/internal/config/app"
+	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/control/httpproxy"
 	"petris.dev/toby/internal/control/tunnel"
-	sandboxruntime "petris.dev/toby/sandbox/runtime"
-
-	dcontainer "github.com/moby/moby/api/types/container"
+	"petris.dev/toby/internal/daemon/resource"
 )
 
-func TestStdioRequestKeepsStdinOpenWithoutTTY(t *testing.T) {
-	t.Setenv("TERM", "xterm-256color")
-	runner := NewDockerRunner(engine.New())
-	req := runner.stdioRequest(SidecarSpec{
-		Name:      "docs",
-		Transport: TransportStdio,
-		Command:   []string{"docs-mcp", "--stdio"},
-		Env:       map[string]string{"TOKEN": "abc"},
-		Image:     "docs:latest",
-	})
-
-	if req.Image != "docs:latest" {
-		t.Fatalf("image = %q", req.Image)
-	}
-	if !slices.Equal(req.Cmd, []string{"docs-mcp", "--stdio"}) {
-		t.Fatalf("cmd = %#v", req.Cmd)
-	}
-	if req.Env["TOKEN"] != "abc" || req.Env["TERM"] != "xterm-256color" {
-		t.Fatalf("env = %#v", req.Env)
-	}
-	if req.Started {
-		t.Fatal("stdio request must be created unstarted so we can attach before output")
-	}
-	c := &dcontainer.Config{}
-	req.ConfigModifier(c)
-	if !c.OpenStdin || c.Tty {
-		t.Fatalf("stdio config must keep stdin open without a TTY: %#v", c)
-	}
-}
-
-func TestHTTPRequestExposesContainerPort(t *testing.T) {
-	runner := NewDockerRunner(engine.New())
-	req := runner.httpRequest(SidecarSpec{
-		Name:      "docs",
-		Transport: TransportHTTP,
-		Command:   []string{"docs-mcp"},
-		Image:     "docs:latest",
-		HTTPPort:  3000,
-	})
-
-	if !slices.Equal(req.ExposedPorts, []string{"3000/tcp"}) {
-		t.Fatalf("exposed ports = %#v", req.ExposedPorts)
-	}
-	if !req.Started {
-		t.Fatal("http request must start so the mapped port can be read")
-	}
-}
-
-func TestConfigureRegistersRemoteAndLocalProxyURLs(t *testing.T) {
+// A remote server needs no container, so Configure is deterministic without Docker: it
+// acquires the shared upstream backend and registers it on the project proxy.
+func TestConfigureRegistersRemoteProxyURL(t *testing.T) {
 	cfg := testConfig(t, []byte(`
 mcps:
   servers:
-    docs:
-      type: local
-      command: docs-mcp
     remote:
       type: remote
       url: https://example.com/mcp
 `))
 	proxy := httpproxy.NewService(nil)
-	svc, err := NewService(ServiceParams{Proxy: proxy, Runner: NewDockerRunner(engine.New())})
+	registry := resource.NewRegistry(resource.NewDockerRunner(engine.New()))
+	svc, err := NewService(ServiceParams{Proxy: proxy, Registry: registry})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,62 +34,19 @@ mcps:
 	if err := svc.Configure(context.Background(), cfg, Defaults{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"docs", "remote"} {
-		url, ok := svc.URL(name)
-		if !ok || !strings.HasPrefix(url, "http://"+tunnel.ProxyAddr+"/proxy/") {
-			t.Fatalf("url %s = %q, %v", name, url, ok)
-		}
+	url, ok := svc.URL("remote")
+	if !ok || !strings.HasPrefix(url, "http://"+tunnel.ProxyAddr+"/proxy/") {
+		t.Fatalf("url = %q, %v", url, ok)
 	}
 	status := svc.Status()
-	if len(status) != 2 || status[0].Name != "docs" || status[0].Status != StatusRegistered || status[0].Transport != TransportStdio {
+	if len(status) != 1 || status[0].Name != "remote" {
 		t.Fatalf("status = %#v", status)
 	}
-}
 
-func TestSidecarSpecImagePrecedence(t *testing.T) {
-	cfg := testConfig(t, []byte(`
-mcps:
-  servers:
-    docs:
-      type: local
-      image: docs:latest
-      command: docs-mcp
-    fallback:
-      type: local
-      command: fallback-mcp
-`))
-	servers := cfg.MCPServers()
-	defaults := Defaults{Image: "main:latest"}
-
-	docs, err := sidecarSpec("docs", servers["docs"], defaults)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if docs.Image != "docs:latest" {
-		t.Fatalf("docs image = %q", docs.Image)
-	}
-	fallback, err := sidecarSpec("fallback", servers["fallback"], defaults)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fallback.Image != "main:latest" {
-		t.Fatalf("fallback image = %q", fallback.Image)
-	}
-}
-
-func TestResolveDefaultImagePrecedence(t *testing.T) {
-	ctx := context.Background()
-	// mcp.image wins over the main container image.
-	if img, err := resolveDefaultImage(ctx, Defaults{Image: "mcp:latest", ContainerImage: "main:latest"}); err != nil || img != "mcp:latest" {
-		t.Fatalf("mcp.image precedence = %q, %v", img, err)
-	}
-	// With no mcp.image/build, fall back to the main container image.
-	if img, err := resolveDefaultImage(ctx, Defaults{ContainerImage: "main:latest"}); err != nil || img != "main:latest" {
-		t.Fatalf("container fallback = %q, %v", img, err)
-	}
-	// With nothing configured, fall back to the built-in default.
-	if img, err := resolveDefaultImage(ctx, Defaults{}); err != nil || img != sandboxruntime.DefaultImage {
-		t.Fatalf("built-in fallback = %q, %v", img, err)
+	// Releasing the project's leases leaves nothing behind.
+	svc.Close()
+	if got := svc.Status(); len(got) != 0 {
+		t.Fatalf("status after close = %#v", got)
 	}
 }
 

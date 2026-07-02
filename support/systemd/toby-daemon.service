@@ -1,0 +1,29 @@
+# Toby daemon as a systemd *user* service (recommended).
+#
+# Toby is per-user: it talks to your Docker/Podman, reads your XDG directories, and
+# binds its control endpoint under $XDG_RUNTIME_DIR. The user manager already exports
+# XDG_RUNTIME_DIR and HOME, so this unit needs almost no environment.
+#
+# Install:
+#   cp support/systemd/toby-daemon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now toby-daemon
+#
+# Adjust ExecStart if `toby` is not on the user manager's PATH.
+
+[Unit]
+Description=Toby development sandbox daemon
+Documentation=https://petris.dev/toby
+After=default.target
+
+[Service]
+Type=simple
+# --no-idle-shutdown keeps the daemon running under supervision; systemd owns its
+# lifecycle instead of letting it self-exit when idle.
+ExecStart=%h/.local/bin/toby daemon --no-idle-shutdown
+ExecStop=%h/.local/bin/toby daemon stop
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -35,13 +35,14 @@ code to match rather than redefining a term here.
 
 - **mount** — the umbrella for attaching storage into a sandbox. A mount is either a
   *volume* or a *bind*.
-- **volume** — a persistent, named Docker volume. Named
-  `toby.<profile>.<type>.<name>.<purpose>`.
+- **volume** — a persistent, named Docker volume. The shared home is named
+  `toby.<homeProfile>.runtime.home`.
 - **bind** — a passthrough of a host path into the sandbox (e.g. the Docker socket,
   project directories). Not persistent state Toby owns.
-- **profile** — a namespace label on volume names so separate sets of state can coexist.
-  Default is `default`; `settings.mountProfile` (and per-tool `tools.<t>.mountProfile`)
-  select another.
+- **home profile** — the shared `/toby/home` a launch runs under. Projects on the same
+  profile share one home container + one home volume (installed tools and tool state
+  persist and are shared across projects). Default is `default`; `settings.homeProfile`
+  selects another.
 
 ## Integrations
 

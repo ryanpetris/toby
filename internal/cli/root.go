@@ -70,7 +70,6 @@ func NewRootCommand(params Params) *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Launch the tool with its permission-bypass flag for this launch.")
 	cmd.PersistentFlags().BoolVar(&managedTerminal, "managed-terminal", true, "Run the foreground tool under Toby's managed terminal (approval prompts); --managed-terminal=false uses a plain passthrough.")
 
-	cmd.AddCommand(newSandboxCommand(params))
 	for _, item := range params.Registry.LaunchTools() {
 		cmd.AddCommand(newLaunchCommand(params, item, &configPath))
 	}

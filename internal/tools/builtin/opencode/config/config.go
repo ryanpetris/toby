@@ -1,9 +1,9 @@
-// Package config generates the synthetic opencode.json that Toby writes into the
-// sandbox context directory: the MCP servers, the LLM providers (pointed at
-// their proxied base URLs with models already resolved), the instruction file
-// paths, and the permission paths. The input is the pre-resolved, sandbox-safe
-// sessionconfig.Config; this package never sees the raw host config, the proxy,
-// the provider registry, or any credential.
+// Package config generates the synthetic opencode.json that Toby writes to opencode's
+// real config dir (~/.config/opencode): the MCP servers, the LLM providers (pointed at
+// their proxied base URLs with models already resolved), the instruction file paths,
+// and the permission paths. The input is the pre-resolved, sandbox-safe
+// sessionconfig.Config; this package never sees the raw host config, the proxy, the
+// provider registry, or any credential.
 package config
 
 import (
@@ -11,12 +11,16 @@ import (
 	"strings"
 
 	"petris.dev/toby/config/session"
+	"petris.dev/toby/container/layout"
 	contextfiles "petris.dev/toby/context/files"
 )
 
+// ConfigDir is opencode's real config directory (its XDG default).
+const ConfigDir = layout.Home + "/.config/opencode"
+
 const (
-	StaticGitignorePath = "opencode/.gitignore"
-	StaticConfigPath    = "opencode/opencode.json"
+	StaticGitignorePath = ConfigDir + "/.gitignore"
+	StaticConfigPath    = ConfigDir + "/opencode.json"
 )
 
 const (

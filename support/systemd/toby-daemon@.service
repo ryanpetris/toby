@@ -1,0 +1,35 @@
+# Toby daemon as a systemd *system* service, templated per user.
+#
+# On a multi-user host, enable one instance per user: `toby-daemon@alice.service`
+# runs the daemon as alice. Because Toby is per-user (Docker access, XDG dirs, the
+# runtime socket under /run/user/<uid>), the instance runs as User=%i and needs that
+# user's runtime dir. Enable lingering so the user's /run/user/<uid> exists without an
+# active login: `loginctl enable-linger alice`.
+#
+# Install:
+#   sudo cp support/systemd/toby-daemon@.service /etc/systemd/system/
+#   sudo loginctl enable-linger alice
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now toby-daemon@alice
+#
+# Prefer the user unit (toby-daemon.service) for a single-user machine.
+
+[Unit]
+Description=Toby development sandbox daemon for %i
+Documentation=https://petris.dev/toby
+After=network-online.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=%i
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# --no-idle-shutdown keeps the daemon running under supervision; systemd owns its
+# lifecycle instead of letting it self-exit when idle.
+ExecStart=/usr/bin/toby daemon --no-idle-shutdown
+ExecStop=/usr/bin/toby daemon stop
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

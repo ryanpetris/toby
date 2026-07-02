@@ -84,13 +84,9 @@ func TestSpeckitDeclaresUVDependency(t *testing.T) {
 func TestLaunchRunsSpecifyWithExtras(t *testing.T) {
 	sandbox := fake.NewSandbox("/toby/context")
 	svc := &speckitTool{Base: tools.Base{Metadata: tools.Metadata{Name: Name}}, sandbox: sandbox}
-	var got []string
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 
-	if err := svc.Launch(context.Background(), []string{"init", "feature"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"init", "feature"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"specify", "init", "feature"}

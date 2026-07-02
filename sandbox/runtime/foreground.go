@@ -32,7 +32,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/vt"
 	"github.com/moby/moby/client"
-	"github.com/testcontainers/testcontainers-go"
 	"golang.org/x/term"
 
 	sandboxapi "petris.dev/toby/sandbox"
@@ -49,7 +48,7 @@ const denySelection = 1
 // shadow emulator for the approval modal. The host terminal is put in raw mode; SIGWINCH
 // resizes the PTY and the shadow; the tool's output stream ending means it has exited.
 // While it runs, the foreground is registered as the approval prompter.
-func (s *instance) runExecForeground(ctx context.Context, cli *testcontainers.DockerClient, execID string, attach client.HijackedResponse, register func(sandboxapi.ApprovalPrompter)) {
+func runExecForeground(ctx context.Context, resize func(cols, rows int), attach client.HijackedResponse, register func(sandboxapi.ApprovalPrompter)) {
 	closeLog := initFGLog()
 	defer closeLog()
 
@@ -74,7 +73,7 @@ func (s *instance) runExecForeground(ctx context.Context, cli *testcontainers.Do
 		defer register(nil)
 	}
 
-	resizeExecTo(ctx, cli, execID, cols, rows)
+	resize(cols, rows)
 
 	// The shadow generates replies to the tool's queries internally; drain and discard
 	// them so its write side never blocks (the real terminal provides the real answers
@@ -98,7 +97,7 @@ func (s *instance) runExecForeground(ctx context.Context, cli *testcontainers.Do
 			if err != nil || w <= 0 || h <= 0 {
 				continue
 			}
-			resizeExecTo(ctx, cli, execID, w, h)
+			resize(w, h)
 			f.resize(w, h)
 		}
 	}()
@@ -375,13 +374,6 @@ func hostTerminalSize() (cols, rows int) {
 		return defaultCols, defaultRows
 	}
 	return w, h
-}
-
-func resizeExecTo(ctx context.Context, cli *testcontainers.DockerClient, execID string, cols, rows int) {
-	if cols <= 0 || rows <= 0 {
-		return
-	}
-	_, _ = cli.ExecResize(ctx, execID, client.ExecResizeOptions{Height: uint(rows), Width: uint(cols)})
 }
 
 // --- temporary diagnostics ---------------------------------------------------

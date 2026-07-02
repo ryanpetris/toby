@@ -129,7 +129,7 @@ func TestUpgradeRunsInstallerWithLatestArchive(t *testing.T) {
 	if err := svc.Install(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{filepath.Join(layout.Context, filepath.FromSlash(uvInstallPath)), archiveURL}}
+	want := [][]string{{uvInstallPath, archiveURL}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
@@ -157,15 +157,11 @@ func TestInitSandboxCreatesManagedDirsBeforeInstallCheck(t *testing.T) {
 }
 
 func TestLaunchRunsUVWithExtras(t *testing.T) {
-	var got []string
 	sandbox := fake.NewSandbox("/toby/context")
-	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
-		got = append([]string(nil), argv...)
-		return 0, nil
-	}
 	svc := Provide(Params{Sandbox: sandbox, ContextFiles: contextfiles.NewService()}).Service
 
-	if err := svc.Launch(context.Background(), []string{"tool", "list"}); err != nil {
+	got, err := svc.LaunchCommand(context.Background(), []string{"tool", "list"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"uv", "tool", "list"}
