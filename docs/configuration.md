@@ -36,6 +36,8 @@ Toby stores:
 - home and tool volumes in `$XDG_DATA_HOME/toby/volumes`;
 - OCI operation and MCP/models generation logs in
   `$XDG_CACHE_HOME/toby/logs`;
+- intermediate Dockerfile-build archives in
+  `$XDG_CACHE_HOME/toby/images/builds`;
 - run overlays in `$XDG_CACHE_HOME/toby/runs`; and
 - the normal agent socket and run capabilities beneath
   `$XDG_RUNTIME_DIR/toby`.
@@ -78,6 +80,8 @@ tools: {}
 
 ### `sandbox`
 
+Choose exactly one sandbox source. A registry image is the default:
+
 ```yaml
 sandbox:
   image: mcr.microsoft.com/devcontainers/javascript-node:24-bookworm
@@ -91,12 +95,49 @@ optional and defaults to
 `pull` accepts:
 
 - `if-missing` — use the cached published object when available, otherwise
-  pull, verify, and extract it;
-- `always` — resolve and pull the registry reference before selecting or
-  preparing the immutable rootfs; or
+  materialize the configured source;
+- `always` — materialize the configured source and update its reference before
+  selecting the immutable rootfs; or
 - `never` — use only an already published per-user object.
 
 The pull-policy default is `if-missing`.
+
+An OCI image-layout tar can be materialized directly:
+
+```yaml
+sandbox:
+  archive: ./images/toby-root.oci.tar
+```
+
+The archive must contain an OCI image layout, including `oci-layout`,
+`index.json`, and its referenced blobs. It is not a Docker image archive.
+Relative archive paths resolve from the host configuration directory. In the
+canonical project configuration set they resolve from the project root.
+
+A Dockerfile build can produce the sandbox image at launch:
+
+```yaml
+sandbox:
+  build:
+    context: .
+    dockerfile: Dockerfile
+```
+
+`build.context` defaults to `.`. `build.dockerfile` defaults to `Dockerfile`
+and resolves relative to the build context. A build invokes the host `buildah`
+command with layer caching and an OCI archive output. Toby does not require
+Buildah for registry or archive sources.
+
+`image`, `archive`, and `build` are mutually exclusive. `pull` applies to the
+selected source. Archive sources receive a deterministic internal reference
+from the resolved archive path and platform. Build references use
+`toby.local/<profile>/<primary-project>:<source-hash>`, with OCI-safe encodings
+for names that cannot appear directly in a repository. The source hash covers
+the resolved context and Dockerfile paths and platform. Under `if-missing`, an
+existing reference bypasses archive reading, Buildah, and rootfs extraction
+entirely. Toby does not inspect source file contents when deciding whether that
+reference is present; use `pull: always` to import a changed archive or rebuild
+a changed context.
 
 ### `instructions`
 
@@ -425,8 +466,11 @@ omitted. It does not identify a long-lived sandbox process.
 
 ### `sandbox`
 
-The launch `sandbox.image` and `sandbox.pull` override host defaults. Direct
-launch flags override both.
+The launch `sandbox` mapping accepts the same mutually exclusive `image`,
+`archive`, and `build` sources as host configuration. Relative paths resolve
+from the arbitrary launch file's directory or, for a canonical project
+configuration set, from the project root. Direct `--image` and `--pull` flags
+select a registry source and override launch-file values.
 
 ### `settings`
 

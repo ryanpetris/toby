@@ -525,6 +525,35 @@ func (s *Service) appendOutput(
 	}
 }
 
+func (s *Service) clearOperationOutput(operation OperationID) {
+	s.mu.Lock()
+	writers := make([]*streamWriter, 0)
+	for writer := range s.writers {
+		if writer.operation == operation {
+			writers = append(writers, writer)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, writer := range writers {
+		writer.discardPending()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.operations[operation]
+	if state == nil || !state.running {
+		return
+	}
+	state.transcript.Reset()
+	if s.mode == ModeInteractive &&
+		!s.handedOff &&
+		s.active == operation {
+		s.sendModelLocked()
+	}
+}
+
 func (s *Service) finishOperation(
 	id OperationID,
 	failed bool,

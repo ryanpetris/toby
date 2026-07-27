@@ -556,9 +556,10 @@ func prepareNativeAgentIntegrationRun(
 			Source: projectSource,
 		}},
 		Binds: []NativeBind{{
-			Bind:   binds[0],
-			Source: services.resolver,
-			Parent: resolverParent,
+			Bind:         binds[0],
+			Source:       services.resolver,
+			Parent:       resolverParent,
+			ResolvedName: filepath.Base(binds[0].HostPath),
 		}},
 		ProtectedRoots:    services.roots,
 		ToolFiles:         files,

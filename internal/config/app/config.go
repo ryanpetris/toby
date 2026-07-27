@@ -16,6 +16,7 @@ import (
 	configfile "petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/permission"
 )
 
@@ -41,10 +42,13 @@ type Config struct {
 	Tools        map[string]ToolConfig
 }
 
-// SandboxConfig is the resolved OCI image selection for application sandboxes.
+// SandboxConfig is the resolved OCI source for application sandboxes.
 type SandboxConfig struct {
-	Image string
-	Pull  image.PullPolicy
+	Source  imagesource.Kind
+	Image   string
+	Archive string
+	Build   imagesource.BuildConfig
+	Pull    image.PullPolicy
 }
 
 // SettingsConfig contains effective application settings.
@@ -91,8 +95,15 @@ type fileSchema struct {
 }
 
 type sandboxSchema struct {
-	Image string            `json:"image" yaml:"image"`
-	Pull  *image.PullPolicy `json:"pull" yaml:"pull"`
+	Image   string              `json:"image" yaml:"image"`
+	Archive string              `json:"archive" yaml:"archive"`
+	Build   *sandboxBuildSchema `json:"build" yaml:"build"`
+	Pull    *image.PullPolicy   `json:"pull" yaml:"pull"`
+}
+
+type sandboxBuildSchema struct {
+	Context    string `json:"context" yaml:"context"`
+	Dockerfile string `json:"dockerfile" yaml:"dockerfile"`
 }
 
 type permissionSchema struct {
@@ -235,8 +246,9 @@ func emptyConfig() Config {
 
 func defaultSandboxConfig() SandboxConfig {
 	return SandboxConfig{
-		Image: defaultSandboxImage,
-		Pull:  image.PullIfMissing,
+		Source: imagesource.Registry,
+		Image:  defaultSandboxImage,
+		Pull:   image.PullIfMissing,
 	}
 }
 
@@ -278,12 +290,16 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 		}
 	}
 
-	if configuredImage := strings.TrimSpace(schema.Sandbox.Image); configuredImage != "" {
-		result.Sandbox.Image = configuredImage
+	sandbox, err := resolveSandboxSchema(
+		schema.Sandbox,
+		dir,
+		home,
+		result.Sandbox,
+	)
+	if err != nil {
+		return Config{}, err
 	}
-	if schema.Sandbox.Pull != nil {
-		result.Sandbox.Pull = *schema.Sandbox.Pull
-	}
+	result.Sandbox = sandbox
 
 	return result, nil
 }
@@ -325,12 +341,182 @@ func (s settingsSchema) resolve() (SettingsConfig, error) {
 
 // Validate verifies the effective application configuration.
 func (c Config) Validate() error {
-	switch c.Sandbox.Pull {
+	return c.Sandbox.Validate()
+}
+
+// Validate checks one effective sandbox source.
+func (c SandboxConfig) Validate() error {
+	switch c.Pull {
 	case image.PullIfMissing, image.PullAlways, image.PullNever:
 	default:
-		return fmt.Errorf("sandbox.pull has unsupported value %q", c.Sandbox.Pull)
+		return fmt.Errorf(
+			"sandbox.pull has unsupported value %q",
+			c.Pull,
+		)
+	}
+
+	switch c.Source {
+	case imagesource.Registry:
+		if strings.TrimSpace(c.Image) == "" {
+			return fmt.Errorf("sandbox.image must not be empty")
+		}
+		if c.Archive != "" ||
+			c.Build != (imagesource.BuildConfig{}) {
+			return fmt.Errorf(
+				"registry sandbox source must not contain archive or build configuration",
+			)
+		}
+	case imagesource.Archive:
+		if c.Archive == "" {
+			return fmt.Errorf("sandbox.archive must not be empty")
+		}
+		if c.Image != "" ||
+			c.Build != (imagesource.BuildConfig{}) {
+			return fmt.Errorf(
+				"archive sandbox source must not contain image or build configuration",
+			)
+		}
+	case imagesource.Build:
+		if c.Build.Context == "" || c.Build.Dockerfile == "" {
+			return fmt.Errorf(
+				"sandbox.build context and Dockerfile must not be empty",
+			)
+		}
+		if c.Image != "" || c.Archive != "" {
+			return fmt.Errorf(
+				"build sandbox source must not contain image or archive configuration",
+			)
+		}
+	default:
+		return fmt.Errorf(
+			"sandbox source %q is unsupported",
+			c.Source,
+		)
 	}
 	return nil
+}
+
+func resolveSandboxSchema(
+	schema sandboxSchema,
+	dir string,
+	home string,
+	base SandboxConfig,
+) (SandboxConfig, error) {
+	imageValue := strings.TrimSpace(schema.Image)
+	archiveValue := strings.TrimSpace(schema.Archive)
+	sources := 0
+	if imageValue != "" {
+		sources++
+	}
+	if archiveValue != "" {
+		sources++
+	}
+	if schema.Build != nil {
+		sources++
+	}
+	if sources > 1 {
+		return SandboxConfig{}, fmt.Errorf(
+			"sandbox.image, sandbox.archive, and sandbox.build are mutually exclusive",
+		)
+	}
+
+	result := base
+	switch {
+	case imageValue != "":
+		result = SandboxConfig{
+			Source: imagesource.Registry,
+			Image:  imageValue,
+			Pull:   image.PullIfMissing,
+		}
+	case archiveValue != "":
+		archivePath, err := resolveSandboxPath(
+			archiveValue,
+			dir,
+			home,
+		)
+		if err != nil {
+			return SandboxConfig{}, fmt.Errorf(
+				"sandbox.archive: %w",
+				err,
+			)
+		}
+		result = SandboxConfig{
+			Source:  imagesource.Archive,
+			Archive: archivePath,
+			Pull:    image.PullIfMissing,
+		}
+	case schema.Build != nil:
+		build, err := resolveSandboxBuild(*schema.Build, dir, home)
+		if err != nil {
+			return SandboxConfig{}, err
+		}
+		result = SandboxConfig{
+			Source: imagesource.Build,
+			Build:  build,
+			Pull:   image.PullIfMissing,
+		}
+	}
+
+	if schema.Pull != nil {
+		result.Pull = *schema.Pull
+	}
+
+	return result, nil
+}
+
+func resolveSandboxBuild(
+	schema sandboxBuildSchema,
+	dir string,
+	home string,
+) (imagesource.BuildConfig, error) {
+	contextValue := strings.TrimSpace(schema.Context)
+	if contextValue == "" {
+		contextValue = "."
+	}
+	contextPath, err := resolveSandboxPath(contextValue, dir, home)
+	if err != nil {
+		return imagesource.BuildConfig{}, fmt.Errorf(
+			"sandbox.build.context: %w",
+			err,
+		)
+	}
+
+	dockerfileValue := strings.TrimSpace(schema.Dockerfile)
+	if dockerfileValue == "" {
+		dockerfileValue = "Dockerfile"
+	}
+	dockerfileValue = config.ExpandHome(dockerfileValue, home)
+	if !filepath.IsAbs(dockerfileValue) {
+		dockerfileValue = filepath.Join(contextPath, dockerfileValue)
+	}
+	dockerfilePath, err := filepath.Abs(dockerfileValue)
+	if err != nil {
+		return imagesource.BuildConfig{}, fmt.Errorf(
+			"sandbox.build.dockerfile: %w",
+			err,
+		)
+	}
+
+	return imagesource.BuildConfig{
+		Context:    contextPath,
+		Dockerfile: filepath.Clean(dockerfilePath),
+	}, nil
+}
+
+func resolveSandboxPath(value string, dir string, home string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	value = config.ExpandHome(value, home)
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(dir, value)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
 }
 
 // AutoloadProjectConfigEnabled reports whether project configuration is loaded automatically.
@@ -467,6 +653,7 @@ func (s *Service) PermissionRule(action string) permission.Rule {
 type LaunchOverrides struct {
 	Profile          string
 	ToolProfiles     map[string]string
+	Sandbox          *SandboxConfig
 	Image            string
 	Pull             image.PullPolicy
 	Debug            *bool
@@ -516,8 +703,19 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	next.config.Tools = tools
 
 	sandbox := s.config.Sandbox
+	if o.Sandbox != nil {
+		sandbox = *o.Sandbox
+	}
 	if o.Image != "" {
-		sandbox.Image = o.Image
+		pull := image.PullIfMissing
+		if sandbox.Source == imagesource.Registry {
+			pull = sandbox.Pull
+		}
+		sandbox = SandboxConfig{
+			Source: imagesource.Registry,
+			Image:  o.Image,
+			Pull:   pull,
+		}
 	}
 	if o.Pull != "" {
 		sandbox.Pull = o.Pull

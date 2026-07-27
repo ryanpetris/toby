@@ -145,6 +145,8 @@ func TestImageCommandIncludesManagementOperations(t *testing.T) {
 	}
 	for _, name := range []string{
 		imagePullCommandName,
+		imageBuildCommandName,
+		imageImportCommandName,
 		imageListCommandName,
 		imageInspectCommandName,
 		imagePathCommandName,

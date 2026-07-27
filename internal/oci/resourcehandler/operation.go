@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -131,6 +132,47 @@ func (o *operation) report(progress oci.Progress) error {
 	return nil
 }
 
+func (o *operation) writer(
+	source protocol.OCISource,
+	stream protocol.OutputStream,
+) io.Writer {
+	return operationOutputWriter{
+		operation: o,
+		source:    source,
+		stream:    stream,
+	}
+}
+
+type operationOutputWriter struct {
+	operation *operation
+	source    protocol.OCISource
+	stream    protocol.OutputStream
+}
+
+var _ io.Writer = operationOutputWriter{}
+
+func (w operationOutputWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	w.operation.mu.Lock()
+	defer w.operation.mu.Unlock()
+	if w.operation.terminal {
+		return 0, io.ErrClosedPipe
+	}
+	w.operation.worked = true
+	w.operation.appendOutputLocked(
+		w.source,
+		w.stream,
+		append([]byte(nil), data...),
+	)
+	if w.operation.broken {
+		return 0, errors.New("encode OCI operation output")
+	}
+	return len(data), nil
+}
+
 func protocolProgress(input oci.Progress) (
 	protocol.OCIProgressState,
 	error,
@@ -193,7 +235,10 @@ func (o *operation) complete() {
 	}, true)
 }
 
-func (o *operation) fail(operationErr error) {
+func (o *operation) fail(
+	operationErr error,
+	source protocol.OCISource,
+) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.terminal {
@@ -201,7 +246,6 @@ func (o *operation) fail(operationErr error) {
 	}
 
 	if operationErr != nil {
-		source := protocol.OCISourceRegistry
 		if o.progress != nil &&
 			o.progress.Phase == protocol.OCIProgressExtracting {
 			source = protocol.OCISourceExtractor

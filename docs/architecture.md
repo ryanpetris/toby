@@ -236,16 +236,20 @@ One production launch proceeds in this order:
    process-group signaling, and terminal mode. Unsupported kernel or
    Bubblewrap behavior fails at the operation that needs it and Bubblewrap's
    diagnostic remains available in debug output.
-6. Toby constructs one effective OCI configuration for the application image,
-   every local MCP image, and the Caddy image when models resources are
-   configured. Each acquisition is independent. The agent defaults and
-   validates the configuration again, computes its stable identity, and
+6. Toby constructs one effective OCI configuration for the application
+   rootfs, every local MCP image, and the Caddy image when models resources are
+   configured. The application source may be a registry reference, an OCI
+   image-layout archive, or a Dockerfile build; background resources use
+   registry references. Each acquisition is independent. The agent defaults
+   and validates the configuration again, computes its stable identity, and
    returns an opaque resource ID and lease ID. The launch opens a `PrepareOCI`
    stream for each required image.
    Independent images prepare concurrently, while matching requests join one
-   agent operation. Toby pulls and verifies the reference into the per-user
-   OCI layout, then rootlessly extracts it. Absolute progress checkpoints and
-   diagnostics are written to disk before they are sent to connected clients.
+   agent operation. Toby materializes a verified OCI layout by pulling a
+   registry reference, extracting an archive, or invoking `buildah` with an
+   OCI output, then rootlessly extracts the selected rootfs. Absolute progress
+   checkpoints and diagnostics are written to disk before they are sent to
+   connected clients.
    The status service receives complete absolute snapshots and keeps only its
    bounded current presentation state and command transcript. Interactive
    rendering combines active OCI work beneath one shared status line and gives
@@ -273,9 +277,10 @@ One production launch proceeds in this order:
 10. `ConfigureSandbox` freezes tool environment and argument-dependent
     declarations. Toby collects complete native tool files, transient runtime
     assets, and socket-relay declarations.
-11. Toby starts any declared host socket relays, assembles the descriptor-owned
-    Bubblewrap run, validates the complete plan, and atomically publishes the
-    generated tool files at their native paths.
+11. Toby starts any declared host socket relays, adds the host resolver as a
+    read-only application bind, assembles the descriptor-owned Bubblewrap run,
+    validates the complete plan, and atomically publishes the generated tool
+    files at their native paths.
 12. `InitSandbox` and `Install` run as direct Bubblewrap commands using the
     run's shared overlay.
 13. Toby clears interactive startup presentation, then the primary tool
@@ -306,11 +311,16 @@ deadline.
 
 ## OCI storage
 
-The OCI implementation under `internal/oci` uses embedded Go libraries for
-image transport and unpacking:
+The OCI implementation under `internal/oci` combines embedded Go libraries
+with an optional Buildah process:
 
 - `go-containerregistry` resolves registry references, selects the requested
   platform, pulls and verifies content, and writes a standard OCI layout;
+- archive sources are extracted into a private temporary OCI layout with
+  traversal and entry-type checks;
+- build sources invoke `buildah build` with layer caching and a transient
+  `oci-archive:` destination beneath `$XDG_CACHE_HOME/toby/images/builds`,
+  then read and remove that OCI image-layout tar;
 - Toby reads and digest-checks only the bounded manifest and image
   configuration it needs for sandbox planning;
 - umoci's Go packages rootlessly unpack the layout into an OCI runtime bundle;
@@ -322,9 +332,21 @@ image transport and unpacking:
 Per-user image data lives beneath
 `${XDG_DATA_HOME:-~/.local/share}/toby/images`. Fetch and materialization are
 coordinated across concurrent launches with per-reference and per-object locks,
-so unrelated images can prepare concurrently. `sandbox.pull` controls remote
-access: `if-missing`, `always`, or `never`. Image preparation requires no
-external registry or extraction executable.
+so unrelated images can prepare concurrently. `sandbox.pull` controls source
+materialization: `if-missing` reuses a published reference, `always`
+rematerializes its source, and `never` requires an existing reference. Registry
+and archive sources require no external extraction executable. Build sources
+require the host `buildah` command.
+
+Archive configurations derive a deterministic internal reference from the
+resolved archive path and platform. Build references use
+`toby.local/<profile>/<primary-project>:<source-hash>`; the source hash covers
+the resolved context and Dockerfile paths and platform. OCI-incompatible
+profile or project names receive a deterministic safe repository component.
+These identities do not include file contents. An `if-missing` launch with a
+published reference therefore bypasses the archive or Buildah process and
+rootfs extraction. An `always` launch rematerializes the source and atomically
+updates the reference.
 
 The on-disk catalog separates normalized reference records from immutable
 objects. A reference identity includes the normalized registry reference and
@@ -353,8 +375,9 @@ reference record stores `schema_version: 1`, the normalized reference,
 platform, and relative object key. Object metadata stores
 `schema_version: 1` and the verified platform, manifest/config descriptors, and
 OCI runtime environment, workdir, entrypoint, command, user, and labels. Locks
-and temporary paths are implementation coordination state, not published image
-identities.
+and data-store temporary paths are implementation coordination state, not
+published image identities. The intermediate Buildah archive lives separately
+under `$XDG_CACHE_HOME/toby/images/builds` and is removed after it is read.
 
 Every `Prepared` rootfs retains a shared advisory object lease for its complete
 lifetime. A running sandbox can therefore continue using an object after a
@@ -364,9 +387,12 @@ final-reference removal fails when that lease is unavailable; forced
 reference removal leaves the busy object intact. Force never overrides the
 object lease itself.
 
-`toby image pull` registers one agent OCI resource per input and follows the
-existing disk-backed preparation stream. Independent inputs run concurrently,
-and identical requests attach to one agent operation. Launch clients create a
+`toby image build` invokes `buildah` directly and writes an OCI archive without
+publishing it. `toby image import` registers one agent OCI resource for an
+archive and explicit reference. `toby image pull` registers one agent OCI
+resource per registry input. Both agent-owned paths follow the existing
+disk-backed preparation stream. Independent inputs run concurrently, and
+identical requests attach to one agent operation. Launch clients create a
 visible status row only after a preparation stream reports progress, output, or
 failure. An immediate cached completion remains silent, while a client joining
 active work receives the current snapshot and displays its progress.
@@ -502,8 +528,9 @@ Rendering validates:
 - rejection of a project that equals, contains, or is contained by any
   protected root, including through a symbolic-link target or changed
   diagnostic path;
-- exact external-bind parent and basename-child capabilities opened without
-  symbolic-link or magic-link traversal, with directory-source ancestry (or
+- external-bind sources resolved through ordinary filesystem symlinks while
+  rejecting magic-link traversal, then pinned as exact parent and
+  basename-child capabilities, with directory-source ancestry (or
   non-directory parent ancestry) kept disjoint from every protected root and
   Toby-owned backing;
 - environment names and bounded command input; and

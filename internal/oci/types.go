@@ -4,9 +4,12 @@ package oci
 // native sandboxes after the image has been prepared.
 
 import (
+	"io"
+
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 )
 
 // ProgressPhase identifies one image-preparation phase.
@@ -36,10 +39,15 @@ type ProgressReporter func(Progress) error
 
 // Request selects one exact platform, pull policy, and progress destination.
 type Request struct {
+	Source     imagesource.Kind
 	Reference  string
+	Archive    string
+	Build      imagesource.BuildConfig
 	Platform   ocispec.Platform
 	PullPolicy image.PullPolicy
 	Progress   ProgressReporter
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // RuntimeConfig is the OCI image configuration consumed by sandbox planning.

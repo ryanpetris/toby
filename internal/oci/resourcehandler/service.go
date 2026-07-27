@@ -18,6 +18,7 @@ import (
 	"petris.dev/toby/internal/config/ociresource"
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/oci"
+	"petris.dev/toby/internal/oci/imagesource"
 )
 
 const (
@@ -291,28 +292,45 @@ func (h *Service) prepare(
 	case h.permits <- struct{}{}:
 		defer func() { <-h.permits }()
 	case <-h.lifetime.Done():
-		current.fail(h.lifetime.Err())
+		current.fail(
+			h.lifetime.Err(),
+			protocol.OCISourceCache,
+		)
 		return
 	}
 
 	images, err := h.imageBackend()
 	if err != nil {
-		current.fail(err)
+		current.fail(err, protocol.OCISourceCache)
 		return
 	}
 
 	prepared, err := images.Prepare(h.lifetime, oci.Request{
+		Source:     configuration.Source,
 		Reference:  configuration.Reference,
+		Archive:    configuration.Archive,
+		Build:      configuration.Build,
 		Platform:   configuration.Platform,
 		PullPolicy: configuration.PullPolicy,
 		Progress:   current.report,
+		Stdout: current.writer(
+			protocol.OCISourceBuilder,
+			protocol.OutputStdout,
+		),
+		Stderr: current.writer(
+			protocol.OCISourceBuilder,
+			protocol.OutputStderr,
+		),
 	})
 	if err != nil {
-		current.fail(err)
+		current.fail(err, preparationFailureSource(configuration))
 		return
 	}
 	if prepared == nil {
-		current.fail(fmt.Errorf("OCI preparation returned no image"))
+		current.fail(
+			fmt.Errorf("OCI preparation returned no image"),
+			protocol.OCISourceCache,
+		)
 		return
 	}
 	h.logger.DebugError(
@@ -322,6 +340,19 @@ func (h *Service) prepare(
 	)
 
 	current.complete()
+}
+
+func preparationFailureSource(
+	configuration ociresource.Config,
+) protocol.OCISource {
+	switch configuration.Source {
+	case imagesource.Archive:
+		return protocol.OCISourceExtractor
+	case imagesource.Build:
+		return protocol.OCISourceBuilder
+	default:
+		return protocol.OCISourceRegistry
+	}
 }
 
 func (h *Service) imageBackend() (imageBackend, error) {

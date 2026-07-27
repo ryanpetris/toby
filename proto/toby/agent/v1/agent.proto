@@ -49,6 +49,7 @@ enum OCISource {
   OCI_SOURCE_REGISTRY = 1;
   OCI_SOURCE_EXTRACTOR = 2;
   OCI_SOURCE_CACHE = 3;
+  OCI_SOURCE_BUILDER = 4;
 }
 
 // OCIProgressPhase identifies one image-preparation phase.

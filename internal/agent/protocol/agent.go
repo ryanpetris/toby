@@ -166,6 +166,8 @@ func OCISourceToAgent(source OCISource) agentv1.OCISource {
 		return agentv1.OCISource_OCI_SOURCE_EXTRACTOR
 	case OCISourceCache:
 		return agentv1.OCISource_OCI_SOURCE_CACHE
+	case OCISourceBuilder:
+		return agentv1.OCISource_OCI_SOURCE_BUILDER
 	default:
 		return agentv1.OCISource_OCI_SOURCE_UNSPECIFIED
 	}
@@ -180,6 +182,8 @@ func OCISourceFromAgent(source agentv1.OCISource) (OCISource, error) {
 		return OCISourceExtractor, nil
 	case agentv1.OCISource_OCI_SOURCE_CACHE:
 		return OCISourceCache, nil
+	case agentv1.OCISource_OCI_SOURCE_BUILDER:
+		return OCISourceBuilder, nil
 	default:
 		return "", fmt.Errorf("unknown OCI output source %q", source)
 	}

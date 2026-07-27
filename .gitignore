@@ -25,6 +25,3 @@ coverage.out
 .specify/
 .gemini/
 .aider*
-
-# Local Toby configuration
-.toby/

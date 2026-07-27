@@ -35,13 +35,15 @@ type NativeProject struct {
 	Source *os.File
 }
 
-// NativeBind pairs one selected external bind with its exact caller-owned
-// source and direct-parent descriptors. Optional declarations that are absent
-// are omitted.
+// NativeBind pairs one selected external-bind declaration with its exact
+// caller-owned source and direct-parent descriptors plus the resolved
+// basename beneath that parent. Optional declarations that are absent are
+// omitted.
 type NativeBind struct {
-	Bind   mount.Bind
-	Source *os.File
-	Parent *os.File
+	Bind         mount.Bind
+	Source       *os.File
+	Parent       *os.File
+	ResolvedName string
 }
 
 // PreparedImage is the leased immutable OCI rootfs surface consumed by one
@@ -555,6 +557,7 @@ func nativeRunSources(
 
 	sources.Binds = make(map[string]*os.File, len(input.Binds))
 	sources.BindParents = make(map[string]*os.File, len(input.Binds))
+	sources.BindNames = make(map[string]string, len(input.Binds))
 	for _, bind := range input.Binds {
 		source, err := retain(bind.Source, "bind "+bind.Bind.Target)
 		if err != nil {
@@ -569,6 +572,7 @@ func nativeRunSources(
 		}
 		sources.Binds[bind.Bind.Target] = source
 		sources.BindParents[bind.Bind.Target] = parent
+		sources.BindNames[bind.Bind.Target] = bind.ResolvedName
 	}
 	sources.RuntimeAssets = make(map[string]*os.File)
 	if input.SocketRelays != nil {

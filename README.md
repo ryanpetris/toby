@@ -70,7 +70,7 @@ toby claude review --project ~/Projects/my-app
 
 Application sandboxes default to
 `mcr.microsoft.com/devcontainers/javascript-node:24-bookworm`. Select another
-prebuilt OCI image in `~/.config/toby/config.yaml`:
+OCI registry image in `~/.config/toby/config.yaml`:
 
 ```yaml
 sandbox:
@@ -78,9 +78,10 @@ sandbox:
   pull: if-missing
 ```
 
-Toby also supports project launch files at `.toby/config.yaml`, reusable tool
-profiles, MCP servers, models APIs, image and volume management, host Git
-approval, and config-owned multi-project launches.
+Toby also supports OCI archive imports and opt-in Buildah builds, project
+launch files at `.toby/config.yaml`, reusable tool profiles, MCP servers,
+models APIs, image and volume management, host Git approval, and config-owned
+multi-project launches.
 
 ## Tools
 

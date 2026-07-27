@@ -19,6 +19,9 @@ Building from source additionally requires the Go version declared in `go.mod`
 and the Protocol Buffers compiler. The Makefile installs the pinned Go-based
 generator and analysis tools when needed.
 
+Dockerfile sandbox sources and `toby image build` additionally require
+`buildah`. Registry images and OCI archive sources do not require Buildah.
+
 ## Release artifacts
 
 Toby release artifacts support Linux on `x86_64` and `arm64`. Each release

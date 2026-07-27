@@ -486,6 +486,7 @@ func rendererSources(t *testing.T, plan Plan) Sources {
 		Projects:           make(map[string]*os.File),
 		Binds:              make(map[string]*os.File),
 		BindParents:        make(map[string]*os.File),
+		BindNames:          make(map[string]string),
 		RuntimeAssets:      make(map[string]*os.File),
 		SandboxBinary:      openExecutableSource(t),
 	}
@@ -515,6 +516,7 @@ func rendererSources(t *testing.T, plan Plan) Sources {
 		source, parent := openBindSource(t, base, index, bind)
 		sources.Binds[bind.Target] = source
 		sources.BindParents[bind.Target] = parent
+		sources.BindNames[bind.Target] = filepath.Base(bind.HostPath)
 	}
 	for _, asset := range plan.RuntimeAssets {
 		if asset.Access == mount.AccessDev {

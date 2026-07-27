@@ -125,6 +125,53 @@ containing the OCI layout, runtime bundle, extracted rootfs, and Toby metadata.
 Multiple references may select the same object. An object without a reference
 is `dangling`.
 
+### Build
+
+```sh
+toby image build [context] \
+  --output <archive> \
+  [--file <Dockerfile>] \
+  [--platform linux/<architecture>[/<variant>]]
+```
+
+The context defaults to the current directory and the Dockerfile defaults to
+`Dockerfile` beneath that context. Toby invokes `buildah` with layer caching
+and writes an OCI image-layout tar to `--output`. `buildah` must be installed.
+
+Build does not publish a reference in Toby's per-user image store. Import the
+completed archive explicitly when it should become available to launches.
+
+### Import
+
+```sh
+toby image import <archive> <reference> \
+  [--platform linux/<architecture>[/<variant>]]
+```
+
+Import validates the selected platform from an OCI image-layout tar, extracts
+the rootfs, publishes or reuses its immutable object, and atomically assigns
+the normalized reference. The archive file itself remains an input-only host
+file; Toby publishes its validated OCI layout content rather than the tar. An
+explicit import always reads the supplied archive and updates the reference.
+
+Import runs through the per-user agent. Concurrent clients importing the same
+effective archive configuration attach to the same operation. A successful
+import prints its full reference-record ID after presentation ends.
+
+Use the assigned reference like any registry reference without contacting a
+registry:
+
+```yaml
+sandbox:
+  image: example.local/toby-dev:latest
+  pull: never
+```
+
+An `archive` source in host or launch configuration can instead materialize an
+OCI archive directly without first assigning a user-chosen reference. Its
+default `if-missing` policy reuses the deterministic source reference once
+published.
+
 ### Pull
 
 ```sh
@@ -137,11 +184,13 @@ the per-user agent. Different images can prepare concurrently, while clients
 requesting the same effective image attach to one preparation operation and
 receive its current absolute progress snapshot.
 
-Terminal output uses Toby's OCI progress rows. Redirected output is append-only
-and reports periodic progress. `--debug` retains diagnostic output;
-`--quiet` suppresses non-result progress. An image already complete in the
-cache does not flash a transient progress row. Successful pulls print their
-full reference-record IDs after presentation ends.
+Terminal output uses Toby's OCI progress rows. Dockerfile builds relay
+Buildah's output through the same operation presentation and clear the
+interactive command transcript when extraction begins. Redirected output is
+append-only and reports periodic transfer progress. `--debug` retains
+diagnostic output; `--quiet` suppresses non-result progress. An image already
+complete in the cache does not flash a transient progress row. Successful
+pulls print their full reference-record IDs after presentation ends.
 
 ### List and filter
 

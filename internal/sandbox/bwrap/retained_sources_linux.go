@@ -39,6 +39,7 @@ func retainPlanSources(
 			Projects:           make(map[string]*os.File),
 			Binds:              make(map[string]*os.File),
 			BindParents:        make(map[string]*os.File),
+			BindNames:          make(map[string]string),
 			RuntimeAssets:      make(map[string]*os.File),
 		},
 	}
@@ -144,6 +145,8 @@ func retainPlanSources(
 		if err != nil {
 			return fail(err)
 		}
+		retained.sources.BindNames[bind.Target] =
+			sources.BindNames[bind.Target]
 	}
 	for _, asset := range plan.RuntimeAssets {
 		retained.sources.RuntimeAssets[asset.Target], err = retain(

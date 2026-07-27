@@ -268,6 +268,66 @@ func TestOperationBoundsProgressJournalAndRetainsLatestSnapshot(
 	}
 }
 
+func TestOperationRecordsBuilderOutputProvenance(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "operation-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := newOperation(
+		protocol.OperationID("operation"),
+		file,
+		4096,
+		nil,
+	)
+	t.Cleanup(func() {
+		if err := current.close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	if _, err := current.writer(
+		protocol.OCISourceBuilder,
+		protocol.OutputStdout,
+	).Write([]byte("plain build output\n")); err != nil {
+		t.Fatal(err)
+	}
+	current.fail(
+		errors.New("build failed"),
+		protocol.OCISourceBuilder,
+	)
+
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []logRecord
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte{'\n'}) {
+		var record logRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records = %#v", records)
+	}
+	if records[0].Kind != recordOutput ||
+		records[0].Source != protocol.OCISourceBuilder ||
+		records[0].Stream != protocol.OutputStdout ||
+		string(records[0].Data) != "plain build output\n" {
+		t.Fatalf("builder output record = %#v", records[0])
+	}
+	if records[1].Kind != recordOutput ||
+		records[1].Source != protocol.OCISourceBuilder ||
+		records[1].Stream != protocol.OutputStderr ||
+		string(records[1].Data) != "build failed\n" {
+		t.Fatalf("builder failure record = %#v", records[1])
+	}
+	if records[2].Kind != recordFailed {
+		t.Fatalf("terminal record = %#v", records[2])
+	}
+}
+
 func TestServiceBroadcastsPreparationFailure(t *testing.T) {
 	release := make(chan struct{})
 	progressed := make(chan struct{})

@@ -61,6 +61,18 @@ func (w *streamWriter) flush() {
 	w.flushPending(false)
 }
 
+func (w *streamWriter) discardPending() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	size := len(w.pending)
+	if size == 0 {
+		return
+	}
+	w.pending = w.pending[:0]
+	w.service.changePendingBytes(-size)
+}
+
 func (w *streamWriter) close() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

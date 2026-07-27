@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 )
 
 // Prepare returns a descriptor lease for the exact cached or newly published
@@ -33,6 +34,9 @@ func (s *Store) Prepare(
 	if err != nil {
 		return nil, err
 	}
+	if request.Source == "" {
+		request.Source = imagesource.Registry
+	}
 	if request.PullPolicy == "" {
 		request.PullPolicy = image.PullIfMissing
 	}
@@ -42,6 +46,25 @@ func (s *Store) Prepare(
 		return nil, fmt.Errorf(
 			"invalid OCI pull policy %q",
 			request.PullPolicy,
+		)
+	}
+	switch request.Source {
+	case imagesource.Registry:
+	case imagesource.Archive:
+		if request.Archive == "" {
+			return nil, fmt.Errorf("OCI archive path must not be empty")
+		}
+	case imagesource.Build:
+		if request.Build.Context == "" ||
+			request.Build.Dockerfile == "" {
+			return nil, fmt.Errorf(
+				"OCI build context and Dockerfile must not be empty",
+			)
+		}
+	default:
+		return nil, fmt.Errorf(
+			"invalid OCI image source %q",
+			request.Source,
 		)
 	}
 
@@ -81,10 +104,10 @@ func (s *Store) Prepare(
 		)
 	}
 
-	return s.pullAndPrepare(ctx, normalized, request)
+	return s.materializeAndPrepare(ctx, normalized, request)
 }
 
-func (s *Store) pullAndPrepare(
+func (s *Store) materializeAndPrepare(
 	ctx context.Context,
 	request normalizedRequest,
 	input Request,
@@ -108,9 +131,26 @@ func (s *Store) pullAndPrepare(
 	}()
 
 	layoutPath := filepath.Join(temporary, "layout")
-	if err := s.pull(ctx, request, layoutPath, input.Progress); err != nil {
+	switch input.Source {
+	case imagesource.Registry:
+		err = s.pull(ctx, request, layoutPath, input.Progress)
+	case imagesource.Archive:
+		err = extractOCIArchive(ctx, input.Archive, layoutPath)
+	case imagesource.Build:
+		err = s.materializeBuild(
+			ctx,
+			input.Build,
+			request.platform,
+			layoutPath,
+			input.Stdout,
+			input.Stderr,
+		)
+	default:
+		err = fmt.Errorf("unsupported OCI source %q", input.Source)
+	}
+	if err != nil {
 		return nil, fmt.Errorf(
-			"copy OCI image %q: %w",
+			"materialize OCI image %q: %w",
 			request.reference,
 			err,
 		)

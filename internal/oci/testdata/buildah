@@ -1,0 +1,19 @@
+#!/bin/sh
+printf '%s\n' "$@" > "$TOBY_TEST_BUILDAH_ARGS"
+printf 'build output\n'
+printf 'build error\n' >&2
+destination=
+previous=
+for argument do
+    if [ "$previous" = "--tag" ]; then
+        case "$argument" in
+            oci-archive:*)
+                destination=${argument#oci-archive:}
+                ;;
+        esac
+    fi
+    previous=$argument
+done
+if [ -n "$destination" ]; then
+    : > "$destination"
+fi

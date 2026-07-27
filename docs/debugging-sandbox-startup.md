@@ -83,7 +83,10 @@ inherit the tool's display-name scope, such as `OpenCode: Installing` and
 status rows retain the terminal's normal color. If agent work is concurrent,
 completing the visible command returns to the newest operation still running;
 output from another operation is never shown under the current label. A
-successful startup clears the presentation before the application starts. A
+Dockerfile build shows Buildah output while it runs, then clears that captured
+command transcript when extraction progress begins. Debug and redirected modes
+remain append-only and preserve the Buildah output. A successful startup
+clears the presentation before the application starts. A
 failed startup also clears it and reports only
 `Toby startup failed. Re-run with --debug for details.` When stderr is not a
 terminal, startup output is append-only without Bubble Tea controls.
@@ -164,6 +167,25 @@ sandbox:
   pull: if-missing
 ```
 
+An `archive` source reads an OCI image-layout tar. A `build` source invokes
+`buildah` and writes an OCI archive:
+
+```yaml
+sandbox:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  pull: if-missing
+```
+
+Archive sources use a deterministic reference derived from the resolved path
+and platform. Builds use
+`toby.local/<profile>/<primary-project>:<source-hash>`, where the hash covers
+the resolved context and Dockerfile paths and platform. With
+`pull: if-missing`, a published reference skips source materialization and
+extraction. Toby does not inspect Dockerfile, context, or archive contents for
+changes. Set `pull: always` when the source must be imported or built again.
+
 Use `--image` and `--pull` to isolate configuration precedence:
 
 ```sh
@@ -179,8 +201,14 @@ Typical OCI failures identify:
 - a digest mismatch;
 - a missing platform manifest for `linux/$GOARCH`;
 - a missing cached object under `pull: never`;
-- a registry transfer failure; or
+- a registry transfer failure;
+- an invalid OCI archive;
+- a missing or failing `buildah` command; or
 - a rootless extraction failure.
+
+Application sandboxes share the host network and receive the host
+`/etc/resolv.conf` as a read-only bind. If DNS fails inside a sandbox, compare
+that file with the host and preserve Bubblewrap output with `--debug`.
 
 Toby's operation label names the image reference throughout preparation:
 
@@ -216,6 +244,8 @@ not manually alter an active object. Toby publishes complete objects atomically.
 Inspect or manage the catalog without loading launch configuration:
 
 ```sh
+toby image build [context] --output <archive> [--file <Dockerfile>] [--platform <platform>]
+toby image import <archive> <reference> [--platform <platform>]
 toby image pull <reference>... [--platform linux/<architecture>[/<variant>]]
 toby image list [--reference <reference>] [--platform <platform>] [--digest <sha256:digest>] [--dangling]
 toby image inspect <reference-or-id> [--platform <platform>] [-o yaml|json]
@@ -224,6 +254,8 @@ toby image remove <reference-or-id>... [--platform <platform>] [--force]
 toby image prune [--force]
 ```
 
+`image build` leaves the OCI archive outside the catalog. `image import`
+publishes the selected platform under the supplied normalized reference.
 `image list` omits paths; `image path` prints only the resolved rootfs path.
 `image inspect` includes both reference and object metadata. A dangling row is
 an immutable object without a current reference. Normal final-reference

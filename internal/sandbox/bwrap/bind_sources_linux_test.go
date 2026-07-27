@@ -70,6 +70,9 @@ func TestRenderRejectsExternalBindAliasesToOwnedDirectories(t *testing.T) {
 			}}
 			sources.Binds[target] = source
 			sources.BindParents[target] = parent
+			sources.BindNames[target] = filepath.Base(
+				plan.Binds[0].HostPath,
+			)
 
 			assertExternalBindRejected(
 				t,
@@ -101,6 +104,7 @@ func TestRenderRejectsExternalRegularFileBeneathProtectedStorage(
 	}}
 	sources.Binds[target] = source
 	sources.BindParents[target] = parent
+	sources.BindNames[target] = filepath.Base(sourcePath)
 
 	assertExternalBindRejected(
 		t,
@@ -133,6 +137,7 @@ func TestRenderRejectsExternalBindSourceParentMismatch(t *testing.T) {
 	}}
 	sources.Binds[target] = openRegularSourceAt(t, firstPath)
 	sources.BindParents[target] = openDirectorySourceAt(t, secondParent)
+	sources.BindNames[target] = filepath.Base(firstPath)
 
 	assertExternalBindRejected(
 		t,
@@ -163,6 +168,7 @@ func TestRenderRejectsExternalBindHardLinkAlias(t *testing.T) {
 	}}
 	sources.Binds[target] = openRegularSourceAt(t, sourcePath)
 	sources.BindParents[target] = openDirectorySourceAt(t, parent)
+	sources.BindNames[target] = filepath.Base(sourcePath)
 
 	assertExternalBindRejected(
 		t,
@@ -224,6 +230,7 @@ func TestRenderAllowsLegitimateExternalRegularFileAndSocket(t *testing.T) {
 			}}
 			sources.Binds[test.target] = source
 			sources.BindParents[test.target] = parent
+			sources.BindNames[test.target] = filepath.Base(sourcePath)
 
 			invocation, err := Render(plan, sources)
 			if err != nil {

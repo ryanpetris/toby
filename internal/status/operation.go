@@ -61,6 +61,24 @@ func (o *Operation) SetProgress(progress Progress) {
 	o.service.setOperationProgress(o.id, progress)
 }
 
+// ClearOutput discards this operation's captured interactive transcript and
+// any incomplete captured line. Direct debug and redirected output is
+// unaffected.
+func (o *Operation) ClearOutput() {
+	if o == nil || o.service == nil {
+		return
+	}
+
+	o.mu.Lock()
+	finished := o.finished
+	o.mu.Unlock()
+	if finished {
+		return
+	}
+
+	o.service.clearOperationOutput(o.id)
+}
+
 // StartChild begins a child action under this operation. The child inherits the
 // parent's presentation scope and temporarily replaces the parent in the
 // interactive display while retaining its own output transcript.

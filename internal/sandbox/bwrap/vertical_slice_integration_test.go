@@ -521,8 +521,12 @@ func prepareVerticalFixtureWithManaged(
 		},
 		Binds:         bindSources,
 		BindParents:   bindParents,
+		BindNames:     map[string]string{},
 		RuntimeAssets: map[string]*os.File{},
 		SandboxBinary: tobyBinary,
+	}
+	for _, bind := range binds {
+		sources.BindNames[bind.Target] = filepath.Base(bind.HostPath)
 	}
 	t.Cleanup(func() {
 		for _, file := range sourceFiles(sources) {

@@ -21,13 +21,16 @@ func validateExternalBindParent(
 	bind mount.Bind,
 	source *os.File,
 	parent *os.File,
+	base string,
 ) error {
-	base := filepath.Base(bind.HostPath)
-	if base == "." || base == string(filepath.Separator) {
+	if base == "" ||
+		base == "." ||
+		base == string(filepath.Separator) ||
+		filepath.Base(base) != base {
 		return fmt.Errorf(
-			"external bind %s host path has no direct-child basename: %q",
+			"external bind %s has invalid resolved basename %q",
 			bind.Target,
-			bind.HostPath,
+			base,
 		)
 	}
 

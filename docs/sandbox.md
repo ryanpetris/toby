@@ -15,16 +15,19 @@ The application sees:
 | `/toby/workspace/<name>` | Selected project directories |
 | `/toby/bin/tobys` | Toby sandbox helper, mounted read-only |
 | `/run/toby/sandbox.sock` | Exact run-scoped sandbox capability |
+| `/etc/resolv.conf` | Host resolver configuration, mounted read-only |
 | `/tmp` | Fresh tmpfs |
 | `/proc` | Fresh PID namespace process view |
 
-The configured OCI rootfs supplies the rest of `/`. Toby mounts it as the lower
-layer of a unique writable overlay for the run. Setup commands and the
-foreground tool in one run reuse that overlay; a concurrent run receives a
-different overlay. Toby holds each foreground init at Bubblewrap's launch gate
-while it retains that exact process and mount namespace. After the command,
-Toby waits for the init to exit and closes the retained namespace descriptor
-before the next command reuses the same upper and work directories.
+The configured OCI rootfs supplies the rest of `/`. Its source may be a
+registry reference, an OCI image-layout archive, or a Dockerfile build. Toby
+mounts the published rootfs as the lower layer of a unique writable overlay
+for the run. Setup commands and the foreground tool in one run reuse that
+overlay; a concurrent run receives a different overlay. Toby holds each
+foreground init at Bubblewrap's launch gate while it retains that exact
+process and mount namespace. After the command, Toby waits for the init to exit
+and closes the retained namespace descriptor before the next command reuses
+the same upper and work directories.
 
 `HOME` is `/toby/home` and `TOBY_SANDBOX=1`. Toby clears the ambient host
 environment and installs only validated run variables. Tool-specific secrets
@@ -79,9 +82,9 @@ does not validate or change the ownership or mode of `_data`; those attributes
 belong to the sandboxed application.
 
 An external bind is different: Toby verifies and exposes an existing path but
-does not own its contents. Toby opens its exact parent and basename child from
-the filesystem root with `openat2`, rejecting symbolic-link and magic-link
-traversal. Directory-source ancestry, or the exact parent ancestry for a
+does not own its contents. Toby follows ordinary filesystem symlinks, rejects
+magic-link traversal, and pins the resolved source and its exact parent with
+`openat2`. Directory-source ancestry, or the exact parent ancestry for a
 non-directory bind, must remain disjoint from protected and Toby-owned storage.
 Non-directory binds must have exactly one hard link.
 
@@ -111,7 +114,9 @@ transiently beneath `/run/toby`; they are not generated configuration.
 ## Namespace and capability policy
 
 Application commands receive fresh user, PID, IPC, and UTS namespaces and
-share the host network namespace.
+share the host network namespace. Their read-only `/etc/resolv.conf` bind
+provides the resolver configuration for that network independently of the
+selected OCI rootfs.
 
 Bubblewrap drops application capabilities. Lifecycle commands that must run as
 namespace root receive only the ownership, DAC, and identity-transition

@@ -28,6 +28,48 @@ sandbox:
   pull: never
 ```
 
+Build a project rootfs into an OCI archive without publishing it:
+
+```sh
+toby image build . --output toby-root.oci.tar
+```
+
+Assign the archive a per-user reference, then select that reference without
+registry access:
+
+```sh
+toby image import toby-root.oci.tar example.local/toby-root:latest
+```
+
+```yaml
+sandbox:
+  image: example.local/toby-root:latest
+  pull: never
+```
+
+A configuration can also materialize the archive directly:
+
+```yaml
+sandbox:
+  archive: ./toby-root.oci.tar
+```
+
+Or it can request a Dockerfile build at launch:
+
+```yaml
+sandbox:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  pull: if-missing
+```
+
+Archive and build paths in `.toby/config.yaml` resolve from the project root.
+Dockerfile builds require `buildah` only when their deterministic reference is
+missing or `pull: always` requests a rebuild. Toby does not inspect source
+contents for changes, so set `pull: always` when a changed Dockerfile, context,
+or archive must replace an existing reference.
+
 ## Launch a coding tool
 
 ```sh

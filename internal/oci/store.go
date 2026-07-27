@@ -64,6 +64,7 @@ type Store struct {
 	gid               int
 	logger            *diagnostic.Logger
 	lockRetryInterval time.Duration
+	cachePath         string
 	active            int
 	closed            bool
 }
@@ -173,6 +174,7 @@ func newStore(
 		gid:               gid,
 		logger:            logger,
 		lockRetryInterval: options.lockRetryInterval,
+		cachePath:         paths.TobyCacheDir(),
 	}, nil
 }
 

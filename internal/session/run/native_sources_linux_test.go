@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -151,7 +152,7 @@ func TestOpenNativeProjectsAllowsExplicitExternalProject(
 	}
 }
 
-func TestOpenNativeBindsRejectsSymbolicLinkAncestor(t *testing.T) {
+func TestOpenNativeBindsFollowsSymbolicLinkAncestor(t *testing.T) {
 	base := t.TempDir()
 	actualParent := filepath.Join(base, "actual")
 	if err := os.Mkdir(actualParent, 0o700); err != nil {
@@ -171,14 +172,22 @@ func TestOpenNativeBindsRejectsSymbolicLinkAncestor(t *testing.T) {
 		Target:   "/etc/config",
 		Access:   mount.AccessReadOnly,
 	}}, nil)
-	if len(binds) != 0 {
-		if closeErr := closeNativeBinds(binds); closeErr != nil {
-			t.Error(closeErr)
-		}
-		t.Fatalf("opened binds = %d, want 0", len(binds))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "without symbolic links") {
-		t.Fatalf("symlink-ancestor error = %v", err)
+	t.Cleanup(func() {
+		if err := closeNativeBinds(binds); err != nil {
+			t.Error(err)
+		}
+	})
+	if len(binds) != 1 {
+		t.Fatalf("opened binds = %d, want 1", len(binds))
+	}
+	if got := binds[0].Bind.HostPath; got != filepath.Join(link, "config") {
+		t.Fatalf("declared host path = %q", got)
+	}
+	if got := binds[0].ResolvedName; got != filepath.Base(sourcePath) {
+		t.Fatalf("resolved name = %q, want %q", got, filepath.Base(sourcePath))
 	}
 }
 
@@ -266,7 +275,7 @@ func TestOpenNativeBindsPreservesLegitimateKindsAndOptionality(
 			t.Fatal(err)
 		}
 		link := filepath.Join(base, "linked")
-		if err := os.Symlink(actual, link); err != nil {
+		if err := os.Symlink(filepath.Base(actual), link); err != nil {
 			t.Fatal(err)
 		}
 
@@ -275,14 +284,26 @@ func TestOpenNativeBindsPreservesLegitimateKindsAndOptionality(
 			Target:   "/etc/config",
 			Access:   mount.AccessReadOnly,
 		}}, nil)
-		if len(binds) != 0 {
-			if closeErr := closeNativeBinds(binds); closeErr != nil {
-				t.Error(closeErr)
-			}
-			t.Fatalf("opened binds = %d, want 0", len(binds))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err == nil || !strings.Contains(err.Error(), "without symbolic links") {
-			t.Fatalf("final-symlink error = %v", err)
+		t.Cleanup(func() {
+			if err := closeNativeBinds(binds); err != nil {
+				t.Error(err)
+			}
+		})
+		if len(binds) != 1 {
+			t.Fatalf("opened binds = %d, want 1", len(binds))
+		}
+		if got := binds[0].Bind.HostPath; got != link {
+			t.Fatalf("declared host path = %q", got)
+		}
+		if got := binds[0].ResolvedName; got != filepath.Base(actual) {
+			t.Fatalf(
+				"resolved name = %q, want %q",
+				got,
+				filepath.Base(actual),
+			)
 		}
 	})
 
@@ -322,6 +343,40 @@ func TestOpenNativeBindsPreservesLegitimateKindsAndOptionality(
 			t.Fatalf("socket source mode = %v", info.Mode())
 		}
 	})
+}
+
+func TestOpenNativeBindsRejectsMagicLink(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(sourcePath, []byte("config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := source.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	binds, err := openNativeBinds([]mount.Bind{{
+		HostPath: "/proc/self/fd/" + strconv.FormatUint(
+			uint64(source.Fd()),
+			10,
+		),
+		Target: "/etc/config",
+		Access: mount.AccessReadOnly,
+	}}, nil)
+	if len(binds) != 0 {
+		if closeErr := closeNativeBinds(binds); closeErr != nil {
+			t.Error(closeErr)
+		}
+		t.Fatalf("opened binds = %d, want 0", len(binds))
+	}
+	if !errors.Is(err, unix.ELOOP) {
+		t.Fatalf("magic-link error = %v, want ELOOP", err)
+	}
 }
 
 func TestCloseNativeBindsClosesSourceAndParentDescriptors(t *testing.T) {

@@ -27,9 +27,11 @@ It listens on a host-only private agent socket, normally
 sandbox. The invoking launch client owns narrower run-scoped capabilities such
 as `/run/toby/sandbox.sock`.
 
-The root `.toby/config.yaml` selects a prebuilt OCI image. Toby does not build a
-sandbox image at launch. The explicit built-in `docker` tool is the only Docker
-integration and is a high-trust opt-in capability, not a runtime dependency.
+The root `.toby/config.yaml` selects a registry image, an OCI image-layout
+archive, or a Dockerfile build for the sandbox rootfs. Dockerfile builds invoke
+the host `buildah` command without a persistent build service. The explicit
+built-in `docker` tool is the only Docker integration and is a high-trust
+opt-in capability, not a runtime dependency.
 
 Start with [docs/README.md](docs/README.md), then
 [docs/architecture.md](docs/architecture.md) for the complete current design.

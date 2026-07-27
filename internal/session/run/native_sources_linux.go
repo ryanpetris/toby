@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -380,7 +381,11 @@ func openNativeBinds(
 			)
 		}
 
-		parent, source, err := openNativeBind(rootFD, item, logger)
+		parent, source, resolvedHostPath, err := openNativeBind(
+			rootFD,
+			item,
+			logger,
+		)
 		if err != nil {
 			if item.Optional && errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -393,9 +398,10 @@ func openNativeBinds(
 		}
 
 		binds = append(binds, NativeBind{
-			Bind:   item,
-			Source: source,
-			Parent: parent,
+			Bind:         item,
+			Source:       source,
+			Parent:       parent,
+			ResolvedName: filepath.Base(resolvedHostPath),
 		})
 	}
 
@@ -406,8 +412,84 @@ func openNativeBind(
 	rootFD int,
 	item mount.Bind,
 	logger *diagnostic.Logger,
-) (parent *os.File, source *os.File, returnErr error) {
-	parentPath := filepath.Dir(item.HostPath)
+) (
+	parent *os.File,
+	source *os.File,
+	resolvedHostPath string,
+	returnErr error,
+) {
+	relativeSource := strings.TrimPrefix(
+		item.HostPath,
+		string(filepath.Separator),
+	)
+	if relativeSource == "" {
+		return nil, nil, "", fmt.Errorf(
+			"external bind host path has no direct-child basename: %q",
+			item.HostPath,
+		)
+	}
+
+	sourceFD, err := unix.Openat2(
+		rootFD,
+		relativeSource,
+		&unix.OpenHow{
+			Flags: unix.O_PATH | unix.O_CLOEXEC,
+			Resolve: unix.RESOLVE_IN_ROOT |
+				unix.RESOLVE_NO_MAGICLINKS,
+		},
+	)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf(
+			"open external bind source %q: %w",
+			item.HostPath,
+			err,
+		)
+	}
+	source = os.NewFile(
+		uintptr(sourceFD),
+		"external bind "+item.Target,
+	)
+	if source == nil {
+		logger.DebugError(
+			"close invalid external-bind source descriptor",
+			unix.Close(sourceFD),
+		)
+		return nil, nil, "", fmt.Errorf(
+			"create external-bind source descriptor",
+		)
+	}
+	defer func() {
+		if returnErr != nil {
+			logger.DebugError(
+				"close external-bind source after resolution failed",
+				source.Close(),
+			)
+			source = nil
+		}
+	}()
+
+	resolvedHostPath, err = os.Readlink(
+		"/proc/self/fd/" + strconv.FormatUint(
+			uint64(source.Fd()),
+			10,
+		),
+	)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf(
+			"resolve external bind source %q: %w",
+			item.HostPath,
+			err,
+		)
+	}
+	if !filepath.IsAbs(resolvedHostPath) {
+		return nil, nil, "", fmt.Errorf(
+			"resolved external bind source is not absolute: %q",
+			resolvedHostPath,
+		)
+	}
+	resolvedHostPath = filepath.Clean(resolvedHostPath)
+
+	parentPath := filepath.Dir(resolvedHostPath)
 	relativeParent := strings.TrimPrefix(
 		parentPath,
 		string(filepath.Separator),
@@ -415,7 +497,6 @@ func openNativeBind(
 	if relativeParent == "" {
 		relativeParent = "."
 	}
-
 	parentFD, err := unix.Openat2(
 		rootFD,
 		relativeParent,
@@ -429,8 +510,8 @@ func openNativeBind(
 		},
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"open exact parent %q without symbolic links: %w",
+		return nil, nil, "", fmt.Errorf(
+			"open resolved external-bind parent %q: %w",
 			parentPath,
 			err,
 		)
@@ -444,60 +525,21 @@ func openNativeBind(
 			"close invalid external-bind parent descriptor",
 			unix.Close(parentFD),
 		)
-		return nil, nil, fmt.Errorf(
+		return nil, nil, "", fmt.Errorf(
 			"create external-bind parent descriptor",
 		)
 	}
-	openedParent := parent
 	defer func() {
 		if returnErr != nil {
 			logger.DebugError(
-				"close external-bind parent after source open failed",
-				openedParent.Close(),
+				"close external-bind parent after resolution failed",
+				parent.Close(),
 			)
 			parent = nil
 		}
 	}()
 
-	base := filepath.Base(item.HostPath)
-	if base == "." || base == string(filepath.Separator) {
-		return nil, nil, fmt.Errorf(
-			"external bind host path has no direct-child basename: %q",
-			item.HostPath,
-		)
-	}
-	sourceFD, err := unix.Openat2(
-		int(parent.Fd()),
-		base,
-		&unix.OpenHow{
-			Flags: unix.O_PATH | unix.O_CLOEXEC,
-			Resolve: unix.RESOLVE_BENEATH |
-				unix.RESOLVE_NO_MAGICLINKS |
-				unix.RESOLVE_NO_SYMLINKS,
-		},
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"open exact child %q without symbolic links: %w",
-			base,
-			err,
-		)
-	}
-	source = os.NewFile(
-		uintptr(sourceFD),
-		"external bind "+item.Target,
-	)
-	if source == nil {
-		logger.DebugError(
-			"close invalid external-bind source descriptor",
-			unix.Close(sourceFD),
-		)
-		return nil, nil, fmt.Errorf(
-			"create external-bind source descriptor",
-		)
-	}
-
-	return parent, source, nil
+	return parent, source, resolvedHostPath, nil
 }
 
 func closeNativeBinds(binds []NativeBind) error {

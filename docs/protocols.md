@@ -373,10 +373,11 @@ uses this order:
 
 Progress covers resolving, downloading, and extracting. Each snapshot carries
 completed and total byte and item counts. Output identifies its registry,
-extractor, or cache source and stdout or stderr provenance. A complete event's
-`cached` field is true when no preparation work was needed. Presentation
-clients intentionally do not create a transient status row for an immediate
-cached completion.
+extractor, builder, or cache source and stdout or stderr provenance. Builder
+output is the stream emitted by `buildah`. A complete event's `cached`
+field is true when no preparation work was needed. Presentation clients
+intentionally do not create a transient status row for an immediate cached
+completion.
 
 The operation record is written before followers are notified. A later client
 can therefore attach to the current snapshot and then follow the same

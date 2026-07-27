@@ -30,10 +30,11 @@ type Presentation struct {
 }
 
 type lazyPresentation struct {
-	options   Presentation
-	operation *status.Operation
-	stdout    io.Writer
-	stderr    io.Writer
+	options       Presentation
+	operation     *status.Operation
+	stdout        io.Writer
+	stderr        io.Writer
+	outputVisible bool
 }
 
 // Follow requests one prepared image and consumes the operation through its
@@ -258,6 +259,10 @@ func (p *lazyPresentation) applyProgress(
 	if err := p.ensure(); err != nil {
 		return err
 	}
+	if p.outputVisible {
+		p.operation.ClearOutput()
+		p.outputVisible = false
+	}
 	applyProgress(p.operation, reference, progress)
 
 	return nil
@@ -281,6 +286,9 @@ func (p *lazyPresentation) write(
 		return fmt.Errorf("unknown output stream %q", stream)
 	}
 	_, err := writer.Write(data)
+	if err == nil && len(data) != 0 {
+		p.outputVisible = true
+	}
 	return err
 }
 

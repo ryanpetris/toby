@@ -32,6 +32,7 @@ type Sources struct {
 	Projects           map[string]*os.File
 	Binds              map[string]*os.File
 	BindParents        map[string]*os.File
+	BindNames          map[string]string
 	RuntimeAssets      map[string]*os.File
 	SandboxBinary      *os.File
 }
@@ -164,10 +165,18 @@ func validateSources(plan Plan, sources Sources) error {
 		); err != nil {
 			return err
 		}
+		name, found := sources.BindNames[bind.Target]
+		if !found {
+			return fmt.Errorf(
+				"missing external-bind resolved name %q",
+				bind.Target,
+			)
+		}
 		if err := validateExternalBindParent(
 			bind,
 			source,
 			parent,
+			name,
 		); err != nil {
 			return err
 		}
@@ -183,6 +192,13 @@ func validateSources(plan Plan, sources Sources) error {
 		"external-bind parent",
 		bindTargets(plan.Binds),
 		sources.BindParents,
+	); err != nil {
+		return err
+	}
+	if err := validateStringCoverage(
+		"external-bind resolved name",
+		bindTargets(plan.Binds),
+		sources.BindNames,
 	); err != nil {
 		return err
 	}
@@ -352,10 +368,10 @@ func validateManagedCoverage(
 	)
 }
 
-func validateStringCoverage(
+func validateStringCoverage[T any](
 	kind string,
 	expected []string,
-	sources map[string]*os.File,
+	sources map[string]T,
 ) error {
 	expectedSet := make(map[string]struct{}, len(expected))
 	for _, key := range expected {

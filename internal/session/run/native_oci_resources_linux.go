@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	mcpconfig "petris.dev/toby/internal/config/mcp"
 	"petris.dev/toby/internal/config/ociresource"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/oci/prepareclient"
 	"petris.dev/toby/internal/providergateway/caddy"
 	"petris.dev/toby/internal/status"
@@ -30,6 +32,7 @@ import (
 
 type namedOCIResource struct {
 	configuration ociresource.Config
+	display       string
 }
 
 func (r *NativeRunner) prepareNativeOCIResources(
@@ -37,14 +40,16 @@ func (r *NativeRunner) prepareNativeOCIResources(
 	session *agentclient.AgentSession,
 	sandbox appconfig.SandboxConfig,
 	resources appconfig.ResourcesConfig,
-) (returnErr error) {
+	profile string,
+	project string,
+) (sandboxResource ociresource.Config, returnErr error) {
 	registry, err := clientresource.NewRegistry(
 		protocol.ResourceOCI,
 		session,
 		r.logger.With("resource_kind", protocol.ResourceOCI),
 	)
 	if err != nil {
-		return err
+		return ociresource.Config{}, err
 	}
 	defer func() {
 		closeCtx, cancel := r.shutdown.CleanupContext()
@@ -55,9 +60,14 @@ func (r *NativeRunner) prepareNativeOCIResources(
 		)
 	}()
 
-	requests, err := nativeOCIResourceRequests(sandbox, resources)
+	requests, sandboxResource, err := nativeOCIResourceRequests(
+		sandbox,
+		resources,
+		profile,
+		project,
+	)
 	if err != nil {
-		return err
+		return ociresource.Config{}, err
 	}
 
 	results := make(chan error, len(requests))
@@ -69,7 +79,7 @@ func (r *NativeRunner) prepareNativeOCIResources(
 		)
 		if err != nil {
 			workers.Wait()
-			return fmt.Errorf(
+			return ociresource.Config{}, fmt.Errorf(
 				"register OCI image %q: %w",
 				request.configuration.Reference,
 				err,
@@ -86,7 +96,7 @@ func (r *NativeRunner) prepareNativeOCIResources(
 				ctx,
 				registry,
 				clientID,
-				request.configuration.Reference,
+				request.display,
 			)
 			results <- err
 		}(request, clientID)
@@ -99,21 +109,31 @@ func (r *NativeRunner) prepareNativeOCIResources(
 		returnErr = errors.Join(returnErr, err)
 	}
 
-	return returnErr
+	return sandboxResource, returnErr
 }
 
 func nativeOCIResourceRequests(
 	sandbox appconfig.SandboxConfig,
 	resources appconfig.ResourcesConfig,
-) ([]namedOCIResource, error) {
-	requested := []ociresource.Config{{
+	profile string,
+	project string,
+) ([]namedOCIResource, ociresource.Config, error) {
+	sandboxRequest := ociresource.Config{
+		Source:    sandbox.Source,
 		Reference: sandbox.Image,
+		Archive:   sandbox.Archive,
+		Build:     sandbox.Build,
 		Platform: ocispec.Platform{
 			OS:           "linux",
 			Architecture: runtime.GOARCH,
 		},
 		PullPolicy: sandbox.Pull,
-	}}
+	}
+	if sandboxRequest.Source == imagesource.Build {
+		sandboxRequest.Profile = profile
+		sandboxRequest.Project = project
+	}
+	requested := []ociresource.Config{sandboxRequest}
 
 	names := make([]string, 0, len(resources.MCPs))
 	for name := range resources.MCPs {
@@ -127,6 +147,7 @@ func nativeOCIResourceRequests(
 		}
 		requested = append(requested, ociresource.Config{
 			Reference: server.Image,
+			Source:    imagesource.Registry,
 			Platform: ocispec.Platform{
 				OS:           "linux",
 				Architecture: runtime.GOARCH,
@@ -137,6 +158,7 @@ func nativeOCIResourceRequests(
 	if len(resources.Models) != 0 {
 		requested = append(requested, ociresource.Config{
 			Reference: caddy.DefaultImage,
+			Source:    imagesource.Registry,
 			Platform: ocispec.Platform{
 				OS:           "linux",
 				Architecture: runtime.GOARCH,
@@ -147,14 +169,18 @@ func nativeOCIResourceRequests(
 
 	result := make([]namedOCIResource, 0, len(requested))
 	seen := make(map[string]struct{}, len(requested))
+	var sandboxResource ociresource.Config
 	for _, input := range requested {
 		effective, err := ociresource.Normalize(input)
 		if err != nil {
-			return nil, err
+			return nil, ociresource.Config{}, err
+		}
+		if sandboxResource.Reference == "" {
+			sandboxResource = effective
 		}
 		encoded, err := json.Marshal(effective)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, ociresource.Config{}, fmt.Errorf(
 				"encode OCI resource identity: %w",
 				err,
 			)
@@ -166,10 +192,22 @@ func nativeOCIResourceRequests(
 		seen[key] = struct{}{}
 		result = append(result, namedOCIResource{
 			configuration: effective,
+			display:       ociResourceDisplay(effective),
 		})
 	}
 
-	return result, nil
+	return result, sandboxResource, nil
+}
+
+func ociResourceDisplay(configuration ociresource.Config) string {
+	switch configuration.Source {
+	case imagesource.Archive:
+		return filepath.Base(configuration.Archive)
+	case imagesource.Build:
+		return filepath.Base(configuration.Build.Context)
+	default:
+		return configuration.Reference
+	}
 }
 
 func (r *NativeRunner) prepareNativeOCIResource(
@@ -185,14 +223,9 @@ func (r *NativeRunner) prepareNativeOCIResource(
 		reference,
 		prepareclient.Presentation{
 			Start: func() *status.Operation {
-				operation := r.status.StartOperation(
+				return r.status.StartOperation(
 					"Preparing OCI image " + reference,
 				)
-				operation.SetProgress(status.Progress{
-					OCIAction:    "Preparing",
-					OCIReference: reference,
-				})
-				return operation
 			},
 			Stdout: r.stdout,
 			Stderr: r.stderr,

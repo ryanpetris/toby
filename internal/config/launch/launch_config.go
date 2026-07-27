@@ -18,6 +18,7 @@ import (
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/tools"
 )
 
@@ -58,8 +59,12 @@ type launchConfig struct {
 }
 
 type launchSandboxConfig struct {
-	Image string
-	Pull  image.PullPolicy
+	Source    imagesource.Kind
+	Image     string
+	Archive   string
+	Build     imagesource.BuildConfig
+	Pull      image.PullPolicy
+	SourceSet bool
 }
 
 type launchSettingsConfig struct {
@@ -95,8 +100,15 @@ type launchSchema struct {
 }
 
 type launchSandboxSchema struct {
-	Image string            `json:"image" yaml:"image"`
-	Pull  *image.PullPolicy `json:"pull" yaml:"pull"`
+	Image   string                    `json:"image" yaml:"image"`
+	Archive string                    `json:"archive" yaml:"archive"`
+	Build   *launchSandboxBuildSchema `json:"build" yaml:"build"`
+	Pull    *image.PullPolicy         `json:"pull" yaml:"pull"`
+}
+
+type launchSandboxBuildSchema struct {
+	Context    string `json:"context" yaml:"context"`
+	Dockerfile string `json:"dockerfile" yaml:"dockerfile"`
 }
 
 type launchSettingsSchema struct {
@@ -266,14 +278,24 @@ func commandOptionsFromLaunchConfig(cfg launchConfig) tools.Options {
 }
 
 func overridesFromLaunchConfig(cfg launchConfig) appconfig.LaunchOverrides {
-	return appconfig.LaunchOverrides{
+	overrides := appconfig.LaunchOverrides{
 		Profile:          cfg.Settings.Profile,
-		Image:            cfg.Sandbox.Image,
 		Pull:             cfg.Sandbox.Pull,
 		SuppressWarnings: cfg.Settings.SuppressWarnings,
 		Debug:            cloneBool(cfg.Settings.Debug),
 		Yolo:             cloneBool(cfg.Settings.Yolo),
 	}
+	if cfg.Sandbox.SourceSet {
+		sandbox := appconfig.SandboxConfig{
+			Source:  cfg.Sandbox.Source,
+			Image:   cfg.Sandbox.Image,
+			Archive: cfg.Sandbox.Archive,
+			Build:   cfg.Sandbox.Build,
+			Pull:    cfg.Sandbox.Pull,
+		}
+		overrides.Sandbox = &sandbox
+	}
+	return overrides
 }
 
 func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOverrides) {
@@ -289,7 +311,13 @@ func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOv
 		}
 	}
 	if src.Image != "" {
+		dst.Sandbox = nil
 		dst.Image = src.Image
+	}
+	if src.Sandbox != nil {
+		sandbox := *src.Sandbox
+		dst.Sandbox = &sandbox
+		dst.Image = ""
 	}
 	if src.Pull != "" {
 		dst.Pull = src.Pull
@@ -324,7 +352,7 @@ func parseLaunchConfigWithPaths(schema launchSchema, dir string, paths config.Pa
 		return launchConfig{}, err
 	}
 	cfg.Settings = settings
-	sandbox, err := schema.Sandbox.resolve()
+	sandbox, err := schema.Sandbox.resolve(dir, paths.Home)
 	if err != nil {
 		return launchConfig{}, err
 	}
@@ -360,8 +388,94 @@ func (s launchSettingsSchema) resolve() (launchSettingsConfig, error) {
 	return cfg, nil
 }
 
-func (s launchSandboxSchema) resolve() (launchSandboxConfig, error) {
-	cfg := launchSandboxConfig{Image: strings.TrimSpace(s.Image)}
+func (s launchSandboxSchema) resolve(
+	dir string,
+	home string,
+) (launchSandboxConfig, error) {
+	imageValue := strings.TrimSpace(s.Image)
+	archiveValue := strings.TrimSpace(s.Archive)
+	sources := 0
+	if imageValue != "" {
+		sources++
+	}
+	if archiveValue != "" {
+		sources++
+	}
+	if s.Build != nil {
+		sources++
+	}
+	if sources > 1 {
+		return launchSandboxConfig{}, fmt.Errorf(
+			"sandbox.image, sandbox.archive, and sandbox.build are mutually exclusive",
+		)
+	}
+
+	cfg := launchSandboxConfig{}
+	switch {
+	case imageValue != "":
+		cfg.Source = imagesource.Registry
+		cfg.Image = imageValue
+		cfg.Pull = image.PullIfMissing
+		cfg.SourceSet = true
+	case archiveValue != "":
+		archive, err := resolveLaunchSourcePath(
+			archiveValue,
+			dir,
+			home,
+		)
+		if err != nil {
+			return launchSandboxConfig{}, fmt.Errorf(
+				"sandbox.archive: %w",
+				err,
+			)
+		}
+		cfg.Source = imagesource.Archive
+		cfg.Archive = archive
+		cfg.Pull = image.PullIfMissing
+		cfg.SourceSet = true
+	case s.Build != nil:
+		contextValue := strings.TrimSpace(s.Build.Context)
+		if contextValue == "" {
+			contextValue = "."
+		}
+		contextPath, err := resolveLaunchSourcePath(
+			contextValue,
+			dir,
+			home,
+		)
+		if err != nil {
+			return launchSandboxConfig{}, fmt.Errorf(
+				"sandbox.build.context: %w",
+				err,
+			)
+		}
+		dockerfileValue := strings.TrimSpace(s.Build.Dockerfile)
+		if dockerfileValue == "" {
+			dockerfileValue = "Dockerfile"
+		}
+		dockerfileValue = config.ExpandHome(dockerfileValue, home)
+		if !filepath.IsAbs(dockerfileValue) {
+			dockerfileValue = filepath.Join(
+				contextPath,
+				dockerfileValue,
+			)
+		}
+		dockerfilePath, err := filepath.Abs(dockerfileValue)
+		if err != nil {
+			return launchSandboxConfig{}, fmt.Errorf(
+				"sandbox.build.dockerfile: %w",
+				err,
+			)
+		}
+		cfg.Source = imagesource.Build
+		cfg.Build = imagesource.BuildConfig{
+			Context:    contextPath,
+			Dockerfile: filepath.Clean(dockerfilePath),
+		}
+		cfg.Pull = image.PullIfMissing
+		cfg.SourceSet = true
+	}
+
 	if s.Pull == nil {
 		return cfg, nil
 	}
@@ -375,6 +489,26 @@ func (s launchSandboxSchema) resolve() (launchSandboxConfig, error) {
 		)
 	}
 	return cfg, nil
+}
+
+func resolveLaunchSourcePath(
+	value string,
+	dir string,
+	home string,
+) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	value = config.ExpandHome(value, home)
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(dir, value)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func cloneBool(value *bool) *bool {

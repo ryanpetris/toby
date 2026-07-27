@@ -13,6 +13,7 @@ import (
 	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/tools"
 )
 
@@ -104,6 +105,69 @@ func TestLoadLaunchConfigParsesJSONWithYAMLParser(t *testing.T) {
 	}
 	if !cfg.Projects[0].Mount.RequireProjectRoot {
 		t.Fatal("default project path must retain project-root provenance")
+	}
+}
+
+func TestLoadLaunchConfigResolvesSandboxBuild(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "project", ".toby")
+	configPath := filepath.Join(dir, "config.yaml")
+	writeTestFile(
+		t,
+		configPath,
+		[]byte(
+			"sandbox:\n"+
+				"  build:\n"+
+				"    context: .\n"+
+				"    dockerfile: Dockerfile\n",
+		),
+	)
+
+	cfg, err := loadLaunchConfigWithPaths(
+		configPath,
+		config.Paths{Home: home},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(home, "project")
+	if cfg.Sandbox.Source != imagesource.Build ||
+		!cfg.Sandbox.SourceSet ||
+		cfg.Sandbox.Build.Context != projectPath ||
+		cfg.Sandbox.Build.Dockerfile != filepath.Join(
+			projectPath,
+			"Dockerfile",
+		) ||
+		cfg.Sandbox.Pull != image.PullIfMissing {
+		t.Fatalf("sandbox = %#v", cfg.Sandbox)
+	}
+}
+
+func TestLoadLaunchConfigAppliesPullPolicyToSandboxBuild(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "project", ".toby", "config.yaml")
+	writeTestFile(
+		t,
+		configPath,
+		[]byte(
+			"sandbox:\n"+
+				"  build:\n"+
+				"    context: .\n"+
+				"  pull: always\n",
+		),
+	)
+
+	cfg, err := loadLaunchConfigWithPaths(
+		configPath,
+		config.Paths{Home: home},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Pull != image.PullAlways {
+		t.Fatalf("pull policy = %q", cfg.Sandbox.Pull)
 	}
 }
 

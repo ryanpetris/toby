@@ -18,6 +18,8 @@ import (
 const (
 	imageCommandName        = "image"
 	imagePullCommandName    = "pull"
+	imageBuildCommandName   = "build"
+	imageImportCommandName  = "import"
 	imageListCommandName    = "list"
 	imageInspectCommandName = "inspect"
 	imagePathCommandName    = "path"
@@ -47,6 +49,8 @@ func isConfigFreeImageInvocation(arguments []string) bool {
 	}
 	for _, name := range []string{
 		imagePullCommandName,
+		imageBuildCommandName,
+		imageImportCommandName,
 		imageListCommandName,
 		imageInspectCommandName,
 		imagePathCommandName,
@@ -65,7 +69,11 @@ func isConfigFreeImageInvocation(arguments []string) bool {
 			subcommand.Aliases = []string{managementRemoveAlias}
 		}
 		switch name {
-		case imagePullCommandName:
+		case imagePullCommandName, imageImportCommandName:
+			subcommand.Flags().String("platform", "", "")
+		case imageBuildCommandName:
+			subcommand.Flags().StringP("file", "f", "", "")
+			subcommand.Flags().StringP("output", "o", "", "")
 			subcommand.Flags().String("platform", "", "")
 		case imageListCommandName:
 			addImageFilterFlags(subcommand, &imageFilterFlagValues{})
@@ -103,6 +111,8 @@ func newImageCommand(
 	}
 	command.AddCommand(
 		newImagePullCommand(params, rootFlags),
+		newImageBuildCommand(params, rootFlags),
+		newImageImportCommand(params, rootFlags),
 		newImageListCommand(params),
 		newImageInspectCommand(params),
 		newImagePathCommand(params),

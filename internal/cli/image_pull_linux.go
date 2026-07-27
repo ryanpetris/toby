@@ -1,36 +1,21 @@
 package cli
 
-// Pulls OCI images through agent-owned preparation resources while reusing
-// the launch progress presentation.
+// Defines registry-backed image pulls.
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"runtime"
-	"sync"
-	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 
-	"petris.dev/toby/internal/agent/clientresource"
-	"petris.dev/toby/internal/agent/protocol"
 	"petris.dev/toby/internal/config/ociresource"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/oci/image"
-	"petris.dev/toby/internal/oci/prepareclient"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/status"
 )
-
-const imagePullReleaseTimeout = 15 * time.Second
-
-type imagePullBinding struct {
-	config   ociresource.Config
-	clientID protocol.ClientResourceID
-}
 
 func newImagePullCommand(
 	params Params,
@@ -46,24 +31,16 @@ func newImagePullCommand(
 			if err != nil {
 				return exitcode.New(2, "%v", err)
 			}
-			debug := false
-			quiet := false
-			if rootFlags != nil {
-				debug = rootFlags.debug
-				quiet = rootFlags.quiet
-			}
-			if debug && quiet {
-				return exitcode.New(
-					2,
-					"--debug and --quiet are mutually exclusive",
-				)
+			options, err := imageStatusOptions(rootFlags)
+			if err != nil {
+				return err
 			}
 			return pullImages(
 				cmd,
 				params,
 				args,
 				platform,
-				status.Options{Debug: debug, Quiet: quiet},
+				options,
 			)
 		},
 	}
@@ -83,149 +60,17 @@ func pullImages(
 	platform ocispec.Platform,
 	statusOptions status.Options,
 ) (returnErr error) {
-	if params.Agent == nil {
-		return fmt.Errorf("agent client is not configured")
-	}
-	if params.Status == nil {
-		return fmt.Errorf("status presentation is not configured")
-	}
-	if err := params.Status.Begin(statusOptions); err != nil {
-		return err
-	}
-	presentationActive := true
-	defer func() {
-		if presentationActive {
-			params.Diagnostics.Logger("cli.image").DebugError(
-				"finish image pull presentation",
-				params.Status.Finish(nil),
-			)
-		}
-	}()
-
 	requests, err := normalizeImagePullRequests(references, platform)
 	if err != nil {
 		return exitcode.New(2, "%v", err)
 	}
-
-	connectOperation := params.Status.StartOperation(
-		"Connecting to the Toby agent",
-	)
-	session, err := params.Agent.Connect(
-		command.Context(),
-		nil,
-	)
-	connectOperation.Finish(err)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		params.Diagnostics.Logger("cli.image").DebugError(
-			"close image pull agent session",
-			session.Close(),
-		)
-	}()
-
-	resources, err := clientresource.NewRegistry(
-		protocol.ResourceOCI,
-		session,
-		params.Diagnostics.Logger("clientresource.oci"),
-	)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			imagePullReleaseTimeout,
-		)
-		defer cancel()
-		params.Diagnostics.Logger("cli.image").DebugError(
-			"release image pull resources",
-			resources.Close(closeCtx),
-		)
-	}()
-
-	bindings := make([]imagePullBinding, 0, len(requests))
-	for _, request := range requests {
-		clientID, err := resources.Acquire(command.Context(), request)
-		if err != nil {
-			return fmt.Errorf(
-				"register OCI image %q: %w",
-				request.Reference,
-				err,
-			)
-		}
-		bindings = append(bindings, imagePullBinding{
-			config:   request,
-			clientID: clientID,
-		})
-	}
-
-	results := make([]error, len(bindings))
-	var workers sync.WaitGroup
-	for index, binding := range bindings {
-		workers.Add(1)
-		go func(index int, binding imagePullBinding) {
-			defer workers.Done()
-
-			reference := binding.config.Reference
-			err := prepareclient.Follow(
-				command.Context(),
-				resources,
-				binding.clientID,
-				reference,
-				prepareclient.Presentation{
-					Start: func() *status.Operation {
-						operation := params.Status.StartOperation(
-							"Preparing OCI image " + reference,
-						)
-						operation.SetProgress(status.Progress{
-							OCIAction:    "Preparing",
-							OCIReference: reference,
-						})
-						return operation
-					},
-					CompleteLabel: "Pulled OCI image " + reference,
-					Stdout:        command.OutOrStdout(),
-					Stderr:        command.ErrOrStderr(),
-					Logger: params.Diagnostics.Logger(
-						"oci.prepare",
-					),
-				},
-			)
-			results[index] = err
-		}(index, binding)
-	}
-	workers.Wait()
-	if err := errors.Join(results...); err != nil {
-		return err
-	}
-	presentationErr := params.Status.Finish(nil)
-	presentationActive = false
-	if presentationErr != nil {
-		return presentationErr
-	}
-
-	return withImageStore(
+	return prepareImageRequests(
+		command,
 		params,
-		func(store *oci.Store) error {
-			for _, request := range requests {
-				info, err := store.InspectImage(
-					command.Context(),
-					request.Reference,
-					request.Platform,
-				)
-				if err != nil {
-					return err
-				}
-				if _, err := fmt.Fprintln(
-					command.OutOrStdout(),
-					info.ID,
-				); err != nil {
-					return err
-				}
-			}
-			return nil
+		requests,
+		statusOptions,
+		func(reference string) string {
+			return "Pulled OCI image " + reference
 		},
 	)
 }
@@ -245,6 +90,7 @@ func normalizeImagePullRequests(
 	seen := make(map[string]bool, len(references))
 	for _, reference := range references {
 		request, err := ociresource.Normalize(ociresource.Config{
+			Source:     imagesource.Registry,
 			Reference:  reference,
 			Platform:   platform,
 			PullPolicy: image.PullAlways,

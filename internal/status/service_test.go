@@ -695,6 +695,54 @@ func TestServiceOperationCombinesStdoutAndStderrAndFlushesPartialOutput(
 	}
 }
 
+func TestOperationClearOutputDiscardsTranscriptAndPartialLines(t *testing.T) {
+	service := newService(
+		&lockedBuffer{},
+		true,
+		true,
+		defaultTranscriptLimit,
+	)
+	if err := service.Begin(Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	operation := service.StartOperation("Building OCI image")
+	stdout := operation.Writer(io.Discard)
+	stderr := operation.Writer(io.Discard)
+	if _, err := stdout.Write([]byte("build output\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stderr.Write([]byte("partial build output")); err != nil {
+		t.Fatal(err)
+	}
+
+	operation.ClearOutput()
+	operation.SetLabel("Extracting OCI image")
+	operation.SetProgress(Progress{
+		CompletedBytes: 1,
+		TotalBytes:     2,
+	})
+	operation.Finish(nil)
+
+	service.mu.Lock()
+	active := service.operations[service.active]
+	pendingBytes := service.pendingBytes
+	service.mu.Unlock()
+	if active == nil {
+		t.Fatal("completed operation is not visible")
+	}
+	if got := active.transcript.String(); got != "" {
+		t.Fatalf("cleared transcript = %q", got)
+	}
+	if pendingBytes != 0 {
+		t.Fatalf("pending output bytes = %d, want 0", pendingBytes)
+	}
+
+	if err := service.Finish(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServiceAggregateOperationOutputRemainsBounded(t *testing.T) {
 	const limit = 128
 	service := newService(

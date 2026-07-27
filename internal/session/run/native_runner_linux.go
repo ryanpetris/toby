@@ -39,6 +39,7 @@ import (
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/bwrap"
 	"petris.dev/toby/internal/sandbox/layout"
@@ -153,6 +154,9 @@ func (r *NativeRunner) Run(
 	options.Projects = append([]tools.ProjectMount(nil), opts.Projects...)
 
 	effective := r.baseConfig.WithOverrides(overrides)
+	if err := effective.Sandbox().Validate(); err != nil {
+		return err
+	}
 	r.launchConfig.SetCurrent(effective)
 	settings := effective.Settings()
 	if options.Quiet && settings.DebugEnabled() {
@@ -276,12 +280,15 @@ func (r *NativeRunner) Run(
 		sandboxConfig.Pull = image.PullIfMissing
 	}
 
-	if err := r.prepareNativeOCIResources(
+	sandboxResource, err := r.prepareNativeOCIResources(
 		ctx,
 		agentSession,
 		sandboxConfig,
 		resourceConfiguration,
-	); err != nil {
+		effective.Profile(),
+		options.Projects[0].Name,
+	)
+	if err != nil {
 		return err
 	}
 	if err := r.shutdown.Checkpoint(); err != nil {
@@ -307,7 +314,8 @@ func (r *NativeRunner) Run(
 	}()
 
 	prepared, err := ociStore.Prepare(ctx, oci.Request{
-		Reference: sandboxConfig.Image,
+		Source:    imagesource.Registry,
+		Reference: sandboxResource.Reference,
 		Platform: ocispec.Platform{
 			OS:           "linux",
 			Architecture: runtime.GOARCH,
@@ -358,6 +366,9 @@ func (r *NativeRunner) Run(
 		RevealHiddenOutput:      r.status.RevealsHiddenOutput(),
 	})
 	if err != nil {
+		return err
+	}
+	if err := addNativeResolverBind(toolSandbox); err != nil {
 		return err
 	}
 	if err := r.sandbox.Set(toolSandbox); err != nil {

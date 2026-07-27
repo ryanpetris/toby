@@ -16,6 +16,7 @@ import (
 	modelsconfig "petris.dev/toby/internal/config/models"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/oci/image"
+	"petris.dev/toby/internal/oci/imagesource"
 )
 
 func TestLoadDeepMergesNativeConfiguration(t *testing.T) {
@@ -106,6 +107,96 @@ func TestLoadDefaultsSandboxPullAndResolvesNativeMCPSecrets(t *testing.T) {
 	}
 	if got := again.MCPs["local"].Environment["TOKEN"]; got != "environment-secret" {
 		t.Fatalf("MCP returned shared state: %q", got)
+	}
+}
+
+func TestLoadResolvesSandboxBuildRelativeToConfig(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"sandbox:\n"+
+			"  build:\n"+
+			"    context: ../source\n"+
+			"    dockerfile: support/Tobyfile\n",
+	)
+
+	service, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := service.Sandbox()
+	contextPath := filepath.Clean(filepath.Join(dir, "../source"))
+	if got.Source != imagesource.Build ||
+		got.Build.Context != contextPath ||
+		got.Build.Dockerfile != filepath.Join(
+			contextPath,
+			"support",
+			"Tobyfile",
+		) ||
+		got.Pull != image.PullIfMissing {
+		t.Fatalf("sandbox = %#v", got)
+	}
+}
+
+func TestLoadResolvesSandboxArchiveRelativeToConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"sandbox:\n"+
+			"  archive: images/root.oci.tar\n",
+	)
+
+	service, err := Load(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := service.Sandbox()
+	if got.Source != imagesource.Archive ||
+		got.Archive != filepath.Join(
+			dir,
+			"images",
+			"root.oci.tar",
+		) ||
+		got.Pull != image.PullIfMissing {
+		t.Fatalf("sandbox = %#v", got)
+	}
+}
+
+func TestLoadAppliesPullPolicyToSandboxBuild(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"sandbox:\n"+
+			"  build:\n"+
+			"    context: .\n"+
+			"  pull: always\n",
+	)
+
+	service, err := Load(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := service.Sandbox().Pull; got != image.PullAlways {
+		t.Fatalf("pull policy = %q", got)
+	}
+}
+
+func TestLoadRejectsMultipleSandboxSources(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"sandbox:\n"+
+			"  image: alpine\n"+
+			"  archive: image.tar\n",
+	)
+
+	if _, err := Load(dir, t.TempDir()); err == nil {
+		t.Fatal("multiple sandbox sources succeeded")
 	}
 }
 

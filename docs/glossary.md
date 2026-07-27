@@ -42,8 +42,9 @@ code to match rather than redefining a term here.
 - **primary tool** — the application tool a run launches in the foreground (the
   one the user named). Use this term when distinguishing it from selected
   dependency or context tools.
-- **image** — an OCI manifest or index reference together with its verified
-  content.
+- **image** — an OCI manifest or index together with its verified content.
+- **image source** — the registry reference, OCI image-layout archive, or
+  Dockerfile build used to materialize an image.
 - **image reference** — one mutable, per-user mapping from a normalized OCI
   reference and exact platform to an immutable image object. Multiple image
   references may select the same object.

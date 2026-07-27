@@ -41,6 +41,8 @@ func TestIsConfigFreeInvocation(t *testing.T) {
 		{name: "volume filtered remove", arguments: []string{"volume", "remove", "--force", "--type", "tool"}, want: true},
 		{name: "image", arguments: []string{"image"}, want: true},
 		{name: "image pull", arguments: []string{"image", "pull", "alpine"}, want: true},
+		{name: "image build", arguments: []string{"image", "build", ".", "--output", "image.tar"}, want: true},
+		{name: "image import", arguments: []string{"image", "import", "image.tar", "example:latest"}, want: true},
 		{name: "image list", arguments: []string{"image", "list", "--dangling"}, want: true},
 		{name: "image list alias", arguments: []string{"image", "ls"}, want: true},
 		{name: "image inspect", arguments: []string{"image", "inspect", "alpine", "--output", "json"}, want: true},

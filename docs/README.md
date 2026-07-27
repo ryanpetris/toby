@@ -33,8 +33,8 @@ and contributor reference material.
 
 ## Operations
 
-- [Storage and agent management](management.md) - image and volume command
-  selection, output, inspection, removal, agent lifecycle, logs, and caches.
+- [Storage and agent management](management.md) - image build, import, catalog,
+  and removal commands; volume management; agent lifecycle; logs; and caches.
 - [Debugging sandbox startup](debugging-sandbox-startup.md) - startup
   presentation, structured diagnostics, host prerequisites, OCI and storage
   checks, agent inspection, resource troubleshooting, and terminal behavior.

@@ -14,11 +14,16 @@ const (
 	OCISourceExtractor OCISource = "extractor"
 	// OCISourceCache reports image-cache output.
 	OCISourceCache OCISource = "cache"
+	// OCISourceBuilder reports Buildah output.
+	OCISourceBuilder OCISource = "builder"
 )
 
 func (s OCISource) validate() error {
 	switch s {
-	case OCISourceRegistry, OCISourceExtractor, OCISourceCache:
+	case OCISourceRegistry,
+		OCISourceExtractor,
+		OCISourceCache,
+		OCISourceBuilder:
 		return nil
 	default:
 		return fmt.Errorf("unknown OCI output source %q", s)
