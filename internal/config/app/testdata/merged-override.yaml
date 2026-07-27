@@ -1,0 +1,9 @@
+
+instructions: [second.md, first.md]
+sandbox:
+  image: ghcr.io/example/final:latest
+  pull: always
+settings:
+  allowExternalProjects: true
+  debug: true
+  suppressWarnings: ["*"]

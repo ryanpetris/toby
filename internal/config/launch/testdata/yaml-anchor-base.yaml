@@ -1,0 +1,8 @@
+
+name: &shared old
+workdir: *shared
+tools:
+  exec:
+    <<: &tool-defaults
+      primary: true
+      params: ["base"]

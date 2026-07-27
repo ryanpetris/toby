@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install Protocol Buffers compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends protobuf-compiler
+
+      - name: Generate gRPC types
+        run: make gen/grpc
+
+      - name: Test with coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go test -covermode=atomic -coverprofile=dist/coverage.out ./...
+          go tool cover -func=dist/coverage.out | tee dist/coverage.txt
+          go tool cover -html=dist/coverage.out -o dist/coverage.html
+          {
+            printf '## Test Coverage\n\n'
+            printf '```\n'
+            cat dist/coverage.txt
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            dist/coverage.out
+            dist/coverage.txt
+            dist/coverage.html
+
+      - name: Publish release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

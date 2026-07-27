@@ -1,0 +1,20 @@
+
+sandbox:
+  image: custom-node
+  pull: always
+settings:
+  profile: review
+  autoUpgrade: true
+  debug: true
+  yolo: true
+  suppressWarnings: ["*"]
+workdir: ~/literal-workdir/../raw
+projects:
+  foo:
+  named:
+  dot:
+    path: .
+  bar:
+    path: ../bar-src
+  abs:
+    path:

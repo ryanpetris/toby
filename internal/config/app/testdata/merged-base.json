@@ -1,0 +1,22 @@
+{
+		"instructions": ["first.md"],
+		"sandbox": {
+			"image": "ghcr.io/example/base:latest",
+			"pull": "if-missing"
+		},
+		"settings": {
+			"debug": false,
+			"suppressWarnings": ["permission.auto-deny"]
+		},
+		"permissions": {
+			"paths": {"~/src": "allow"}
+		},
+		"resources": {
+			"models": {
+				"openai": {
+					"protocol": "openai",
+					"url": "https://api.example.invalid/v1"
+				}
+			}
+		}
+	}

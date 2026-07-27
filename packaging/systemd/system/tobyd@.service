@@ -1,0 +1,21 @@
+[Unit]
+Description=Toby agent service for %i
+Documentation=https://github.com/ryanpetris/toby
+Requires=tobyd@%i.socket
+After=tobyd@%i.socket
+
+[Service]
+Type=simple
+User=%I
+Environment=XDG_RUNTIME_DIR=/run/toby/users/%I
+RuntimeDirectory=toby/users/%I toby/users/%I/toby
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/tobyd --persistent
+TimeoutStopSec=50s
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+Also=tobyd@%i.socket

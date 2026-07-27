@@ -1,0 +1,11 @@
+
+name: custom-name
+projects:
+  duplicate:
+    path: Projects/app
+  shared:
+  extra:
+    path: extra
+tools:
+  opencode:
+  npm:

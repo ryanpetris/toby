@@ -1,0 +1,8 @@
+
+settings:
+  suppressWarnings:
+    - unknown.warning
+projects:
+  foo:
+tools:
+  exec:

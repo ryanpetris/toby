@@ -1,0 +1,7 @@
+
+resources:
+  mcps:
+    docs:
+      type: remote
+      transport: http
+      url: "{env:TOBY_TEST_MISSING_MCP_URL}"

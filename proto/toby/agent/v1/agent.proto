@@ -1,0 +1,480 @@
+syntax = "proto3";
+
+package toby.agent.v1;
+
+option go_package = "petris.dev/toby/internal/gen/toby/agent/v1;agentv1";
+
+// ResourceKind selects one agent resource handler.
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_OCI = 1;
+  RESOURCE_KIND_MCP = 2;
+  RESOURCE_KIND_MODELS = 3;
+}
+
+// ServiceState is the agent-service state returned by Status.
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  SERVICE_STATE_STARTING = 1;
+  SERVICE_STATE_READY = 2;
+  SERVICE_STATE_STOPPING = 3;
+}
+
+// TransportCapability identifies a transport supported by the agent service.
+enum TransportCapability {
+  TRANSPORT_CAPABILITY_UNSPECIFIED = 0;
+  TRANSPORT_CAPABILITY_UNIX_SOCKET = 1;
+}
+
+// ErrorCode is the closed Toby failure category attached to a gRPC status.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_ACQUIRE_FAILED = 2;
+  ERROR_CODE_LEASE_NOT_FOUND = 3;
+  ERROR_CODE_UNAVAILABLE = 4;
+  ERROR_CODE_INTERNAL = 5;
+}
+
+// OutputStream preserves diagnostic stdout or stderr provenance.
+enum OutputStream {
+  OUTPUT_STREAM_UNSPECIFIED = 0;
+  OUTPUT_STREAM_STDOUT = 1;
+  OUTPUT_STREAM_STDERR = 2;
+}
+
+// OCISource identifies the image-preparation component producing output.
+enum OCISource {
+  OCI_SOURCE_UNSPECIFIED = 0;
+  OCI_SOURCE_REGISTRY = 1;
+  OCI_SOURCE_EXTRACTOR = 2;
+  OCI_SOURCE_CACHE = 3;
+}
+
+// OCIProgressPhase identifies one image-preparation phase.
+enum OCIProgressPhase {
+  OCI_PROGRESS_PHASE_UNSPECIFIED = 0;
+  OCI_PROGRESS_PHASE_RESOLVING = 1;
+  OCI_PROGRESS_PHASE_DOWNLOADING = 2;
+  OCI_PROGRESS_PHASE_EXTRACTING = 3;
+}
+
+// HelloRequest asks the agent service to describe its application protocol.
+message HelloRequest {
+  string correlation_id = 1;
+  string binary_version = 2;
+}
+
+// HelloResponse reports agent-service compatibility information.
+message HelloResponse {
+  string correlation_id = 1;
+  string binary_version = 2;
+  uint32 protocol_version = 3;
+  string hash_algorithm = 4;
+}
+
+// ErrorDetail adds Toby-specific context to a gRPC status.
+message ErrorDetail {
+  string correlation_id = 1;
+  ErrorCode code = 2;
+  string message = 3;
+  bool retryable = 4;
+}
+
+// SessionOpenRequest is the required first OpenSession client message.
+message SessionOpenRequest {}
+
+// SessionOpenResponse returns the new session and available transports.
+message SessionOpenResponse {
+  string session_id = 1;
+  repeated TransportCapability transport_capabilities = 2;
+}
+
+// HostActionRequest asks the live launch client to perform one typed action.
+message HostActionRequest {
+  bytes payload = 1;
+}
+
+// HostActionResponse returns the action protocol's successful payload.
+message HostActionResponse {
+  bytes payload = 1;
+}
+
+// HostActionError returns a safe typed failure for one host action.
+message HostActionError {
+  ErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
+
+// HostActionCancel revokes one outstanding reverse action.
+message HostActionCancel {}
+
+// ShutdownRequest asks the client to finish launch-owned cleanup within
+// the advertised grace period.
+message ShutdownRequest {
+  uint64 grace_period_milliseconds = 1;
+}
+
+// ShutdownResponse confirms that client cleanup has completed.
+message ShutdownResponse {}
+
+// SessionClientMessage opens a session or answers an agent request.
+message SessionClientMessage {
+  string correlation_id = 1;
+
+  oneof value {
+    SessionOpenRequest open = 2;
+    HostActionResponse host_action_response = 3;
+    HostActionError host_action_error = 4;
+    ShutdownResponse shutdown_response = 5;
+  }
+}
+
+// SessionServerMessage acknowledges a session or carries an agent request.
+message SessionServerMessage {
+  string correlation_id = 1;
+
+  oneof value {
+    SessionOpenResponse opened = 2;
+    HostActionRequest host_action_request = 3;
+    HostActionCancel host_action_cancel = 4;
+    ShutdownRequest shutdown_request = 5;
+  }
+}
+
+// ResourceAcquireRequest registers one input-only resource configuration.
+message ResourceAcquireRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  ResourceKind kind = 3;
+  bytes configuration = 4;
+}
+
+// ResourceAcquireResponse returns one stable resource and independent lease.
+message ResourceAcquireResponse {
+  string correlation_id = 1;
+  string resource_id = 2;
+  string lease_id = 3;
+}
+
+// ResourceReleaseRequest releases one lease owned by the selected session.
+message ResourceReleaseRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  string lease_id = 3;
+}
+
+// ResourceReleaseResponse acknowledges a completed or idempotent release.
+message ResourceReleaseResponse {
+  string correlation_id = 1;
+}
+
+// StatusRequest asks for non-secret agent-service and activity state.
+message StatusRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+}
+
+// StatusResponse reports process state and active-object counts.
+message StatusResponse {
+  string correlation_id = 1;
+  string binary_version = 2;
+  ServiceState state = 3;
+  uint64 active_sessions = 4;
+  uint64 active_leases = 5;
+  uint64 active_resources = 6;
+  uint64 active_streams = 7;
+}
+
+// StopRequest begins graceful agent-service shutdown.
+message StopRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+}
+
+// StopResponse acknowledges the stop request before teardown completes.
+message StopResponse {
+  string correlation_id = 1;
+}
+
+// ResourceListRequest selects the session that owns the listing operation.
+message ResourceListRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+}
+
+// ResourceListItem reports one non-secret active agent resource.
+message ResourceListItem {
+  string correlation_id = 1;
+  uint64 sequence = 2;
+  string resource_id = 3;
+  ResourceKind kind = 4;
+  uint64 active_leases = 5;
+}
+
+// ResourceLogRequest selects an exact or latest retained JSONL log.
+message ResourceLogRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  ResourceKind kind = 3;
+  string resource_id = 4;
+  string operation_id = 5;
+}
+
+// ResourceLogAccepted reports the operation selected for reading.
+message ResourceLogAccepted {
+  string operation_id = 1;
+}
+
+// ResourceLogChunk carries exact raw bytes from the retained log file.
+message ResourceLogChunk {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  bytes data = 3;
+}
+
+// ResourceLogComplete marks successful end of the selected log.
+message ResourceLogComplete {
+  string operation_id = 1;
+  uint64 sequence = 2;
+}
+
+// ResourceLogFailed marks an accepted log read that could not complete.
+message ResourceLogFailed {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  string message = 3;
+}
+
+// ResourceLogEvent is one ordered event in a retained-log read.
+message ResourceLogEvent {
+  string correlation_id = 1;
+
+  oneof value {
+    ResourceLogAccepted accepted = 2;
+    ResourceLogChunk chunk = 3;
+    ResourceLogComplete complete = 4;
+    ResourceLogFailed failed = 5;
+  }
+}
+
+// ModelsListRequest discovers models through one active models lease.
+message ModelsListRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  string lease_id = 3;
+}
+
+// ModelsListAccepted reports the new discovery operation identity.
+message ModelsListAccepted {
+  string operation_id = 1;
+}
+
+// ModelsListItem carries one sorted model ID and JSON metadata document.
+message ModelsListItem {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  string model_id = 3;
+  bytes model = 4;
+}
+
+// ModelsListComplete marks successful model discovery.
+message ModelsListComplete {
+  string operation_id = 1;
+  uint64 sequence = 2;
+}
+
+// ModelsListFailed marks an accepted discovery operation that failed.
+message ModelsListFailed {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  string message = 3;
+}
+
+// ModelsListEvent is one ordered model-discovery event.
+message ModelsListEvent {
+  string correlation_id = 1;
+
+  oneof value {
+    ModelsListAccepted accepted = 2;
+    ModelsListItem item = 3;
+    ModelsListComplete complete = 4;
+    ModelsListFailed failed = 5;
+  }
+}
+
+// ModelsCacheFlushRequest invalidates one active models resource cache.
+message ModelsCacheFlushRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  string lease_id = 3;
+}
+
+// ModelsCacheFlushResponse acknowledges cache invalidation.
+message ModelsCacheFlushResponse {
+  string correlation_id = 1;
+}
+
+// OCIProgress is one complete absolute image-preparation snapshot.
+message OCIProgress {
+  OCIProgressPhase phase = 1;
+  int64 completed_bytes = 2;
+  int64 total_bytes = 3;
+  int64 completed_items = 4;
+  int64 total_items = 5;
+}
+
+// OCIPrepareRequest starts or joins preparation for one active OCI lease.
+message OCIPrepareRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  string resource_id = 3;
+  string lease_id = 4;
+}
+
+// OCIPrepareAccepted reports the selected preparation operation.
+message OCIPrepareAccepted {
+  string operation_id = 1;
+}
+
+// OCIPrepareSnapshot lets a late follower catch up to active work.
+message OCIPrepareSnapshot {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  OCIProgress progress = 3;
+}
+
+// OCIPrepareProgress carries one new absolute progress checkpoint.
+message OCIPrepareProgress {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  OCIProgress progress = 3;
+}
+
+// OCIPrepareOutput preserves one bounded diagnostic byte chunk.
+message OCIPrepareOutput {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  OCISource source = 3;
+  OutputStream stream = 4;
+  bytes data = 5;
+}
+
+// OCIPrepareComplete marks successful preparation and cached status.
+message OCIPrepareComplete {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  bool cached = 3;
+}
+
+// OCIPrepareFailed marks an accepted preparation operation that failed.
+message OCIPrepareFailed {
+  string operation_id = 1;
+  uint64 sequence = 2;
+  string message = 3;
+}
+
+// OCIPrepareEvent is one ordered image-preparation event.
+message OCIPrepareEvent {
+  string correlation_id = 1;
+
+  oneof value {
+    OCIPrepareAccepted accepted = 2;
+    OCIPrepareSnapshot snapshot = 3;
+    OCIPrepareProgress progress = 4;
+    OCIPrepareOutput output = 5;
+    OCIPrepareComplete complete = 6;
+    OCIPrepareFailed failed = 7;
+  }
+}
+
+// MCPConnectOpen selects one active MCP resource lease.
+message MCPConnectOpen {
+  string session_id = 1;
+  string resource_id = 2;
+  string lease_id = 3;
+}
+
+// MCPConnectReady confirms that the MCP backend stream is open.
+message MCPConnectReady {}
+
+// MCPConnectRequest opens the stream and then carries raw MCP bytes.
+message MCPConnectRequest {
+  string correlation_id = 1;
+
+  oneof value {
+    MCPConnectOpen open = 2;
+    bytes data = 3;
+  }
+}
+
+// MCPConnectResponse acknowledges readiness and then carries raw MCP bytes.
+message MCPConnectResponse {
+  string correlation_id = 1;
+
+  oneof value {
+    MCPConnectReady ready = 2;
+    bytes data = 3;
+  }
+}
+
+// ModelsConnectOpen selects one active models resource lease.
+message ModelsConnectOpen {
+  string session_id = 1;
+  string resource_id = 2;
+  string lease_id = 3;
+}
+
+// ModelsConnectReady confirms that the models HTTP stream is open.
+message ModelsConnectReady {}
+
+// ModelsConnectRequest opens the stream and then carries raw HTTP bytes.
+message ModelsConnectRequest {
+  string correlation_id = 1;
+
+  oneof value {
+    ModelsConnectOpen open = 2;
+    bytes data = 3;
+  }
+}
+
+// ModelsConnectResponse acknowledges readiness and then carries raw HTTP bytes.
+message ModelsConnectResponse {
+  string correlation_id = 1;
+
+  oneof value {
+    ModelsConnectReady ready = 2;
+    bytes data = 3;
+  }
+}
+
+// AgentService coordinates one user's resources and sessions.
+service AgentService {
+  // Hello returns agent protocol and hash compatibility information.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  // OpenSession owns leases and carries causally initiated reverse host actions.
+  rpc OpenSession(stream SessionClientMessage) returns (stream SessionServerMessage);
+  // AcquireResource registers one input-only configuration.
+  rpc AcquireResource(ResourceAcquireRequest) returns (ResourceAcquireResponse);
+  // ReleaseResource releases one session-owned lease.
+  rpc ReleaseResource(ResourceReleaseRequest) returns (ResourceReleaseResponse);
+  // Status reports non-secret agent-service state.
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // Stop begins graceful agent-service teardown.
+  rpc Stop(StopRequest) returns (StopResponse);
+  // ListResources streams non-secret active resources.
+  rpc ListResources(ResourceListRequest) returns (stream ResourceListItem);
+  // ReadResourceLog streams one exact or latest retained JSONL file.
+  rpc ReadResourceLog(ResourceLogRequest) returns (stream ResourceLogEvent);
+  // ListModels streams sorted discovered model documents.
+  rpc ListModels(ModelsListRequest) returns (stream ModelsListEvent);
+  // FlushModelsCache invalidates one resource's discovery cache.
+  rpc FlushModelsCache(ModelsCacheFlushRequest) returns (ModelsCacheFlushResponse);
+  // PrepareOCI starts or joins one image-preparation operation.
+  rpc PrepareOCI(OCIPrepareRequest) returns (stream OCIPrepareEvent);
+  // ConnectMCP carries one lease-authorized MCP byte stream.
+  rpc ConnectMCP(stream MCPConnectRequest) returns (stream MCPConnectResponse);
+  // ConnectModels carries one lease-authorized raw HTTP byte stream.
+  rpc ConnectModels(stream ModelsConnectRequest) returns (stream ModelsConnectResponse);
+}

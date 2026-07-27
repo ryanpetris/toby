@@ -1,0 +1,8 @@
+
+    local:
+      type: local
+      transport: stdio
+      image: ghcr.io/example/mcp:latest
+      command: /bin/server
+      scope: run
+      network: private

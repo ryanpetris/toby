@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package toby.sandbox.v1;
+
+option go_package = "petris.dev/toby/internal/gen/toby/sandbox/v1;sandboxv1";
+
+// HelloRequest asks the run-scoped endpoint to describe its protocol.
+message HelloRequest {
+  string correlation_id = 1;
+  string binary_version = 2;
+}
+
+// HelloResponse reports the endpoint implementation and protocol version.
+message HelloResponse {
+  string correlation_id = 1;
+  string binary_version = 2;
+  uint32 protocol_version = 3;
+}
+
+// SandboxService exposes run-scoped resources to processes inside one sandbox.
+service SandboxService {
+  // Hello returns launch protocol compatibility information.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  // ConnectResource carries one launch-authorized bidirectional byte stream.
+  rpc ConnectResource(stream ResourceConnectRequest)
+      returns (stream ResourceConnectResponse);
+}
+
+// ResourceConnectRequest opens one resource and then carries client bytes.
+message ResourceConnectRequest {
+  string correlation_id = 1;
+
+  oneof value {
+    ResourceConnectOpen open = 2;
+    bytes data = 3;
+  }
+}
+
+// ResourceConnectOpen selects one launch-generated client resource UUID.
+message ResourceConnectOpen {
+  string resource_id = 1;
+}
+
+// ResourceConnectResponse acknowledges the resource and then carries its bytes.
+message ResourceConnectResponse {
+  string correlation_id = 1;
+
+  oneof value {
+    ResourceConnectReady ready = 2;
+    bytes data = 3;
+  }
+}
+
+// ResourceConnectReady confirms that the resource stream is open.
+message ResourceConnectReady {}

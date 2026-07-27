@@ -1,0 +1,5 @@
+
+name: &shared new
+tools:
+  exec:
+    params: ["fragment"]

@@ -1,0 +1,5 @@
+
+name: fragment
+projects:
+  app:
+    path: escaped

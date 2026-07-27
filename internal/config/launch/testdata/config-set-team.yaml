@@ -1,0 +1,11 @@
+
+sandbox:
+  pull: always
+settings:
+  debug: true
+projects:
+  app:
+    path: src/team
+tools:
+  exec:
+    params: ["team"]

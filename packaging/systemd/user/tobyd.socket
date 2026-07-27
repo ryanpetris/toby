@@ -1,0 +1,14 @@
+[Unit]
+Description=Toby agent socket
+Documentation=https://github.com/ryanpetris/toby
+
+[Socket]
+ListenStream=%t/toby/agent.sock
+FileDescriptorName=agent
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=true
+Service=tobyd.service
+
+[Install]
+WantedBy=sockets.target

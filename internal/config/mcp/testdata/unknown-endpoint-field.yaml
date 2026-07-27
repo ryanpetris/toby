@@ -1,0 +1,13 @@
+
+    local:
+      type: local
+      transport: http
+      image: ghcr.io/example/mcp:latest
+      command: ["/bin/server"]
+      endpoint:
+        kind: unix
+        socket: /run/toby/local.sock
+        path: /mcp
+        unexpected: true
+      scope: run
+      network: host

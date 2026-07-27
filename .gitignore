@@ -1,0 +1,30 @@
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Go build and test artifacts
+/toby
+/bin/
+/dist/
+/internal/gen/
+*.test
+*.out
+coverage.out
+*.coverprofile
+
+# AI coding tool state and config directories
+.claude/
+.codex/
+.copilot/
+.grok/
+.opencode/
+.specify/
+.gemini/
+.aider*
+
+# Local Toby configuration
+.toby/

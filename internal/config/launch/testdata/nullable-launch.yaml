@@ -1,0 +1,15 @@
+
+projects:
+  foo:
+workdir: /tmp/work
+settings:
+  profile: review
+  debug: false
+  yolo: true
+  suppressWarnings:
+    - permission.auto-deny
+tools:
+  gh:
+    primary: true
+    profile: personal
+  npm:

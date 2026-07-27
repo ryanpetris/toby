@@ -1,0 +1,11 @@
+
+name: final
+sandbox:
+  image: final-image
+  pull: never
+projects:
+  app:
+    path: src/final
+tools:
+  exec:
+    params: ["final", "--flag"]

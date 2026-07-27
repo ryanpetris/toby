@@ -1,0 +1,6 @@
+
+sandbox:
+  image: ghcr.io/example/base:latest
+  pull: if-missing
+settings:
+  debug: false

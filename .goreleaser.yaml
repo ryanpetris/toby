@@ -1,0 +1,137 @@
+version: 2
+
+project_name: toby
+
+before:
+  hooks:
+    - make gen/grpc
+
+builds:
+  - id: toby
+    main: ./cmd/toby
+    binary: toby
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X petris.dev/toby/internal/version.Current={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - id: tobyd
+    main: ./cmd/tobyd
+    binary: tobyd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X petris.dev/toby/internal/version.Current={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - id: tobys
+    main: ./cmd/tobys
+    binary: tobys
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X petris.dev/toby/internal/version.Current={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: binary
+    ids:
+      - toby
+      - tobyd
+      - tobys
+    formats:
+      - tar.gz
+    name_template: >-
+      toby-linux-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - none*
+
+nfpms:
+  - id: packages
+    ids:
+      - toby
+      - tobyd
+      - tobys
+    package_name: toby
+    file_name_template: >-
+      toby_{{ .Version }}_linux_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    vendor: Toby
+    homepage: https://github.com/ryanpetris/toby
+    maintainer: Ryan Petris <ryan@petris.net>
+    description: >-
+      Private-home development sandboxes using Bubblewrap and OCI images.
+    license: MIT
+    bindir: /usr/bin
+    section: utils
+    priority: optional
+    release: "1"
+    formats:
+      - deb
+      - archlinux
+    dependencies:
+      - bubblewrap
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/toby/LICENSE
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/system/tobyd@.service
+        dst: /usr/lib/systemd/system/tobyd@.service
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/system/tobyd@.socket
+        dst: /usr/lib/systemd/system/tobyd@.socket
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/user/tobyd.service
+        dst: /usr/lib/systemd/user/tobyd.service
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/user/tobyd.socket
+        dst: /usr/lib/systemd/user/tobyd.socket
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      postremove: packaging/scripts/postremove.sh
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

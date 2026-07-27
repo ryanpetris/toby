@@ -1,0 +1,13 @@
+[Unit]
+Description=Toby agent service
+Documentation=https://github.com/ryanpetris/toby
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tobyd --persistent
+TimeoutStopSec=50s
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target

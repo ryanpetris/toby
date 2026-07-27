@@ -1,0 +1,16 @@
+
+name: base
+sandbox:
+  image: base-image
+  pull: if-missing
+settings:
+  debug: false
+projects:
+  app:
+    path: src/base
+  root:
+    path: .
+tools:
+  exec:
+    primary: true
+    params: ["base"]

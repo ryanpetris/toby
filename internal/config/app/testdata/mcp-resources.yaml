@@ -1,0 +1,18 @@
+
+resources:
+  mcps:
+    docs:
+      type: remote
+      transport: http
+      url: "{env:MCP_URL}"
+      headers:
+        Authorization: "Bearer {file:argument.txt}"
+    local:
+      type: local
+      transport: stdio
+      image: ghcr.io/example/mcp:latest
+      command: ["/bin/server", "--token={file:argument.txt}"]
+      environment:
+        TOKEN: "{env:MCP_TOKEN}"
+      scope: run
+      network: private

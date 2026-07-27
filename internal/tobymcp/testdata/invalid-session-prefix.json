@@ -1,0 +1,13 @@
+{
+		"debug":false,
+		"runtime":{
+			"name":"work",
+			"profile":"default",
+			"runtime":"bubblewrap",
+			"home":"/toby/home",
+			"workspace":"/toby/workspace",
+			"root":"/toby",
+			"bin":"/toby/bin",
+			"workdir":"/toby/workspace"
+		},
+		"tools":{}
