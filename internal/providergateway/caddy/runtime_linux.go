@@ -126,22 +126,7 @@ func (p *Pool) openRuntime(
 		}
 	}()
 
-	resolver, err := os.Open(defaultResolverSource)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"open Caddy resolver capability",
-		)
-	}
-	defer func() {
-		if returnErr != nil {
-			p.logger.DebugError(
-				"close Caddy resolver source after initialization failure",
-				resolver.Close(),
-			)
-		}
-	}()
-
-	spec, err := p.resourceSpec(prepared, auth, resolver)
+	spec, err := p.resourceSpec(prepared, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +141,6 @@ func (p *Pool) openRuntime(
 		executor:       executor,
 		authPath:       p.authPath,
 		auth:           auth,
-		resolver:       resolver,
 		readinessLimit: p.options.ReadinessTimeout,
 		readinessPoll:  p.options.ReadinessPoll,
 		uid:            uid,
@@ -180,7 +164,6 @@ func (p *Pool) openRuntime(
 		images:   images,
 		executor: executor,
 		auth:     auth,
-		resolver: resolver,
 		key:      key,
 		logger:   p.logger,
 	}, nil
@@ -193,7 +176,6 @@ type nativeRuntime struct {
 	images   *oci.Store
 	executor *bwrap.Executor
 	auth     *os.File
-	resolver *os.File
 	key      resource.Key
 	logger   *diagnostic.Logger
 }
@@ -205,7 +187,6 @@ func (r *nativeRuntime) Close(ctx context.Context) error {
 
 	shutdownErr := r.registry.Shutdown(ctx)
 	r.logger.DebugError("close Caddy authorization source", r.auth.Close())
-	r.logger.DebugError("close Caddy resolver source", r.resolver.Close())
 	r.logger.DebugError("close prepared Caddy image", r.image.Close())
 	r.logger.DebugError("close Caddy run storage", r.storage.Close())
 	r.logger.DebugError("close Caddy image store", r.images.Close())

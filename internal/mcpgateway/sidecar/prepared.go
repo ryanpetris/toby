@@ -12,6 +12,7 @@ import (
 
 	"petris.dev/toby/internal/agent/resource"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/hostconfig"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
 )
@@ -96,6 +97,10 @@ func (p *Prepared) Start(
 			)
 		}
 	}()
+
+	if err := hostconfig.Copy(directories); err != nil {
+		return nil, err
+	}
 
 	sources, closeSources, err := p.sources(directories, withRuntime)
 	if err != nil {

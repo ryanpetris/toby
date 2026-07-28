@@ -9,26 +9,30 @@ import (
 	"fmt"
 	"os"
 
+	"golang.org/x/sys/unix"
+
 	"petris.dev/toby/internal/sandbox/mount"
 )
 
 // BackgroundServiceSources contains the authoritative caller-owned
 // capabilities for every host object in a BackgroundServicePlan.
 type BackgroundServiceSources struct {
-	RootFS  *os.File
-	Binds   map[string]*os.File
-	Runtime *os.File
+	RootFS       *os.File
+	OverlayUpper *os.File
+	OverlayWork  *os.File
+	Binds        map[string]*os.File
+	Runtime      *os.File
 }
 
 func validateBackgroundServiceSourceCardinality(
 	plan BackgroundServicePlan,
 	sources BackgroundServiceSources,
 ) error {
-	expected := 1 + len(plan.Binds)
+	expected := 3 + len(plan.Binds)
 	if plan.Runtime != nil {
 		expected++
 	}
-	provided := 1 + len(sources.Binds)
+	provided := 3 + len(sources.Binds)
 	if sources.Runtime != nil {
 		provided++
 	}
@@ -61,11 +65,29 @@ func validateBackgroundServiceSources(
 	); err != nil {
 		return err
 	}
-	if err := validateDirectoryDescriptor(
-		"background-service rootfs",
-		sources.RootFS,
-	); err != nil {
-		return err
+	for _, source := range []struct {
+		label string
+		file  *os.File
+	}{
+		{
+			label: "background-service rootfs",
+			file:  sources.RootFS,
+		},
+		{
+			label: "background-service overlay upper",
+			file:  sources.OverlayUpper,
+		},
+		{
+			label: "background-service overlay work",
+			file:  sources.OverlayWork,
+		},
+	} {
+		if err := validateDirectoryDescriptor(
+			source.label,
+			source.file,
+		); err != nil {
+			return err
+		}
 	}
 
 	for _, bind := range plan.Binds {
@@ -142,12 +164,23 @@ func validateDistinctBackgroundServiceDescriptors(
 	descriptors := make(
 		[]namedDescriptor,
 		0,
-		1+len(plan.Binds)+1,
+		3+len(plan.Binds)+1,
 	)
-	descriptors = append(descriptors, namedDescriptor{
-		label: "background-service rootfs",
-		file:  sources.RootFS,
-	})
+	descriptors = append(
+		descriptors,
+		namedDescriptor{
+			label: "background-service rootfs",
+			file:  sources.RootFS,
+		},
+		namedDescriptor{
+			label: "background-service overlay upper",
+			file:  sources.OverlayUpper,
+		},
+		namedDescriptor{
+			label: "background-service overlay work",
+			file:  sources.OverlayWork,
+		},
+	)
 	for _, bind := range plan.Binds {
 		descriptors = append(descriptors, namedDescriptor{
 			label: "background-service bind " + bind.Target,
@@ -184,6 +217,32 @@ func validateDistinctBackgroundServiceDescriptors(
 			label: descriptor.label,
 			info:  info,
 		})
+	}
+
+	var upper unix.Stat_t
+	if err := unix.Fstat(
+		int(sources.OverlayUpper.Fd()),
+		&upper,
+	); err != nil {
+		return fmt.Errorf(
+			"inspect background-service overlay upper filesystem: %w",
+			err,
+		)
+	}
+	var work unix.Stat_t
+	if err := unix.Fstat(
+		int(sources.OverlayWork.Fd()),
+		&work,
+	); err != nil {
+		return fmt.Errorf(
+			"inspect background-service overlay work filesystem: %w",
+			err,
+		)
+	}
+	if upper.Dev != work.Dev {
+		return fmt.Errorf(
+			"background-service overlay upper and work must share a filesystem",
+		)
 	}
 
 	return nil

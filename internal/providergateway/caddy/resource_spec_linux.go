@@ -16,7 +16,6 @@ import (
 func (p *Pool) resourceSpec(
 	prepared *oci.Prepared,
 	auth *os.File,
-	resolver *os.File,
 ) (resource.Spec, error) {
 	rootfs := prepared.Spec()
 	if rootfs.Manifest.Digest.String() == "" ||
@@ -30,11 +29,6 @@ func (p *Pool) resourceSpec(
 	if err != nil {
 		return resource.Spec{}, err
 	}
-	resolverIdentity, err := sourceIdentity(resolver)
-	if err != nil {
-		return resource.Spec{}, err
-	}
-
 	return resource.Spec{
 		Kind:           resource.KindCaddy,
 		Transport:      resource.TransportHTTP,
@@ -60,13 +54,6 @@ func (p *Pool) resourceSpec(
 				Source:         p.authPath,
 				SourceIdentity: authIdentity,
 				Target:         defaultAuthSocket,
-				Access:         "read_only",
-				Scope:          resource.ScopeUser,
-			},
-			{
-				Source:         defaultResolverSource,
-				SourceIdentity: resolverIdentity,
-				Target:         defaultResolverTarget,
 				Access:         "read_only",
 				Scope:          resource.ScopeUser,
 			},

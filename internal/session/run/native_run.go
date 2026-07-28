@@ -20,6 +20,7 @@ import (
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/runtimeassets"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/hostconfig"
 	"petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/sandboxgateway"
 	"petris.dev/toby/internal/socketrelay"
@@ -171,6 +172,10 @@ func NewNativeRun(
 			)
 		}
 	}()
+
+	if err := hostconfig.Copy(directories); err != nil {
+		return nil, err
+	}
 
 	sources, closeSources, err := nativeRunSources(input, directories)
 	if err != nil {

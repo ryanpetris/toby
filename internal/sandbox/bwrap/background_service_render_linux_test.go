@@ -91,6 +91,21 @@ func TestBackgroundServicePlanValidatesReadOnlyPathGraphs(t *testing.T) {
 			},
 		},
 		{
+			name: "overlay upper aliases work",
+			mutate: func(plan *BackgroundServicePlan) {
+				plan.Overlay.Work = plan.Overlay.Upper
+			},
+		},
+		{
+			name: "overlay root does not match id",
+			mutate: func(plan *BackgroundServicePlan) {
+				plan.Overlay.Upper =
+					"/host/runs/other/upper"
+				plan.Overlay.Work =
+					"/host/runs/other/work"
+			},
+		},
+		{
 			name: "negative identity",
 			mutate: func(plan *BackgroundServicePlan) {
 				plan.Identity.HostUID = -1
@@ -265,7 +280,7 @@ func TestRenderBackgroundServiceGoldenPolicyAndDescriptors(t *testing.T) {
 	})
 
 	if got, want := invocation.Args, []string{
-		"--args", "8",
+		"--args", "10",
 		"--",
 		"/usr/bin/service", "serve", "public-command-sentinel",
 	}; !slices.Equal(got, want) {
@@ -296,18 +311,23 @@ func TestRenderBackgroundServiceGoldenPolicyAndDescriptors(t *testing.T) {
 		"--die-with-parent",
 		"--cap-drop", "ALL",
 		"--overlay-src", "/proc/self/fd/3",
-		"--tmp-overlay", "/",
+		"--overlay",
+		"/proc/self/fd/4",
+		"/proc/self/fd/5",
+		"/",
 		"--ro-bind-fd", "3", "/dev",
+		"--ro-bind-fd", "4", "/dev",
+		"--ro-bind-fd", "5", "/dev",
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
 		"--tmpfs", "/run",
 		"--dir", "/run/toby",
 		"--chmod", "0700", "/run/toby",
-		"--ro-bind-fd", "4", "/etc/resolv.conf",
-		"--ro-bind-fd", "5", "/etc/ssl/certs",
-		"--ro-bind-fd", "6", "/run/toby/auth.sock",
-		"--bind-fd", "7", "/run/toby/service",
+		"--ro-bind-fd", "6", "/etc/ssl/certs",
+		"--ro-bind-fd", "7", "/opt/service/config",
+		"--ro-bind-fd", "8", "/run/toby/auth.sock",
+		"--bind-fd", "9", "/run/toby/service",
 		"--remount-ro", "/",
 		"--clearenv",
 		"--setenv", "HOME", "/tmp",
@@ -326,7 +346,7 @@ func TestRenderBackgroundServiceGoldenPolicyAndDescriptors(t *testing.T) {
 		)
 	}
 	for _, forbidden := range []string{
-		"--overlay",
+		"--tmp-overlay",
 		"/toby/home",
 		"/toby/workspace",
 	} {
@@ -342,7 +362,11 @@ func TestRenderBackgroundServiceGoldenPolicyAndDescriptors(t *testing.T) {
 	}
 
 	canonical := plan.Canonical()
-	wantSources := []*os.File{sources.RootFS}
+	wantSources := []*os.File{
+		sources.RootFS,
+		sources.OverlayUpper,
+		sources.OverlayWork,
+	}
 	for _, bind := range canonical.Binds {
 		wantSources = append(wantSources, sources.Binds[bind.Target])
 	}
@@ -431,7 +455,7 @@ func TestRenderBackgroundServiceWithoutWritableRuntime(t *testing.T) {
 			args,
 		)
 	}
-	if got, want := len(invocation.ExtraFiles), 5; got != want {
+	if got, want := len(invocation.ExtraFiles), 7; got != want {
 		t.Fatalf("extra files = %d, want %d", got, want)
 	}
 }
@@ -472,6 +496,16 @@ func TestRenderBackgroundServiceRejectsInvalidSourceSets(t *testing.T) {
 				sources.RootFS = openExecutableSource(t)
 			},
 			match: "rootfs source must be a directory descriptor",
+		},
+		{
+			name: "overlay upper is regular file",
+			mutate: func(
+				_ *BackgroundServicePlan,
+				sources *BackgroundServiceSources,
+			) {
+				sources.OverlayUpper = openExecutableSource(t)
+			},
+			match: "overlay upper source must be a directory descriptor",
 		},
 		{
 			name: "auth capability is directory",
@@ -541,6 +575,16 @@ func TestRenderBackgroundServiceRejectsInvalidSourceSets(t *testing.T) {
 			},
 			match: "alias the same host object",
 		},
+		{
+			name: "overlay directories alias",
+			mutate: func(
+				_ *BackgroundServicePlan,
+				sources *BackgroundServiceSources,
+			) {
+				sources.OverlayWork = sources.OverlayUpper
+			},
+			match: "alias the same host object",
+		},
 	}
 
 	for _, test := range tests {
@@ -598,6 +642,11 @@ func validBackgroundServicePlan() BackgroundServicePlan {
 			Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			Path:   "/store/rootfs",
 		},
+		Overlay: Overlay{
+			RunStorageDir: "/host/runs",
+			Upper:         "/host/runs/models-gateway/upper",
+			Work:          "/host/runs/models-gateway/work",
+		},
 		Binds: []mount.Bind{
 			{
 				HostPath: "/host/ca",
@@ -610,13 +659,13 @@ func validBackgroundServicePlan() BackgroundServicePlan {
 				Access:   mount.AccessReadOnly,
 			},
 			{
-				HostPath: "/host/dns/resolv.conf",
-				Target:   "/etc/resolv.conf",
+				HostPath: "/host/service/config",
+				Target:   "/opt/service/config",
 				Access:   mount.AccessReadOnly,
 			},
 		},
 		Runtime: &RuntimeAsset{
-			HostPath: "/host/runtime/service",
+			HostPath: "/host/runs/models-gateway/runtime",
 			Target:   BackgroundServiceRuntimeTarget,
 			Access:   mount.AccessRegular,
 		},
@@ -641,8 +690,10 @@ func validBackgroundServiceSources(
 	t.Helper()
 
 	sources := BackgroundServiceSources{
-		RootFS: openDirectorySource(t),
-		Binds:  make(map[string]*os.File, len(plan.Binds)),
+		RootFS:       openDirectorySource(t),
+		OverlayUpper: openDirectorySource(t),
+		OverlayWork:  openDirectorySource(t),
+		Binds:        make(map[string]*os.File, len(plan.Binds)),
 	}
 	for _, bind := range plan.Binds {
 		if bind.Target == BackgroundServiceAuthSocketTarget {

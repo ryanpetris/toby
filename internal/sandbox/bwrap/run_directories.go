@@ -6,7 +6,9 @@ package bwrap
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"petris.dev/toby/internal/diagnostic"
@@ -179,6 +181,55 @@ func (r *RunDirectories) WorkFile() (*os.File, error) {
 	}
 
 	return r.work.File()
+}
+
+// ReplaceOverlayFile creates any missing parent directories in the writable
+// root overlay and atomically replaces the final entry with a regular file.
+func (r *RunDirectories) ReplaceOverlayFile(
+	name string,
+	data []byte,
+	mode fs.FileMode,
+) error {
+	if r == nil {
+		return os.ErrInvalid
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.upper == nil {
+		return os.ErrInvalid
+	}
+
+	parentName := filepath.Dir(name)
+	parent := r.upper
+	if parentName != "." {
+		opened, err := r.upper.MkdirAll(parentName)
+		if err != nil {
+			return fmt.Errorf(
+				"create overlay file parent %q: %w",
+				parentName,
+				err,
+			)
+		}
+		defer func() {
+			r.logger.DebugError(
+				"close overlay file parent",
+				opened.Close(),
+				"path", parentName,
+			)
+		}()
+		parent = opened
+	}
+
+	if err := parent.ReplaceFile(
+		filepath.Base(name),
+		data,
+		mode,
+	); err != nil {
+		return fmt.Errorf("replace overlay file %q: %w", name, err)
+	}
+
+	return nil
 }
 
 // Close removes the exact transient run tree while its lifetime lock remains

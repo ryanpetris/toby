@@ -186,15 +186,15 @@ func TestRenderAllowsLegitimateExternalRegularFileAndSocket(t *testing.T) {
 		open   func(*testing.T) (string, *os.File, *os.File)
 	}{
 		{
-			name:   "resolver mount file",
-			target: "/etc/resolv.conf",
+			name:   "regular configuration file",
+			target: "/etc/service.conf",
 			access: mount.AccessReadOnly,
 			open: func(t *testing.T) (string, *os.File, *os.File) {
 				parentPath := t.TempDir()
-				sourcePath := filepath.Join(parentPath, "resolv.conf")
+				sourcePath := filepath.Join(parentPath, "service.conf")
 				if err := os.WriteFile(
 					sourcePath,
-					[]byte("nameserver 192.0.2.1\n"),
+					[]byte("enabled=true\n"),
 					0o600,
 				); err != nil {
 					t.Fatal(err)

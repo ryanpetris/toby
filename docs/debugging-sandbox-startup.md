@@ -206,9 +206,9 @@ Typical OCI failures identify:
 - a missing or failing `buildah` command; or
 - a rootless extraction failure.
 
-Application sandboxes share the host network and receive the host
-`/etc/resolv.conf` as a read-only bind. If DNS fails inside a sandbox, compare
-that file with the host and preserve Bubblewrap output with `--debug`.
+Application sandboxes share the host network and receive a run-scoped snapshot
+of the contents of the host `/etc/resolv.conf`. If DNS fails inside a sandbox,
+compare that file with the host and preserve Bubblewrap output with `--debug`.
 
 Toby's operation label names the image reference throughout preparation:
 

@@ -249,19 +249,6 @@ func appendOverlayFDRegistrations(args []string, descriptors ...int) []string {
 	return args
 }
 
-// appendAnonymousRootOverlay renders a descriptor-backed immutable lower with
-// an anonymous upper that Bubblewrap discards when the sandbox exits. Callers
-// must remount the completed root read-only after installing their child
-// mounts if the payload is not allowed to mutate it.
-func appendAnonymousRootOverlay(args []string, rootFD int) []string {
-	args = append(args,
-		"--overlay-src", childFDPath(rootFD),
-		"--tmp-overlay", "/",
-	)
-
-	return appendOverlayFDRegistrations(args, rootFD)
-}
-
 func (i *Invocation) retain(source *os.File, label string) (int, error) {
 	duplicate, err := duplicateDescriptor(source, label)
 	if err != nil {

@@ -64,6 +64,20 @@ func RenderBackgroundService(
 	if err != nil {
 		return nil, err
 	}
+	upperFD, err := invocation.retain(
+		sources.OverlayUpper,
+		"background-service overlay upper",
+	)
+	if err != nil {
+		return nil, err
+	}
+	workFD, err := invocation.retain(
+		sources.OverlayWork,
+		"background-service overlay work",
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	args := namespaceArgs(
 		canonical.Identity.HostUID,
@@ -73,10 +87,19 @@ func RenderBackgroundService(
 		args = append(args, "--unshare-net")
 	}
 	args = append(args, "--cap-drop", "ALL")
-	// The anonymous upper permits setup to create targets absent from the
-	// immutable image. The completed overlay is remounted read-only below
-	// before payload execution and discarded when the sandbox exits.
-	args = appendAnonymousRootOverlay(args, rootFD)
+	args = append(args,
+		"--overlay-src", childFDPath(rootFD),
+		"--overlay",
+		childFDPath(upperFD),
+		childFDPath(workFD),
+		"/",
+	)
+	args = appendOverlayFDRegistrations(
+		args,
+		rootFD,
+		upperFD,
+		workFD,
+	)
 	args = append(args,
 		"--proc", "/proc",
 		"--dev", "/dev",

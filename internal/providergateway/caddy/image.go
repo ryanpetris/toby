@@ -12,16 +12,13 @@ const (
 	// gateway.
 	DefaultImage = "docker.io/library/caddy:latest"
 
-	defaultBinary          = "/usr/bin/caddy"
-	bridgeVersion          = "1"
-	adminProtocolVersion   = "1"
-	defaultServiceWorkdir  = "/run/toby/service"
-	defaultAdminSocket     = "/run/toby/service/admin.sock"
-	defaultDataSocket      = "/run/toby/service/data.sock"
-	defaultAuthSocket      = "/run/toby/auth.sock"
-	defaultResolverTarget  = "/etc/resolv.conf"
-	defaultResolverSource  = "/etc/resolv.conf"
-	defaultServiceIDPrefix = "caddy-"
+	defaultBinary         = "/usr/bin/caddy"
+	bridgeVersion         = "1"
+	adminProtocolVersion  = "1"
+	defaultServiceWorkdir = "/run/toby/service"
+	defaultAdminSocket    = "/run/toby/service/admin.sock"
+	defaultDataSocket     = "/run/toby/service/data.sock"
+	defaultAuthSocket     = "/run/toby/auth.sock"
 )
 
 var defaultCommand = []string{

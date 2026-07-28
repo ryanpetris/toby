@@ -46,7 +46,6 @@ type nativeAgentIntegrationServices struct {
 	executor   *bwrap.Executor
 	binaryPath string
 	binary     *os.File
-	resolver   *os.File
 	identity   bwrap.Identity
 	roots      bwrap.ProtectedRoots
 }
@@ -304,17 +303,6 @@ func prepareNativeAgentIntegrationServices(
 		}
 	})
 
-	const resolverPath = "/etc/resolv.conf"
-	resolver, err := os.Open(resolverPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := resolver.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-
 	reference := os.Getenv("TOBY_BWRAP_AGENT_OCI_REFERENCE")
 	if reference == "" {
 		reference = defaultNativeAgentOCIReference
@@ -329,7 +317,6 @@ func prepareNativeAgentIntegrationServices(
 		executor:   executor,
 		binaryPath: binaryPath,
 		binary:     binary,
-		resolver:   resolver,
 		roots:      roots,
 		identity: bwrap.Identity{
 			HostUID: os.Geteuid(),
@@ -443,15 +430,6 @@ func prepareNativeAgentIntegrationRun(
 		}
 	}
 
-	const resolverPath = "/etc/resolv.conf"
-	if err := toolSandbox.AddBind(mount.Bind{
-		HostPath: resolverPath,
-		Target:   resolverPath,
-		Access:   mount.AccessReadOnly,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
 	managed, err := services.storage.ResolveManaged(
 		prepareContext,
 		storage.ProfileSelection{},
@@ -513,23 +491,9 @@ func prepareNativeAgentIntegrationRun(
 			t.Error(err)
 		}
 	})
-	resolverParent, err := openNativeDirectory(
-		filepath.Dir(services.resolver.Name()),
-		"resolver bind parent",
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := resolverParent.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-
 	binds := toolSandbox.Binds()
-	if len(binds) != 1 {
-		t.Fatalf("resolved external binds = %d, want 1", len(binds))
+	if len(binds) != 0 {
+		t.Fatalf("resolved external binds = %d, want 0", len(binds))
 	}
 	files, err := nativeAgentToolFiles(spec, services.identity)
 	if err != nil {
@@ -554,12 +518,6 @@ func prepareNativeAgentIntegrationRun(
 				HostPath: project.HostPath,
 			},
 			Source: projectSource,
-		}},
-		Binds: []NativeBind{{
-			Bind:         binds[0],
-			Source:       services.resolver,
-			Parent:       resolverParent,
-			ResolvedName: filepath.Base(binds[0].HostPath),
 		}},
 		ProtectedRoots:    services.roots,
 		ToolFiles:         files,

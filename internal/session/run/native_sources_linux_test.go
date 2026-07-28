@@ -195,17 +195,17 @@ func TestOpenNativeBindsPreservesLegitimateKindsAndOptionality(
 	t *testing.T,
 ) {
 	t.Run("regular mount file", func(t *testing.T) {
-		resolver := filepath.Join(t.TempDir(), "resolv.conf")
+		config := filepath.Join(t.TempDir(), "service.conf")
 		if err := os.WriteFile(
-			resolver,
-			[]byte("nameserver 192.0.2.1\n"),
+			config,
+			[]byte("enabled=true\n"),
 			0o600,
 		); err != nil {
 			t.Fatal(err)
 		}
 		binds, err := openNativeBinds([]mount.Bind{{
-			HostPath: resolver,
-			Target:   "/etc/resolv.conf",
+			HostPath: config,
+			Target:   "/etc/service.conf",
 			Access:   mount.AccessReadOnly,
 		}}, nil)
 		if err != nil {
@@ -224,7 +224,7 @@ func TestOpenNativeBindsPreservesLegitimateKindsAndOptionality(
 			t.Fatal(err)
 		}
 		if !info.Mode().IsRegular() {
-			t.Fatalf("%s mode = %v, want regular file", resolver, info.Mode())
+			t.Fatalf("%s mode = %v, want regular file", config, info.Mode())
 		}
 	})
 

@@ -5,6 +5,7 @@ package bwrap
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -28,8 +29,9 @@ const (
 // agent-owned noninteractive service whose root filesystem is read-only when
 // its payload starts.
 type BackgroundServicePlan struct {
-	ID     string
-	RootFS RootFS
+	ID      string
+	RootFS  RootFS
+	Overlay Overlay
 
 	// Binds contains exact caller-authorized capabilities. Callers remain
 	// responsible for applying the service-specific target allowlist.
@@ -94,7 +96,7 @@ func (p BackgroundServicePlan) Clone() BackgroundServicePlan {
 // Validate checks the complete background-service host and sandbox path
 // graphs.
 func (p BackgroundServicePlan) Validate() error {
-	descriptorCount := 1 + len(p.Binds)
+	descriptorCount := 3 + len(p.Binds)
 	if p.Runtime != nil {
 		descriptorCount++
 	}
@@ -117,6 +119,30 @@ func (p BackgroundServicePlan) Validate() error {
 		"background-service rootfs",
 		p.RootFS.Path,
 	); err != nil {
+		return err
+	}
+	for _, hostPath := range []struct {
+		label string
+		path  string
+	}{
+		{
+			label: "background-service run storage",
+			path:  p.Overlay.RunStorageDir,
+		},
+		{
+			label: "background-service overlay upper",
+			path:  p.Overlay.Upper,
+		},
+		{
+			label: "background-service overlay work",
+			path:  p.Overlay.Work,
+		},
+	} {
+		if err := validateHostPath(hostPath.label, hostPath.path); err != nil {
+			return err
+		}
+	}
+	if err := validateBackgroundServiceOverlay(p); err != nil {
 		return err
 	}
 	if err := validateSandboxPath(
@@ -172,6 +198,35 @@ func (p BackgroundServicePlan) Validate() error {
 	}
 
 	return validateBackgroundServiceHostGraph(p)
+}
+
+func validateBackgroundServiceOverlay(plan BackgroundServicePlan) error {
+	if filepath.Clean(plan.Overlay.Upper) ==
+		filepath.Clean(plan.Overlay.Work) {
+		return fmt.Errorf(
+			"background-service overlay upper and work must differ",
+		)
+	}
+
+	upperParent := filepath.Dir(plan.Overlay.Upper)
+	workParent := filepath.Dir(plan.Overlay.Work)
+	if upperParent != workParent ||
+		filepath.Base(plan.Overlay.Upper) != "upper" ||
+		filepath.Base(plan.Overlay.Work) != "work" {
+		return fmt.Errorf(
+			"background-service overlay upper and work must be named sibling directories",
+		)
+	}
+	expected := filepath.Join(plan.Overlay.RunStorageDir, plan.ID)
+	if upperParent != expected {
+		return fmt.Errorf(
+			"background-service overlay root %q must be %q",
+			upperParent,
+			expected,
+		)
+	}
+
+	return nil
 }
 
 func validateBackgroundServiceBinds(binds []mount.Bind) error {
@@ -274,6 +329,7 @@ func validateBackgroundServiceRuntime(runtime *RuntimeAsset) error {
 func validateBackgroundServiceHostGraph(
 	plan BackgroundServicePlan,
 ) error {
+	runRoot := filepath.Dir(plan.Overlay.Upper)
 	claims := make([]hostPathClaim, 0, len(plan.Binds)+2)
 	claims = append(claims, hostPathClaim{
 		label: "background-service rootfs",
@@ -286,6 +342,14 @@ func validateBackgroundServiceHostGraph(
 		})
 	}
 	if plan.Runtime != nil {
+		expectedRuntime := filepath.Join(runRoot, "runtime")
+		if plan.Runtime.HostPath != expectedRuntime {
+			return fmt.Errorf(
+				"background-service runtime directory %q must be %q",
+				plan.Runtime.HostPath,
+				expectedRuntime,
+			)
+		}
 		claims = append(claims, hostPathClaim{
 			label: "background-service runtime directory",
 			path:  plan.Runtime.HostPath,
@@ -293,6 +357,15 @@ func validateBackgroundServiceHostGraph(
 	}
 
 	for index, claim := range claims {
+		if claim.label != "background-service runtime directory" &&
+			hostPathsOverlap(runRoot, claim.path) {
+			return fmt.Errorf(
+				"background-service overlay root %q overlaps %s host path %q",
+				runRoot,
+				claim.label,
+				claim.path,
+			)
+		}
 		for earlier := range index {
 			other := claims[earlier]
 			if hostPathsOverlap(claim.path, other.path) {

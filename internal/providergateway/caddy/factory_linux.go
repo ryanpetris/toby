@@ -17,6 +17,7 @@ import (
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/hostconfig"
 	"petris.dev/toby/internal/sandbox/mount"
 )
 
@@ -26,7 +27,6 @@ type factory struct {
 	executor       *bwrap.Executor
 	authPath       string
 	auth           *os.File
-	resolver       *os.File
 	readinessLimit time.Duration
 	readinessPoll  time.Duration
 	uid            int
@@ -39,14 +39,13 @@ var _ resource.Factory = (*factory)(nil)
 func (f *factory) Start(
 	ctx context.Context,
 	_ resource.Key,
-	generation uint64,
+	_ uint64,
 ) (result resource.Instance, returnErr error) {
 	if f == nil ||
 		f.image == nil ||
 		f.storage == nil ||
 		f.executor == nil ||
-		f.auth == nil ||
-		f.resolver == nil {
+		f.auth == nil {
 		return nil, fmt.Errorf(
 			"caddy generation factory is not configured",
 		)
@@ -75,6 +74,10 @@ func (f *factory) Start(
 			)
 		}
 	}()
+
+	if err := hostconfig.Copy(directories); err != nil {
+		return nil, err
+	}
 
 	rootfs, err := f.image.RootfsFile()
 	if err != nil {
@@ -108,35 +111,42 @@ func (f *factory) Start(
 			auth.Close(),
 		)
 	}()
-	resolver, err := f.duplicateFile(f.resolver)
+	upper, err := directories.UpperFile()
 	if err != nil {
 		return nil, fmt.Errorf(
-			"duplicate Caddy resolver capability",
+			"open Caddy overlay upper capability",
 		)
 	}
 	defer func() {
 		f.logger.DebugError(
-			"close Caddy resolver capability",
-			resolver.Close(),
+			"close Caddy overlay upper capability",
+			upper.Close(),
+		)
+	}()
+	work, err := directories.WorkFile()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"open Caddy overlay work capability",
+		)
+	}
+	defer func() {
+		f.logger.DebugError(
+			"close Caddy overlay work capability",
+			work.Close(),
 		)
 	}()
 
 	plan := bwrap.BackgroundServicePlan{
-		ID: defaultServiceIDPrefix +
-			fmt.Sprintf("%d", generation),
+		ID: directories.ID(),
 		RootFS: bwrap.RootFS{
 			Path:   f.image.RootfsPath(),
 			Digest: f.image.Spec().Config.Digest.String(),
 		},
+		Overlay: directories.Overlay(),
 		Binds: []mount.Bind{
 			{
 				HostPath: f.authPath,
 				Target:   defaultAuthSocket,
-				Access:   mount.AccessReadOnly,
-			},
-			{
-				HostPath: defaultResolverSource,
-				Target:   defaultResolverTarget,
 				Access:   mount.AccessReadOnly,
 			},
 		},
@@ -160,10 +170,11 @@ func (f *factory) Start(
 	invocation, err := bwrap.RenderBackgroundService(
 		plan,
 		bwrap.BackgroundServiceSources{
-			RootFS: rootfs,
+			RootFS:       rootfs,
+			OverlayUpper: upper,
+			OverlayWork:  work,
 			Binds: map[string]*os.File{
-				defaultAuthSocket:     auth,
-				defaultResolverTarget: resolver,
+				defaultAuthSocket: auth,
 			},
 			Runtime: runtimeDirectory,
 		},

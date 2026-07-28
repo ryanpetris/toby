@@ -262,14 +262,14 @@ func TestBubblewrapVerticalSliceLaunchesOpenCodeAndCodexWithoutAgent(
 func prepareVerticalFixture(
 	t *testing.T,
 	reference string,
-	withDNS bool,
+	withHostResolver bool,
 ) *verticalFixture {
 	t.Helper()
 
 	return prepareVerticalFixtureWithManaged(
 		t,
 		reference,
-		withDNS,
+		withHostResolver,
 		mount.Request{
 			Key: mount.Key{
 				Type:    mount.TypeTool,
@@ -285,7 +285,7 @@ func prepareVerticalFixture(
 func prepareVerticalFixtureWithManaged(
 	t *testing.T,
 	reference string,
-	withDNS bool,
+	withHostResolver bool,
 	managedRequest mount.Request,
 ) *verticalFixture {
 	t.Helper()
@@ -425,6 +425,19 @@ func prepareVerticalFixtureWithManaged(
 			t.Error(err)
 		}
 	})
+	if withHostResolver {
+		resolver, err := os.ReadFile("/etc/resolv.conf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := directories.ReplaceOverlayFile(
+			"etc/resolv.conf",
+			resolver,
+			0o644,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	project := filepath.Join(base, "projects", "app")
 	readOnly := filepath.Join(base, "projects", "read-only")
@@ -482,24 +495,6 @@ func prepareVerticalFixtureWithManaged(
 	binds := []mount.Bind{}
 	bindSources := map[string]*os.File{}
 	bindParents := map[string]*os.File{}
-	if withDNS {
-		const resolver = "/etc/resolv.conf"
-		resolverFile, err := os.Open(resolver)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resolverParent, err := os.Open(filepath.Dir(resolver))
-		if err != nil {
-			t.Fatal(err)
-		}
-		binds = append(binds, mount.Bind{
-			HostPath: resolver,
-			Target:   resolver,
-			Access:   mount.AccessReadOnly,
-		})
-		bindSources[resolver] = resolverFile
-		bindParents[resolver] = resolverParent
-	}
 
 	sources := Sources{
 		ProtectedRoots: ProtectedRoots{

@@ -109,7 +109,7 @@ func TestNativeRunCloseCompletesBoundedOverlayCleanup(
 ) {
 	input, _, runRoot := nativeOwnershipInputWithLimits(
 		t,
-		bwrap.RunStorageLimits{MaxCleanupEntries: 3},
+		bwrap.RunStorageLimits{MaxCleanupEntries: 4},
 	)
 
 	managedPath := filepath.Join(

@@ -368,9 +368,6 @@ func (r *NativeRunner) Run(
 	if err != nil {
 		return err
 	}
-	if err := addNativeResolverBind(toolSandbox); err != nil {
-		return err
-	}
 	if err := r.sandbox.Set(toolSandbox); err != nil {
 		return err
 	}

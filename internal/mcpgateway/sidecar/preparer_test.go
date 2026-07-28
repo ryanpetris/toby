@@ -165,7 +165,7 @@ func TestPreparedStartsWithPinnedMountAndCleansGeneration(t *testing.T) {
 func TestProcessCleanupCompletesBoundedRunDirectoryBatches(t *testing.T) {
 	service, images, _, storage := newTestPreparerWithLimits(
 		t,
-		bwrap.RunStorageLimits{MaxCleanupEntries: 3},
+		bwrap.RunStorageLimits{MaxCleanupEntries: 4},
 	)
 	defer storage.Close()
 

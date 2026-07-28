@@ -15,7 +15,9 @@ The application sees:
 | `/toby/workspace/<name>` | Selected project directories |
 | `/toby/bin/tobys` | Toby sandbox helper, mounted read-only |
 | `/run/toby/sandbox.sock` | Exact run-scoped sandbox capability |
-| `/etc/resolv.conf` | Host resolver configuration, mounted read-only |
+| `/etc/resolv.conf` | Snapshot of the host resolver configuration |
+| `/etc/hosts` | Snapshot of the host name mappings, when present |
+| `/etc/localtime` | Snapshot of the host timezone data, when present |
 | `/tmp` | Fresh tmpfs |
 | `/proc` | Fresh PID namespace process view |
 
@@ -28,6 +30,13 @@ foreground init at Bubblewrap's launch gate while it retains that exact
 process and mount namespace. After the command, Toby waits for the init to exit
 and closes the retained namespace descriptor before the next command reuses
 the same upper and work directories.
+
+Before Bubblewrap starts, Toby reads `/etc/resolv.conf`, `/etc/hosts`, and
+`/etc/localtime` through ordinary host filesystem semantics and writes their
+contents into the root overlay as regular files. A host symlink is followed by
+the read; the symlink itself is not reproduced. `/etc/resolv.conf` is required,
+while absent hosts and timezone files are omitted. Application runs, local MCP
+sidecars, and Caddy each receive their own run-scoped snapshot.
 
 `HOME` is `/toby/home` and `TOBY_SANDBOX=1`. Toby clears the ambient host
 environment and installs only validated run variables. Tool-specific secrets
@@ -114,9 +123,8 @@ transiently beneath `/run/toby`; they are not generated configuration.
 ## Namespace and capability policy
 
 Application commands receive fresh user, PID, IPC, and UTS namespaces and
-share the host network namespace. Their read-only `/etc/resolv.conf` bind
-provides the resolver configuration for that network independently of the
-selected OCI rootfs.
+share the host network namespace. The host resolver snapshot provides the
+configuration for that network independently of the selected OCI rootfs.
 
 Bubblewrap drops application capabilities. Lifecycle commands that must run as
 namespace root receive only the ownership, DAC, and identity-transition

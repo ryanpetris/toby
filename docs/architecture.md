@@ -277,10 +277,10 @@ One production launch proceeds in this order:
 10. `ConfigureSandbox` freezes tool environment and argument-dependent
     declarations. Toby collects complete native tool files, transient runtime
     assets, and socket-relay declarations.
-11. Toby starts any declared host socket relays, adds the host resolver as a
-    read-only application bind, assembles the descriptor-owned Bubblewrap run,
-    validates the complete plan, and atomically publishes the generated tool
-    files at their native paths.
+11. Toby starts any declared host socket relays, copies selected host
+    configuration into the run overlay, assembles the descriptor-owned
+    Bubblewrap run, validates the complete plan, and atomically publishes the
+    generated tool files at their native paths.
 12. `InitSandbox` and `Install` run as direct Bubblewrap commands using the
     run's shared overlay.
 13. Toby clears interactive startup presentation, then the primary tool
@@ -803,18 +803,16 @@ share one discovery operation. Cache flush targets one acquired models
 resource.
 
 Caddy runs from the official `docker.io/library/caddy:latest` OCI image under
-Bubblewrap with a read-only filesystem, host networking, and no private home
-or projects. The image is pulled only when missing. Separate owner-only Unix
-sockets carry administration, models data, and authorization. None is
+Bubblewrap with a run-scoped root overlay, host networking, and no private home
+or projects. The image is pulled only when missing. Toby copies the selected
+host configuration into that overlay, installs the authorization and runtime
+mounts, and remounts `/` read-only before Caddy executes. Separate owner-only
+Unix sockets carry administration, models data, and authorization. None is
 mounted into an application sandbox.
 
-During Bubblewrap mount assembly, an anonymous temporary overlay permits
-creation of bind targets that an OCI image omits, such as `/etc/resolv.conf`.
-After the exact DNS, authorization, and runtime mounts are installed,
-Bubblewrap remounts `/` read-only before Caddy executes. The anonymous upper is
-never persisted. Purpose-specific child mounts retain their separately defined
-access, including ephemeral `/tmp`, `/run`, and `/dev` plus the owner-only
-service runtime.
+Purpose-specific child mounts retain their separately defined access,
+including ephemeral `/tmp`, `/run`, and `/dev` plus the owner-only service
+runtime. The run overlay is removed with the Caddy generation.
 
 The launch loopback relay requires the expected synthetic credential. It
 strips that credential before opening an agent stream. The agent-private Caddy
