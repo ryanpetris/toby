@@ -601,7 +601,8 @@ denied.
 
 Selected tools contribute complete files through `internal/toolfiles`. Toby
 validates the combined set before writing anything, resolves each target to the
-private home or an owned tool volume, and atomically replaces the file.
+private home or an owned tool volume, and atomically replaces the destination
+directory entry. A final symlink is replaced rather than followed.
 
 Files are written at the applications' native paths. Concurrent launches
 sharing the same home or tool volume use last-launch-wins behavior for these

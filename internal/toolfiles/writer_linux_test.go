@@ -115,23 +115,6 @@ func TestWriterValidatesCompleteSetBeforeMutation(t *testing.T) {
 			},
 		},
 		{
-			name: "symlink target",
-			prepare: func(t *testing.T, fixture *writerFixture) File {
-				t.Helper()
-				external := filepath.Join(t.TempDir(), "outside")
-				if err := os.WriteFile(external, []byte("outside"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(
-					external,
-					filepath.Join(fixture.plan.Home.HostPath, ".z-config"),
-				); err != nil {
-					t.Fatal(err)
-				}
-				return nativeFile(fixture.plan, "/toby/home/.z-config", "bad")
-			},
-		},
-		{
 			name: "foreign identity",
 			prepare: func(_ *testing.T, fixture *writerFixture) File {
 				file := nativeFile(fixture.plan, "/toby/home/.z-config", "bad")
@@ -166,6 +149,57 @@ func TestWriterValidatesCompleteSetBeforeMutation(t *testing.T) {
 				t.Fatalf("first file was mutated before later validation failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestWriterReplacesFinalSymlinkWithoutFollowingIt(t *testing.T) {
+	fixture := newWriterFixture(t)
+	external := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(external, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(fixture.plan.Home.HostPath, ".grok", "managed_config.toml")
+	if err := os.Mkdir(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, target); err != nil {
+		t.Fatal(err)
+	}
+
+	file := nativeFile(
+		fixture.plan,
+		"/toby/home/.grok/managed_config.toml",
+		"generated",
+	)
+	if _, err := NewWriter(nil).Write(
+		fixture.plan,
+		fixture.sources,
+		[]File{file},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("replacement target mode = %v, want regular file", info.Mode())
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "generated" {
+		t.Fatalf("replacement target data = %q", content)
+	}
+	externalContent, err := os.ReadFile(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(externalContent) != "outside" {
+		t.Fatalf("symlink target data = %q, want unchanged", externalContent)
 	}
 }
 

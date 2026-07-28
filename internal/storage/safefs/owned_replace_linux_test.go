@@ -187,7 +187,7 @@ func TestReplaceFileOwnedNormalizesExistingGID(t *testing.T) {
 	}
 }
 
-func TestReplaceFileOwnedRejectsSymlinkAndNonRegularTargets(t *testing.T) {
+func TestReplaceFileOwnedReplacesSymlinkAndRejectsDirectory(t *testing.T) {
 	directory, path := testDirectory(t)
 	outside := filepath.Join(filepath.Dir(path), filepath.Base(path)+"-owned-outside")
 	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
@@ -206,11 +206,31 @@ func TestReplaceFileOwnedRejectsSymlinkAndNonRegularTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"link", "directory"} {
-		err := directory.ReplaceFileOwned(name, []byte("bad"), 0o600, os.Geteuid(), os.Getegid())
-		if !errors.Is(err, ErrUnsafePath) {
-			t.Errorf("ReplaceFileOwned(%q) error = %v, want ErrUnsafePath", name, err)
-		}
+	if err := directory.ReplaceFileOwned(
+		"link",
+		[]byte("replacement"),
+		0o600,
+		os.Geteuid(),
+		os.Getegid(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	linkData, err := os.ReadFile(filepath.Join(path, "link"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkData) != "replacement" {
+		t.Fatalf("replacement link data = %q", linkData)
+	}
+
+	if err := directory.ReplaceFileOwned(
+		"directory",
+		[]byte("bad"),
+		0o600,
+		os.Geteuid(),
+		os.Getegid(),
+	); err == nil {
+		t.Fatal("replacing a directory with a file succeeded")
 	}
 
 	data, err := os.ReadFile(outside)

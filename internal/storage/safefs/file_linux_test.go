@@ -134,7 +134,7 @@ func TestRegularFileOperationsRejectTraversalSymlinksAndTypes(t *testing.T) {
 	}
 }
 
-func TestReplaceFileIsAtomicAndRejectsUnsafeTargets(t *testing.T) {
+func TestReplaceFileIsAtomicAndReplacesExistingEntries(t *testing.T) {
 	directory, path := testDirectory(t)
 
 	if err := directory.WriteFile("mapping", []byte("old"), 0o600); err != nil {
@@ -169,17 +169,41 @@ func TestReplaceFileIsAtomicAndRejectsUnsafeTargets(t *testing.T) {
 	t.Cleanup(func() {
 		os.Remove(outside)
 	})
-	if err := os.Symlink(outside, filepath.Join(path, "unsafe-link")); err != nil {
+	link := filepath.Join(path, "link")
+	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.ReplaceFile("unsafe-link", []byte("bad"), 0o600); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("replace symlink error = %v, want ErrUnsafePath", err)
-	}
-	if err := os.Mkdir(filepath.Join(path, "unsafe-directory"), 0o700); err != nil {
+	if err := directory.ReplaceFile("link", []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.ReplaceFile("unsafe-directory", []byte("bad"), 0o600); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("replace directory error = %v, want ErrUnsafePath", err)
+	linkData, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkData) != "replacement" {
+		t.Fatalf("replacement link data = %q", linkData)
+	}
+
+	fifo := filepath.Join(path, "fifo-replacement")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.ReplaceFile("fifo-replacement", []byte("fifo replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoData, err := os.ReadFile(fifo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(fifoData) != "fifo replacement" {
+		t.Fatalf("replacement FIFO data = %q", fifoData)
+	}
+
+	if err := os.Mkdir(filepath.Join(path, "directory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.ReplaceFile("directory", []byte("bad"), 0o600); err == nil {
+		t.Fatal("replacing a directory with a file succeeded")
 	}
 
 	outsideData, err := os.ReadFile(outside)

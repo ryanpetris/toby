@@ -171,8 +171,8 @@ func (d *Directory) PublishFile(
 	return true, nil
 }
 
-// ReplaceFile durably replaces an absent or owned regular file with complete
-// data. An existing symbolic link or non-regular file is rejected.
+// ReplaceFile durably replaces a non-directory destination entry with complete
+// data. An existing entry is replaced without being followed.
 func (d *Directory) ReplaceFile(
 	name string,
 	data []byte,
@@ -181,9 +181,9 @@ func (d *Directory) ReplaceFile(
 	return d.replaceFile(name, data, mode, fileOwnership{})
 }
 
-// ReplaceFileOwned durably replaces an absent or regular file with complete
-// data and best-effort ownership. Existing filesystem ownership does not
-// prevent replacement when the containing directory permits it.
+// ReplaceFileOwned durably replaces a non-directory destination entry with
+// complete data and best-effort ownership. Existing filesystem ownership does
+// not prevent replacement when the containing directory permits it.
 func (d *Directory) ReplaceFileOwned(
 	name string,
 	data []byte,
@@ -312,18 +312,6 @@ func (d *Directory) replaceFile(
 		return closeErr
 	}
 
-	if err := validateReplaceTarget(parentFD, base, path); err != nil {
-		d.logger.DebugError(
-			"remove temporary file after replacement target validation failed",
-			cleanupTemporaryFile(
-				parentFD,
-				temporary,
-				temporaryPath,
-			),
-			"path", temporaryPath,
-		)
-		return err
-	}
 	if err := validateTemporaryFile(
 		parentFD,
 		temporary,
@@ -844,17 +832,6 @@ func renameNoReplace(parentFD int, oldName, newName string) error {
 		return fmt.Errorf("%w: rename without replacement: %v", ErrUnsupported, err)
 	}
 	return err
-}
-
-func validateReplaceTarget(parentFD int, name, path string) error {
-	var stat unix.Stat_t
-	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return nil
-		}
-		return &fs.PathError{Op: "stat replacement target", Path: path, Err: err}
-	}
-	return validateRegularStat(&stat, path)
 }
 
 func descriptorIdentity(fd int, path string) (descriptorID, error) {

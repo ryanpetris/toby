@@ -1,7 +1,7 @@
 package toolfiles
 
-// Preflights existing native paths without mutation, creates missing safe
-// parents, and performs per-file atomic replacements.
+// Preflights existing native parent paths without mutation, creates missing
+// safe parents, and performs per-file atomic replacements.
 
 import (
 	"errors"
@@ -17,7 +17,7 @@ func preflightFile(
 	file resolvedFile,
 	logger *diagnostic.Logger,
 ) error {
-	parent, base := filepath.Split(file.relative)
+	parent, _ := filepath.Split(file.relative)
 	parent = strings.TrimSuffix(parent, string(filepath.Separator))
 
 	directory, complete, err := openExistingParent(
@@ -38,19 +38,6 @@ func preflightFile(
 			"path", parent,
 		)
 	}()
-
-	target, err := directory.OpenFile(base)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	logger.DebugError(
-		"close generated-file preflight target",
-		target.Close(),
-		"path", file.relative,
-	)
 	return nil
 }
 

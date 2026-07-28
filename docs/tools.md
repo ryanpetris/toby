@@ -69,7 +69,9 @@ Coding-tool adapters receive a sandbox-safe session configuration containing:
 
 Each adapter renders complete ordinary files at the application's native paths.
 Toby validates the combined file set, then atomically replaces every file
-before lifecycle commands start.
+before lifecycle commands start. An existing final symlink or other
+non-directory entry is replaced as a directory entry; its referenced object is
+not modified.
 
 These files are Toby-owned and replaced on later launches. Concurrent launches
 sharing the same private home or tool volume use last-launch-wins behavior.
