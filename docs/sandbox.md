@@ -35,8 +35,11 @@ Before Bubblewrap starts, Toby reads `/etc/resolv.conf`, `/etc/hosts`, and
 `/etc/localtime` through ordinary host filesystem semantics and writes their
 contents into the root overlay as regular files. A host symlink is followed by
 the read; the symlink itself is not reproduced. `/etc/resolv.conf` is required,
-while absent hosts and timezone files are omitted. Application runs, local MCP
-sidecars, and Caddy each receive their own run-scoped snapshot.
+while absent hosts and timezone files are omitted. Application runs, host-mode
+local MCP sidecars, and Caddy each receive their own run-scoped snapshot.
+Private local MCP sidecars instead receive a regular `/etc/resolv.conf`
+containing only `nameserver 198.51.100.53`; Pasta forwards that synthetic
+address to the resolver selected from the host configuration.
 
 `HOME` is `/toby/home` and `TOBY_SANDBOX=1`. Toby clears the ambient host
 environment and installs only validated run variables. Tool-specific secrets
@@ -260,8 +263,16 @@ is not restarted for each application command; it lives until that MCP
 connector closes.
 
 OCI preflight prepares the configured image before the application starts.
-The process runs under Bubblewrap. Command and environment values are passed
-through a sealed descriptor rather than visible process arguments.
+The process runs under Bubblewrap. Setup options and environment values are
+passed through a sealed descriptor. The command follows Bubblewrap's `--`
+separator in the process arguments.
+
+`network: host` shares the host network namespace. `network: private` creates
+a private namespace and starts one host Pasta process for that sidecar through
+`nsenter`. Toby holds the Bubblewrap payload until Pasta has configured the
+namespace. Private sidecars receive outbound DNS and Internet connectivity
+without host-loopback access or forwarded ports. Pasta exits and is reaped with
+the sidecar; an unexpected Pasta exit invalidates the resource generation.
 
 ### Local HTTP MCP
 
@@ -275,6 +286,10 @@ teardown even while a launch remains registered. A later connector restarts
 the resource transparently through the same lease. Readiness failure or process
 exit invalidates that generation; the resource registry owns bounded retry and
 reaping.
+
+Local HTTP sidecars use the same `host` and `private` network policies as local
+stdio sidecars. Their MCP endpoint remains a Unix socket beneath `/run/toby`;
+the network policy controls connections initiated by the MCP server.
 
 ### Remote HTTP MCP
 

@@ -124,10 +124,12 @@ func RenderSidecar(
 			variable.Value,
 		)
 	}
-	args = append(args, "--chdir", canonical.Workdir, "--")
-	args = append(args, canonical.Command...)
+	args = append(args, "--chdir", canonical.Workdir)
 
-	if err := invocation.setConfidentialArgumentsWithTail(args, nil); err != nil {
+	if err := invocation.setConfidentialOptions(
+		args,
+		canonical.Command,
+	); err != nil {
 		return nil, fmt.Errorf(
 			"retain confidential Bubblewrap sidecar arguments: %w",
 			err,

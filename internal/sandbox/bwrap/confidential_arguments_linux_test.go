@@ -67,9 +67,9 @@ func TestDuplicateInvocationRecreatesConfidentialArgumentsAtOffsetZero(
 
 func TestRenderSidecarBoundsConfidentialArgumentPayload(t *testing.T) {
 	plan := validSidecarPlan()
-	plan.Command = append(
-		plan.Command,
-		strings.Repeat("x", maxConfidentialArgumentPayloadSize),
+	plan.Environment[0].Value = strings.Repeat(
+		"x",
+		maxConfidentialArgumentPayloadSize,
 	)
 
 	invocation, err := RenderSidecar(

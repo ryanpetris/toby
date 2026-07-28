@@ -5,6 +5,11 @@ package bwrap
 
 import "context"
 
+// BackgroundSetup prepares external state for a retained Bubblewrap init while
+// the sandbox payload is blocked. The PID is valid for the duration of the
+// callback and must not be retained as process identity.
+type BackgroundSetup func(context.Context, int) error
+
 // BackgroundProcess is an asynchronously running Bubblewrap process. Done
 // closes only after Bubblewrap and its retained init and payload identities
 // have exited and the direct Bubblewrap child has been reaped. Stop sends

@@ -13,6 +13,7 @@ import (
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/pasta"
 )
 
 type nativeRuntime struct {
@@ -30,10 +31,11 @@ var _ Runtime = (*nativeRuntime)(nil)
 func NewNativeLazy(
 	paths config.Paths,
 	diagnostics *diagnostic.Service,
+	network *pasta.Service,
 ) (*Lazy, error) {
 	return newLazy(
 		func(ctx context.Context) (Runtime, error) {
-			return openNativeRuntime(ctx, paths, diagnostics)
+			return openNativeRuntime(ctx, paths, diagnostics, network)
 		},
 		diagnostics.Logger("mcp.sidecar"),
 	)
@@ -43,6 +45,7 @@ func openNativeRuntime(
 	ctx context.Context,
 	paths config.Paths,
 	diagnostics *diagnostic.Service,
+	network *pasta.Service,
 ) (Runtime, error) {
 	if ctx == nil {
 		return nil, errors.New(
@@ -86,7 +89,13 @@ func openNativeRuntime(
 		logger.DebugError("close Bubblewrap executor", executor.Close())
 		return nil, err
 	}
-	service, err := New(imageAdapter, storage, executor, logger)
+	service, err := New(
+		imageAdapter,
+		storage,
+		executor,
+		network,
+		logger,
+	)
 	if err != nil {
 		logger.DebugError("close Bubblewrap run storage", storage.Close())
 		logger.DebugError("close OCI image store", images.Close())

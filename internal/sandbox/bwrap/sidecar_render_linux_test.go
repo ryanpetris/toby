@@ -29,17 +29,26 @@ func TestRenderSidecarUsesPrivateNetworkAndExactSources(t *testing.T) {
 	}
 	defer invocation.Close()
 
-	if got, want := invocation.Args, []string{"--args", "8"}; !slices.Equal(got, want) {
+	if got, want := invocation.Args, []string{
+		"--args", "8",
+		"--",
+		"/bin/mcp-server",
+		"command-secret-sentinel",
+	}; !slices.Equal(got, want) {
 		t.Fatalf("sidecar public args = %q, want %q", got, want)
 	}
 	public := strings.Join(invocation.Args, "\x00")
-	for _, secret := range []string{
-		"environment-secret-sentinel",
-		"command-secret-sentinel",
-	} {
-		if strings.Contains(public, secret) {
-			t.Fatalf("sidecar public args expose %q: %q", secret, invocation.Args)
-		}
+	if strings.Contains(public, "environment-secret-sentinel") {
+		t.Fatalf(
+			"sidecar public args expose the environment: %q",
+			invocation.Args,
+		)
+	}
+	if !strings.Contains(public, "command-secret-sentinel") {
+		t.Fatalf(
+			"sidecar public args omit the Bubblewrap command: %q",
+			invocation.Args,
+		)
 	}
 
 	args, err := invocationArguments(invocation)
@@ -76,7 +85,7 @@ func TestRenderSidecarUsesPrivateNetworkAndExactSources(t *testing.T) {
 	}
 }
 
-func TestExecutorKeepsSidecarSecretsOutOfObservableArgv(t *testing.T) {
+func TestExecutorKeepsSidecarEnvironmentOutOfObservableArgv(t *testing.T) {
 	const (
 		environmentSecret = "observable-environment-secret-sentinel"
 		commandSecret     = "observable-command-secret-sentinel"
@@ -138,24 +147,34 @@ func TestExecutorKeepsSidecarSecretsOutOfObservableArgv(t *testing.T) {
 	}
 
 	observed := strings.Join(observable, "\x00")
-	for _, secret := range []string{environmentSecret, commandSecret} {
-		if strings.Contains(observed, secret) {
-			t.Fatalf(
-				"observable child argv exposes %q: %q",
-				secret,
-				observable,
-			)
-		}
+	if strings.Contains(observed, environmentSecret) {
+		t.Fatalf(
+			"observable child argv exposes %q: %q",
+			environmentSecret,
+			observable,
+		)
+	}
+	if !strings.Contains(observed, commandSecret) {
+		t.Fatalf(
+			"observable child argv omits the Bubblewrap command %q: %q",
+			commandSecret,
+			observable,
+		)
 	}
 	received := strings.Join(payload, "\x00")
-	for _, secret := range []string{environmentSecret, commandSecret} {
-		if !strings.Contains(received, secret) {
-			t.Fatalf(
-				"confidential argument payload omits %q: %q",
-				secret,
-				payload,
-			)
-		}
+	if !strings.Contains(received, environmentSecret) {
+		t.Fatalf(
+			"confidential argument payload omits %q: %q",
+			environmentSecret,
+			payload,
+		)
+	}
+	if strings.Contains(received, commandSecret) {
+		t.Fatalf(
+			"confidential option payload includes command %q: %q",
+			commandSecret,
+			payload,
+		)
 	}
 }
 
@@ -182,6 +201,7 @@ func TestStartBackgroundRunsConfidentialSidecarArguments(t *testing.T) {
 		t.Context(),
 		invocation,
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

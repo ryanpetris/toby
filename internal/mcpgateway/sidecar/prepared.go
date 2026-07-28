@@ -15,6 +15,7 @@ import (
 	"petris.dev/toby/internal/sandbox/hostconfig"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
+	"petris.dev/toby/internal/sandbox/pasta"
 )
 
 // Prepared owns one exact image and mount set until Start transfers them to a
@@ -98,7 +99,7 @@ func (p *Prepared) Start(
 		}
 	}()
 
-	if err := hostconfig.Copy(directories); err != nil {
+	if err := p.copyHostConfiguration(directories); err != nil {
 		return nil, err
 	}
 
@@ -148,14 +149,39 @@ func (p *Prepared) Start(
 	}()
 	streams.Stderr = stderrWriter
 
+	var network pasta.Process
+	var setup bwrap.BackgroundSetup
+	if p.definition.Network == resource.NetworkPrivate {
+		setup = func(
+			setupCtx context.Context,
+			targetPID int,
+		) error {
+			var startErr error
+			network, startErr = p.preparer.network.Start(
+				setupCtx,
+				pasta.StartOptions{
+					TargetPID:        targetPID,
+					RuntimeDirectory: directories.RuntimePath(),
+					DNSForward:       hostconfig.PrivateResolverAddress,
+				},
+			)
+			return startErr
+		}
+	}
+
 	background, err := p.preparer.executor.StartBackground(
 		ctx,
 		invocation,
 		streams,
+		setup,
 	)
 	writerErr := stderrWriter.Close()
 	sourceErr := closeSources()
 	if err != nil {
+		cleanupNetworkAfterStartFailure(
+			network,
+			p.preparer.logger,
+		)
 		readerErr := stderrReader.Close()
 		drainErr := <-drainDone
 		p.preparer.logger.DebugError(
@@ -191,6 +217,7 @@ func (p *Prepared) Start(
 	}
 	result = newProcess(
 		background,
+		network,
 		directories,
 		p,
 		runtimePath,
@@ -201,6 +228,15 @@ func (p *Prepared) Start(
 	p = nil
 
 	return result, nil
+}
+
+func (p *Prepared) copyHostConfiguration(
+	directories *bwrap.RunDirectories,
+) error {
+	if p.definition.Network == resource.NetworkPrivate {
+		return hostconfig.CopyPrivate(directories)
+	}
+	return hostconfig.CopyHost(directories)
 }
 
 // Close releases an unstarted prepared sidecar.

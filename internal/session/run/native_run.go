@@ -173,7 +173,7 @@ func NewNativeRun(
 		}
 	}()
 
-	if err := hostconfig.Copy(directories); err != nil {
+	if err := hostconfig.CopyHost(directories); err != nil {
 		return nil, err
 	}
 

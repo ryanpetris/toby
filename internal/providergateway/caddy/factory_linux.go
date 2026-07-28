@@ -75,7 +75,7 @@ func (f *factory) Start(
 		}
 	}()
 
-	if err := hostconfig.Copy(directories); err != nil {
+	if err := hostconfig.CopyHost(directories); err != nil {
 		return nil, err
 	}
 
@@ -239,6 +239,7 @@ func (f *factory) Start(
 			Stdout: nullOutput,
 			Stderr: nullError,
 		},
+		nil,
 	)
 	if err != nil {
 		launchOperation.Fail("Caddy launch failed")

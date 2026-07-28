@@ -8,10 +8,12 @@ package bwrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -91,6 +93,7 @@ func TestStartBackgroundConsumesInvocationOnEveryReturn(t *testing.T) {
 		t.Context(),
 		invocation,
 		ProcessIO{},
+		nil,
 	); err == nil {
 		t.Fatal("nil executor unexpectedly started a background process")
 	}
@@ -160,6 +163,7 @@ func TestStartBackgroundRequiresFixedNoninteractivePolicy(t *testing.T) {
 				t.Context(),
 				test.invocation,
 				test.streams,
+				nil,
 			); err == nil {
 				t.Fatal("invalid background policy unexpectedly accepted")
 			}
@@ -218,6 +222,7 @@ func TestStartBackgroundRejectsNonFileStreams(t *testing.T) {
 					Mode: ExecutionNonInteractive,
 				},
 				test.streams(release),
+				nil,
 			)
 			close(release)
 			if process != nil {
@@ -242,6 +247,7 @@ func TestStartBackgroundRejectsTypedNilFileStream(t *testing.T) {
 			Mode: ExecutionNonInteractive,
 		},
 		ProcessIO{Stdin: input},
+		nil,
 	)
 	if process != nil {
 		_ = process.Kill(t.Context())
@@ -253,6 +259,93 @@ func TestStartBackgroundRejectsTypedNilFileStream(t *testing.T) {
 			"stdin must be unset or hold a non-nil direct *os.File",
 		) {
 		t.Fatalf("typed-nil stdin result = %v", err)
+	}
+}
+
+func TestStartBackgroundRunsSetupBeforePayload(t *testing.T) {
+	executor := backgroundTestExecutor(t)
+	payloadMarker := filepath.Join(t.TempDir(), "payload")
+	var setupPID int
+
+	process, err := executor.StartBackground(
+		t.Context(),
+		&Invocation{
+			Args: backgroundTestArgs(
+				"/bin/sh",
+				"-c",
+				`: > "$1"; /bin/sleep 30`,
+				"toby-background-setup",
+				payloadMarker,
+			),
+			Mode: ExecutionNonInteractive,
+		},
+		ProcessIO{},
+		func(ctx context.Context, pid int) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, err := os.Stat(payloadMarker); !errors.Is(
+				err,
+				os.ErrNotExist,
+			) {
+				return fmt.Errorf(
+					"payload started before setup: %w",
+					err,
+				)
+			}
+			if _, err := os.Stat(
+				filepath.Join("/proc", strconv.Itoa(pid)),
+			); err != nil {
+				return err
+			}
+			setupPID = pid
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = process.Kill(context.Background())
+		waitForBackgroundDone(t, process)
+	})
+
+	if setupPID <= 0 {
+		t.Fatal("setup did not receive the Bubblewrap init PID")
+	}
+	waitForBackgroundTestFile(t, payloadMarker)
+}
+
+func TestStartBackgroundSetupFailurePreventsPayload(t *testing.T) {
+	executor := backgroundTestExecutor(t)
+	payloadMarker := filepath.Join(t.TempDir(), "payload")
+	setupErr := errors.New("synthetic background setup failure")
+
+	process, err := executor.StartBackground(
+		t.Context(),
+		&Invocation{
+			Args: backgroundTestArgs(
+				"/bin/sh",
+				"-c",
+				`: > "$1"`,
+				"toby-background-setup-failure",
+				payloadMarker,
+			),
+			Mode: ExecutionNonInteractive,
+		},
+		ProcessIO{},
+		func(context.Context, int) error {
+			return setupErr
+		},
+	)
+	if process != nil {
+		t.Fatal("setup failure returned a background process")
+	}
+	if !errors.Is(err, setupErr) {
+		t.Fatalf("setup failure = %v, want %v", err, setupErr)
+	}
+	if _, err := os.Stat(payloadMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("payload ran after setup failure: %v", err)
 	}
 }
 
@@ -291,6 +384,7 @@ func TestBackgroundProcessSupportsStdioAndNaturalReap(t *testing.T) {
 		t.Context(),
 		invocation,
 		ProcessIO{Stdin: input},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -333,6 +427,7 @@ func TestBackgroundProcessGracefullySignalsPayloadAndReapsBeforeDone(
 			Mode: ExecutionNonInteractive,
 		},
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -381,6 +476,7 @@ func TestBackgroundProcessKillTearsDownFakeTopology(t *testing.T) {
 			Mode: ExecutionNonInteractive,
 		},
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -471,6 +567,7 @@ func TestBackgroundProcessSignalHonorsCanceledContext(t *testing.T) {
 			Mode: ExecutionNonInteractive,
 		},
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

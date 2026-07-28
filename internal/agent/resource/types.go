@@ -36,7 +36,7 @@ type Network string
 const (
 	// NetworkHost uses the host network namespace.
 	NetworkHost Network = "host"
-	// NetworkPrivate uses a private network namespace.
+	// NetworkPrivate uses a Pasta-connected private network namespace.
 	NetworkPrivate Network = "private"
 )
 

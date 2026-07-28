@@ -19,6 +19,7 @@ import (
 	"petris.dev/toby/internal/mcpgateway/remotehttp"
 	"petris.dev/toby/internal/mcpgateway/resourcehandler"
 	"petris.dev/toby/internal/mcpgateway/sidecar"
+	"petris.dev/toby/internal/sandbox/pasta"
 	"petris.dev/toby/internal/tobymcp"
 	gitservice "petris.dev/toby/internal/tobymcp/services/git"
 	sessionservice "petris.dev/toby/internal/tobymcp/services/session"
@@ -35,6 +36,7 @@ func Module() fx.Option {
 		tobymcp.Module(),
 		gitservice.Module(),
 		sessionservice.Module(),
+		pasta.Module(),
 		fx.Provide(
 			newHTTPBridge,
 			sidecar.NewNativeLazy,

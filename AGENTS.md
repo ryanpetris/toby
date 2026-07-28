@@ -97,7 +97,7 @@ Current package map:
 | Internal | Gateways | `internal/sandboxgateway`, `internal/sandboxgateway/protocol`; `internal/mcpgateway` and its transport/resource subpackages; `internal/providergateway`, `internal/providergateway/{caddy,modelresource,wiring}` |
 | Internal | Policy and presentation | `internal/approval`, `internal/permission`, `internal/status` |
 | Internal | OCI and storage | `internal/oci` and its subpackages; `internal/storage` and its subpackages |
-| Internal | Sandbox runtime | `internal/sandbox`, `internal/sandbox/layout`, `internal/sandbox/mount`, `internal/sandbox/hostconfig`, `internal/sandbox/bwrap` |
+| Internal | Sandbox runtime | `internal/sandbox`, `internal/sandbox/layout`, `internal/sandbox/mount`, `internal/sandbox/hostconfig`, `internal/sandbox/bwrap`, `internal/sandbox/pasta` |
 | Internal | Shared support | `internal/diagnostic`, `internal/diagnostic/exitcode`, `internal/diagnostic/warning`, `internal/executable`, `internal/resourcehash`, `internal/shutdown`, `internal/uuid` |
 
 Toby intentionally uses uber-go/fx for dependency injection. Wiring belongs in

@@ -18,6 +18,9 @@ while [ "$#" -gt 0 ]; do
 		arguments_fd=$2
 		shift 2
 		;;
+	--)
+		break
+		;;
 	*)
 		exit 2
 		;;

@@ -85,6 +85,41 @@ func TestCopyFilesRequiresResolverSource(t *testing.T) {
 	}
 }
 
+func TestCopyPrivateWritesStaticPastaResolver(t *testing.T) {
+	directories := newRunDirectories(t)
+	target := filepath.Join(
+		directories.Overlay().Upper,
+		"etc",
+		"resolv.conf",
+	)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/outside", target); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyPrivate(directories); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("private resolver mode = %s, want regular file", info.Mode())
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data),
+		"nameserver 198.51.100.53\n"; got != want {
+		t.Fatalf("private resolver = %q, want %q", got, want)
+	}
+}
+
 func newRunDirectories(t *testing.T) *bwrap.RunDirectories {
 	t.Helper()
 

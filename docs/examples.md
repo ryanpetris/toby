@@ -276,7 +276,8 @@ resources:
 ```
 
 One Bubblewrap sidecar runs for each live MCP connector. It remains alive for
-that connector instead of restarting for each tool call.
+that connector instead of restarting for each tool call. `network: host`
+shares the host network and resolver configuration.
 
 ## Add a reusable local HTTP MCP
 
@@ -307,7 +308,10 @@ resources:
 Matching definitions may share the agent-owned process, while each connector
 keeps independent Streamable HTTP state. The process stops after all connectors
 have been idle for the configured timeout, even if a launch remains registered;
-the next connector starts it again through the same lease.
+the next connector starts it again through the same lease. `network: private`
+uses Pasta for outbound DNS and Internet access without exposing host loopback
+or forwarding ports. The host must provide the `pasta` executable from the
+`passt` package and `nsenter` from `util-linux`.
 
 ## Configure host Git approval
 

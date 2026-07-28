@@ -6,6 +6,12 @@ fi
 status_fd=$2
 shift 2
 
+block_fd=
+if [ "$1" = "--block-fd" ]; then
+	block_fd=$2
+	shift 2
+fi
+
 if [ "$1" = "--args" ]; then
 	arguments_fd=$2
 	shift 2
@@ -13,7 +19,7 @@ if [ "$1" = "--args" ]; then
 	while IFS= read -r -d '' -u "$arguments_fd" argument; do
 		arguments+=("$argument")
 	done
-	set -- "${arguments[@]}"
+	set -- "${arguments[@]}" "$@"
 fi
 
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
@@ -28,6 +34,10 @@ exec 200<&0
 
 (
 	eval "exec ${status_fd}>&-"
+	if [ -n "$block_fd" ]; then
+		eval "cat <&${block_fd} >/dev/null"
+		eval "exec ${block_fd}<&-"
+	fi
 	"$@" <&200 &
 	payload_pid=$!
 	wait "$payload_pid"

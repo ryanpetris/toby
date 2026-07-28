@@ -38,8 +38,8 @@ const (
 	// NetworkHost keeps the invoking host network namespace.
 	NetworkHost NetworkMode = "host"
 
-	// NetworkPrivate gives a process a new network namespace with only its
-	// loopback interface.
+	// NetworkPrivate gives a process a new network namespace that its lifecycle
+	// owner connects before releasing the payload.
 	NetworkPrivate NetworkMode = "private"
 )
 

@@ -343,6 +343,13 @@ A local server requires:
 cannot be configured. A stdio server starts one Bubblewrap sidecar process per
 connector and cannot define `endpoint` or `idleTimeout`.
 
+`host` shares the host network namespace and copies the host resolver
+configuration. `private` creates a separate namespace connected by a
+host-installed `pasta` executable entered through `nsenter`. It permits
+outbound DNS and Internet connections, does not expose host loopback or forward
+ports, and installs `nameserver 198.51.100.53` as the sidecar resolver. Toby
+requires `pasta` and `nsenter` only when a private local MCP generation starts.
+
 ### Local HTTP server
 
 ```yaml

@@ -27,8 +27,10 @@ import (
 	"petris.dev/toby/internal/mcpgateway/localstdio"
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/hostconfig"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
+	"petris.dev/toby/internal/sandbox/pasta"
 	"petris.dev/toby/internal/sandboxgateway"
 )
 
@@ -142,6 +144,25 @@ func TestPreparedStartsWithPinnedMountAndCleansGeneration(t *testing.T) {
 	if captured.bound[layout.Runtime] == nil {
 		t.Fatal("sidecar did not bind its private runtime directory")
 	}
+	network := service.network.(*testPrivateNetwork)
+	start := network.lastStart()
+	if start.TargetPID != os.Getpid() ||
+		start.RuntimeDirectory != runtimePath ||
+		start.DNSForward != hostconfig.PrivateResolverAddress {
+		t.Fatalf("private network start = %#v", start)
+	}
+	resolver, err := os.ReadFile(filepath.Join(
+		process.directories.Overlay().Upper,
+		"etc",
+		"resolv.conf",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(resolver),
+		"nameserver 198.51.100.53\n"; got != want {
+		t.Fatalf("private resolver = %q, want %q", got, want)
+	}
 
 	if err := process.Stop(t.Context()); err != nil {
 		t.Fatal(err)
@@ -213,6 +234,41 @@ func TestProcessCleanupCompletesBoundedRunDirectoryBatches(t *testing.T) {
 	}
 }
 
+func TestPrivateNetworkExitFailsAndStopsSidecar(t *testing.T) {
+	service, _, executor, storage := newTestPreparer(t)
+	defer storage.Close()
+
+	prepared, err := service.Prepare(t.Context(), Definition{
+		Image:   "registry.example/test/mcp:latest",
+		Command: []string{"/bin/mcp"},
+		Network: resource.NetworkPrivate,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := prepared.Start(t.Context(), bwrap.ProcessIO{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	network := service.network.(*testPrivateNetwork)
+	network.lastProcess().complete()
+	select {
+	case <-process.Done():
+	case <-time.After(time.Second):
+		t.Fatal("sidecar remained live after Pasta exited")
+	}
+	if err := process.Err(); err == nil ||
+		!strings.Contains(err.Error(), "pasta exited") {
+		t.Fatalf("sidecar result = %v, want Pasta exit", err)
+	}
+	select {
+	case <-executor.lastProcess().killed:
+	default:
+		t.Fatal("sidecar was not killed after Pasta exited")
+	}
+}
+
 func TestPinnedMountSurvivesPlanningToGenerationStart(t *testing.T) {
 	service, _, executor, storage := newTestPreparer(t)
 	defer storage.Close()
@@ -277,6 +333,9 @@ func TestPinnedMountSurvivesPlanningToGenerationStart(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := service.network.(*testPrivateNetwork).callCount(); got != 0 {
+		t.Fatalf("host sidecar private network starts = %d, want 0", got)
 	}
 
 	captured := executor.lastInvocation()
@@ -849,9 +908,10 @@ type testInvocation struct {
 }
 
 func (e *testExecutor) StartBackground(
-	_ context.Context,
+	ctx context.Context,
 	invocation *bwrap.Invocation,
 	_ bwrap.ProcessIO,
+	setup bwrap.BackgroundSetup,
 ) (bwrap.BackgroundProcess, error) {
 	args, err := sidecarInvocationArguments(invocation)
 	if err != nil {
@@ -885,6 +945,11 @@ func (e *testExecutor) StartBackground(
 	if err := invocation.Close(); err != nil {
 		return nil, err
 	}
+	if setup != nil {
+		if err := setup(ctx, os.Getpid()); err != nil {
+			return nil, err
+		}
+	}
 
 	e.mu.Lock()
 	hold := e.holdNext
@@ -904,7 +969,7 @@ func (e *testExecutor) StartBackground(
 func sidecarInvocationArguments(
 	invocation *bwrap.Invocation,
 ) ([]string, error) {
-	if len(invocation.Args) != 2 ||
+	if len(invocation.Args) < 2 ||
 		invocation.Args[0] != "--args" {
 		return append([]string(nil), invocation.Args...), nil
 	}
@@ -949,7 +1014,7 @@ func sidecarInvocationArguments(
 		args[index] = string(part)
 	}
 
-	return args, nil
+	return append(args, invocation.Args[2:]...), nil
 }
 
 func (e *testExecutor) lastInvocation() testInvocation {
@@ -989,6 +1054,77 @@ type testBackground struct {
 }
 
 var _ bwrap.BackgroundProcess = (*testBackground)(nil)
+
+type testPrivateNetwork struct {
+	mu        sync.Mutex
+	starts    []pasta.StartOptions
+	processes []*testNetworkProcess
+}
+
+var _ PrivateNetworkStarter = (*testPrivateNetwork)(nil)
+
+func (n *testPrivateNetwork) Start(
+	ctx context.Context,
+	options pasta.StartOptions,
+) (pasta.Process, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	process := &testNetworkProcess{done: make(chan struct{})}
+	n.mu.Lock()
+	n.starts = append(n.starts, options)
+	n.processes = append(n.processes, process)
+	n.mu.Unlock()
+	return process, nil
+}
+
+func (n *testPrivateNetwork) lastStart() pasta.StartOptions {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.starts[len(n.starts)-1]
+}
+
+func (n *testPrivateNetwork) callCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.starts)
+}
+
+func (n *testPrivateNetwork) lastProcess() *testNetworkProcess {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.processes[len(n.processes)-1]
+}
+
+type testNetworkProcess struct {
+	once sync.Once
+	done chan struct{}
+}
+
+var _ pasta.Process = (*testNetworkProcess)(nil)
+
+func (p *testNetworkProcess) Done() <-chan struct{} {
+	return p.done
+}
+
+func (*testNetworkProcess) Err() error {
+	return nil
+}
+
+func (p *testNetworkProcess) Stop(context.Context) error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func (p *testNetworkProcess) Kill(context.Context) error {
+	p.complete()
+	return nil
+}
+
+func (p *testNetworkProcess) complete() {
+	p.once.Do(func() { close(p.done) })
+}
 
 func (p *testBackground) Done() <-chan struct{} {
 	return p.done
@@ -1065,7 +1201,13 @@ func newTestPreparerWithLimits(
 	}
 	images := &testImagePreparer{root: rootfsPath}
 	executor := &testExecutor{}
-	service, err := New(images, storage, executor, nil)
+	service, err := New(
+		images,
+		storage,
+		executor,
+		&testPrivateNetwork{},
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

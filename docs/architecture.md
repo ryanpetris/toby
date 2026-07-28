@@ -141,7 +141,7 @@ Each lifecycle, sidecar, or application process runs from a deterministic
 Bubblewrap plan. The application process gets:
 
 - fresh user, PID, IPC, and UTS namespaces;
-- the host network namespace for the initial implementation;
+- the host network namespace;
 - an immutable OCI rootfs covered by a run-unique writable overlay;
 - `/proc`, a controlled `/dev`, tmpfs `/tmp`, and a fresh `/run`;
 - the persistent private home at `/toby/home`;
@@ -162,9 +162,9 @@ a nonzero parent UID.
 graph for their binary. The client graph provides configuration, tool
 registries, the Bubblewrap facade, the agent client, lifecycle services,
 approval, status, and the native session runner. The agent graph provides the
-agent server, resource registry, MCP and models gateways, and their background
-lifecycle services. `tobys` dispatches its two fixed helper commands without an
-Fx graph.
+agent server, resource registry, MCP and models gateways, Pasta launch service,
+and their background lifecycle services. `tobys` dispatches its two fixed
+helper commands without an Fx graph.
 
 Runs, resource leases, sidecar generations, commands, overlays, sockets, and
 private homes are ordinary values created by those services. They are not Fx
@@ -537,9 +537,10 @@ Rendering validates:
 - the selected namespace, capability, terminal, and network policy.
 
 Bubblewrap consumes `/proc/self/fd/<n>` references rather than reopening
-security-sensitive host paths. Background sidecar commands and environment
+security-sensitive host paths. Background sidecar setup options and environment
 values are carried in a bounded sealed descriptor through Bubblewrap's `--args`
-support, keeping secret values out of observable process arguments.
+support, keeping secret values out of observable process arguments. The
+sidecar command follows Bubblewrap's `--` separator in the process arguments.
 
 The executor selects among noninteractive, direct-terminal, and managed-PTY
 modes. Noninteractive and background children start in a new session so they
@@ -557,6 +558,16 @@ exact process with a pidfd, opens its mount namespace, verifies both identities,
 and only then releases the launch gate. After the Bubblewrap monitor returns,
 Toby waits for the init to exit and closes the namespace descriptor before
 another command reuses the run overlay.
+
+Private MCP sidecars use the same launch gate for network preparation. The
+agent waits for Bubblewrap to publish the nested user namespace that owns the
+private network, then uses `nsenter` to start one foreground Pasta process
+against the exact held Bubblewrap init. It disables port forwarding and
+host-gateway mapping and waits for Pasta's PID-file readiness signal before
+releasing the payload. The sidecar receives `198.51.100.53` as its sole
+resolver; Pasta maps that synthetic address to the host resolver. Bubblewrap
+and Pasta form one resource generation for stop, failure, restart, and reap
+behavior.
 
 Linux can defer releasing the OverlayFS superblock after that final namespace
 reference is closed. A later command in the same run is therefore eligible for
@@ -779,6 +790,11 @@ sidecar sandbox. The bridge enforces request, response, header, body,
 concurrency, and session limits. Upstream endpoints and credentials remain
 host-side.
 
+Local sidecars configured with `network: host` share the host network
+namespace. `network: private` gives each sidecar generation its own namespace
+with outbound connectivity through Pasta, no forwarded ports, and no
+host-loopback access. The MCP Unix endpoint is unchanged by this selection.
+
 The built-in server exposes Git operations and bounded `toby://` resources
 created from an immutable session snapshot. Snapshot views never contain host
 paths, capability paths, upstream URLs, headers, commands, environment values,
@@ -839,10 +855,11 @@ The major trust boundaries are:
   launch file must explicitly name any additional project source; and
 - generated tool files are restricted to validated owned backings.
 
-Host networking is a known limitation. It does not replace capability
-authentication: sandbox resource streams use an owner-only Unix socket, and
-models HTTP requests require a launch-owned loopback route plus a synthetic
-credential.
+Application sandboxes and Caddy use host networking. Capability authentication
+remains independent of that choice: sandbox resource streams use an owner-only
+Unix socket, and models HTTP requests require a launch-owned loopback route
+plus a synthetic credential. Private MCP sidecars use Pasta-connected network
+namespaces with outbound access and no forwarded ports.
 
 A process deliberately sharing a private home or tool-volume profile can read
 the current generated models route and synthetic credential because generated

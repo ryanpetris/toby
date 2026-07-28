@@ -210,6 +210,20 @@ Application sandboxes share the host network and receive a run-scoped snapshot
 of the contents of the host `/etc/resolv.conf`. If DNS fails inside a sandbox,
 compare that file with the host and preserve Bubblewrap output with `--debug`.
 
+Local MCP resources configured with `network: private` require Pasta:
+
+```sh
+command -v pasta
+pasta --version
+command -v nsenter
+nsenter --version
+```
+
+Their `/etc/resolv.conf` contains `nameserver 198.51.100.53`. Pasta forwards
+that address to the host resolver while keeping host loopback and port
+forwarding unavailable. Use `toby agent logs <resource-id>` to inspect a
+private MCP generation that fails during Pasta startup or outbound access.
+
 Toby's operation label names the image reference throughout preparation:
 
 ```text
@@ -476,6 +490,11 @@ For a local target, check:
 - `scope` is `user`, `home`, `project`, or `run`;
 - `network` is `host` or `private`; and
 - every mount source is an absolute, safe host path.
+
+For `network: private`, also confirm that the host `pasta` executable is
+installed from the `passt` package and `nsenter` is installed from
+`util-linux`. The sidecar starts only after Pasta reports that its network
+configuration is ready.
 
 For local HTTP, also check:
 

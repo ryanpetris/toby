@@ -46,11 +46,14 @@ type backgroundChildResult struct {
 // goroutine. The caller owns those descriptors and any external pumps attached
 // to them; StartBackground does not close or supervise either. The returned
 // process is independent of ctx after startup; its lifecycle owner must call
-// Stop or Kill.
+// Stop or Kill. When setup is non-nil, Bubblewrap holds the payload behind a
+// launch gate while setup receives the retained init PID. StartBackground
+// releases the gate only after setup succeeds.
 func (e *Executor) StartBackground(
 	ctx context.Context,
 	invocation *Invocation,
 	streams ProcessIO,
+	setup BackgroundSetup,
 ) (result BackgroundProcess, returnErr error) {
 	var logger *diagnostic.Logger
 	if e != nil {
@@ -119,6 +122,10 @@ func (e *Executor) StartBackground(
 	}
 	statusReaderOpen := true
 	statusWriterOpen := true
+	var gateReader *os.File
+	var gateWriter *os.File
+	gateReaderOpen := false
+	gateWriterOpen := false
 	defer func() {
 		if statusReaderOpen {
 			logger.DebugError(
@@ -132,17 +139,48 @@ func (e *Executor) StartBackground(
 				statusWriter.Close(),
 			)
 		}
+		if gateReaderOpen {
+			logger.DebugError(
+				"close background Bubblewrap launch gate reader",
+				gateReader.Close(),
+			)
+		}
+		if gateWriterOpen {
+			logger.DebugError(
+				"close background Bubblewrap launch gate writer",
+				gateWriter.Close(),
+			)
+		}
 	}()
 
 	files := append([]*os.File(nil), attempt.ExtraFiles...)
 	statusFD := childExtraFileBaseFD + len(files)
 	files = append(files, statusWriter)
 
+	controlArgs := []string{
+		"--json-status-fd", strconv.Itoa(statusFD),
+	}
+	if setup != nil {
+		gateReader, gateWriter, err = os.Pipe()
+		if err != nil {
+			return nil, fmt.Errorf(
+				"create background Bubblewrap launch gate: %w",
+				err,
+			)
+		}
+		gateReaderOpen = true
+		gateWriterOpen = true
+
+		gateFD := childExtraFileBaseFD + len(files)
+		files = append(files, gateReader)
+		controlArgs = append(
+			controlArgs,
+			"--block-fd", strconv.Itoa(gateFD),
+		)
+	}
+
 	args := append([]string(nil), attempt.Args...)
-	args = append(
-		[]string{"--json-status-fd", strconv.Itoa(statusFD)},
-		args...,
-	)
+	args = append(controlArgs, args...)
 	command := exec.Command(executable, args...)
 	command.ExtraFiles = files
 	command.Env = []string{}
@@ -183,6 +221,11 @@ func (e *Executor) StartBackground(
 
 	writerErr := statusWriter.Close()
 	statusWriterOpen = false
+	var gateReaderErr error
+	if gateReaderOpen {
+		gateReaderErr = gateReader.Close()
+		gateReaderOpen = false
+	}
 	attemptErr := attempt.Close()
 	attemptOpen = false
 	logger.DebugError(
@@ -196,6 +239,7 @@ func (e *Executor) StartBackground(
 	)
 	startErr := errors.Join(
 		writerErr,
+		gateReaderErr,
 		monitorErr,
 		ctx.Err(),
 	)
@@ -262,6 +306,45 @@ func (e *Executor) StartBackground(
 			err,
 		)
 	}
+	if setup != nil {
+		setupErr := errors.Join(setup(ctx, child.pid), ctx.Err())
+		if setupErr != nil {
+			cleanupErr := terminateStartedBackground(
+				command,
+				monitor,
+				statusResult,
+				init,
+			)
+			logger.DebugError(
+				"terminate background Bubblewrap after setup failure",
+				cleanupErr,
+			)
+			return nil, fmt.Errorf(
+				"prepare background Bubblewrap sandbox: %w",
+				setupErr,
+			)
+		}
+
+		gateErr := gateWriter.Close()
+		gateWriterOpen = false
+		if gateErr != nil {
+			cleanupErr := terminateStartedBackground(
+				command,
+				monitor,
+				statusResult,
+				init,
+			)
+			logger.DebugError(
+				"terminate background Bubblewrap after launch gate failure",
+				cleanupErr,
+			)
+			return nil, fmt.Errorf(
+				"release background Bubblewrap launch gate: %w",
+				gateErr,
+			)
+		}
+	}
+
 	payload, payloadErr := retainBackgroundPayload(ctx, init)
 	startErr = errors.Join(payloadErr, ctx.Err())
 	if startErr != nil {

@@ -12,6 +12,7 @@ import (
 	"petris.dev/toby/internal/mcpgateway"
 	"petris.dev/toby/internal/oci"
 	"petris.dev/toby/internal/sandbox/bwrap"
+	"petris.dev/toby/internal/sandbox/pasta"
 )
 
 // Image is one leased immutable OCI rootfs plus its verified metadata.
@@ -45,10 +46,22 @@ type BackgroundExecutor interface {
 		context.Context,
 		*bwrap.Invocation,
 		bwrap.ProcessIO,
+		bwrap.BackgroundSetup,
 	) (bwrap.BackgroundProcess, error)
 }
 
 var _ BackgroundExecutor = (*bwrap.Executor)(nil)
+
+// PrivateNetworkStarter connects one held sidecar network namespace.
+type PrivateNetworkStarter interface {
+	// Start connects the namespace and returns its owned Pasta process.
+	Start(
+		context.Context,
+		pasta.StartOptions,
+	) (pasta.Process, error)
+}
+
+var _ PrivateNetworkStarter = (*pasta.Service)(nil)
 
 // Provider resolves image metadata, pins explicit mounts, and prepares exact
 // sidecar launches. Implementations may initialize the native runtime lazily.

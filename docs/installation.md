@@ -6,6 +6,9 @@ Toby requires:
 
 - Linux kernel 6.9 or newer;
 - Bubblewrap (`bwrap`);
+- Pasta (`pasta`) from the `passt` package for local MCP resources configured
+  with `network: private`;
+- `nsenter` from the `util-linux` package for those private MCP resources;
 - a non-root host user;
 - unprivileged user namespaces and Bubblewrap overlay support; and
 - an absolute, accessible `XDG_RUNTIME_DIR` for sandbox and agent operations.
@@ -32,9 +35,9 @@ contains:
 - an Arch Linux package.
 
 Packages install `toby`, `tobyd`, and `tobys` beneath `/usr/bin`, depend on
-Bubblewrap, include the MIT license, and install optional systemd user and
-system-wide units. Package installation reloads the system systemd manager but
-does not enable or start any unit.
+Bubblewrap, `passt`, and `util-linux`, include the MIT license, and install
+optional systemd user and system-wide units. Package installation reloads the
+system systemd manager but does not enable or start any unit.
 
 ## Binary archive
 

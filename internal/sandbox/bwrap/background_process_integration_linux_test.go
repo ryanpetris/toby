@@ -39,6 +39,7 @@ func TestBackgroundProcessStopRunsPayloadTermHandler(t *testing.T) {
 		t.Context(),
 		backgroundTermIntegrationInvocation(root, false),
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +75,7 @@ func TestBackgroundProcessEscalatesIgnoredTerm(t *testing.T) {
 		t.Context(),
 		backgroundTermIntegrationInvocation(root, true),
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +184,7 @@ func TestBackgroundProcessSurvivesStartingThreadExit(t *testing.T) {
 				ctx,
 				backgroundIntegrationInvocation(root),
 				ProcessIO{},
+				nil,
 			)
 			thread.result <- launchResult{
 				process: process,
@@ -515,6 +518,7 @@ func runBackgroundDeathHelper(t *testing.T) {
 		ctx,
 		backgroundIntegrationInvocation(root),
 		ProcessIO{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

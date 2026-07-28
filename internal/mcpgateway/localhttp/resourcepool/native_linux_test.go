@@ -34,6 +34,7 @@ import (
 	"petris.dev/toby/internal/sandbox/bwrap"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
+	"petris.dev/toby/internal/sandbox/pasta"
 )
 
 const (
@@ -536,6 +537,7 @@ func (e *nativeTestExecutor) StartBackground(
 	ctx context.Context,
 	invocation *bwrap.Invocation,
 	_ bwrap.ProcessIO,
+	setup bwrap.BackgroundSetup,
 ) (bwrap.BackgroundProcess, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, invocation.Close())
@@ -599,6 +601,11 @@ func (e *nativeTestExecutor) StartBackground(
 			fmt.Errorf("sidecar invocation has no runtime bind"),
 			invocation.Close(),
 		)
+	}
+	if setup != nil {
+		if err := setup(ctx, os.Getpid()); err != nil {
+			return nil, errors.Join(err, invocation.Close())
+		}
 	}
 
 	captured.socketPath = filepath.Join(
@@ -690,6 +697,45 @@ func (e *nativeTestExecutor) StartBackground(
 	return process, nil
 }
 
+type nativeTestNetwork struct{}
+
+var _ sidecar.PrivateNetworkStarter = nativeTestNetwork{}
+
+func (nativeTestNetwork) Start(
+	ctx context.Context,
+	_ pasta.StartOptions,
+) (pasta.Process, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &nativeTestNetworkProcess{done: make(chan struct{})}, nil
+}
+
+type nativeTestNetworkProcess struct {
+	once sync.Once
+	done chan struct{}
+}
+
+var _ pasta.Process = (*nativeTestNetworkProcess)(nil)
+
+func (p *nativeTestNetworkProcess) Done() <-chan struct{} {
+	return p.done
+}
+
+func (*nativeTestNetworkProcess) Err() error {
+	return nil
+}
+
+func (p *nativeTestNetworkProcess) Stop(context.Context) error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func (p *nativeTestNetworkProcess) Kill(context.Context) error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
 func (e *nativeTestExecutor) capture() nativeTestInvocation {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -772,7 +818,7 @@ func nativeTestInvocationArguments(
 	if invocation == nil {
 		return nil, fmt.Errorf("sidecar invocation is nil")
 	}
-	if len(invocation.Args) != 2 ||
+	if len(invocation.Args) < 2 ||
 		invocation.Args[0] != "--args" {
 		return append([]string(nil), invocation.Args...), nil
 	}
@@ -821,7 +867,7 @@ func nativeTestInvocationArguments(
 		args[index] = string(part)
 	}
 
-	return args, nil
+	return append(args, invocation.Args[2:]...), nil
 }
 
 func newNativeTestRuntime(
@@ -899,7 +945,13 @@ func newNativeTestRuntime(
 		socketName: "mcp.sock",
 		requests:   make(chan nativeTestRequest, 4),
 	}
-	sidecars, err := sidecar.New(images, storage, executor, nil)
+	sidecars, err := sidecar.New(
+		images,
+		storage,
+		executor,
+		nativeTestNetwork{},
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

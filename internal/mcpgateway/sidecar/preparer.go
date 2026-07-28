@@ -20,6 +20,7 @@ type Preparer struct {
 	images   ImagePreparer
 	storage  *bwrap.RunStorage
 	executor BackgroundExecutor
+	network  PrivateNetworkStarter
 	logger   *diagnostic.Logger
 }
 
@@ -28,6 +29,7 @@ func New(
 	images ImagePreparer,
 	storage *bwrap.RunStorage,
 	executor BackgroundExecutor,
+	network PrivateNetworkStarter,
 	logger *diagnostic.Logger,
 ) (*Preparer, error) {
 	if isNilContract(images) {
@@ -39,11 +41,15 @@ func New(
 	if isNilContract(executor) {
 		return nil, fmt.Errorf("sidecar Bubblewrap executor is required")
 	}
+	if isNilContract(network) {
+		return nil, fmt.Errorf("sidecar private network service is required")
+	}
 
 	return &Preparer{
 		images:   images,
 		storage:  storage,
 		executor: executor,
+		network:  network,
 		logger:   logger,
 	}, nil
 }
@@ -56,7 +62,7 @@ func (s *Preparer) Resolve(
 	progress mcpgateway.ProgressReporter,
 ) (result Metadata, returnErr error) {
 	if s == nil || s.images == nil || s.storage == nil ||
-		s.executor == nil {
+		s.executor == nil || s.network == nil {
 		return Metadata{}, fmt.Errorf("sidecar preparer is not configured")
 	}
 	if ctx == nil {

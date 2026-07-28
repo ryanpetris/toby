@@ -21,6 +21,7 @@ import (
 	"petris.dev/toby/internal/sandbox/bwrap"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
+	"petris.dev/toby/internal/sandbox/pasta"
 )
 
 func TestPoolSharesProcessButNotRunConnectorLeases(t *testing.T) {
@@ -559,8 +560,20 @@ func (unavailableBackgroundExecutor) StartBackground(
 	context.Context,
 	*bwrap.Invocation,
 	bwrap.ProcessIO,
+	bwrap.BackgroundSetup,
 ) (bwrap.BackgroundProcess, error) {
 	return nil, errors.New("test background execution reached")
+}
+
+type unavailablePrivateNetwork struct{}
+
+var _ sidecar.PrivateNetworkStarter = unavailablePrivateNetwork{}
+
+func (unavailablePrivateNetwork) Start(
+	context.Context,
+	pasta.StartOptions,
+) (pasta.Process, error) {
+	return nil, errors.New("test private network startup reached")
 }
 
 func newTestMountCapabilities(
@@ -576,6 +589,7 @@ func newTestMountCapabilities(
 		unavailableImagePreparer{},
 		new(bwrap.RunStorage),
 		unavailableBackgroundExecutor{},
+		unavailablePrivateNetwork{},
 		nil,
 	)
 	if err != nil {
