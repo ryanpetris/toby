@@ -25,3 +25,7 @@ coverage.out
 .specify/
 .gemini/
 .aider*
+
+# Environment
+.env
+.env.*
