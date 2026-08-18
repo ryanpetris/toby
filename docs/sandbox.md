@@ -405,6 +405,20 @@ Session MCP servers live in the generated plugin. Toby patches
 `~/.grok/config.toml` so `[plugins].enabled` contains `toby-session`. Grok
 receives the generated rule contents through its launch contract as needed.
 
+### Cursor
+
+Toby writes:
+
+- `~/.cursor/mcp.json`
+- `~/.cursor/rules/toby.mdc`
+
+The generated MCP file is Cursor's global `mcp.json`. Replacing it on a later
+launch drops servers that are no longer in the session. Combined instructions
+are an always-applied Cursor rule. Launch arguments approve MCP connectors and
+disable Cursor's nested sandbox. Linux login tokens live in
+`~/.config/cursor/auth.json`. Cursor's config, state, and agent-data
+directories are separate global tool volumes selected by profile.
+
 ## Docker tool exception
 
 The built-in `docker` tool is the only Docker integration in Toby. Selecting it

@@ -26,6 +26,7 @@ primary tool is the final foreground child.
 | `claude` | `claude` | AI | `npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code` |
 | `codex` | `codex` | AI | `npm install -g @openai/codex` |
 | `copilot` | `copilot` | AI | `npm install -g @github/copilot` |
+| `cursor` | `cursor` | AI | Linux archive from `cursor.com/install` |
 | `dcode` | `dcode` | AI | `uv tool install --prerelease allow deepagents-code` |
 | `grok` | `grok` | AI | Linux archive from `x.ai/cli` |
 | `speckit` | `speckit` | System | `uv tool install` from GitHub Spec Kit |
@@ -164,6 +165,32 @@ on a later launch drops servers that are no longer in the session. Toby
 patches `~/.grok/config.toml` so `[plugins].enabled` contains `toby-session`
 without replacing other enabled plugins. Combined instructions are also
 passed through Grok's `--rules` launch contract.
+
+### Cursor
+
+Toby writes:
+
+- `~/.cursor/mcp.json`
+- `~/.cursor/rules/toby.mdc`
+
+Cursor keeps its ordinary writable directories. The generated MCP file uses
+Cursor's global `mcp.json` path. Replacing that file on a later launch drops
+servers that are no longer in the session. Combined instructions are written
+as an always-applied Cursor rule. The CLI command is `toby cursor`; the
+foreground binary is `cursor-agent`. Toby launches it with `--approve-mcps`
+and `--sandbox disabled` so run-scoped MCP connectors load without approval
+prompts and Cursor does not nest a second sandbox. `--yolo` adds Cursor's
+`--force` flag.
+
+Cursor requests separate global tool volumes for:
+
+- `~/.cursor`
+- `~/.config/cursor`
+- `~/.local/share/cursor-agent`
+
+Linux login tokens live in `~/.config/cursor/auth.json`, not under
+`~/.cursor`. Matching profiles reuse those volumes across projects and
+private homes.
 
 ### T3 Code
 

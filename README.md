@@ -6,7 +6,7 @@ Toby runs development tools in private-home Linux sandboxes. Each launch uses
 a verified OCI root filesystem and Bubblewrap without using Docker as its
 runtime.
 
-OpenCode, Claude Code, Codex, Copilot, Deep Agents Code, Grok, package
+OpenCode, Claude Code, Codex, Copilot, Cursor, Deep Agents Code, Grok, package
 managers, and VCS clients see the selected projects and Toby-managed storage.
 Host files such as `~/.ssh`, `~/.gnupg`, and ordinary tool configuration remain
 outside the sandbox.
@@ -87,8 +87,8 @@ multi-project launches.
 
 The primary launch commands are grouped by purpose:
 
-- AI coding: `opencode`, `claude`, `codex`, `copilot`, `dcode`, `grok`, and
-  `t3`
+- AI coding: `opencode`, `claude`, `codex`, `copilot`, `cursor`, `dcode`,
+  `grok`, and `t3`
 - Development and helper tools: `exec`, `npm`, `uv`, `gh`, `glab`, `fj`,
   `emdash`, `speckit`, and `docker`
 
