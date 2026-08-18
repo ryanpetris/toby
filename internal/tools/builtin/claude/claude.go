@@ -38,7 +38,7 @@ func provide(params params) result {
 			params.Sandbox,
 			tools.Base{Metadata: Meta},
 			[]string{".config", "claude"},
-			[]string{"npm", "install", "-g", "@anthropic-ai/claude-code"},
+			[]string{"npm", "install", "-g", "--allow-scripts=@anthropic-ai/claude-code", "@anthropic-ai/claude-code"},
 			nil,
 		),
 		sessionConfig: params.SessionConfig,

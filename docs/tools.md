@@ -23,7 +23,7 @@ primary tool is the final foreground child.
 | Tool | CLI | Group | Installation |
 | --- | --- | --- | --- |
 | `opencode` | `opencode` | AI | `npm install -g opencode-ai` |
-| `claude` | `claude` | AI | `npm install -g @anthropic-ai/claude-code` |
+| `claude` | `claude` | AI | `npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code` |
 | `codex` | `codex` | AI | `npm install -g @openai/codex` |
 | `copilot` | `copilot` | AI | `npm install -g @github/copilot` |
 | `dcode` | `dcode` | AI | `uv tool install --prerelease allow deepagents-code` |
