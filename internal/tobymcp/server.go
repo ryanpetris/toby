@@ -1,5 +1,5 @@
 // Package tobymcp is the agent-hosted MCP server Toby exposes to tools
-// running inside a native sandbox. It composes host Git tools, a resources.read
+// running inside a native sandbox. It composes host Git tools, a resources_read
 // fallback, and sandbox-safe toby:// session and documentation resources.
 package tobymcp
 

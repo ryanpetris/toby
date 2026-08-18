@@ -244,6 +244,9 @@ The connector does not know:
 
 The built-in `toby` target starts a fresh MCP server session for each connector.
 It exposes host Git operations and bounded documentation/session resources.
+The MCP tool names are `git_commit`, `git_fetch`, `git_push`, `git_rebase`,
+`git_tag`, and `resources_read`. Approval rules still use the host-action ids
+`git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag`.
 
 Host Git requests return to the launch process as typed host-action messages on
 the client-opened `OpenSession` gRPC stream. They are sent only in response to a

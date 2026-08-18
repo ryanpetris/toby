@@ -1,6 +1,6 @@
 package sessionservice
 
-// Binds one native session to resources.read and the toby://session/*
+// Binds one native session to resources_read and the toby://session/*
 // introspection resources.
 
 import (

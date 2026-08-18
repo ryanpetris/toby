@@ -8,6 +8,22 @@ import (
 	"petris.dev/toby/internal/hostaction/methods/git"
 )
 
+func TestServiceExposesUnderscoreGitToolNames(t *testing.T) {
+	got := make([]string, 0, 5)
+	for _, tool := range (Service{}).Tools() {
+		got = append(got, tool.Name)
+	}
+	want := []string{toolCommit, toolFetch, toolPush, toolRebase, toolTag}
+	if len(got) != len(want) {
+		t.Fatalf("git tools = %#v", got)
+	}
+	for index, name := range want {
+		if got[index] != name {
+			t.Fatalf("git tools = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestGitToolResultMarksNonzeroExitAsError(t *testing.T) {
 	if result := gitToolResult(git.Result{}); result != nil {
 		t.Fatalf("zero exit result = %#v", result)

@@ -1,4 +1,4 @@
-// Package sessionservice contributes Toby's resources.read fallback and
+// Package sessionservice contributes Toby's resources_read fallback and
 // sandbox-safe toby://session/* and toby://docs/* resources.
 package sessionservice
 
@@ -12,7 +12,9 @@ import (
 
 const resourcesReadDescription = "Read one or more Toby resources by URI (for example toby://session/runtime or toby://docs/introspection). Pass uris to select specific resources; omit uris to read every available resource. Use this when the MCP client cannot read MCP resources directly."
 
-// Service contributes Toby's introspection resources and resources.read tool.
+const toolResourcesRead = "resources_read"
+
+// Service contributes Toby's introspection resources and resources_read tool.
 type Service struct{}
 
 var _ tobymcp.Contributor = Service{}
@@ -20,8 +22,8 @@ var _ tobymcp.Contributor = Service{}
 // Tools returns session introspection MCP tools.
 func (Service) Tools() []tobymcp.Tool {
 	return []tobymcp.Tool{
-		{Name: "resources.read", Register: func(server *mcp.Server, session *tobymcp.Session) {
-			mcp.AddTool(server, &mcp.Tool{Name: "resources.read", Description: resourcesReadDescription}, handler{session}.resourcesRead)
+		{Name: toolResourcesRead, Register: func(server *mcp.Server, session *tobymcp.Session) {
+			mcp.AddTool(server, &mcp.Tool{Name: toolResourcesRead, Description: resourcesReadDescription}, handler{session}.resourcesRead)
 		}},
 	}
 }

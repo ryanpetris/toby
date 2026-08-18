@@ -10,7 +10,8 @@ import (
 func TestSandboxInstructions(t *testing.T) {
 	instructions := SandboxInstructions()
 	if !bytes.Contains(instructions, []byte("# Toby Sandbox")) ||
-		!bytes.Contains(instructions, []byte("git.commit")) {
+		!bytes.Contains(instructions, []byte("Toby MCP")) ||
+		!bytes.Contains(instructions, []byte("toby://docs/git")) {
 		t.Fatalf("sandbox instructions are incomplete: %q", instructions)
 	}
 

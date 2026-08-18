@@ -164,7 +164,7 @@ func TestIntrospectionResourcesRenderOnlyNativeSnapshot(t *testing.T) {
 
 func TestServiceExposesResourcesReadTool(t *testing.T) {
 	tools := (Service{}).Tools()
-	if len(tools) != 1 || tools[0].Name != "resources.read" {
+	if len(tools) != 1 || tools[0].Name != "resources_read" {
 		t.Fatalf("session tools = %#v", tools)
 	}
 }
