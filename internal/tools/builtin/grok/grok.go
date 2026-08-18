@@ -1,6 +1,6 @@
 // Package grok provides the Grok CLI agent tool: it installs the x.ai Grok CLI
-// into the sandbox and launches it with Toby's generated MCP config and
-// instructions.
+// into the sandbox and launches it with Toby's generated plugin, config.toml
+// enablement patch, and instructions.
 package grok
 
 import (

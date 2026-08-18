@@ -396,11 +396,14 @@ Toby writes:
 
 Toby writes:
 
-- `~/.grok/managed_config.toml`
+- `~/.grok/plugins/toby-session/plugin.json`
+- `~/.grok/plugins/toby-session/.mcp.json`
+- `~/.grok/config.toml`
 - `~/.grok/AGENTS.md`
 
-Both are regular files. Grok receives the generated rule contents through its
-launch contract as needed.
+Session MCP servers live in the generated plugin. Toby patches
+`~/.grok/config.toml` so `[plugins].enabled` contains `toby-session`. Grok
+receives the generated rule contents through its launch contract as needed.
 
 ## Docker tool exception
 

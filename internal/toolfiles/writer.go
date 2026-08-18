@@ -84,6 +84,10 @@ func (w *Writer) Write(
 		}
 	}
 
+	if err := applyPatches(resolved, generated, w.logger); err != nil {
+		return nil, fmt.Errorf("write native tool files: %w", err)
+	}
+
 	for _, file := range resolved {
 		if err := writeFile(file, w.logger); err != nil {
 			return nil, fmt.Errorf(

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"petris.dev/toby/internal/configpatch"
 	"petris.dev/toby/internal/sandbox/bwrap"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
@@ -159,7 +160,7 @@ func TestWriterReplacesFinalSymlinkWithoutFollowingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	target := filepath.Join(fixture.plan.Home.HostPath, ".grok", "managed_config.toml")
+	target := filepath.Join(fixture.plan.Home.HostPath, ".app", "config.toml")
 	if err := os.Mkdir(filepath.Dir(target), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestWriterReplacesFinalSymlinkWithoutFollowingIt(t *testing.T) {
 
 	file := nativeFile(
 		fixture.plan,
-		"/toby/home/.grok/managed_config.toml",
+		"/toby/home/.app/config.toml",
 		"generated",
 	)
 	if _, err := NewWriter(nil).Write(
@@ -381,6 +382,135 @@ func TestWriterLaterLaunchWinsWhileApplicationDatabaseLockIsHeld(
 	if !os.SameFile(before, after) {
 		t.Fatal("generated-file replacement changed the database inode")
 	}
+}
+
+func TestWriterAppliesTOMLEnsurePatchToExistingFile(t *testing.T) {
+	fixture := newWriterFixture(t)
+	parent := filepath.Join(fixture.plan.Home.HostPath, ".grok")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("" +
+		"[ui]\n" +
+		"max_thoughts_width = 120\n" +
+		"\n" +
+		"[plugins]\n" +
+		"enabled = [\"already\"]\n")
+	if err := os.WriteFile(filepath.Join(parent, "config.toml"), existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	generated, err := NewWriter(nil).Write(
+		fixture.plan,
+		fixture.sources,
+		[]File{pluginEnablementFile(fixture.plan)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(generated[0].Data) == string(existing) {
+		t.Fatal("generated record was not updated with the patched document")
+	}
+
+	got, err := os.ReadFile(filepath.Join(parent, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("already")) || !bytes.Contains(got, []byte("toby-session")) {
+		t.Fatalf("patched config = %q", got)
+	}
+	if !bytes.Contains(got, []byte("max_thoughts_width = 120")) {
+		t.Fatalf("integer was not preserved: %q", got)
+	}
+}
+
+func TestWriterAppliesPatchToMissingFile(t *testing.T) {
+	fixture := newWriterFixture(t)
+	generated, err := NewWriter(nil).Write(
+		fixture.plan,
+		fixture.sources,
+		[]File{pluginEnablementFile(fixture.plan)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generated[0].Data) == 0 {
+		t.Fatal("missing-file patch produced empty generated data")
+	}
+
+	got, err := os.ReadFile(filepath.Join(fixture.plan.Home.HostPath, ".grok", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("toby-session")) {
+		t.Fatalf("created config = %q", got)
+	}
+}
+
+func TestWriterRejectsPatchWhenExistingFileIsSymlink(t *testing.T) {
+	fixture := newWriterFixture(t)
+	external := filepath.Join(t.TempDir(), "outside.toml")
+	if err := os.WriteFile(external, []byte("keep = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(fixture.plan.Home.HostPath, ".grok")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(parent, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewWriter(nil).Write(
+		fixture.plan,
+		fixture.sources,
+		[]File{pluginEnablementFile(fixture.plan)},
+	); err == nil {
+		t.Fatal("symlink config was patched")
+	}
+
+	externalContent, err := os.ReadFile(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(externalContent) != "keep = true\n" {
+		t.Fatalf("symlink target data = %q", externalContent)
+	}
+}
+
+func TestWriterDoesNotWriteWhenPatchFails(t *testing.T) {
+	fixture := newWriterFixture(t)
+	parent := filepath.Join(fixture.plan.Home.HostPath, ".grok")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "config.toml"), []byte("= invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	good := nativeFile(fixture.plan, "/toby/home/.a/good", "good")
+	if _, err := NewWriter(nil).Write(
+		fixture.plan,
+		fixture.sources,
+		[]File{good, pluginEnablementFile(fixture.plan)},
+	); err == nil {
+		t.Fatal("invalid patch source was accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.plan.Home.HostPath, ".a/good")); !os.IsNotExist(err) {
+		t.Fatalf("sibling file was written after patch failed: %v", err)
+	}
+}
+
+func pluginEnablementFile(plan bwrap.Plan) File {
+	file := nativeFile(plan, "/toby/home/.grok/config.toml", "")
+	file.Data = nil
+	file.Patch = configpatch.Patch{
+		Ensure: []configpatch.Value{{
+			Path:  "/plugins/enabled",
+			Value: "toby-session",
+		}},
+	}
+	return file
 }
 
 type writerFixture struct {

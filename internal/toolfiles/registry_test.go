@@ -6,6 +6,8 @@ package toolfiles
 import (
 	"reflect"
 	"testing"
+
+	"petris.dev/toby/internal/configpatch"
 )
 
 func TestRegistryReturnsDeterministicDetachedFiles(t *testing.T) {
@@ -50,6 +52,36 @@ func TestRegistryReturnsDeterministicDetachedFiles(t *testing.T) {
 	got[0].Data[0] = 'X'
 	if next := registry.Files(); string(next[0].Data) != "codex" {
 		t.Fatalf("Files result aliases registry data: %q", next[0].Data)
+	}
+}
+
+func TestRegistryClonesPatchIntents(t *testing.T) {
+	registry := NewRegistry()
+	file := File{
+		Owner:  "grok",
+		Target: "/toby/home/.grok/config.toml",
+		Patch: configpatch.Patch{
+			Ensure: []configpatch.Value{{
+				Path:  "/plugins/enabled",
+				Value: map[string]any{"name": "toby-session"},
+			}},
+		},
+		Mode: 0o600,
+		UID:  1000,
+		GID:  1000,
+	}
+	if err := registry.Register(file); err != nil {
+		t.Fatal(err)
+	}
+	file.Patch.Ensure[0].Value.(map[string]any)["name"] = "mutated"
+
+	got := registry.Files()
+	if got[0].Patch.Ensure[0].Value.(map[string]any)["name"] != "toby-session" {
+		t.Fatalf("registered patch aliases caller value: %#v", got[0].Patch)
+	}
+	got[0].Patch.Ensure[0].Value.(map[string]any)["name"] = "mutated"
+	if next := registry.Files(); next[0].Patch.Ensure[0].Value.(map[string]any)["name"] != "toby-session" {
+		t.Fatalf("Files result aliases registry patch: %#v", next[0].Patch)
 	}
 }
 
@@ -119,6 +151,30 @@ func TestRegistryRejectsInvalidAndOverlappingTargets(t *testing.T) {
 			name: "negative gid",
 			mutate: func(file *File) {
 				file.GID = -1
+			},
+		},
+		{
+			name: "data and patch",
+			mutate: func(file *File) {
+				file.Patch = configpatch.Patch{
+					Ensure: []configpatch.Value{{
+						Path:  "/plugins/enabled",
+						Value: "toby-session",
+					}},
+				}
+			},
+		},
+		{
+			name: "patch target extension",
+			mutate: func(file *File) {
+				file.Data = nil
+				file.Target = "/toby/home/.grok/config"
+				file.Patch = configpatch.Patch{
+					Ensure: []configpatch.Value{{
+						Path:  "/plugins/enabled",
+						Value: "toby-session",
+					}},
+				}
 			},
 		},
 	}

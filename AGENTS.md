@@ -88,7 +88,7 @@ Current package map:
 | --- | --- | --- |
 | Commands | Entry points | `cmd/toby`, `cmd/tobyd`, `cmd/tobys` |
 | Internal | Entry and CLI | `internal/app/{client,agent,sandbox}`, `internal/cli`, `internal/version` |
-| Internal | Configuration | `internal/config`, `internal/config/file`, `internal/config/session`, `internal/config/{app,launch,mcp,mcpresource,models,ociresource}` |
+| Internal | Configuration | `internal/config`, `internal/config/file`, `internal/config/session`, `internal/config/{app,launch,mcp,mcpresource,models,ociresource}`, `internal/configpatch` |
 | Internal | Session and lifecycle | `internal/session/run`, `internal/lifecycle`, `internal/toolfiles`, `internal/runtimeassets` |
 | Internal | Tools | `internal/tools`, `internal/tools/helpers`, `internal/tools/kit`, `internal/tools/builtin/<name>`, `internal/tools/wiring`, `internal/tools/fake`, `internal/tools/runtimepath` |
 | Internal | Providers | `internal/providers`, `internal/providers/openai`, `internal/providers/anthropic` |
@@ -259,6 +259,8 @@ paths, credentials, or other sensitive values.
 
 Generated configuration is written as ordinary files at each application's
 native private-home or tool-volume paths and atomically replaced on launch.
+A tool may instead declare a patch; `toolfiles` applies it to the current
+native file, or to an empty object when the file is missing.
 Never introduce a shared context directory, symlink indirection, or a parallel
 compatibility path. Never modify the host user's real tool configuration.
 Concurrent launches sharing the same persistent backing use last-launch-wins

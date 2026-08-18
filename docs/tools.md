@@ -67,14 +67,18 @@ Coding-tool adapters receive a sandbox-safe session configuration containing:
 - permission paths; and
 - resolved instruction contents.
 
-Each adapter renders complete ordinary files at the application's native paths.
-Toby validates the combined file set, then atomically replaces every file
-before lifecycle commands start. An existing final symlink or other
-non-directory entry is replaced as a directory entry; its referenced object is
-not modified.
+Each adapter renders complete ordinary files at the application's native paths,
+or declares a patch applied to the current native file at publish time. A
+missing patched file is treated as an empty object. Toby validates the combined
+file set, then atomically replaces every file before lifecycle commands start.
+An existing final symlink or other non-directory entry is replaced as a
+directory entry; its referenced object is not modified. A patched file that is
+a symlink is rejected instead of being followed.
 
-These files are Toby-owned and replaced on later launches. Concurrent launches
-sharing the same private home or tool volume use last-launch-wins behavior.
+Complete generated files are Toby-owned and replaced on later launches. Patched
+files keep unrelated keys and are rewritten with the applied result. Concurrent
+launches sharing the same private home or tool volume use last-launch-wins
+behavior.
 
 ### OpenCode
 
@@ -150,11 +154,16 @@ variables.
 
 Toby writes:
 
-- `~/.grok/managed_config.toml`
+- `~/.grok/plugins/toby-session/plugin.json`
+- `~/.grok/plugins/toby-session/.mcp.json`
+- `~/.grok/config.toml`
 - `~/.grok/AGENTS.md`
 
-The managed config is a regular file. Combined instructions are also passed
-through Grok's `--rules` launch contract.
+Session MCP servers live in the generated plugin. Replacing that `.mcp.json`
+on a later launch drops servers that are no longer in the session. Toby
+patches `~/.grok/config.toml` so `[plugins].enabled` contains `toby-session`
+without replacing other enabled plugins. Combined instructions are also
+passed through Grok's `--rules` launch contract.
 
 ### T3 Code
 

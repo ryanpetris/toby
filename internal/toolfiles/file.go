@@ -7,14 +7,18 @@ import (
 	"io/fs"
 	"strings"
 
+	"petris.dev/toby/internal/configpatch"
 	"petris.dev/toby/internal/sandbox/mount"
 )
 
 // File is one complete Toby-owned native file registered by a tool adapter.
+// Data replaces the whole file. A non-empty Patch is applied to the current
+// native file (or an empty object if it is missing) at publish time.
 type File struct {
 	Owner  string
 	Target string
 	Data   []byte
+	Patch  configpatch.Patch
 	Mode   fs.FileMode
 	UID    int
 	GID    int
@@ -23,6 +27,7 @@ type File struct {
 func (f File) clone() File {
 	clone := f
 	clone.Data = append([]byte(nil), f.Data...)
+	clone.Patch = f.Patch.Clone()
 	return clone
 }
 
@@ -52,6 +57,17 @@ func (f File) validate() error {
 			"file owner %q uid and gid must be non-negative",
 			f.Owner,
 		)
+	}
+	if !f.Patch.Empty() {
+		if len(f.Data) != 0 {
+			return fmt.Errorf("file owner %q cannot set both data and a patch", f.Owner)
+		}
+		if err := f.Patch.Validate(); err != nil {
+			return fmt.Errorf("file owner %q patch: %w", f.Owner, err)
+		}
+		if _, err := patchFormat(f.Target); err != nil {
+			return fmt.Errorf("file owner %q patch target: %w", f.Owner, err)
+		}
 	}
 
 	return nil
