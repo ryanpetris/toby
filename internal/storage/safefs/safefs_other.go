@@ -101,19 +101,9 @@ func (d *Directory) RemoveAll(string, uint64) error {
 	return unsupported("remove tree")
 }
 
-// RemoveAllOwned reports that Toby-owned recursive removal requires Linux.
-func (d *Directory) RemoveAllOwned(string, uint64) error {
-	return unsupported("remove owned tree")
-}
-
 // RemoveAllProgress reports that bounded no-follow removal requires Linux.
 func (d *Directory) RemoveAllProgress(string, uint64) (uint64, error) {
 	return 0, unsupported("remove tree")
-}
-
-// RemoveAllOwnedProgress reports that Toby-owned removal requires Linux.
-func (d *Directory) RemoveAllOwnedProgress(string, uint64) (uint64, error) {
-	return 0, unsupported("remove owned tree")
 }
 
 // Lock reports that secure advisory locking requires Linux.

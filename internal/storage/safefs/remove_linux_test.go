@@ -115,7 +115,7 @@ func TestRemoveAllMissingIsNoOp(t *testing.T) {
 	}
 }
 
-func TestRemoveAllOwnedWidensRestrictiveDirectoriesThroughPinnedDescriptors(t *testing.T) {
+func TestRemoveAllWidensRestrictiveDirectoriesThroughPinnedDescriptors(t *testing.T) {
 	directory, path := testDirectory(t)
 
 	tree := filepath.Join(path, "restrictive")
@@ -139,7 +139,7 @@ func TestRemoveAllOwnedWidensRestrictiveDirectoriesThroughPinnedDescriptors(t *t
 		t.Fatal(err)
 	}
 
-	if err := directory.RemoveAllOwned("restrictive", 3); err != nil {
+	if err := directory.RemoveAll("restrictive", 3); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(tree); !errors.Is(err, os.ErrNotExist) {
@@ -147,15 +147,18 @@ func TestRemoveAllOwnedWidensRestrictiveDirectoriesThroughPinnedDescriptors(t *t
 	}
 }
 
-func TestRemoveAllDoesNotChangeRestrictiveApplicationDirectory(t *testing.T) {
+func TestRemoveAllRemovesReadOnlyApplicationTrees(t *testing.T) {
 	directory, path := testDirectory(t)
 
-	tree := filepath.Join(path, "application-data")
-	nested := filepath.Join(tree, "nested")
-	if err := os.MkdirAll(nested, 0o700); err != nil {
+	// The Go module cache is the common case: read-only files inside
+	// read-only directories, which no unlink can reach until the containing
+	// directory regains write access.
+	tree := filepath.Join(path, "module-cache")
+	nested := filepath.Join(tree, "reference@v0.6.0")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "file"), []byte("keep"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(nested, ".gitattributes"), []byte("cached"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -164,22 +167,18 @@ func TestRemoveAllDoesNotChangeRestrictiveApplicationDirectory(t *testing.T) {
 		_ = os.RemoveAll(tree)
 	})
 
-	if err := os.Chmod(nested, 0); err != nil {
+	if err := os.Chmod(nested, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(tree, 0); err != nil {
+	if err := os.Chmod(tree, 0o555); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := directory.RemoveAll("application-data", 3); !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("RemoveAll error = %v, want permission error", err)
-	}
-	info, err := os.Stat(tree)
-	if err != nil {
+	if err := directory.RemoveAll("module-cache", 4); err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0 {
-		t.Fatalf("application directory mode = %04o, want preserved 0000", info.Mode().Perm())
+	if _, err := os.Lstat(tree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("module cache remains: %v", err)
 	}
 }
 

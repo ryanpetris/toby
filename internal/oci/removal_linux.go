@@ -113,7 +113,7 @@ func (s *Store) RemoveImages(
 
 	deletedReferences := make(map[string]bool, len(referenceIDs))
 	for _, id := range sortedSet(referenceIDs) {
-		if err := referencesDirectory.RemoveAllOwned(id+".json", 1); err != nil {
+		if err := referencesDirectory.RemoveAll(id+".json", 1); err != nil {
 			removed = reportImageRemovalResults(
 				selected,
 				deletedReferences,
@@ -136,7 +136,7 @@ func (s *Store) RemoveImages(
 		if _, retained := objectLocks[object]; !retained {
 			continue
 		}
-		if err := s.root.RemoveAllOwned(
+		if err := s.root.RemoveAll(
 			filepath.Join("objects", object),
 			^uint64(0),
 		); err != nil {

@@ -67,7 +67,7 @@ func recoverPublishedRuns(
 			return errors.Join(lockErr, candidateCloseErr)
 		}
 
-		removeErr := root.RemoveAllOwned(name, limits.MaxCleanupEntries)
+		removeErr := root.RemoveAll(name, limits.MaxCleanupEntries)
 		lockCloseErr := lifetime.Close()
 		if removeErr != nil || lockCloseErr != nil {
 			if removeErr != nil {

@@ -948,7 +948,6 @@ func cleanupTemporaryDirectory(parentFD int, name, path string, limit uint64) er
 	if err != nil {
 		return err
 	}
-	state.repair = true
 	if err := removeEntry(parentFD, name, path, &state); err != nil {
 		return err
 	}

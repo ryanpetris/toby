@@ -24,7 +24,6 @@ type removalState struct {
 	removed   uint64
 	device    uint64
 	mountID   uint64
-	repair    bool
 	logger    *diagnostic.Logger
 }
 
@@ -38,15 +37,16 @@ type removalIdentity struct {
 // RemoveAll removes name and its descendants without following symbolic links.
 // maxEntries counts name itself and every visited descendant. If the bound is
 // exhausted, already completed removals remain completed.
+//
+// Toby owns every tree it removes, so each directory is widened to owner-only
+// traversal before its entries are unlinked. Applications routinely leave
+// read-only directories behind, such as the Go module cache, and those entries
+// cannot be unlinked until their parent directory is writable again. Failed
+// corrective chmod attempts emit debug diagnostics and continue; only a
+// subsequent filesystem operation that actually needs the access stops
+// removal.
 func (d *Directory) RemoveAll(name string, maxEntries uint64) error {
 	_, err := d.RemoveAllProgress(name, maxEntries)
-	return err
-}
-
-// RemoveAllOwned removes a Toby-owned tree like RemoveAll and best-effort
-// restores directory traversal permissions while deleting it.
-func (d *Directory) RemoveAllOwned(name string, maxEntries uint64) error {
-	_, err := d.RemoveAllOwnedProgress(name, maxEntries)
 	return err
 }
 
@@ -55,25 +55,6 @@ func (d *Directory) RemoveAllOwned(name string, maxEntries uint64) error {
 func (d *Directory) RemoveAllProgress(
 	name string,
 	maxEntries uint64,
-) (uint64, error) {
-	return d.removeAllProgress(name, maxEntries, false)
-}
-
-// RemoveAllOwnedProgress removes a Toby-owned tree and reports its progress.
-// Failed corrective chmod attempts emit debug diagnostics and continue; only a
-// subsequent filesystem operation that actually needs the access stops
-// removal.
-func (d *Directory) RemoveAllOwnedProgress(
-	name string,
-	maxEntries uint64,
-) (uint64, error) {
-	return d.removeAllProgress(name, maxEntries, true)
-}
-
-func (d *Directory) removeAllProgress(
-	name string,
-	maxEntries uint64,
-	repair bool,
 ) (uint64, error) {
 	if maxEntries == 0 {
 		return 0, fmt.Errorf("removal limit must be positive")
@@ -88,7 +69,6 @@ func (d *Directory) removeAllProgress(
 	if err != nil {
 		return state.removed, err
 	}
-	state.repair = repair
 	state.logger = d.logger
 
 	parentFD, base, path, err := d.openRemovalParent(name, &state)
@@ -339,20 +319,20 @@ func removeDirectory(
 	if err != nil || !present {
 		return err
 	}
-	if state.repair {
-		if err := unix.Fchmodat(
-			pathFD,
-			"",
-			0o700,
-			unix.AT_EMPTY_PATH,
-		); err != nil {
-			state.logger.DebugError(
-				"make Toby-owned directory removable",
-				err,
-				"path",
-				path,
-			)
-		}
+	// Unlinking an entry requires write and search access on its directory,
+	// regardless of the entry's own mode, so widen the directory first.
+	if err := unix.Fchmodat(
+		pathFD,
+		"",
+		0o700,
+		unix.AT_EMPTY_PATH,
+	); err != nil {
+		state.logger.DebugError(
+			"make Toby-owned directory removable",
+			err,
+			"path",
+			path,
+		)
 	}
 
 	for {

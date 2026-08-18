@@ -119,7 +119,7 @@ func (s *Set) Close() error {
 	if s.parent != nil && s.storageName != "" {
 		s.logger.DebugError(
 			"remove runtime asset storage",
-			s.parent.RemoveAllOwned(
+			s.parent.RemoveAll(
 				s.storageName,
 				s.cleanupEntries,
 			),

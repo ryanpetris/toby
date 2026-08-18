@@ -348,6 +348,51 @@ func TestRemoveVolumesReportsEachCompletedDeletion(t *testing.T) {
 	}
 }
 
+func TestRemoveVolumesDeletesReadOnlyApplicationData(t *testing.T) {
+	base := secureStorageTestPath(t)
+	service := newStorageTestStore(t, base)
+	defer service.Close()
+
+	volume, err := service.CreateVolume(t.Context(), VolumeSpec{
+		Type: VolumeTypeHome,
+		Name: "toby",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Go writes its module cache read-only, so both the cached files and the
+	// directories holding them deny the write access an unlink needs.
+	module := filepath.Join(volume.DataPath, "go", "pkg", "mod", "reference@v0.6.0")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(module, ".gitattributes"),
+		[]byte("cached"),
+		0o444,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(module, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(module, 0o700)
+	})
+
+	removed, err := service.RemoveVolumes(t.Context(), []string{volume.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != volume.ID {
+		t.Fatalf("removed IDs = %#v, want %q", removed, volume.ID)
+	}
+	if _, err := os.Lstat(volume.ObjectPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("volume remains: %v", err)
+	}
+}
+
 func TestRemoveVolumesStopsBetweenVolumesWhenCancelled(t *testing.T) {
 	base := secureStorageTestPath(t)
 	service := newStorageTestStore(t, base)

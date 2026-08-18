@@ -334,7 +334,7 @@ func cleanupTemporaryDirectory(
 		)
 	}
 
-	if err := directory.RemoveAllOwned(name, maxEntries); err != nil {
+	if err := directory.RemoveAll(name, maxEntries); err != nil {
 		return fmt.Errorf("remove temporary recovery directory %q: %w", path, err)
 	}
 	return nil

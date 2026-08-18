@@ -277,7 +277,7 @@ func (r *RunDirectories) Close() error {
 			)
 			break
 		}
-		removed, removeErr := r.parent.RemoveAllOwnedProgress(
+		removed, removeErr := r.parent.RemoveAllProgress(
 			r.id,
 			r.limits.MaxCleanupEntries,
 		)

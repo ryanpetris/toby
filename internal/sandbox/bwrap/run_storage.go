@@ -288,7 +288,7 @@ func (s *RunStorage) Create(
 		if err := ctx.Err(); err != nil {
 			s.logger.DebugError(
 				"remove cancelled Bubblewrap run",
-				root.RemoveAllOwned(id, limits.MaxCleanupEntries),
+				root.RemoveAll(id, limits.MaxCleanupEntries),
 			)
 			s.logger.DebugError(
 				"close cancelled Bubblewrap run lifetime lock",
@@ -311,7 +311,7 @@ func (s *RunStorage) Create(
 		if err != nil {
 			s.logger.DebugError(
 				"remove unopened Bubblewrap run",
-				root.RemoveAllOwned(id, limits.MaxCleanupEntries),
+				root.RemoveAll(id, limits.MaxCleanupEntries),
 			)
 			s.logger.DebugError(
 				"close unopened Bubblewrap run lifetime lock",

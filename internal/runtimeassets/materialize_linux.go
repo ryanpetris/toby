@@ -107,7 +107,7 @@ func (r *Registry) Materialize(
 			if published {
 				logger.DebugError(
 					"remove published runtime assets after publication failed",
-					parent.RemoveAllOwned(
+					parent.RemoveAll(
 						storageName,
 						uint64(len(r.assets))+
 							cleanupEntrySlack,
