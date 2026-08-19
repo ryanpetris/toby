@@ -549,14 +549,17 @@ func TestResolveDirectLaunchProjectRejectsSymlinkEscapeAndMissingDirectory(
 	}
 }
 
-func TestLoadLaunchConfigRejectsInvalidSuppressedWarning(t *testing.T) {
+func TestLoadLaunchConfigIgnoresUnknownSuppressedWarning(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "toby.yaml")
 	writeTestFile(t, configPath, []byte(unknownWarningFixture))
 
-	_, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home}, nil)
-	if err == nil || !strings.Contains(err.Error(), "settings.suppressWarnings[0]") {
-		t.Fatalf("error = %v", err)
+	cfg, err := loadLaunchConfigWithPaths(configPath, config.Paths{Home: home}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Settings.UnknownSuppressWarnings) == 0 {
+		t.Fatal("unknown suppressWarnings IDs were not collected")
 	}
 }
 

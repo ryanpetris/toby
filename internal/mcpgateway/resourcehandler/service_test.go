@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -187,6 +188,35 @@ func TestFirstUseRetriesFailedStartup(t *testing.T) {
 	}
 }
 
+func TestFirstUseFailsFastOnPermanentStartup(t *testing.T) {
+	t.Parallel()
+
+	service, resolvers := newTestService(t, Options{
+		InitialRetry: time.Millisecond,
+		MaximumRetry: 2 * time.Millisecond,
+		Jitter:       identityJitter,
+	})
+	resource := testResource()
+	service.LeaseAcquired(resource)
+	remote := resolvers[mcpgateway.TargetRemoteHTTP]
+	remote.failures = 8
+	remote.permanent = true
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, err := service.Open(ctx, resourcelease.StreamRequest{
+		Resource: resource,
+	})
+	if err == nil || !strings.Contains(err.Error(), "planned acquisition failure") {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if got := remote.acquireCount(); got != 1 {
+		t.Fatalf("acquire count = %d, want 1", got)
+	}
+
+	service.LeaseReleased(resource)
+}
+
 func TestWarmIdleExpiresWhileLeaseRemainsRegistered(t *testing.T) {
 	t.Parallel()
 
@@ -330,6 +360,7 @@ type fakeResolver struct {
 	acquires        int
 	releases        int
 	failures        int
+	permanent       bool
 	acquireStarted  chan struct{}
 	acquireContinue chan struct{}
 }
@@ -375,6 +406,7 @@ func (p fakePrepared) Acquire(
 	p.resolver.acquires++
 	acquireNumber := p.resolver.acquires
 	failures := p.resolver.failures
+	permanent := p.resolver.permanent
 	started := p.resolver.acquireStarted
 	continueChannel := p.resolver.acquireContinue
 	p.resolver.mu.Unlock()
@@ -390,7 +422,11 @@ func (p fakePrepared) Acquire(
 		}
 	}
 	if acquireNumber <= failures {
-		return nil, fmt.Errorf("planned acquisition failure")
+		err := fmt.Errorf("planned acquisition failure")
+		if permanent {
+			err = mcpgateway.Permanent(err)
+		}
+		return nil, err
 	}
 
 	return &fakeAcquired{

@@ -220,12 +220,16 @@ One production launch proceeds in this order:
    (`status`, `stop`, `resources`, and `logs`) do not load launch
    configuration. Agent models and cache commands resolve the named models
    resource from host configuration.
-2. The launch opens or starts the per-user agent, invokes `Hello`, selects the
-   application protocol advertised by `HelloResponse`, and opens a persistent
-   bidirectional `OpenSession` stream.
+2. The launch opens or starts the per-user agent, then retries `Hello` on
+   unavailable, reset, and EOF failures until the startup or handshake timeout.
+   It selects the application protocol advertised by `HelloResponse` and opens a
+   persistent bidirectional `OpenSession` stream.
 3. Host configuration and launch overrides produce an immutable effective
    configuration. MCP and models blocks are decoded, substituted, defaulted,
-   and validated only after hello completes.
+   and validated only after hello completes. Invalid optional MCP servers and
+   models endpoints are skipped with warnings. Substitution failures, the
+   reserved `toby` MCP name, unknown fields on kept objects, and protocol
+   mismatches remain fail-closed.
 4. Project declarations are resolved with their origin: relative direct
    sources resolve from `XDG_PROJECTS_DIR`; containment is enforced unless the
    global external-project setting is enabled. Explicit launch-file paths may
@@ -240,10 +244,13 @@ One production launch proceeds in this order:
    rootfs, every local MCP image, and the Caddy image when models resources are
    configured. The application source may be a registry reference, an OCI
    image-layout archive, or a Dockerfile build; background resources use
-   registry references. Each acquisition is independent. The agent defaults
-   and validates the configuration again, computes its stable identity, and
-   returns an opaque resource ID and lease ID. The launch opens a `PrepareOCI`
-   stream for each required image.
+   registry references. Each acquisition is independent. A sandbox-image failure
+   fails the launch. A local MCP sidecar failure skips the dependent servers
+   with `mcp.image-unavailable`. A Caddy-image failure skips models endpoints
+   with `models.endpoint-unavailable`. The agent defaults and validates the
+   configuration again, computes its stable identity, and returns an opaque
+   resource ID and lease ID. The launch opens a `PrepareOCI` stream for each
+   required image.
    Independent images prepare concurrently, while matching requests join one
    agent operation. Toby materializes a verified OCI layout by pulling a
    registry reference, extracting an archive, or invoking `buildah` with an
@@ -269,11 +276,12 @@ One production launch proceeds in this order:
    volume and requested tool volumes, and Toby creates the run-unique overlay.
 9. Toby builds a bounded sandbox-safe session snapshot and host-action router,
    then independently acquires every models and MCP resource. Models discovery
-   runs through the acquired models resources so generated tool files contain
-   current model metadata. Registration remains lazy for MCP backends. Toby
-   creates the generic run-scoped sandbox resource capability and loopback
-   models capability; per-launch client resource UUIDs map to the opaque agent
-   resource and lease IDs.
+   retries transient failures inside a two-minute budget; a persistent endpoint
+   failure is skipped with `models.endpoint-unavailable`. Registration remains
+   lazy for MCP backends, and a non-built-in MCP acquire failure is skipped with
+   `mcp.server-invalid`. Toby creates the generic run-scoped sandbox resource
+   capability and loopback models capability; per-launch client resource UUIDs
+   map to the opaque agent resource and lease IDs.
 10. `ConfigureSandbox` freezes tool environment and argument-dependent
     declarations. Toby collects complete native tool files, transient runtime
     assets, and socket-relay declarations.
@@ -724,10 +732,11 @@ cannot fail the resource operation; those failures emit debug diagnostics and
 the live protocol continues without persisted history.
 
 MCP and models acquisition registers interest but leaves the runtime dormant.
-First use coalesces concurrent startup. Unexpected failure closes affected raw
-streams and subsequent use starts a replacement with jittered exponential
-backoff from 250 milliseconds to at most five minutes. Intentional idle
-teardown, final release, and agent shutdown do not restart a resource.
+First use coalesces concurrent startup. Authentication, not-found, and other
+permanent initialize failures fail immediately. Transient failure closes
+affected raw streams and subsequent use starts a replacement with jittered
+exponential backoff from 250 milliseconds to at most five minutes. Intentional
+idle teardown, final release, and agent shutdown do not restart a resource.
 
 Resource and status snapshots include both lease-registered resources and
 service-owned runtimes that remain active during warm idle or an in-progress

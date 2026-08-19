@@ -136,8 +136,8 @@ type NativeRun struct {
 var _ io.Closer = (*NativeRun)(nil)
 
 // NewNativeRun writes generated files, materializes transient assets, builds a
-// complete plan, retains its exact sources, and attaches the tool-facing
-// sandbox. No application or private-home lock is acquired.
+// complete plan from caller-owned descriptors, retains those sources, and
+// attaches the tool-facing sandbox.
 func NewNativeRun(
 	ctx context.Context,
 	input NativeRunInput,

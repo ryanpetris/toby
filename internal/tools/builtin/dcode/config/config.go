@@ -3,10 +3,7 @@
 package config
 
 import (
-	"encoding/json"
-	"fmt"
-
-	"petris.dev/toby/internal/config/session"
+	sessionconfig "petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/toolfiles"
 	"petris.dev/toby/internal/tools/helpers"
@@ -56,47 +53,9 @@ func Instructions(cfg sessionconfig.Config) []byte {
 }
 
 func renderMCP(servers []sessionconfig.MCPServer) ([]byte, error) {
-	mcp, err := syntheticMCP(servers)
+	mcp, err := helpers.StdioHTTPMCPServers(servers, "DCode")
 	if err != nil {
 		return nil, err
 	}
-	return marshalJSON(mcp)
-}
-
-func syntheticMCP(servers []sessionconfig.MCPServer) (map[string]any, error) {
-	out := map[string]any{}
-	for _, server := range servers {
-		if err := server.Validate(); err != nil {
-			return nil, fmt.Errorf("render DCode MCP server %q: %w", server.Name, err)
-		}
-
-		switch server.Transport {
-		case sessionconfig.MCPTransportStdio:
-			out[server.Name] = map[string]any{
-				"type":    "stdio",
-				"command": server.Command,
-				"args":    append([]string(nil), server.Args...),
-			}
-		case sessionconfig.MCPTransportHTTP:
-			out[server.Name] = map[string]any{
-				"type": "http",
-				"url":  server.URL,
-			}
-		default:
-			return nil, fmt.Errorf(
-				"render DCode MCP server %q: unsupported transport %q",
-				server.Name,
-				server.Transport,
-			)
-		}
-	}
-	return map[string]any{"mcpServers": out}, nil
-}
-
-func marshalJSON(value any) ([]byte, error) {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(data, '\n'), nil
+	return helpers.MarshalJSON(mcp)
 }

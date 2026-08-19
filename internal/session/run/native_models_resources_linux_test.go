@@ -6,12 +6,17 @@ package run
 // models endpoint configuration and session introspection.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"petris.dev/toby/internal/agent/client"
 	"petris.dev/toby/internal/agent/protocol"
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/tobymcp"
@@ -117,5 +122,51 @@ func TestNativeSnapshotModelsBoundsDiscoveredModels(t *testing.T) {
 	if got[0].Models[0] != "model-000" ||
 		got[0].Models[len(got[0].Models)-1] != "model-255" {
 		t.Fatalf("bounded models = %#v", got[0].Models)
+	}
+}
+
+func TestRetryableModelsListError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "canceled", err: context.Canceled, want: false},
+		{
+			name: "unavailable",
+			err:  status.Error(codes.Unavailable, "temporarily down"),
+			want: true,
+		},
+		{
+			name: "not found",
+			err:  status.Error(codes.NotFound, "missing"),
+			want: false,
+		},
+		{
+			name: "retryable remote",
+			err: client.RemoteError{
+				Message:   "busy",
+				Retryable: true,
+			},
+			want: true,
+		},
+		{
+			name: "permanent remote",
+			err: client.RemoteError{
+				Message:   "invalid",
+				Retryable: false,
+			},
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := retryableModelsListError(test.err); got != test.want {
+				t.Fatalf("retryableModelsListError() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }

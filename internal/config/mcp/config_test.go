@@ -13,50 +13,56 @@ import (
 	"petris.dev/toby/internal/sandbox/mount"
 )
 
-func TestResolveSubstitutionsDetachesAndValidates(t *testing.T) {
+func TestDecodeWithSubstitutionsDetachesResolvedSecrets(t *testing.T) {
 	t.Parallel()
 
-	config := Config{
-		Servers: map[string]Server{
-			"remote": {
-				Type:      ServerRemote,
-				Transport: TransportHTTP,
-				URL:       "https://example.invalid/{token}",
-				Headers:   map[string]string{"Authorization": "Bearer {token}"},
+	block := map[string]any{
+		"remote": map[string]any{
+			"type":      "remote",
+			"transport": "http",
+			"url":       "https://example.invalid/{token}",
+			"headers": map[string]any{
+				"Authorization": "Bearer {token}",
 			},
-			"local": {
-				Type:        ServerLocal,
-				Transport:   TransportStdio,
-				Image:       "ghcr.io/example/mcp:latest",
-				Command:     []string{"/bin/server", "{token}"},
-				Environment: map[string]string{"TOKEN": "{token}"},
-				Scope:       resource.ScopeRun,
-				Network:     resource.NetworkPrivate,
-			},
+		},
+		"local": map[string]any{
+			"type":        "local",
+			"transport":   "stdio",
+			"image":       "ghcr.io/example/mcp:latest",
+			"command":     []any{"/bin/server", "{token}"},
+			"environment": map[string]any{"TOKEN": "{token}"},
+			"scope":       "run",
+			"network":     "private",
 		},
 	}
 
-	resolved, err := config.ResolveSubstitutions(func(value string) (string, error) {
-		return strings.ReplaceAll(value, "{token}", "secret"), nil
-	})
+	config, skipped, err := DecodeWithSubstitutions(
+		block,
+		func(value string) (string, error) {
+			return strings.ReplaceAll(value, "{token}", "secret"), nil
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Servers["remote"].URL != "https://example.invalid/secret" ||
-		resolved.Servers["remote"].Headers["Authorization"] != "Bearer secret" ||
-		resolved.Servers["local"].Command[1] != "secret" ||
-		resolved.Servers["local"].Environment["TOKEN"] != "secret" {
-		t.Fatalf("resolved = %#v", resolved)
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %#v", skipped)
 	}
-	if config.Servers["local"].Environment["TOKEN"] != "{token}" {
-		t.Fatal("ResolveSubstitutions mutated source config")
+	if config.Servers["remote"].URL != "https://example.invalid/secret" ||
+		config.Servers["remote"].Headers["Authorization"] != "Bearer secret" ||
+		config.Servers["local"].Command[1] != "secret" ||
+		config.Servers["local"].Environment["TOKEN"] != "secret" {
+		t.Fatalf("resolved = %#v", config)
+	}
+	if block["local"].(map[string]any)["environment"].(map[string]any)["TOKEN"] != "{token}" {
+		t.Fatal("DecodeWithSubstitutions mutated source config")
 	}
 }
 
 func TestDecodeWithSubstitutionsValidatesOnlyResolvedURL(t *testing.T) {
 	t.Parallel()
 
-	config, err := DecodeWithSubstitutions(
+	config, skipped, err := DecodeWithSubstitutions(
 		map[string]any{
 			"remote": map[string]any{
 				"type":      "remote",
@@ -74,6 +80,9 @@ func TestDecodeWithSubstitutionsValidatesOnlyResolvedURL(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %#v", skipped)
 	}
 	if got := config.Servers["remote"].URL; got != "https://example.invalid/mcp" {
 		t.Fatalf("resolved URL = %q", got)
@@ -121,17 +130,23 @@ func TestNativeDecodeRejectsInvalidShapes(t *testing.T) {
 			t.Parallel()
 
 			block := decodeMCPFixture(t, test.block)
-			_, err := DecodeWithSubstitutions(
+			config, skipped, err := DecodeWithSubstitutions(
 				block,
 				func(value string) (string, error) {
 					return value, nil
 				},
 			)
-			if err == nil ||
-				!strings.Contains(err.Error(), test.wantErr) {
+			if err != nil {
+				t.Fatalf("DecodeWithSubstitutions() error = %v", err)
+			}
+			if len(config.Servers) != 0 {
+				t.Fatalf("servers = %#v, want none", config.Servers)
+			}
+			if len(skipped) != 1 ||
+				!strings.Contains(skipped[0].Err.Error(), test.wantErr) {
 				t.Fatalf(
-					"DecodeWithSubstitutions() error = %v, want containing %q",
-					err,
+					"skipped = %#v, want containing %q",
+					skipped,
 					test.wantErr,
 				)
 			}

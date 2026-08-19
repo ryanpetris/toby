@@ -314,9 +314,9 @@ func TestNativeRunPublishesFilesAndUsesOneBubblewrapRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nativeLifecycle := lifecycle.NewNative(lifecycle.NewRunner(
+	nativeLifecycle := lifecycle.NewRunner(
 		status.NewService(nil),
-	))
+	)
 	lifecycleContext := lifecycle.Context{Options: &tools.Options{}}
 	primaryArgs := []string{"test-model"}
 	if err := nativeLifecycle.PrepareHost(

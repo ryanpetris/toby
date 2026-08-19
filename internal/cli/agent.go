@@ -225,7 +225,7 @@ func acquireAgentModelsResource(
 		}
 	}()
 
-	resources, err := params.TobyConfig.ResolveResources()
+	resources, err := params.TobyConfig.ResolveResources(params.Warnings)
 	if err != nil {
 		return nil, nil, err
 	}

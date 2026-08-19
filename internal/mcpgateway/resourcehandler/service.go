@@ -274,6 +274,13 @@ func (h *Service) Open(
 				continue
 			}
 		}
+		if current.lastErr != nil &&
+			current.acquired == nil &&
+			!mcpgateway.RetryableStart(current.lastErr) {
+			err := current.lastErr
+			h.mu.Unlock()
+			return nil, err
+		}
 		if delay := time.Until(current.retryAt); delay > 0 {
 			h.mu.Unlock()
 			timer := time.NewTimer(delay)
@@ -316,16 +323,27 @@ func (h *Service) Open(
 				err = fmt.Errorf("MCP resource service is shutting down")
 			}
 			current.lastErr = err
-			current.failures++
-			current.retryAt = time.Now().Add(
-				h.retryDelay(current.failures),
-			)
+			if mcpgateway.RetryableStart(err) {
+				current.failures++
+				current.retryAt = time.Now().Add(
+					h.retryDelay(current.failures),
+				)
+			} else {
+				current.failures = 0
+				current.retryAt = time.Time{}
+			}
 		}
 		close(wait)
 		h.releaseDemandLocked(current)
 		h.mu.Unlock()
 
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			if !mcpgateway.RetryableStart(err) {
+				return nil, err
+			}
 			continue
 		}
 	}

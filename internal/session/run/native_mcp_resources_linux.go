@@ -18,6 +18,7 @@ import (
 	"petris.dev/toby/internal/config/mcpresource"
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic"
+	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/mcpgateway"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandboxgateway"
@@ -41,6 +42,7 @@ func acquireNativeMCPResources(
 	snapshot tobymcp.SessionSnapshot,
 	runIdentity string,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 	cleanupContext func() context.Context,
 ) (result *nativeMCPResources, returnErr error) {
 	if ctx == nil {
@@ -96,11 +98,8 @@ func acquireNativeMCPResources(
 			identities,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"resolve MCP resource %q: %w",
-				name,
-				err,
-			)
+			warnMCPServer(warnings, name, err)
+			continue
 		}
 		requested = append(requested, requestedResource{
 			name:          name,
@@ -120,11 +119,15 @@ func acquireNativeMCPResources(
 	for _, item := range requested {
 		clientID, err := registry.Acquire(ctx, item.configuration)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"acquire MCP resource %q: %w",
-				item.name,
-				err,
-			)
+			if item.name == mcpgateway.BuiltinTarget {
+				return nil, fmt.Errorf(
+					"acquire MCP resource %q: %w",
+					item.name,
+					err,
+				)
+			}
+			warnMCPServer(warnings, item.name, err)
+			continue
 		}
 
 		target := string(clientID)
@@ -193,4 +196,23 @@ func closeNativeMCPRegistry(
 	defer cancel()
 
 	return registry.Close(ctx)
+}
+
+func warnMCPServer(
+	warnings *warning.Service,
+	name string,
+	err error,
+) {
+	if warnings == nil || err == nil {
+		return
+	}
+	warnings.WarnError(
+		warning.MCPServerInvalid,
+		fmt.Sprintf(
+			"MCP server %q is unavailable; skipping it",
+			name,
+		),
+		err,
+		"mcp_server", name,
+	)
 }

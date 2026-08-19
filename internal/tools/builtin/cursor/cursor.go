@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	appconfig "petris.dev/toby/internal/config/app"
 	sessionconfig "petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/runtimeassets"
 	"petris.dev/toby/internal/sandbox"
@@ -43,19 +42,25 @@ const (
 
 // provide constructs the tool implementation.
 func provide(params params) result {
+	simple := kit.NewSimple(
+		params.Sandbox,
+		tools.Base{Metadata: Meta},
+		[]string{".cursor"},
+		nil,
+		map[string]string{
+			"CURSOR_CONFIG_DIR":          filepath.Join(layout.Home, ".cursor"),
+			"AGENT_CLI_CREDENTIAL_STORE": "file",
+		},
+	)
+	simple.ExtraMounts = extraMounts()
+	simple.PathAppend = filepath.Join(layout.Home, ".local", "bin")
+	simple.LaunchCommand = cursorCommand
+	simple.LaunchArgs = []string{"--approve-mcps", "--sandbox", "disabled"}
+	simple.YoloArgs = []string{"--force"}
+	simple.Yolo = kit.YoloFromConfig(params.Config)
 	svc := &cursorTool{
-		Simple: kit.NewSimple(
-			params.Sandbox,
-			tools.Base{Metadata: Meta},
-			[]string{".cursor"},
-			nil,
-			map[string]string{
-				"CURSOR_CONFIG_DIR":          filepath.Join(layout.Home, ".cursor"),
-				"AGENT_CLI_CREDENTIAL_STORE": "file",
-			},
-		),
+		Simple:        simple,
 		sessionConfig: params.SessionConfig,
-		config:        params.Config,
 	}
 	return result{Service: svc}
 }
@@ -63,28 +68,11 @@ func provide(params params) result {
 type cursorTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
-	config        *appconfig.LaunchHolder
-	yolo          bool
 }
 
 var _ tools.Tool = (*cursorTool)(nil)
 var _ runtimeassets.Contributor = (*cursorTool)(nil)
 var _ toolfiles.Contributor = (*cursorTool)(nil)
-
-func (t *cursorTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	current := t.config.Current()
-	t.yolo = current != nil && current.Settings().YoloEnabled()
-
-	if err := t.Simple.PrepareHost(ctx, opts); err != nil {
-		return err
-	}
-	for _, req := range extraMounts() {
-		if err := t.Sandbox.AddMount(req); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 func extraMounts() []mount.Request {
 	return []mount.Request{
@@ -123,14 +111,6 @@ func (t *cursorTool) RuntimeAssets() ([]runtimeassets.Asset, error) {
 	}}, nil
 }
 
-func (t *cursorTool) ConfigureSandbox(ctx context.Context) error {
-	if err := t.Simple.ConfigureSandbox(ctx); err != nil {
-		return err
-	}
-
-	return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":")
-}
-
 func (t *cursorTool) Install(ctx context.Context, force bool) error {
 	if !force {
 		exists, err := helpers.CommandExists(
@@ -160,18 +140,6 @@ func (t *cursorTool) Install(ctx context.Context, force bool) error {
 		[]string{installer, arch},
 		sandbox.ExecOptions{Status: "Installing"},
 	)
-	return err
-}
-
-func (t *cursorTool) Launch(ctx context.Context, extra []string) error {
-	// cursor-agent is the official binary. The agent alias would collide with
-	// Grok's agent symlink when both tools share a sandbox.
-	argv := []string{cursorCommand, "--approve-mcps", "--sandbox", "disabled"}
-	if t.yolo {
-		argv = append(argv, "--force")
-	}
-	argv = append(argv, extra...)
-	_, err := t.Sandbox.Exec(ctx, argv, sandbox.ExecOptions{Foreground: true})
 	return err
 }
 

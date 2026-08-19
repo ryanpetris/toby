@@ -21,29 +21,51 @@ const (
 	ProjectMissing ID = "project.missing"
 	// PermissionAutoDeny warns that a permission request was denied automatically.
 	PermissionAutoDeny ID = "permission.auto-deny"
+	// PermissionPathInvalid warns that a permission path mode is not allow or deny.
+	PermissionPathInvalid ID = "permission.path-invalid"
 	// AgentBinaryMismatch warns that the client and agent builds differ.
 	AgentBinaryMismatch ID = "agent.binary-version-mismatch"
+	// ConfigUnknownWarningID warns that settings.suppressWarnings named an unknown ID.
+	ConfigUnknownWarningID ID = "config.unknown-warning-id"
+	// ConfigInstructionMissing warns that an instruction path or glob matched nothing.
+	ConfigInstructionMissing ID = "config.instruction-missing"
+	// ConfigFragmentIgnored warns that a config.d file was not loaded.
+	ConfigFragmentIgnored ID = "config.fragment-ignored"
+	// MCPServerInvalid warns that one MCP server definition was skipped.
+	MCPServerInvalid ID = "mcp.server-invalid"
+	// MCPImageUnavailable warns that a local MCP sidecar image could not be prepared.
+	MCPImageUnavailable ID = "mcp.image-unavailable"
+	// ModelsEndpointUnavailable warns that one models endpoint was skipped.
+	ModelsEndpointUnavailable ID = "models.endpoint-unavailable"
+	// DockerSocketMissing warns that the Docker engine socket is absent.
+	DockerSocketMissing ID = "docker.socket-missing"
 )
+
+var registeredIDs = []ID{
+	AgentBinaryMismatch,
+	ConfigFragmentIgnored,
+	ConfigInstructionMissing,
+	ConfigUnknownWarningID,
+	DockerSocketMissing,
+	MCPImageUnavailable,
+	MCPServerInvalid,
+	ModelsEndpointUnavailable,
+	PermissionAutoDeny,
+	PermissionPathInvalid,
+	ProjectAutoloadDisabled,
+	ProjectDuplicate,
+	ProjectMissing,
+}
 
 // ParseID parses and validates a warning identifier.
 func ParseID(value string) (ID, error) {
-	switch id := ID(strings.TrimSpace(value)); id {
-	case ProjectAutoloadDisabled,
-		ProjectDuplicate,
-		ProjectMissing,
-		PermissionAutoDeny,
-		AgentBinaryMismatch:
-		return id, nil
-	default:
-		return "", fmt.Errorf(
-			"warning id must be one of %q, %q, %q, %q, or %q",
-			ProjectAutoloadDisabled,
-			ProjectDuplicate,
-			ProjectMissing,
-			PermissionAutoDeny,
-			AgentBinaryMismatch,
-		)
+	id := ID(strings.TrimSpace(value))
+	for _, registered := range registeredIDs {
+		if id == registered {
+			return id, nil
+		}
 	}
+	return "", fmt.Errorf("warning id %q is not registered", strings.TrimSpace(value))
 }
 
 // Suppression records which warnings a user has disabled.
@@ -54,26 +76,29 @@ type Suppression struct {
 }
 
 // SuppressionFromList builds a Suppression from the list form of
-// settings.suppressWarnings. The single entry "*" suppresses every warning; any
-// other entry must be a registered warning ID.
-func SuppressionFromList(list []string, label string) (Suppression, error) {
+// settings.suppressWarnings. The single entry "*" suppresses every warning.
+// Unknown IDs are omitted from the suppression set and returned so the caller
+// can warn; they do not fail configuration loading.
+func SuppressionFromList(list []string) (Suppression, []string) {
 	result := Suppression{Set: true}
 	ids := map[ID]bool{}
-	for i, item := range list {
+	var unknown []string
+	for _, item := range list {
 		if strings.TrimSpace(item) == "*" {
 			result.All = true
 			continue
 		}
 		id, err := ParseID(item)
 		if err != nil {
-			return Suppression{}, fmt.Errorf("%s[%d]: %w", label, i, err)
+			unknown = append(unknown, item)
+			continue
 		}
 		ids[id] = true
 	}
 	if len(ids) > 0 {
 		result.IDs = ids
 	}
-	return result, nil
+	return result, unknown
 }
 
 // Clone returns an independent copy of the suppression set.
@@ -113,4 +138,21 @@ func (s *Suppression) Merge(src Suppression) {
 // Suppresses reports whether id is disabled.
 func (s Suppression) Suppresses(id ID) bool {
 	return s.All || s.IDs[id]
+}
+
+// WarnUnknownSuppressWarnings emits one warning per unknown suppressWarnings ID.
+func WarnUnknownSuppressWarnings(warnings *Service, ids []string) {
+	if warnings == nil {
+		return
+	}
+	for _, id := range ids {
+		warnings.Warn(
+			ConfigUnknownWarningID,
+			fmt.Sprintf(
+				"settings.suppressWarnings includes unknown id %q; ignoring it",
+				id,
+			),
+			"configured_id", id,
+		)
+	}
 }

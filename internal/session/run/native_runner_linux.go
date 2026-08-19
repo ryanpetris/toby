@@ -8,19 +8,14 @@ package run
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"runtime"
 	"strings"
 	"sync"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"golang.org/x/term"
 
 	"petris.dev/toby/internal/agent"
 	agentclient "petris.dev/toby/internal/agent/client"
@@ -42,11 +37,8 @@ import (
 	"petris.dev/toby/internal/oci/imagesource"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/sandbox/bwrap"
-	"petris.dev/toby/internal/sandbox/layout"
-	"petris.dev/toby/internal/sandbox/mount"
 	"petris.dev/toby/internal/shutdown"
 	"petris.dev/toby/internal/status"
-	"petris.dev/toby/internal/storage"
 	"petris.dev/toby/internal/storage/safefs"
 	"petris.dev/toby/internal/toolfiles"
 	"petris.dev/toby/internal/tools"
@@ -62,7 +54,7 @@ type NativeRunnerParams struct {
 	SessionConfig *sessionconfig.Holder
 	Agent         *agent.Client
 	Diagnostics   *diagnostic.Service
-	Lifecycle     *lifecycle.Native
+	Lifecycle     *lifecycle.Runner
 	Sandbox       *bwrap.ToolService
 	Git           *git.Service
 	Approval      *approval.Service
@@ -84,7 +76,7 @@ type NativeRunner struct {
 	agent         *agent.Client
 	diagnostics   *diagnostic.Service
 	logger        *diagnostic.Logger
-	lifecycle     *lifecycle.Native
+	lifecycle     *lifecycle.Runner
 	sandbox       *bwrap.ToolService
 	git           *git.Service
 	approval      *approval.Service
@@ -150,14 +142,14 @@ func (r *NativeRunner) Run(
 	if opts == nil {
 		opts = &tools.Options{}
 	}
-	options := *opts
-	options.Projects = append([]tools.ProjectMount(nil), opts.Projects...)
+	options := nativeLaunchOptions(*opts, primary)
 
 	effective := r.baseConfig.WithOverrides(overrides)
 	if err := effective.Sandbox().Validate(); err != nil {
 		return err
 	}
 	r.launchConfig.SetCurrent(effective)
+	effective.EmitPendingWarnings(r.warnings)
 	settings := effective.Settings()
 	if options.Quiet && settings.DebugEnabled() {
 		return exitcode.New(
@@ -213,7 +205,7 @@ func (r *NativeRunner) Run(
 		)
 	}()
 	go r.followAgentShutdown(ctx, agentSession)
-	resourceConfiguration, err := effective.ResolveResources()
+	resourceConfiguration, err := effective.ResolveResources(r.warnings)
 	if err != nil {
 		return err
 	}
@@ -284,7 +276,7 @@ func (r *NativeRunner) Run(
 		ctx,
 		agentSession,
 		sandboxConfig,
-		resourceConfiguration,
+		&resourceConfiguration,
 		effective.Profile(),
 		options.Projects[0].Name,
 	)
@@ -407,70 +399,36 @@ func (r *NativeRunner) Run(
 		)
 	}()
 
-	homeOperation := r.status.StartOperation("Preparing private home")
-	volumeStore, err := storage.NewStore(
-		r.paths,
-		storage.DefaultLimits(),
-		r.diagnostics,
+	launchStorage, err := r.prepareNativeLaunchStorage(
+		ctx,
+		options.Env,
+		effective.Profile(),
+		effective.ToolProfiles(),
+		prepared,
+		toolSandbox.MountRequests(),
+		nativeOccupiedTargets(projectView, binds),
 	)
 	if err != nil {
 		return err
 	}
+	volumeStore := launchStorage.volumeStore
 	defer func() {
 		r.logCleanup("close volume store", volumeStore.Close())
 	}()
-	persistentDataRoot, err := volumeStore.DataRootFile()
-	if err != nil {
-		return err
-	}
+	persistentDataRoot := launchStorage.persistentDataRoot
 	defer func() {
 		r.logCleanup(
 			"close persistent data root",
 			persistentDataRoot.Close(),
 		)
 	}()
-
-	rootfsFile, err := prepared.RootfsFile()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		r.logCleanup("close OCI rootfs seed", rootfsFile.Close())
-	}()
-	rootfsSeed := storage.SeedSource{
-		Root:            rootfsFile,
-		RootDescription: prepared.RootfsPath(),
-		ImagePath:       layout.Home,
-	}
-
-	home, err := volumeStore.ResolveHome(
-		ctx,
-		options.Env,
-		effective.Profile(),
-		rootfsSeed,
-	)
-	if err != nil {
-		return err
-	}
+	home := launchStorage.home
 	defer func() {
 		if home != nil {
 			r.logCleanup("close private home", home.Close())
 		}
 	}()
-
-	managed, err := volumeStore.ResolveManaged(
-		ctx,
-		storage.ProfileSelection{
-			Default: effective.Profile(),
-			Tools:   effective.ToolProfiles(),
-		},
-		toolSandbox.MountRequests(),
-		nativeOccupiedTargets(projectView, binds),
-		rootfsSeed,
-	)
-	if err != nil {
-		return err
-	}
+	managed := launchStorage.managed
 	defer func() {
 		if managed != nil {
 			r.logCleanup(
@@ -479,39 +437,23 @@ func (r *NativeRunner) Run(
 			)
 		}
 	}()
-
-	runStorage, err := bwrap.OpenRunStorage(
-		r.paths.RunStorageDir(),
-		bwrap.DefaultRunStorageLimits(),
-		r.logger,
-	)
-	if err != nil {
-		return err
-	}
+	runStorage := launchStorage.runStorage
 	defer func() {
 		r.logCleanup("close Bubblewrap run storage", runStorage.Close())
 	}()
-	runStorageRoot, err := runStorage.RootFile()
-	if err != nil {
-		return err
-	}
+	runStorageRoot := launchStorage.runStorageRoot
 	defer func() {
 		r.logCleanup(
 			"close Bubblewrap run-storage root",
 			runStorageRoot.Close(),
 		)
 	}()
-
-	directories, err := runStorage.Create(ctx)
-	if err != nil {
-		return err
-	}
+	directories := launchStorage.directories
 	defer func() {
 		if directories != nil {
 			r.logCleanup("close Bubblewrap run directories", directories.Close())
 		}
 	}()
-	homeOperation.Finish(nil)
 	if err := r.shutdown.Checkpoint(); err != nil {
 		return err
 	}
@@ -559,6 +501,7 @@ func (r *NativeRunner) Run(
 			Configuration:  effective,
 			Resources:      resourceConfiguration,
 			Logger:         r.logger,
+			Warnings:       r.warnings,
 			CleanupContext: cleanupContext,
 			Identities: mcpresource.ScopeIdentities{
 				Home:    home.Identity().ID,
@@ -840,170 +783,4 @@ func (r *NativeRunner) validate() error {
 	default:
 		return nil
 	}
-}
-
-func nativeForegroundMode(
-	managed bool,
-	stdin io.Reader,
-	stdout io.Writer,
-	stderr io.Writer,
-) bwrap.ExecutionMode {
-	input, ok := stdin.(*os.File)
-	if !ok || input == nil || !term.IsTerminal(int(input.Fd())) {
-		return bwrap.ExecutionNonInteractive
-	}
-
-	output, outputTerminal := stdout.(*os.File)
-	errorOutput, errorTerminal := stderr.(*os.File)
-	if managed &&
-		outputTerminal &&
-		output != nil &&
-		errorTerminal &&
-		errorOutput != nil &&
-		term.IsTerminal(int(output.Fd())) &&
-		term.IsTerminal(int(errorOutput.Fd())) &&
-		sameNativeTerminal(input, output, errorOutput) {
-		return bwrap.ExecutionManagedPTY
-	}
-
-	return bwrap.ExecutionDirectTerminal
-}
-
-func nativeTerminalType(mode bwrap.ExecutionMode) string {
-	if mode == bwrap.ExecutionNonInteractive {
-		return ""
-	}
-
-	return os.Getenv("TERM")
-}
-
-func sameNativeTerminal(files ...*os.File) bool {
-	if len(files) < 2 {
-		return true
-	}
-
-	first, err := files[0].Stat()
-	if err != nil {
-		return false
-	}
-	for _, file := range files[1:] {
-		current, err := file.Stat()
-		if err != nil || !os.SameFile(first, current) {
-			return false
-		}
-	}
-	return true
-}
-
-func warnIfNativeAutoDeny(
-	warnings *warning.Service,
-	config *appconfig.Service,
-	mode bwrap.ExecutionMode,
-) {
-	settings := config.Settings()
-	if settings.YoloEnabled() || mode == bwrap.ExecutionManagedPTY {
-		return
-	}
-
-	reason := "unavailable unless stdin, stdout, and stderr share one terminal"
-	if !settings.ManagedTerminalEnabled() {
-		reason = "off (settings.managedTerminal is false)"
-	}
-	warnings.Warn(
-		warning.PermissionAutoDeny,
-		fmt.Sprintf(
-			"approval prompts are %s; actions that are not explicitly allowed will be denied",
-			reason,
-		),
-		"reason", reason,
-		"managed_terminal", settings.ManagedTerminalEnabled(),
-	)
-}
-
-func resolveNativeWorkdir(
-	configured string,
-	projects []bwrap.Project,
-) (string, error) {
-	workdir := layout.ExpandHome(configured)
-	if workdir == "" {
-		if len(projects) == 0 {
-			return "", fmt.Errorf("native launch requires a project")
-		}
-		workdir = projects[0].Target
-	}
-	if !path.IsAbs(workdir) ||
-		path.Clean(workdir) != workdir {
-		return "", exitcode.New(
-			2,
-			"workdir must be a clean absolute sandbox path: %q",
-			configured,
-		)
-	}
-
-	return workdir, nil
-}
-
-func nativeOccupiedTargets(
-	projects []bwrap.Project,
-	binds []NativeBind,
-) []string {
-	targets := make([]string, 0, len(projects)+len(binds))
-	for _, project := range projects {
-		targets = append(targets, project.Target)
-	}
-	for _, bind := range binds {
-		targets = append(targets, bind.Bind.Target)
-	}
-
-	return targets
-}
-
-func nativeManagedEntries(
-	handles []*storage.ManagedHandle,
-) []mount.Entry {
-	entries := make([]mount.Entry, len(handles))
-	for index, handle := range handles {
-		entries[index] = handle.Entry()
-	}
-
-	return entries
-}
-
-func nativeManagedInterfaces(
-	handles []*storage.ManagedHandle,
-) []ManagedDirectory {
-	result := make([]ManagedDirectory, len(handles))
-	for index, handle := range handles {
-		result[index] = handle
-	}
-
-	return result
-}
-
-func closeManagedHandles(handles []*storage.ManagedHandle) error {
-	var closeErr error
-	for index := len(handles) - 1; index >= 0; index-- {
-		if handles[index] != nil {
-			closeErr = errors.Join(closeErr, handles[index].Close())
-			handles[index] = nil
-		}
-	}
-
-	return closeErr
-}
-
-func nativeBindPlans(binds []NativeBind) []mount.Bind {
-	result := make([]mount.Bind, len(binds))
-	for index, bind := range binds {
-		result[index] = bind.Bind
-	}
-
-	return result
-}
-
-func nativeProjectScopeIdentity(project bwrap.Project) string {
-	digest := sha256.Sum256(
-		[]byte(project.Name + "\x00" + project.HostPath),
-	)
-	return "project-" + hex.EncodeToString(digest[:])
 }

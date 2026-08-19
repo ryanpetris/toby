@@ -92,12 +92,12 @@ func TestDecodeSessionSnapshotRejectsSecretBearingAndAmbiguousFields(
 		{
 			name: "duplicate field",
 			data: prefix + `,"debug":true}`,
-			want: "duplicate object key",
+			want: "duplicate JSON field",
 		},
 		{
 			name: "trailing value",
 			data: prefix + `} true`,
-			want: "trailing",
+			want: "multiple JSON values",
 		},
 	}
 

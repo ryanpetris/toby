@@ -68,11 +68,12 @@ type launchSandboxConfig struct {
 }
 
 type launchSettingsConfig struct {
-	Profile          string
-	AutoUpgrade      bool
-	SuppressWarnings warning.Suppression
-	Debug            *bool
-	Yolo             *bool
+	Profile                 string
+	AutoUpgrade             bool
+	SuppressWarnings        warning.Suppression
+	UnknownSuppressWarnings []string
+	Debug                   *bool
+	Yolo                    *bool
 }
 
 type launchToolConfig struct {
@@ -132,14 +133,19 @@ type launchToolSchema struct {
 
 // BuildConfiguredLaunch resolves a launch from an explicit configuration file.
 func BuildConfiguredLaunch(params Params, configPath string, extra []string) (ConfiguredLaunch, error) {
-	cfg, err := loadLaunchConfigWithPaths(
+	cfg, err := loadLaunchConfig(
 		configPath,
 		params.Paths,
 		params.Logger,
+		params.Warnings,
 	)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
+	warning.WarnUnknownSuppressWarnings(
+		params.Warnings,
+		cfg.Settings.UnknownSuppressWarnings,
+	)
 	if len(cfg.Projects) == 0 {
 		return ConfiguredLaunch{}, exitcode.New(2, "launch config projects must not be empty")
 	}
@@ -177,14 +183,19 @@ func BuildConfiguredLaunch(params Params, configPath string, extra []string) (Co
 
 // BuildOverlayConfiguredLaunch overlays a configuration file onto a direct launch.
 func BuildOverlayConfiguredLaunch(params Params, configPath string, parsed DirectLaunch, primary string, primaryProject tools.ProjectMount) (ConfiguredLaunch, error) {
-	cfg, err := loadLaunchConfigWithPaths(
+	cfg, err := loadLaunchConfig(
 		configPath,
 		params.Paths,
 		params.Logger,
+		params.Warnings,
 	)
 	if err != nil {
 		return ConfiguredLaunch{}, err
 	}
+	warning.WarnUnknownSuppressWarnings(
+		params.Warnings,
+		cfg.Settings.UnknownSuppressWarnings,
+	)
 	configuredTools, err := resolveConfiguredTools(params.Registry, cfg.Tools)
 	if err != nil {
 		return ConfiguredLaunch{}, err
@@ -379,11 +390,9 @@ func (s launchSettingsSchema) resolve() (launchSettingsConfig, error) {
 		Yolo:        cloneBool(s.Yolo),
 	}
 	if s.SuppressWarnings != nil {
-		suppression, err := warning.SuppressionFromList(s.SuppressWarnings, "settings.suppressWarnings")
-		if err != nil {
-			return launchSettingsConfig{}, err
-		}
+		suppression, unknown := warning.SuppressionFromList(s.SuppressWarnings)
 		cfg.SuppressWarnings = suppression
+		cfg.UnknownSuppressWarnings = append([]string(nil), unknown...)
 	}
 	return cfg, nil
 }
@@ -404,111 +413,41 @@ func (s launchSandboxSchema) resolve(
 	if s.Build != nil {
 		sources++
 	}
-	if sources > 1 {
-		return launchSandboxConfig{}, fmt.Errorf(
-			"sandbox.image, sandbox.archive, and sandbox.build are mutually exclusive",
-		)
+
+	var build *appconfig.SandboxBuild
+	if s.Build != nil {
+		build = &appconfig.SandboxBuild{
+			Context:    s.Build.Context,
+			Dockerfile: s.Build.Dockerfile,
+		}
+	}
+	resolved, err := appconfig.ResolveSandboxSource(
+		appconfig.SandboxSource{
+			Image:   s.Image,
+			Archive: s.Archive,
+			Build:   build,
+			Pull:    s.Pull,
+		},
+		dir,
+		home,
+		appconfig.SandboxConfig{},
+	)
+	if err != nil {
+		return launchSandboxConfig{}, err
 	}
 
-	cfg := launchSandboxConfig{}
-	switch {
-	case imageValue != "":
-		cfg.Source = imagesource.Registry
-		cfg.Image = imageValue
-		cfg.Pull = image.PullIfMissing
-		cfg.SourceSet = true
-	case archiveValue != "":
-		archive, err := resolveLaunchSourcePath(
-			archiveValue,
-			dir,
-			home,
-		)
-		if err != nil {
-			return launchSandboxConfig{}, fmt.Errorf(
-				"sandbox.archive: %w",
-				err,
-			)
-		}
-		cfg.Source = imagesource.Archive
-		cfg.Archive = archive
-		cfg.Pull = image.PullIfMissing
-		cfg.SourceSet = true
-	case s.Build != nil:
-		contextValue := strings.TrimSpace(s.Build.Context)
-		if contextValue == "" {
-			contextValue = "."
-		}
-		contextPath, err := resolveLaunchSourcePath(
-			contextValue,
-			dir,
-			home,
-		)
-		if err != nil {
-			return launchSandboxConfig{}, fmt.Errorf(
-				"sandbox.build.context: %w",
-				err,
-			)
-		}
-		dockerfileValue := strings.TrimSpace(s.Build.Dockerfile)
-		if dockerfileValue == "" {
-			dockerfileValue = "Dockerfile"
-		}
-		dockerfileValue = config.ExpandHome(dockerfileValue, home)
-		if !filepath.IsAbs(dockerfileValue) {
-			dockerfileValue = filepath.Join(
-				contextPath,
-				dockerfileValue,
-			)
-		}
-		dockerfilePath, err := filepath.Abs(dockerfileValue)
-		if err != nil {
-			return launchSandboxConfig{}, fmt.Errorf(
-				"sandbox.build.dockerfile: %w",
-				err,
-			)
-		}
-		cfg.Source = imagesource.Build
-		cfg.Build = imagesource.BuildConfig{
-			Context:    contextPath,
-			Dockerfile: filepath.Clean(dockerfilePath),
-		}
-		cfg.Pull = image.PullIfMissing
-		cfg.SourceSet = true
+	cfg := launchSandboxConfig{
+		Source:    resolved.Source,
+		Image:     resolved.Image,
+		Archive:   resolved.Archive,
+		Build:     resolved.Build,
+		Pull:      resolved.Pull,
+		SourceSet: sources > 0,
 	}
-
-	if s.Pull == nil {
-		return cfg, nil
-	}
-	switch *s.Pull {
-	case image.PullIfMissing, image.PullAlways, image.PullNever:
+	if s.Pull != nil {
 		cfg.Pull = *s.Pull
-	default:
-		return launchSandboxConfig{}, fmt.Errorf(
-			"sandbox.pull has unsupported value %q",
-			*s.Pull,
-		)
 	}
 	return cfg, nil
-}
-
-func resolveLaunchSourcePath(
-	value string,
-	dir string,
-	home string,
-) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", fmt.Errorf("path must not be empty")
-	}
-	value = config.ExpandHome(value, home)
-	if !filepath.IsAbs(value) {
-		value = filepath.Join(dir, value)
-	}
-	absolute, err := filepath.Abs(value)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(absolute), nil
 }
 
 func cloneBool(value *bool) *bool {

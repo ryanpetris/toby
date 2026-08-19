@@ -11,6 +11,7 @@ import (
 	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic"
+	"petris.dev/toby/internal/diagnostic/warning"
 	sandboxapi "petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/tools"
 	"petris.dev/toby/internal/tools/fake"
@@ -31,6 +32,7 @@ func TestModuleRegistersEveryConcreteToolOnce(t *testing.T) {
 		fx.Supply(config.Paths{Home: home}),
 		fx.Supply(fx.Annotate(sandbox, fx.As(new(sandboxapi.Service)))),
 		fx.Supply(appconfig.NewLaunchHolder(base)),
+		fx.Supply(warning.NewService(nil, nil)),
 		fx.Provide(sessionconfig.NewHolder),
 		diagnostic.Module(),
 		Module,

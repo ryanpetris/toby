@@ -1,7 +1,7 @@
 package appconfig
 
-// Carries the effective per-launch host configuration to statically composed
-// process services without introducing a nested dependency-injection graph.
+// Carries the effective per-launch host configuration for process-wide
+// services that read the current launch settings.
 
 import "sync"
 

@@ -193,6 +193,9 @@ func (h *Service) Open(
 		h.mu.Unlock()
 
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			continue
 		}
 	}

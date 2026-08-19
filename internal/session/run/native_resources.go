@@ -16,6 +16,7 @@ import (
 	"petris.dev/toby/internal/config/mcpresource"
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic"
+	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/hostaction"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/sandboxgateway"
@@ -72,6 +73,7 @@ type nativeResourceInput struct {
 	Resources      appconfig.ResourcesConfig
 	Identities     mcpresource.ScopeIdentities
 	Logger         *diagnostic.Logger
+	Warnings       *warning.Service
 	CleanupContext func() context.Context
 }
 
@@ -112,6 +114,7 @@ func acquireNativeResources(
 			input.Configuration,
 			input.Resources.Models,
 			input.Logger,
+			input.Warnings,
 			input.CleanupContext,
 		)
 		if err != nil {
@@ -152,6 +155,7 @@ func acquireNativeResources(
 		snapshot,
 		input.RunID,
 		input.Logger,
+		input.Warnings,
 		input.CleanupContext,
 	)
 	if err != nil {
@@ -197,6 +201,7 @@ func acquireNativeResources(
 		mcpResources.servers,
 		modelsEndpoints,
 		input.Snapshot.Projects,
+		input.Warnings,
 	)
 	if err != nil {
 		return nativeResources{}, err
@@ -244,8 +249,9 @@ func nativeSessionConfig(
 	mcpServers []sessionconfig.MCPServer,
 	modelsEndpoints []sessionconfig.ModelsEndpoint,
 	projects []tobymcp.SessionProject,
+	warnings *warning.Service,
 ) (sessionconfig.Config, error) {
-	instructions, err := config.ResolveInstructions()
+	instructions, err := config.ResolveInstructions(warnings)
 	if err != nil {
 		return sessionconfig.Config{}, err
 	}

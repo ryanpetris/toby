@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"petris.dev/toby/internal/config"
+	"petris.dev/toby/internal/diagnostic"
+	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/oci/image"
 	"petris.dev/toby/internal/tools"
 
@@ -53,6 +55,58 @@ func TestLoadProjectConfigSetMergesFragmentsInLexicalOrder(t *testing.T) {
 	if got, want := cfg.Tools[0].Params, []string{"final", "--flag"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("params = %#v, want %#v", got, want)
 	}
+}
+
+func TestLoadProjectConfigSetWarnsOnNonYAMLFragments(t *testing.T) {
+	home := t.TempDir()
+	projectRoot := filepath.Join(home, "project")
+	configPath := filepath.Join(projectRoot, projectLaunchConfigName)
+	writeTestFile(t, configPath, []byte("name: base\n"))
+	fragments := filepath.Join(projectRoot, projectConfigDirName, projectFragmentsDir)
+	writeTestFile(t, filepath.Join(fragments, "95-ignored.yml"), []byte("name: ignored\n"))
+	writeTestFile(t, filepath.Join(fragments, "README"), []byte("not configuration"))
+
+	logger := &configSetWarningLogger{}
+	cfg, err := loadLaunchConfig(
+		configPath,
+		config.Paths{Home: home, ProjectRoot: filepath.Join(home, "Projects")},
+		nil,
+		warning.NewService(logger, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Name != "base" {
+		t.Fatalf("name = %q", cfg.Name)
+	}
+	if len(logger.messages) != 2 {
+		t.Fatalf("warnings = %#v", logger.messages)
+	}
+	for _, message := range logger.messages {
+		if !strings.Contains(message, string(warning.ConfigFragmentIgnored)) {
+			t.Fatalf("warning = %q", message)
+		}
+	}
+}
+
+type configSetWarningLogger struct {
+	messages []string
+}
+
+func (l *configSetWarningLogger) Warn(message string, _ ...any) {
+	l.messages = append(l.messages, message)
+}
+
+func (l *configSetWarningLogger) WarnError(
+	message string,
+	_ error,
+	_ ...any,
+) {
+	l.messages = append(l.messages, message)
+}
+
+func (l *configSetWarningLogger) Error(message string, _ ...any) {
+	l.messages = append(l.messages, message)
 }
 
 func TestLoadProjectConfigSetAllowsMissingOrEmptyFragmentDirectory(t *testing.T) {
@@ -329,4 +383,12 @@ func TestLoadProjectConfigSetRejectsUnsafeTypes(t *testing.T) {
 			t.Fatalf("error = %v, want missing base error", err)
 		}
 	})
+}
+
+func loadLaunchConfigWithPaths(
+	path string,
+	paths config.Paths,
+	logger *diagnostic.Logger,
+) (launchConfig, error) {
+	return loadLaunchConfig(path, paths, logger, nil)
 }

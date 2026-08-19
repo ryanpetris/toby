@@ -58,7 +58,6 @@ func processModule() fx.Option {
 			appconfig.NewLaunchHolder,
 			newWarningService,
 			sessionconfig.NewHolder,
-			lifecycle.NewNative,
 			fx.Annotate(
 				bwrap.NewToolService,
 				fx.As(new(sandbox.Service)),
@@ -130,7 +129,7 @@ type sessionRunnerParams struct {
 	SessionConfig *sessionconfig.Holder
 	Agent         *agent.Client
 	Diagnostics   *diagnostic.Service
-	Lifecycle     *lifecycle.Native
+	Lifecycle     *lifecycle.Runner
 	Sandbox       *bwrap.ToolService
 	Git           *git.Service
 	Approval      *approval.Service

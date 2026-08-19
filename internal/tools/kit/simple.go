@@ -20,19 +20,30 @@ type Simple struct {
 	tools.Base
 	Sandbox             sandbox.Service
 	SandboxSubpath      []string
+	ExtraMounts         []mount.Request
 	InstallCommand      []string
 	InstallCheckCommand string
 	SandboxEnv          map[string]string
+	PathAppend          string
 	LaunchCommand       string
+	LaunchArgs          []string
+	YoloArgs            []string
+	Yolo                func() bool
 }
 
 // PrepareHost prepares host-side state required by the tool.
 func (t *Simple) PrepareHost(_ context.Context, _ *tools.Options) error {
-	req, ok := t.mountRequest()
-	if !ok {
-		return nil
+	if req, ok := t.mountRequest(); ok {
+		if err := t.Sandbox.AddMount(req); err != nil {
+			return err
+		}
 	}
-	return t.Sandbox.AddMount(req)
+	for _, req := range t.ExtraMounts {
+		if err := t.Sandbox.AddMount(req); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (t *Simple) mountRequest() (mount.Request, bool) {
@@ -53,7 +64,10 @@ func (t *Simple) ConfigureSandbox(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	if t.PathAppend == "" {
+		return nil
+	}
+	return t.Sandbox.AppendEnvironment(ctx, "PATH", t.PathAppend, ":")
 }
 
 // Install installs the tool when needed.
@@ -96,7 +110,16 @@ func (t *Simple) Launch(ctx context.Context, extra []string) error {
 	if command == "" {
 		command = t.Name()
 	}
-	argv := append([]string{command}, extra...)
+	argv := append([]string{command}, t.LaunchArgs...)
+	if t.YoloEnabled() {
+		argv = append(argv, t.YoloArgs...)
+	}
+	argv = append(argv, extra...)
 	_, err := t.Sandbox.Exec(ctx, argv, sandbox.ExecOptions{Foreground: true})
 	return err
+}
+
+// YoloEnabled reports whether this launch should add YoloArgs.
+func (t *Simple) YoloEnabled() bool {
+	return t != nil && t.Yolo != nil && t.Yolo()
 }

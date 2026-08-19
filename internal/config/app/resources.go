@@ -12,6 +12,7 @@ import (
 	configfile "petris.dev/toby/internal/config/file"
 	mcpconfig "petris.dev/toby/internal/config/mcp"
 	modelsconfig "petris.dev/toby/internal/config/models"
+	"petris.dev/toby/internal/diagnostic/warning"
 )
 
 // ResourcesConfig is the detached effective resource configuration for one
@@ -34,8 +35,11 @@ type modelSchema struct {
 }
 
 // ResolveResources strictly defaults, substitutes, and validates the
-// input-only resources block. Callers invoke this only after hello.
-func (s *Service) ResolveResources() (ResourcesConfig, error) {
+// input-only resources block. Callers invoke this only after hello. Invalid
+// optional MCP servers and models endpoints are skipped and warned.
+func (s *Service) ResolveResources(
+	warnings *warning.Service,
+) (ResourcesConfig, error) {
 	if s == nil {
 		return emptyResources(), nil
 	}
@@ -67,7 +71,7 @@ func (s *Service) ResolveResources() (ResourcesConfig, error) {
 		)
 	}
 
-	mcps, err := mcpconfig.DecodeWithSubstitutions(
+	mcps, skipped, err := mcpconfig.DecodeWithSubstitutions(
 		configfile.CloneMap(schema.MCPs),
 		func(value string) (string, error) {
 			configDirs, home := s.resolutionContext()
@@ -77,8 +81,21 @@ func (s *Service) ResolveResources() (ResourcesConfig, error) {
 	if err != nil {
 		return ResourcesConfig{}, err
 	}
+	for _, item := range skipped {
+		warnSkippedResource(
+			warnings,
+			warning.MCPServerInvalid,
+			fmt.Sprintf(
+				"MCP server %q is invalid; skipping it: %v",
+				item.Name,
+				item.Err,
+			),
+			item.Err,
+			"mcp_server", item.Name,
+		)
+	}
 
-	models, err := s.resolveModels(schema.Models)
+	models, err := s.resolveModels(schema.Models, warnings)
 	if err != nil {
 		return ResourcesConfig{}, err
 	}
@@ -91,37 +108,81 @@ func (s *Service) ResolveResources() (ResourcesConfig, error) {
 
 func (s *Service) resolveModels(
 	raw map[string]any,
+	warnings *warning.Service,
 ) (map[string]modelsconfig.Config, error) {
-	decoded := make(map[string]*modelSchema)
-	if err := configfile.DecodeInto(
-		configfile.CloneMap(raw),
-		&decoded,
-	); err != nil {
-		return nil, fmt.Errorf("decode resources.models: %w", err)
-	}
-
-	result := make(map[string]modelsconfig.Config, len(decoded))
-	names := make([]string, 0, len(decoded))
-	for name := range decoded {
+	result := make(map[string]modelsconfig.Config, len(raw))
+	names := make([]string, 0, len(raw))
+	for name := range raw {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		model := decoded[name]
-		if model == nil {
-			return nil, fmt.Errorf(
-				"resources.models.%s must be an object",
-				name,
+		value := raw[name]
+		object, ok := value.(map[string]any)
+		if !ok {
+			warnSkippedResource(
+				warnings,
+				warning.ModelsEndpointUnavailable,
+				fmt.Sprintf(
+					"models endpoint %q is invalid; skipping it: must be an object",
+					name,
+				),
+				fmt.Errorf("resources.models.%s must be an object", name),
+				"models_endpoint", name,
 			)
+			continue
+		}
+		var model modelSchema
+		if err := configfile.DecodeInto(object, &model); err != nil {
+			warnSkippedResource(
+				warnings,
+				warning.ModelsEndpointUnavailable,
+				fmt.Sprintf(
+					"models endpoint %q is invalid; skipping it: %v",
+					name,
+					err,
+				),
+				err,
+				"models_endpoint", name,
+			)
+			continue
 		}
 		effective, err := model.resolve(name)
 		if err != nil {
-			return nil, err
+			warnSkippedResource(
+				warnings,
+				warning.ModelsEndpointUnavailable,
+				fmt.Sprintf(
+					"models endpoint %q is invalid; skipping it: %v",
+					name,
+					err,
+				),
+				err,
+				"models_endpoint", name,
+			)
+			continue
 		}
 		result[name] = effective
 	}
 
 	return result, nil
+}
+
+func warnSkippedResource(
+	warnings *warning.Service,
+	id warning.ID,
+	message string,
+	err error,
+	attributes ...any,
+) {
+	if warnings == nil {
+		return
+	}
+	if err != nil {
+		warnings.WarnError(id, message, err, attributes...)
+		return
+	}
+	warnings.Warn(id, message, attributes...)
 }
 
 func (m *modelSchema) resolve(

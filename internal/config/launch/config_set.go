@@ -20,6 +20,7 @@ import (
 	configfile "petris.dev/toby/internal/config/file"
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/diagnostic/warning"
 
 	"gopkg.in/yaml.v3"
 )
@@ -98,10 +99,11 @@ func projectConfigMarker(
 	return true, nil
 }
 
-func loadLaunchConfigWithPaths(
+func loadLaunchConfig(
 	path string,
 	paths config.Paths,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 ) (launchConfig, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -115,7 +117,7 @@ func loadLaunchConfigWithPaths(
 		return launchConfig{}, err
 	}
 
-	schema, relativeRoot, err := loadLaunchSchema(abs, logger)
+	schema, relativeRoot, err := loadLaunchSchema(abs, logger, warnings)
 	if err != nil {
 		return launchConfig{}, err
 	}
@@ -130,10 +132,11 @@ func loadLaunchConfigWithPaths(
 func loadLaunchSchema(
 	path string,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 ) (launchSchema, string, error) {
 	if isCanonicalProjectConfig(path) {
 		projectRoot := filepath.Dir(filepath.Dir(path))
-		schema, err := loadProjectConfigSet(projectRoot, logger)
+		schema, err := loadProjectConfigSet(projectRoot, logger, warnings)
 		return schema, projectRoot, err
 	}
 
@@ -182,6 +185,7 @@ func loadSingleLaunchConfig(
 func loadProjectConfigSet(
 	projectRoot string,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 ) (result launchSchema, returnErr error) {
 	project, err := os.OpenRoot(projectRoot)
 	if err != nil {
@@ -228,6 +232,7 @@ func loadProjectConfigSet(
 		configDirPath,
 		&merged,
 		logger,
+		warnings,
 	); err != nil {
 		return launchSchema{}, err
 	}
@@ -686,6 +691,7 @@ func mergeProjectFragments(
 	configDirPath string,
 	merged *yaml.Node,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 ) (returnErr error) {
 	fragmentsPath := filepath.Join(configDirPath, projectFragmentsDir)
 	info, err := configDir.Lstat(projectFragmentsDir)
@@ -739,11 +745,20 @@ func mergeProjectFragments(
 	})
 	for _, entry := range entries {
 		name := entry.Name()
+		path := filepath.Join(fragmentsPath, name)
 		if filepath.Ext(name) != ".yaml" {
+			if !entry.IsDir() && warnings != nil {
+				warnings.Warn(
+					warning.ConfigFragmentIgnored,
+					fmt.Sprintf(
+						"project configuration fragment %s is ignored; only .yaml files in config.d are loaded",
+						path,
+					),
+					"path", path,
+				)
+			}
 			continue
 		}
-
-		path := filepath.Join(fragmentsPath, name)
 		data, err := readRootedRegularFile(
 			fragments,
 			name,

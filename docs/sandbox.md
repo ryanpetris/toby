@@ -317,6 +317,8 @@ It does not receive the real upstream URL or headers.
 
 Caddy runs in its own read-only Bubblewrap sandbox from the official
 `docker.io/library/caddy:latest` OCI image, which Toby pulls only when missing.
+If that image cannot be prepared, models endpoints are skipped with
+`models.endpoint-unavailable`.
 It has host networking for upstream access but no private home, project, or
 application mounts. Admin, data, and authorization channels are separate
 owner-only Unix sockets in agent-owned runtime storage.

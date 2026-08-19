@@ -1,7 +1,7 @@
 package bwrap
 
 // Adapts tool lifecycle declarations and command execution to one Bubblewrap
-// Run without introducing a per-home or per-application lock.
+// Run.
 
 import (
 	"context"

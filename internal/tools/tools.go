@@ -76,6 +76,7 @@ type Options struct {
 	Install  bool
 	Upgrade  bool
 	Quiet    bool
+	Primary  string
 }
 
 // ProjectMount names a host project to mount into the sandbox.

@@ -232,6 +232,7 @@ func TestDockerToolLaunchesThroughBubblewrapSocketRelay(t *testing.T) {
 	service := provide(
 		config.Paths{Home: hostHome},
 		toolSandbox,
+		nil,
 	).Service
 	service.(*dockerTool).socket = endpoint.path
 
@@ -250,9 +251,9 @@ func TestDockerToolLaunchesThroughBubblewrapSocketRelay(t *testing.T) {
 		t.Fatalf("selected Docker toolset = %#v", orderedTools)
 	}
 
-	nativeLifecycle := lifecycle.NewNative(lifecycle.NewRunner(
+	nativeLifecycle := lifecycle.NewRunner(
 		status.NewService(nil),
-	))
+	)
 	lifecycleContext := lifecycle.Context{Options: &tools.Options{}}
 	if err := nativeLifecycle.PrepareHost(
 		t.Context(),

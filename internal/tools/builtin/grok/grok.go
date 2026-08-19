@@ -38,11 +38,15 @@ const grokInstallPath = "grok/install.sh"
 
 // provide constructs the tool implementation.
 func provide(params params) result {
-	svc := &grokTool{Simple: &kit.Simple{
-		Base:           tools.Base{Metadata: Meta},
-		Sandbox:        params.Sandbox,
-		SandboxSubpath: []string{".grok"},
-	}, sessionConfig: params.SessionConfig}
+	simple := kit.NewSimple(
+		params.Sandbox,
+		tools.Base{Metadata: Meta},
+		[]string{".grok"},
+		nil,
+		nil,
+	)
+	simple.PathAppend = filepath.Join(layout.Home, ".grok", "bin")
+	svc := &grokTool{Simple: simple, sessionConfig: params.SessionConfig}
 	return result{Service: svc}
 }
 
@@ -75,14 +79,6 @@ func (t *grokTool) RuntimeAssets() ([]runtimeassets.Asset, error) {
 		Data:   data,
 		Mode:   0o755,
 	}}, nil
-}
-
-func (t *grokTool) ConfigureSandbox(ctx context.Context) error {
-	if err := t.Simple.ConfigureSandbox(ctx); err != nil {
-		return err
-	}
-
-	return t.Sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".grok", "bin"), ":")
 }
 
 func (t *grokTool) Install(ctx context.Context, force bool) error {

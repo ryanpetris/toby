@@ -4,12 +4,9 @@
 package claude
 
 import (
-	"context"
 	"path/filepath"
 
-	appconfig "petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/config/session"
-	"petris.dev/toby/internal/sandbox"
+	sessionconfig "petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/toolfiles"
 	"petris.dev/toby/internal/tools"
@@ -33,16 +30,22 @@ var Meta = tools.Metadata{
 
 // provide constructs the tool implementation.
 func provide(params params) result {
+	simple := kit.NewSimple(
+		params.Sandbox,
+		tools.Base{Metadata: Meta},
+		[]string{".config", "claude"},
+		[]string{"npm", "install", "-g", "--allow-scripts=@anthropic-ai/claude-code", "@anthropic-ai/claude-code"},
+		map[string]string{
+			"CLAUDE_CONFIG_DIR": filepath.Join(layout.Home, ".config", "claude"),
+		},
+	)
+	simple.LaunchCommand = "claude"
+	simple.LaunchArgs = nativeFlags()
+	simple.YoloArgs = []string{"--dangerously-skip-permissions"}
+	simple.Yolo = kit.YoloFromConfig(params.Config)
 	svc := &claudeTool{
-		Simple: kit.NewSimple(
-			params.Sandbox,
-			tools.Base{Metadata: Meta},
-			[]string{".config", "claude"},
-			[]string{"npm", "install", "-g", "--allow-scripts=@anthropic-ai/claude-code", "@anthropic-ai/claude-code"},
-			nil,
-		),
+		Simple:        simple,
 		sessionConfig: params.SessionConfig,
-		config:        params.Config,
 	}
 	return result{Service: svc}
 }
@@ -50,27 +53,10 @@ func provide(params params) result {
 type claudeTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
-	config        *appconfig.LaunchHolder
-	yolo          bool
 }
 
 var _ tools.Tool = (*claudeTool)(nil)
 var _ toolfiles.Contributor = (*claudeTool)(nil)
-
-func (t *claudeTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	current := t.config.Current()
-	t.yolo = current != nil && current.Settings().YoloEnabled()
-
-	return t.Simple.PrepareHost(ctx, opts)
-}
-
-func (t *claudeTool) ConfigureSandbox(ctx context.Context) error {
-	if err := t.Simple.ConfigureSandbox(ctx); err != nil {
-		return err
-	}
-
-	return t.Sandbox.SetEnvironment(ctx, "CLAUDE_CONFIG_DIR", filepath.Join(layout.Home, ".config", "claude"))
-}
 
 func (t *claudeTool) ToolFiles(ownership toolfiles.Ownership) ([]toolfiles.File, error) {
 	cfg, err := t.sessionConfig.Config()
@@ -79,18 +65,6 @@ func (t *claudeTool) ToolFiles(ownership toolfiles.Ownership) ([]toolfiles.File,
 	}
 
 	return claudeconfig.NativeFiles(Name, ownership, cfg)
-}
-
-// Launch starts Claude Code with Toby's generated MCP and settings files while
-// Claude keeps its normal writable config directory.
-func (t *claudeTool) Launch(ctx context.Context, extra []string) error {
-	argv := append([]string{"claude"}, nativeFlags()...)
-	if t.yolo {
-		argv = append(argv, "--dangerously-skip-permissions")
-	}
-	argv = append(argv, extra...)
-	_, err := t.Sandbox.Exec(ctx, argv, sandbox.ExecOptions{Foreground: true})
-	return err
 }
 
 func nativeFlags() []string {

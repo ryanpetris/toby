@@ -18,6 +18,9 @@ import (
 	"petris.dev/toby/internal/agent/socket"
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/diagnostic/warning"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Launcher starts a detached `tobyd` process. Concurrent callers
@@ -98,16 +101,7 @@ func (m *Service) Connect(
 	ctx context.Context,
 	handler HostActionHandler,
 ) (*AgentSession, error) {
-	connection, err := m.ensureConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return m.openAgentConnection(
-		ctx,
-		connection,
-		handler,
-	)
+	return m.openReadySession(ctx, handler, true)
 }
 
 // OpenAgent opens a persistent version-1 agent session without starting a
@@ -123,20 +117,71 @@ func (m *Service) OpenAgent(
 		return nil, fmt.Errorf("agent client context is nil")
 	}
 
-	connection, err := socket.Dial(
-		ctx,
-		m.path,
-		socket.Options{Logger: m.options.Logger},
-	)
-	if err != nil {
-		return nil, err
-	}
+	return m.openReadySession(ctx, handler, false)
+}
 
-	return m.openAgentConnection(
-		ctx,
-		connection,
-		handler,
-	)
+func (m *Service) openReadySession(
+	ctx context.Context,
+	handler HostActionHandler,
+	autostart bool,
+) (*AgentSession, error) {
+	timeout := m.options.Session.HandshakeTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if autostart {
+		timeout = m.options.StartupTimeout
+	}
+	startupCtx, cancel := boundedContext(ctx, timeout)
+	defer cancel()
+
+	delay := m.options.RetryMinimum
+	var lastErr error
+	for {
+		var connection net.Conn
+		var err error
+		if autostart {
+			connection, err = m.ensureConnection(startupCtx)
+		} else {
+			connection, err = socket.Dial(
+				startupCtx,
+				m.path,
+				socket.Options{Logger: m.options.Logger},
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		session, err := m.openAgentConnection(
+			startupCtx,
+			connection,
+			handler,
+		)
+		if err == nil {
+			return session, nil
+		}
+		if !transientHelloError(err) {
+			return nil, err
+		}
+		lastErr = err
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-startupCtx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf(
+				"wait for agent readiness: %w: last connection error: %v",
+				startupCtx.Err(),
+				lastErr,
+			)
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > m.options.RetryMaximum {
+			delay = m.options.RetryMaximum
+		}
+	}
 }
 
 func (m *Service) openAgentConnection(
@@ -342,4 +387,26 @@ func transientStartupError(err error) bool {
 	return errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.EOF)
+}
+
+func transientHelloError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if agentAbsent(err) || transientStartupError(err) {
+		return true
+	}
+	var remote RemoteError
+	if errors.As(err, &remote) {
+		return remote.Retryable
+	}
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if st, ok := status.FromError(current); ok {
+			switch st.Code() {
+			case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+				return true
+			}
+		}
+	}
+	return false
 }

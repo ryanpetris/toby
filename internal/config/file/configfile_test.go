@@ -54,6 +54,14 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsDuplicateJSONFields(t *testing.T) {
+	var got sample
+	err := Decode([]byte(`{"name":"a","name":"b"}`), FormatJSON, "test", &got)
+	if err == nil || !strings.Contains(err.Error(), `duplicate JSON field "name"`) {
+		t.Fatalf("err = %v, want duplicate JSON field", err)
+	}
+}
+
 func TestDecodeRejectsTrailingJSON(t *testing.T) {
 	var got sample
 	err := Decode([]byte(`{"name":"a"} {}`), FormatJSON, "test", &got)

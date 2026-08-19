@@ -3,77 +3,83 @@ package mcpconfig
 // Resolves host-owned substitutions before secret-bearing MCP configuration is
 // sent to the per-user agent.
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
-// ResolveSubstitutions returns a detached configuration with substitutions
-// resolved in remote URLs and headers and in local commands and environment
-// values. The resolver runs on the host; its outputs are validated before the
-// configuration is returned.
-func (c Config) ResolveSubstitutions(
+// SubstitutionError is a fail-closed host substitution failure for one MCP
+// credential-bearing field.
+type SubstitutionError struct {
+	Server string
+	Field  string
+	Err    error
+}
+
+func (e *SubstitutionError) Error() string {
+	if e == nil {
+		return "MCP substitution error"
+	}
+	return fmt.Sprintf("resources.mcps.%s.%s: %v", e.Server, e.Field, e.Err)
+}
+
+func (e *SubstitutionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func resolveServerSubstitutions(
+	name string,
+	server Server,
 	resolve func(string) (string, error),
-) (Config, error) {
-	if resolve == nil {
-		return Config{}, fmt.Errorf("MCP substitution resolver is required")
+) (Server, error) {
+	value, err := resolve(server.URL)
+	if err != nil {
+		return Server{}, &SubstitutionError{
+			Server: name,
+			Field:  "url",
+			Err:    err,
+		}
 	}
+	server.URL = value
 
-	resolved := c.Clone()
-	for _, name := range sortedNames(resolved.Servers) {
-		server := resolved.Servers[name]
-
-		value, err := resolve(server.URL)
+	for _, header := range sortedNames(server.Headers) {
+		raw := server.Headers[header]
+		value, err := resolve(raw)
 		if err != nil {
-			return Config{}, fmt.Errorf(
-				"resources.mcps.%s.url: %w",
-				name,
-				err,
-			)
-		}
-		server.URL = value
-
-		for _, header := range sortedNames(server.Headers) {
-			raw := server.Headers[header]
-			value, err := resolve(raw)
-			if err != nil {
-				return Config{}, fmt.Errorf(
-					"resources.mcps.%s.headers.%s: %w",
-					name,
-					header,
-					err,
-				)
+			return Server{}, &SubstitutionError{
+				Server: name,
+				Field:  "headers." + header,
+				Err:    err,
 			}
-			server.Headers[header] = value
 		}
-		for index, raw := range server.Command {
-			value, err := resolve(raw)
-			if err != nil {
-				return Config{}, fmt.Errorf(
-					"resources.mcps.%s.command[%d]: %w",
-					name,
-					index,
-					err,
-				)
+		server.Headers[header] = value
+	}
+	for index, raw := range server.Command {
+		value, err := resolve(raw)
+		if err != nil {
+			return Server{}, &SubstitutionError{
+				Server: name,
+				Field:  "command[" + strconv.Itoa(index) + "]",
+				Err:    err,
 			}
-			server.Command[index] = value
 		}
-		for _, environment := range sortedNames(server.Environment) {
-			raw := server.Environment[environment]
-			value, err := resolve(raw)
-			if err != nil {
-				return Config{}, fmt.Errorf(
-					"resources.mcps.%s.environment.%s: %w",
-					name,
-					environment,
-					err,
-				)
+		server.Command[index] = value
+	}
+	for _, environment := range sortedNames(server.Environment) {
+		raw := server.Environment[environment]
+		value, err := resolve(raw)
+		if err != nil {
+			return Server{}, &SubstitutionError{
+				Server: name,
+				Field:  "environment." + environment,
+				Err:    err,
 			}
-			server.Environment[environment] = value
 		}
-
-		resolved.Servers[name] = server
+		server.Environment[environment] = value
 	}
 
-	if err := resolved.Validate(); err != nil {
-		return Config{}, err
-	}
-	return resolved, nil
+	return server, nil
 }

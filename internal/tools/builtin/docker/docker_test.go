@@ -22,7 +22,7 @@ func TestProvideUsesOnlyHostDockerCapabilities(t *testing.T) {
 	home := t.TempDir()
 	sandbox := fake.NewSandbox()
 	sandbox.Env["DOCKER_CONTEXT"] = "inherited"
-	svc := provide(config.Paths{Home: home}, sandbox).Service
+	svc := provide(config.Paths{Home: home}, sandbox, nil).Service
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -74,12 +74,43 @@ func TestPrepareHostRequiresUnixSocket(t *testing.T) {
 	svc := provide(
 		config.Paths{Home: t.TempDir()},
 		fake.NewSandbox(),
+		nil,
 	).Service.(*dockerTool)
 	svc.socket = filepath.Join(t.TempDir(), "missing.sock")
 
-	err := svc.PrepareHost(t.Context(), &tools.Options{})
+	err := svc.PrepareHost(t.Context(), &tools.Options{Primary: Name})
 	if err == nil || !strings.Contains(err.Error(), "requires host socket") {
 		t.Fatalf("missing socket error = %v", err)
+	}
+}
+
+func TestPrepareHostSkipsMissingSocketWhenNotPrimary(t *testing.T) {
+	sandbox := fake.NewSandbox()
+	svc := provide(
+		config.Paths{Home: t.TempDir()},
+		sandbox,
+		nil,
+	).Service.(*dockerTool)
+	svc.socket = filepath.Join(t.TempDir(), "missing.sock")
+
+	if err := svc.PrepareHost(t.Context(), &tools.Options{Primary: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.disabled {
+		t.Fatal("docker tool was not skipped")
+	}
+	if err := svc.ConfigureSandbox(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := sandbox.Env["DOCKER_HOST"]; found {
+		t.Fatal("skipped docker tool set DOCKER_HOST")
+	}
+	relays, err := svc.SocketRelays()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relays) != 0 {
+		t.Fatalf("SocketRelays = %#v", relays)
 	}
 }
 
@@ -92,7 +123,7 @@ func TestInstallRequiresDockerCLI(t *testing.T) {
 	) (int, error) {
 		return 1, nil
 	}
-	svc := provide(config.Paths{Home: t.TempDir()}, sandbox).Service
+	svc := provide(config.Paths{Home: t.TempDir()}, sandbox, nil).Service
 
 	err := svc.Install(t.Context(), false)
 	if err == nil || !strings.Contains(err.Error(), "requires the Docker CLI") {
@@ -107,7 +138,7 @@ func TestLaunchRunsDockerWithExtras(t *testing.T) {
 		got = append([]string(nil), argv...)
 		return 0, nil
 	}
-	svc := provide(config.Paths{Home: t.TempDir()}, sandbox).Service
+	svc := provide(config.Paths{Home: t.TempDir()}, sandbox, nil).Service
 
 	if err := svc.Launch(context.Background(), []string{"ps", "--format", "json"}); err != nil {
 		t.Fatal(err)

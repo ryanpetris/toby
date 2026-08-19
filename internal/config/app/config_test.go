@@ -31,7 +31,7 @@ func TestLoadDeepMergesNativeConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instructions, err := service.ResolveInstructions()
+	instructions, err := service.ResolveInstructions(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestLoadDeepMergesNativeConfiguration(t *testing.T) {
 	if got := service.PermissionPaths()[filepath.Join(home, "src")]; got != "allow" {
 		t.Fatalf("permission = %q", got)
 	}
-	resources, err := service.ResolveResources()
+	resources, err := service.ResolveResources(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestLoadDefaultsSandboxPullAndResolvesNativeMCPSecrets(t *testing.T) {
 		t.Fatalf("default sandbox config = %#v", got)
 	}
 
-	resources, err := service.ResolveResources()
+	resources, err := service.ResolveResources(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestLoadDefaultsSandboxPullAndResolvesNativeMCPSecrets(t *testing.T) {
 	}
 
 	local.Environment["TOKEN"] = "changed"
-	again, err := service.ResolveResources()
+	again, err := service.ResolveResources(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestLoadRejectsMultipleSandboxSources(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsMissingMCPEnvironmentSubstitution(t *testing.T) {
+func TestLoadSkipsMissingMCPEnvironmentSubstitution(t *testing.T) {
 	const environmentName = "TOBY_TEST_MISSING_MCP_URL"
 
 	previous, present := os.LookupEnv(environmentName)
@@ -226,13 +226,12 @@ func TestLoadRejectsMissingMCPEnvironmentSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.ResolveResources()
-	if err == nil ||
-		!strings.Contains(
-			err.Error(),
-			"resources.mcps.docs.url: must be a non-empty URL",
-		) {
-		t.Fatalf("error = %v, want missing substituted MCP URL", err)
+	resources, err := service.ResolveResources(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resources.MCPs["docs"]; ok {
+		t.Fatalf("skipped MCP remained: %#v", resources.MCPs)
 	}
 }
 
@@ -255,7 +254,7 @@ func TestNewDefaultsInitializesEmptyValidConfiguration(t *testing.T) {
 		service.config.Permissions.Actions == nil {
 		t.Fatalf("default config contains nil maps: %#v", service.config)
 	}
-	if got, err := service.ResolveResources(); err != nil ||
+	if got, err := service.ResolveResources(nil); err != nil ||
 		len(got.MCPs) != 0 ||
 		len(got.Models) != 0 {
 		t.Fatalf("default resources = %#v, error %v", got, err)
@@ -307,11 +306,6 @@ func TestLoadRejectsInvalidNativeConfiguration(t *testing.T) {
 			wantErr: `unknown field "unexpected"`,
 		},
 		{
-			name:    "unknown MCP field",
-			config:  "resources:\n  mcps:\n    docs:\n      unexpected: true\n",
-			wantErr: `unknown field "unexpected"`,
-		},
-		{
 			name:    "null resources block",
 			config:  "resources: null\n",
 			wantErr: "resources must be an object",
@@ -326,14 +320,6 @@ func TestLoadRejectsInvalidNativeConfiguration(t *testing.T) {
 			config:  "resources:\n  models: null\n",
 			wantErr: "resources.models must be an object",
 		},
-		{
-			name: "model declarations",
-			config: "resources:\n  models:\n    local:\n" +
-				"      protocol: openai\n" +
-				"      url: https://example.invalid/v1\n" +
-				"      models: {}\n",
-			wantErr: `unknown field "models"`,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -345,7 +331,7 @@ func TestLoadRejectsInvalidNativeConfiguration(t *testing.T) {
 				test.config,
 				"resources:",
 			) {
-				_, err = service.ResolveResources()
+				_, err = service.ResolveResources(nil)
 			}
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("error = %v, want %q", err, test.wantErr)
@@ -452,7 +438,7 @@ func TestResolveInstructionsReturnsHostSourcesAndDetachedContents(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := service.ResolveInstructions()
+	resolved, err := service.ResolveInstructions(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,13 +450,142 @@ func TestResolveInstructionsReturnsHostSourcesAndDetachedContents(t *testing.T) 
 		t.Fatalf("resolved instructions = %#v", resolved)
 	}
 	resolved[0].Contents[0] = 'X'
-	again, err := service.ResolveInstructions()
+	again, err := service.ResolveInstructions(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(again[0].Contents) != "first\n" {
 		t.Fatal("resolved instruction contents shared mutable state")
 	}
+}
+
+func TestLoadSkipsInvalidPermissionPathMode(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"permissions:\n  paths:\n    ~/src: allow\n    ~/bad: alow\n",
+	)
+
+	service, err := Load(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := service.PermissionPaths()[filepath.Join(home, "src")]; got != "allow" {
+		t.Fatalf("valid path mode = %q", got)
+	}
+	if _, ok := service.PermissionPaths()[filepath.Join(home, "bad")]; ok {
+		t.Fatal("invalid path mode was kept")
+	}
+
+	logger := &configWarningLogger{}
+	service.EmitPendingWarnings(warning.NewService(logger, nil))
+	if len(logger.messages) != 1 ||
+		!strings.Contains(logger.messages[0], string(warning.PermissionPathInvalid)) {
+		t.Fatalf("warnings = %#v", logger.messages)
+	}
+}
+
+func TestResolveInstructionsSkipsMissingSources(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, filepath.Join(dir, "present.md"), "present\n")
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"instructions:\n  - present.md\n  - missing.md\n  - absent/*.md\n",
+	)
+
+	service, err := Load(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := &configWarningLogger{}
+	resolved, err := service.ResolveInstructions(warning.NewService(logger, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 ||
+		resolved[0].Source != filepath.Join(dir, "present.md") ||
+		string(resolved[0].Contents) != "present\n" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+	if len(logger.messages) != 2 {
+		t.Fatalf("warnings = %#v", logger.messages)
+	}
+	for _, message := range logger.messages {
+		if !strings.Contains(message, string(warning.ConfigInstructionMissing)) {
+			t.Fatalf("warning = %q", message)
+		}
+	}
+}
+
+func TestResolveResourcesSkipsInvalidOptionalEntries(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(
+		t,
+		filepath.Join(dir, "config.yaml"),
+		"resources:\n"+
+			"  mcps:\n"+
+			"    good:\n"+
+			"      type: remote\n"+
+			"      transport: http\n"+
+			"      url: https://example.invalid/mcp\n"+
+			"    bad: not-an-object\n"+
+			"  models:\n"+
+			"    good:\n"+
+			"      protocol: openai\n"+
+			"      url: https://example.invalid/v1\n"+
+			"    bad:\n"+
+			"      protocol: openai\n",
+	)
+
+	service, err := Load(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := &configWarningLogger{}
+	resources, err := service.ResolveResources(warning.NewService(logger, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resources.MCPs["good"]; !ok {
+		t.Fatalf("valid MCP was skipped: %#v", resources.MCPs)
+	}
+	if _, ok := resources.MCPs["bad"]; ok {
+		t.Fatalf("invalid MCP was kept: %#v", resources.MCPs)
+	}
+	if _, ok := resources.Models["good"]; !ok {
+		t.Fatalf("valid models endpoint was skipped: %#v", resources.Models)
+	}
+	if _, ok := resources.Models["bad"]; ok {
+		t.Fatalf("invalid models endpoint was kept: %#v", resources.Models)
+	}
+	joined := strings.Join(logger.messages, "\n")
+	if !strings.Contains(joined, string(warning.MCPServerInvalid)) ||
+		!strings.Contains(joined, string(warning.ModelsEndpointUnavailable)) {
+		t.Fatalf("warnings = %q", joined)
+	}
+}
+
+type configWarningLogger struct {
+	messages []string
+}
+
+func (l *configWarningLogger) Warn(message string, _ ...any) {
+	l.messages = append(l.messages, message)
+}
+
+func (l *configWarningLogger) WarnError(
+	message string,
+	_ error,
+	_ ...any,
+) {
+	l.messages = append(l.messages, message)
+}
+
+func (l *configWarningLogger) Error(message string, _ ...any) {
+	l.messages = append(l.messages, message)
 }
 
 func TestResolveStringSubstitutions(t *testing.T) {

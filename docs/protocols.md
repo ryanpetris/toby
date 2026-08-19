@@ -404,10 +404,11 @@ correlation ID is invalid.
 HTTP/1.x bytes between the launch's loopback reverse proxy and the
 agent-private Caddy route; it is not a Toby-specific JSON models API.
 
-Unexpected backend failure closes affected streams. The next use starts or
-joins a replacement generation with jittered exponential backoff, capped at
-five minutes by the MCP and models handlers. Intentional idle teardown, final
-release, and agent shutdown do not trigger restart.
+Permanent initialize failures such as authentication and not-found close the
+affected streams immediately. Transient failure starts or joins a replacement
+generation with jittered exponential backoff, capped at five minutes by the MCP
+and models handlers. Intentional idle teardown, final release, and agent
+shutdown do not trigger restart.
 
 ### Agent errors
 

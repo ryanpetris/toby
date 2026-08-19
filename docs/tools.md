@@ -272,4 +272,6 @@ socket.
 
 Selecting it is an explicit high-trust grant. Control of the host Docker daemon can
 generally provide host-level control. No other built-in tool selects it as a
-dependency, and normal launches do not probe for or expose Docker.
+dependency. When Docker is included as a supporting tool and
+`/var/run/docker.sock` is missing, Toby skips it with `docker.socket-missing`.
+A primary `toby docker` launch still fails if the socket is absent.

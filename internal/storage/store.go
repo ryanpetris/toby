@@ -1,7 +1,7 @@
 package storage
 
 // Coordinates per-user volume creation, validation, first-use seeding, and
-// capability retention without application or home singleton locks.
+// shared-lock capability retention.
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"time"
 
 	"petris.dev/toby/internal/config"
 	"petris.dev/toby/internal/diagnostic"
@@ -22,6 +23,7 @@ const (
 	publicationRecoveryCandidates = 4096
 	volumeDataDirectory           = "_data"
 	volumeMetadataFile            = "metadata.json"
+	volumeLockRetry               = 25 * time.Millisecond
 )
 
 // Store owns the per-user persistent volume root for one host process.
@@ -126,7 +128,7 @@ func (s *Store) CreateVolume(
 		return VolumeInfo{}, fmt.Errorf("derive volume identity: %w", err)
 	}
 
-	volume, err := s.openVolume(id, metadata)
+	volume, err := s.openVolume(ctx, id, metadata)
 	if err == nil {
 		s.logger.DebugError(
 			"close existing volume after creation lookup",
@@ -176,7 +178,7 @@ func (s *Store) ResolveHome(
 		return nil, fmt.Errorf("%w: inconsistent home volume identity", ErrMetadataMismatch)
 	}
 
-	volume, err := s.openVolume(id, metadata)
+	volume, err := s.openVolume(ctx, id, metadata)
 	if err == nil {
 		return newHomeHandle(identity, volume), nil
 	}
@@ -187,7 +189,7 @@ func (s *Store) ResolveHome(
 	if err := s.publishVolume(ctx, id, metadataData, seed); err != nil {
 		return nil, fmt.Errorf("publish home volume %q: %w", id, err)
 	}
-	volume, err = s.openVolume(id, metadata)
+	volume, err = s.openVolume(ctx, id, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +245,7 @@ func (s *Store) resolveManaged(
 		return nil, fmt.Errorf("derive tool volume identity %s: %w", request.Key, err)
 	}
 
-	volume, err := s.openVolume(id, metadata)
+	volume, err := s.openVolume(ctx, id, metadata)
 	if err == nil {
 		return newManagedHandle(profile, request, volume), nil
 	}
@@ -256,7 +258,7 @@ func (s *Store) resolveManaged(
 	if err := s.publishVolume(ctx, id, metadataData, seed); err != nil {
 		return nil, fmt.Errorf("publish tool volume %s: %w", request.Key, err)
 	}
-	volume, err = s.openVolume(id, metadata)
+	volume, err = s.openVolume(ctx, id, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -308,6 +310,7 @@ func (s *Store) publishVolume(
 }
 
 func (s *Store) openVolume(
+	ctx context.Context,
 	id string,
 	expected volumeMetadata,
 ) (*openedVolume, error) {
@@ -358,28 +361,38 @@ func (s *Store) openVolume(
 		return nil, fmt.Errorf("open volume data: %w", err)
 	}
 
-	lease, err := directory.LockSelf(safefs.LockShared, true)
-	if err != nil {
-		if errors.Is(err, safefs.ErrWouldBlock) {
+	for {
+		lease, err := directory.LockSelf(safefs.LockShared, true)
+		if err == nil {
+			return &openedVolume{
+				data:  directory,
+				lease: lease,
+			}, nil
+		}
+		if !errors.Is(err, safefs.ErrWouldBlock) {
+			s.logger.DebugError(
+				"close volume data directory after lease failed",
+				directory.Close(),
+				"volume_id", id,
+			)
+			return nil, fmt.Errorf("retain volume %q: %w", id, err)
+		}
+
+		timer := time.NewTimer(volumeLockRetry)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			s.logger.DebugError(
 				"close busy volume data directory",
 				directory.Close(),
 				"volume_id", id,
 			)
-			return nil, fmt.Errorf("%w: volume %q", ErrVolumeBusy, id)
+			return nil, ctx.Err()
+		case <-timer.C:
 		}
-		s.logger.DebugError(
-			"close volume data directory after lease failed",
-			directory.Close(),
-			"volume_id", id,
-		)
-		return nil, fmt.Errorf("retain volume %q: %w", id, err)
 	}
-
-	return &openedVolume{
-		data:  directory,
-		lease: lease,
-	}, nil
 }
 
 func (s *Store) validateContext(ctx context.Context) error {

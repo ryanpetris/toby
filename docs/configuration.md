@@ -150,7 +150,8 @@ instructions:
 Entries are host paths or glob patterns. Relative paths resolve from the host
 configuration directory, and a leading `~` expands to the host home. Toby reads
 the matching files before launch and hands their contents to each selected tool
-adapter.
+adapter. A missing file or a glob that matches nothing is skipped with
+`config.instruction-missing`.
 
 Tool adapters write the combined instructions at their native private-home
 paths as ordinary files that Toby replaces on each launch.
@@ -190,10 +191,21 @@ continues without loading that file.
 Registered warning IDs are:
 
 - `agent.binary-version-mismatch`
+- `config.fragment-ignored`
+- `config.instruction-missing`
+- `config.unknown-warning-id`
+- `docker.socket-missing`
+- `mcp.image-unavailable`
+- `mcp.server-invalid`
+- `models.endpoint-unavailable`
+- `permission.auto-deny`
+- `permission.path-invalid`
 - `project.autoload-disabled`
 - `project.duplicate`
 - `project.missing`
-- `permission.auto-deny`
+
+Unknown IDs in `settings.suppressWarnings` are ignored and reported as
+`config.unknown-warning-id`. They do not fail host or launch configuration.
 
 Human-readable diagnostics include the registered ID as
 `warning[<id>]: <message>`. Structured diagnostics also include the same value
@@ -232,7 +244,8 @@ permissions:
 `paths` are passed to supported application adapters. A leading `~` expands to
 the host home while loading host configuration; use sandbox paths when granting
 sandbox access. Toby supplies a default for `/tmp`; a configured rule for that
-path overrides the default. `--yolo` adds `/`.
+path overrides the default. `--yolo` adds `/`. Modes other than `allow` or
+`deny` are skipped with `permission.path-invalid`.
 
 Action rules are `allow`, `deny`, `ask`, or `always-ask`. `always-ask` still
 requires confirmation under `--yolo`. When a prompt cannot be displayed, an
@@ -257,7 +270,9 @@ substitutions. Models are not declared in Toby configuration. During launch,
 Toby asks the agent to query the configured API's models endpoint and writes
 the discovered model map into generated tool configuration. Successful
 discovery is cached by the agent for five minutes per effective models
-resource.
+resource. An endpoint that fails discovery or validation is skipped with
+`models.endpoint-unavailable` so other endpoints can still launch. Header
+`{file:}` substitutions remain fail-closed.
 
 Acquisition validates the HTTP or HTTPS base URL, bounded non-reserved headers,
 and display metadata. This initial validation does not start Caddy or contact
@@ -296,7 +311,9 @@ resources:
 ```
 
 Every key beneath `resources.mcps` names one MCP resource. The name `toby` is
-reserved for the built-in server. A local HTTP resource may set its own
+reserved for the built-in server. An invalid optional server is skipped with
+`mcp.server-invalid`. Substitution failures, the reserved `toby` name, and the
+server-count limit remain fail-closed. A local HTTP resource may set its own
 `idleTimeout`; otherwise it defaults to `10m`.
 
 ### Remote HTTP server
@@ -341,7 +358,9 @@ A local server requires:
 
 `environment` is optional. `HOME` and `TOBY_SANDBOX` are runtime-controlled and
 cannot be configured. A stdio server starts one Bubblewrap sidecar process per
-connector and cannot define `endpoint` or `idleTimeout`.
+connector and cannot define `endpoint` or `idleTimeout`. If a local sidecar
+image cannot be prepared, dependent servers are skipped with
+`mcp.image-unavailable`.
 
 `host` shares the host network namespace and copies the host resolver
 configuration. `private` creates a separate namespace connected by a
@@ -437,8 +456,10 @@ When this exact path is loaded, Toby also reads regular files matching:
 
 Fragments are sorted lexically by filename and deep-merged after the base.
 Nested mappings merge recursively; scalars and sequences are replaced by the
-later source. Empty fragments are no-ops. Every individual source is checked
-for unknown fields and invalid YAML before the merged document is decoded.
+later source. Empty fragments are no-ops. Regular files that do not use a
+`.yaml` extension are skipped with `config.fragment-ignored`. Every loaded
+source is checked for unknown fields and invalid YAML before the merged
+document is decoded.
 
 All relative paths from the base and fragments resolve from `<project>`, not
 from `.toby` or `config.d`.

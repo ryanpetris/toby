@@ -68,7 +68,7 @@ func (a *acquired) ServeConnector(
 	ctx context.Context,
 	conn io.ReadWriteCloser,
 ) {
-	sessionCtx, cancel := mergeContexts(ctx, a.lifetime)
+	sessionCtx, cancel := mcpgateway.MergeContexts(ctx, a.lifetime)
 	defer cancel()
 
 	if err := a.bridge.Serve(
@@ -94,23 +94,4 @@ func (a *acquired) Revoke() {
 func (a *acquired) Release(context.Context) error {
 	a.Revoke()
 	return nil
-}
-
-func mergeContexts(
-	first context.Context,
-	second context.Context,
-) (context.Context, context.CancelFunc) {
-	if first == nil {
-		first = context.Background()
-	}
-	if second == nil {
-		second = context.Background()
-	}
-
-	ctx, cancel := context.WithCancel(first)
-	stop := context.AfterFunc(second, cancel)
-	return ctx, func() {
-		stop()
-		cancel()
-	}
 }

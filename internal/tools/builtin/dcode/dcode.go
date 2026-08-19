@@ -6,8 +6,7 @@ import (
 	"context"
 	"strings"
 
-	appconfig "petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/config/session"
+	sessionconfig "petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/sandbox"
@@ -48,28 +47,19 @@ func provide(params params) result {
 			nil,
 		),
 		sessionConfig: params.SessionConfig,
-		config:        params.Config,
 	}
+	svc.Yolo = kit.YoloFromConfig(params.Config)
 	return result{Service: svc}
 }
 
 type deepAgentsTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
-	config        *appconfig.LaunchHolder
-	yolo          bool
 }
 
 var _ tools.Tool = (*deepAgentsTool)(nil)
 var _ lifecycle.LaunchPreparer = (*deepAgentsTool)(nil)
 var _ toolfiles.Contributor = (*deepAgentsTool)(nil)
-
-func (t *deepAgentsTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	current := t.config.Current()
-	t.yolo = current != nil && current.Settings().YoloEnabled()
-
-	return t.Simple.PrepareHost(ctx, opts)
-}
 
 func (t *deepAgentsTool) ToolFiles(ownership toolfiles.Ownership) ([]toolfiles.File, error) {
 	cfg, err := t.sessionConfig.Config()
@@ -121,7 +111,7 @@ func (t *deepAgentsTool) Launch(ctx context.Context, extra []string) error {
 	if !hasAgentArg(extra) {
 		argv = append(argv, "--agent", "toby")
 	}
-	if t.yolo {
+	if t.YoloEnabled() {
 		argv = append(argv, "-y")
 	}
 	argv = append(argv, extra...)

@@ -80,6 +80,9 @@ func formatForPath(path string) (Format, error) {
 // strict decode surfaces both syntax errors and semantic ones (unknown fields,
 // custom unmarshalers), and double-prefixing them reads poorly.
 func decodeJSON(data []byte, label string, dest any) error {
+	if err := RejectDuplicateFields(data); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	decoder.DisallowUnknownFields()

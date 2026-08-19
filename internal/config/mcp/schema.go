@@ -12,10 +12,6 @@ import (
 	"petris.dev/toby/internal/sandbox/mount"
 )
 
-type blockSchema struct {
-	Servers map[string]*serverSchema `json:"servers" yaml:"servers"`
-}
-
 type serverSchema struct {
 	Type        ServerType        `json:"type" yaml:"type"`
 	Transport   Transport         `json:"transport" yaml:"transport"`
@@ -66,46 +62,6 @@ func (d *durationValue) UnmarshalJSON(data []byte) error {
 	d.Duration = value
 
 	return nil
-}
-
-// build converts the strict decoded shape and applies effective duration
-// defaults without validating fields that may still contain host
-// substitutions.
-func (s blockSchema) build() (Config, error) {
-	config := Config{
-		Servers: make(map[string]Server, len(s.Servers)),
-	}
-
-	for _, name := range sortedNames(s.Servers) {
-		raw := s.Servers[name]
-		if raw == nil {
-			return Config{}, fmt.Errorf(
-				"resources.mcps.%s must be an object",
-				name,
-			)
-		}
-		if raw.IdleTimeout != nil &&
-			raw.IdleTimeout.Duration <= 0 {
-			return Config{}, fmt.Errorf(
-				"resources.mcps.%s.idleTimeout must be positive",
-				name,
-			)
-		}
-
-		server := raw.server()
-		config.Servers[name] = server
-	}
-
-	for name, server := range config.Servers {
-		if server.Type == ServerLocal &&
-			server.Transport == TransportHTTP &&
-			server.IdleTimeout == 0 {
-			server.IdleTimeout = DefaultIdleTimeout
-			config.Servers[name] = server
-		}
-	}
-
-	return config, nil
 }
 
 func (s serverSchema) server() Server {

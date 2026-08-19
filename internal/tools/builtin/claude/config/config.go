@@ -3,8 +3,6 @@
 package config
 
 import (
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -34,7 +32,7 @@ func NativeFiles(
 	if err != nil {
 		return nil, err
 	}
-	settings, err := marshalJSON(syntheticSettings(cfg.Permissions))
+	settings, err := helpers.MarshalJSON(syntheticSettings(cfg.Permissions))
 	if err != nil {
 		return nil, err
 	}
@@ -68,41 +66,11 @@ func NativeFiles(
 }
 
 func renderMCP(servers []sessionconfig.MCPServer) ([]byte, error) {
-	mcp, err := syntheticMCP(servers)
+	mcp, err := helpers.StdioHTTPMCPServers(servers, "Claude")
 	if err != nil {
 		return nil, err
 	}
-	return marshalJSON(mcp)
-}
-
-func syntheticMCP(servers []sessionconfig.MCPServer) (map[string]any, error) {
-	out := map[string]any{}
-	for _, server := range servers {
-		if err := server.Validate(); err != nil {
-			return nil, fmt.Errorf("render Claude MCP server %q: %w", server.Name, err)
-		}
-
-		switch server.Transport {
-		case sessionconfig.MCPTransportStdio:
-			out[server.Name] = map[string]any{
-				"type":    "stdio",
-				"command": server.Command,
-				"args":    append([]string(nil), server.Args...),
-			}
-		case sessionconfig.MCPTransportHTTP:
-			out[server.Name] = map[string]any{
-				"type": "http",
-				"url":  server.URL,
-			}
-		default:
-			return nil, fmt.Errorf(
-				"render Claude MCP server %q: unsupported transport %q",
-				server.Name,
-				server.Transport,
-			)
-		}
-	}
-	return map[string]any{"mcpServers": out}, nil
+	return helpers.MarshalJSON(mcp)
 }
 
 // syntheticSettings renders Claude's permission settings from Toby's shared
@@ -140,12 +108,4 @@ func allowedDirectories(permissions map[string]string) []any {
 		result[i] = dir
 	}
 	return result
-}
-
-func marshalJSON(value any) ([]byte, error) {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(data, '\n'), nil
 }

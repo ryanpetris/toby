@@ -10,20 +10,19 @@ import (
 )
 
 func TestSuppressionFromList(t *testing.T) {
-	all, err := SuppressionFromList([]string{"*"}, "warnings")
-	if err != nil {
-		t.Fatal(err)
+	all, unknown := SuppressionFromList([]string{"*"})
+	if len(unknown) != 0 {
+		t.Fatalf("unknown = %#v", unknown)
 	}
 	if !all.Set || !all.All || !all.Suppresses(ProjectDuplicate) {
 		t.Fatalf("all suppression = %#v", all)
 	}
 
-	ids, err := SuppressionFromList(
+	ids, unknown := SuppressionFromList(
 		[]string{" project.duplicate ", "project.missing"},
-		"warnings",
 	)
-	if err != nil {
-		t.Fatal(err)
+	if len(unknown) != 0 {
+		t.Fatalf("unknown = %#v", unknown)
 	}
 	if !ids.Set || ids.All || !ids.Suppresses(ProjectDuplicate) ||
 		!ids.Suppresses(ProjectMissing) ||
@@ -31,19 +30,25 @@ func TestSuppressionFromList(t *testing.T) {
 		t.Fatalf("id suppression = %#v", ids)
 	}
 
-	empty, err := SuppressionFromList(nil, "warnings")
-	if err != nil {
-		t.Fatal(err)
+	empty, unknown := SuppressionFromList(nil)
+	if len(unknown) != 0 {
+		t.Fatalf("unknown = %#v", unknown)
 	}
 	if !empty.Set || empty.All || empty.Suppresses(ProjectDuplicate) {
 		t.Fatalf("empty suppression = %#v", empty)
 	}
 }
 
-func TestSuppressionFromListRejectsUnknownIDs(t *testing.T) {
-	_, err := SuppressionFromList([]string{"unknown.warning"}, "warnings")
-	if err == nil || !strings.Contains(err.Error(), "warnings[0]: warning id must be one of") {
-		t.Fatalf("err = %v, want unknown-id error", err)
+func TestSuppressionFromListSkipsUnknownIDs(t *testing.T) {
+	suppression, unknown := SuppressionFromList(
+		[]string{"unknown.warning", "project.missing"},
+	)
+	if !reflect.DeepEqual(unknown, []string{"unknown.warning"}) {
+		t.Fatalf("unknown = %#v", unknown)
+	}
+	if !suppression.Suppresses(ProjectMissing) ||
+		suppression.Suppresses(PermissionAutoDeny) {
+		t.Fatalf("suppression = %#v", suppression)
 	}
 }
 
@@ -181,7 +186,8 @@ func TestParseIDTrimsAndRejectsUnknownIDs(t *testing.T) {
 	if id, err := ParseID(" project.autoload-disabled "); err != nil || id != ProjectAutoloadDisabled {
 		t.Fatalf("ParseID = %q, %v", id, err)
 	}
-	if _, err := ParseID("unknown"); err == nil {
-		t.Fatal("expected unknown id to fail")
+	if _, err := ParseID("unknown"); err == nil ||
+		!strings.Contains(err.Error(), `warning id "unknown" is not registered`) {
+		t.Fatalf("ParseID unknown = %v", err)
 	}
 }

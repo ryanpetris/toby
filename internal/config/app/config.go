@@ -25,12 +25,19 @@ const defaultProfile = "default"
 
 var substitutionPattern = regexp.MustCompile(`\{(env|file):([^}]+)\}`)
 
+type pendingWarning struct {
+	id         warning.ID
+	message    string
+	attributes []any
+}
+
 // Service holds the resolved global and launch configuration.
 type Service struct {
-	Dir          string
-	Home         string
-	config       Config
-	rawResources map[string]any
+	Dir             string
+	Home            string
+	config          Config
+	rawResources    map[string]any
+	pendingWarnings []pendingWarning
 }
 
 // Config is the resolved Toby host configuration.
@@ -53,13 +60,14 @@ type SandboxConfig struct {
 
 // SettingsConfig contains effective application settings.
 type SettingsConfig struct {
-	Profile               string
-	SuppressWarnings      warning.Suppression
-	AutoloadProjectConfig *bool
-	AllowExternalProjects *bool
-	Debug                 *bool
-	Yolo                  *bool
-	ManagedTerminal       *bool
+	Profile                 string
+	SuppressWarnings        warning.Suppression
+	AutoloadProjectConfig   *bool
+	AllowExternalProjects   *bool
+	Debug                   *bool
+	Yolo                    *bool
+	ManagedTerminal         *bool
+	UnknownSuppressWarnings []string
 }
 
 // ToolConfig contains host defaults for one registered tool.
@@ -198,7 +206,7 @@ func Load(dir, home string) (*Service, error) {
 	if err := configfile.DecodeInto(merged, &schema); err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Join(dir, "config"), err)
 	}
-	cfg, err := resolve(schema, dir, home)
+	cfg, pending, err := resolve(schema, dir, home)
 	if err != nil {
 		return nil, err
 	}
@@ -206,10 +214,11 @@ func Load(dir, home string) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		Dir:          dir,
-		Home:         home,
-		config:       cfg,
-		rawResources: rawResources,
+		Dir:             dir,
+		Home:            home,
+		config:          cfg,
+		rawResources:    rawResources,
+		pendingWarnings: pending,
 	}, nil
 }
 
@@ -255,31 +264,52 @@ func defaultSandboxConfig() SandboxConfig {
 // resolve turns the decoded schema into a resolved Config: it expands paths and
 // host-side substitutions, parses warning suppression, and clones open
 // passthrough bodies so Config never shares mutable structure with decoded maps.
-func resolve(schema fileSchema, dir, home string) (Config, error) {
+func resolve(schema fileSchema, dir, home string) (Config, []pendingWarning, error) {
 	result := emptyConfig()
 	result.Instructions = append([]string(nil), schema.Instructions...)
+	var pending []pendingWarning
 
 	for pattern, mode := range schema.Permissions.Paths {
+		mode = strings.TrimSpace(mode)
+		if mode != "allow" && mode != "deny" {
+			pending = append(pending, pendingWarning{
+				id: warning.PermissionPathInvalid,
+				message: fmt.Sprintf(
+					"permissions.paths %q has invalid mode %q; skipping it",
+					pattern,
+					mode,
+				),
+				attributes: []any{"path", pattern, "mode", mode},
+			})
+			continue
+		}
 		result.Permissions.Paths[config.ExpandHome(pattern, home)] = mode
 	}
 
 	for action, value := range schema.Permissions.Actions {
 		rule, err := permission.ParseRule(value)
 		if err != nil {
-			return Config{}, fmt.Errorf("permissions.actions.%s: %w", action, err)
+			return Config{}, nil, fmt.Errorf("permissions.actions.%s: %w", action, err)
 		}
 		result.Permissions.Actions[action] = rule
 	}
 
-	settings, err := schema.Settings.resolve()
-	if err != nil {
-		return Config{}, err
-	}
+	settings := schema.Settings.resolve()
 	result.Settings = settings
+	for _, id := range settings.UnknownSuppressWarnings {
+		pending = append(pending, pendingWarning{
+			id: warning.ConfigUnknownWarningID,
+			message: fmt.Sprintf(
+				"settings.suppressWarnings includes unknown id %q; ignoring it",
+				id,
+			),
+			attributes: []any{"configured_id", id},
+		})
+	}
 	for name, raw := range schema.Tools {
 		name = strings.TrimSpace(name)
 		if name == "" {
-			return Config{}, fmt.Errorf("tools key must not be empty")
+			return Config{}, nil, fmt.Errorf("tools key must not be empty")
 		}
 		if raw == nil {
 			continue
@@ -290,31 +320,34 @@ func resolve(schema fileSchema, dir, home string) (Config, error) {
 		}
 	}
 
-	sandbox, err := resolveSandboxSchema(
-		schema.Sandbox,
+	sandbox, err := ResolveSandboxSource(
+		SandboxSource{
+			Image:   schema.Sandbox.Image,
+			Archive: schema.Sandbox.Archive,
+			Build:   sandboxBuildFromSchema(schema.Sandbox.Build),
+			Pull:    schema.Sandbox.Pull,
+		},
 		dir,
 		home,
 		result.Sandbox,
 	)
 	if err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
 	result.Sandbox = sandbox
 
-	return result, nil
+	return result, pending, nil
 }
 
-func (s settingsSchema) resolve() (SettingsConfig, error) {
+func (s settingsSchema) resolve() SettingsConfig {
 	cfg := SettingsConfig{Profile: strings.TrimSpace(s.Profile)}
 	if cfg.Profile == "" {
 		cfg.Profile = defaultProfile
 	}
 	if s.SuppressWarnings != nil {
-		suppression, err := warning.SuppressionFromList(s.SuppressWarnings, "settings.suppressWarnings")
-		if err != nil {
-			return SettingsConfig{}, err
-		}
+		suppression, unknown := warning.SuppressionFromList(s.SuppressWarnings)
 		cfg.SuppressWarnings = suppression
+		cfg.UnknownSuppressWarnings = append([]string(nil), unknown...)
 	}
 	if s.AutoloadProjectConfig != nil {
 		autoload := *s.AutoloadProjectConfig
@@ -336,7 +369,7 @@ func (s settingsSchema) resolve() (SettingsConfig, error) {
 		managed := *s.ManagedTerminal
 		cfg.ManagedTerminal = &managed
 	}
-	return cfg, nil
+	return cfg
 }
 
 // Validate verifies the effective application configuration.
@@ -396,14 +429,41 @@ func (c SandboxConfig) Validate() error {
 	return nil
 }
 
-func resolveSandboxSchema(
-	schema sandboxSchema,
+// SandboxSource is one decoded image, archive, or build selection.
+type SandboxSource struct {
+	Image   string
+	Archive string
+	Build   *SandboxBuild
+	Pull    *image.PullPolicy
+}
+
+// SandboxBuild is one decoded Dockerfile build selection.
+type SandboxBuild struct {
+	Context    string
+	Dockerfile string
+}
+
+func sandboxBuildFromSchema(schema *sandboxBuildSchema) *SandboxBuild {
+	if schema == nil {
+		return nil
+	}
+	return &SandboxBuild{
+		Context:    schema.Context,
+		Dockerfile: schema.Dockerfile,
+	}
+}
+
+// ResolveSandboxSource resolves one image, archive, or build selection relative
+// to dir and home. Empty input returns base unchanged except for an explicit pull
+// override.
+func ResolveSandboxSource(
+	source SandboxSource,
 	dir string,
 	home string,
 	base SandboxConfig,
 ) (SandboxConfig, error) {
-	imageValue := strings.TrimSpace(schema.Image)
-	archiveValue := strings.TrimSpace(schema.Archive)
+	imageValue := strings.TrimSpace(source.Image)
+	archiveValue := strings.TrimSpace(source.Archive)
 	sources := 0
 	if imageValue != "" {
 		sources++
@@ -411,7 +471,7 @@ func resolveSandboxSchema(
 	if archiveValue != "" {
 		sources++
 	}
-	if schema.Build != nil {
+	if source.Build != nil {
 		sources++
 	}
 	if sources > 1 {
@@ -445,8 +505,15 @@ func resolveSandboxSchema(
 			Archive: archivePath,
 			Pull:    image.PullIfMissing,
 		}
-	case schema.Build != nil:
-		build, err := resolveSandboxBuild(*schema.Build, dir, home)
+	case source.Build != nil:
+		build, err := resolveSandboxBuild(
+			sandboxBuildSchema{
+				Context:    source.Build.Context,
+				Dockerfile: source.Build.Dockerfile,
+			},
+			dir,
+			home,
+		)
 		if err != nil {
 			return SandboxConfig{}, err
 		}
@@ -457,8 +524,8 @@ func resolveSandboxSchema(
 		}
 	}
 
-	if schema.Pull != nil {
-		result.Pull = *schema.Pull
+	if source.Pull != nil {
+		result.Pull = *source.Pull
 	}
 
 	return result, nil
@@ -721,18 +788,32 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 		sandbox.Pull = o.Pull
 	}
 	next.config.Sandbox = sandbox
+	next.pendingWarnings = append([]pendingWarning(nil), s.pendingWarnings...)
 
 	return &next
+}
+
+// EmitPendingWarnings reports non-fatal host-configuration issues collected
+// during load.
+func (s *Service) EmitPendingWarnings(warnings *warning.Service) {
+	if s == nil || warnings == nil {
+		return
+	}
+	for _, item := range s.pendingWarnings {
+		warnings.Warn(item.id, item.message, item.attributes...)
+	}
 }
 
 // ResolveInstructions reads configured instruction sources on the host. It does
 // not invent a shared sandbox path: each selected tool writes the contents to
 // its own native instruction path.
-func (s *Service) ResolveInstructions() ([]ResolvedInstruction, error) {
+func (s *Service) ResolveInstructions(
+	warnings *warning.Service,
+) ([]ResolvedInstruction, error) {
 	if s == nil {
 		return nil, nil
 	}
-	hostPaths, err := s.instructionHostPaths()
+	hostPaths, err := s.instructionHostPaths(warnings)
 	if err != nil {
 		return nil, err
 	}
@@ -741,6 +822,10 @@ func (s *Service) ResolveInstructions() ([]ResolvedInstruction, error) {
 	for _, hostPath := range hostPaths {
 		data, err := os.ReadFile(hostPath)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				warnInstructionMissing(warnings, hostPath)
+				continue
+			}
 			return nil, fmt.Errorf(
 				"read instruction file %s: %w",
 				hostPath,
@@ -807,11 +892,13 @@ func readSubstitutionFile(path string, configDirs []string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func (s *Service) instructionHostPaths() ([]string, error) {
+func (s *Service) instructionHostPaths(
+	warnings *warning.Service,
+) ([]string, error) {
 	paths := make([]string, 0, len(s.config.Instructions))
 	seen := map[string]bool{}
 	for _, pattern := range s.config.Instructions {
-		matches, err := s.resolveInstructionPattern(pattern)
+		matches, err := s.resolveInstructionPattern(pattern, warnings)
 		if err != nil {
 			return nil, err
 		}
@@ -826,7 +913,10 @@ func (s *Service) instructionHostPaths() ([]string, error) {
 	return paths, nil
 }
 
-func (s *Service) resolveInstructionPattern(pattern string) ([]string, error) {
+func (s *Service) resolveInstructionPattern(
+	pattern string,
+	warnings *warning.Service,
+) ([]string, error) {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return nil, nil
@@ -840,10 +930,25 @@ func (s *Service) resolveInstructionPattern(pattern string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid instruction pattern %q: %w", pattern, err)
 		}
+		if len(matches) == 0 {
+			warnInstructionMissing(warnings, pattern)
+			return nil, nil
+		}
 		sort.Strings(matches)
 		return cleanInstructionPaths(matches)
 	}
 	return cleanInstructionPaths([]string{path})
+}
+
+func warnInstructionMissing(warnings *warning.Service, source string) {
+	if warnings == nil {
+		return
+	}
+	warnings.Warn(
+		warning.ConfigInstructionMissing,
+		fmt.Sprintf("instruction source %q is missing; skipping it", source),
+		"source", source,
+	)
 }
 
 func cleanInstructionPaths(paths []string) ([]string, error) {

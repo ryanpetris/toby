@@ -4,8 +4,13 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -13,7 +18,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+)
+
+const (
+	pullRetryAttempts = 3
+	pullRetryMin      = 100 * time.Millisecond
 )
 
 func pullImage(
@@ -40,6 +51,40 @@ func pullImage(
 		)
 	}
 
+	delay := pullRetryMin
+	var lastErr error
+	for attempt := 1; attempt <= pullRetryAttempts; attempt++ {
+		err := pullImageOnce(ctx, request, reference, layoutPath, reporter)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryablePullError(err) || attempt == pullRetryAttempts {
+			return err
+		}
+		if removeErr := os.RemoveAll(layoutPath); removeErr != nil &&
+			!errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(err, removeErr)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+	return lastErr
+}
+
+func pullImageOnce(
+	ctx context.Context,
+	request normalizedRequest,
+	reference name.Reference,
+	layoutPath string,
+	reporter ProgressReporter,
+) error {
 	image, err := remote.Image(
 		reference,
 		remote.WithContext(ctx),
@@ -105,6 +150,19 @@ func pullImage(
 	}
 
 	return nil
+}
+
+func retryablePullError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var transportErr *transport.Error
+	if errors.As(err, &transportErr) {
+		return transportErr.StatusCode == http.StatusTooManyRequests ||
+			transportErr.StatusCode >= 500
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 type progressImage struct {

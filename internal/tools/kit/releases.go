@@ -6,14 +6,22 @@ package kit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/version"
+)
+
+const (
+	jsonRetryAttempts = 3
+	jsonRetryMin      = 100 * time.Millisecond
 )
 
 // DiagnosticLogger reports non-fatal release metadata cleanup errors.
@@ -22,8 +30,47 @@ type DiagnosticLogger interface {
 	DebugError(string, error, ...any)
 }
 
+type httpStatusError struct {
+	status  int
+	details string
+}
+
+func (e httpStatusError) Error() string {
+	return fmt.Sprintf("request failed with HTTP %d: %s", e.status, e.details)
+}
+
 // GetJSON retrieves and decodes a JSON document with Toby's user agent.
 func GetJSON(
+	ctx context.Context,
+	client *http.Client,
+	logger DiagnosticLogger,
+	url, accept string,
+	target any,
+) error {
+	delay := jsonRetryMin
+	var lastErr error
+	for attempt := 1; attempt <= jsonRetryAttempts; attempt++ {
+		err := getJSONOnce(ctx, client, logger, url, accept, target)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryableJSONError(err) || attempt == jsonRetryAttempts {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+	return lastErr
+}
+
+func getJSONOnce(
 	ctx context.Context,
 	client *http.Client,
 	logger DiagnosticLogger,
@@ -72,12 +119,25 @@ func GetJSON(
 		if details == "" {
 			details = resp.Status
 		}
-		return fmt.Errorf("request failed with HTTP %d: %s", resp.StatusCode, details)
+		return httpStatusError{status: resp.StatusCode, details: details}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		return err
 	}
 	return nil
+}
+
+func retryableJSONError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var statusErr httpStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.status == http.StatusTooManyRequests ||
+			statusErr.status >= 500
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // GoAssetArch returns the Go release architecture name for the host.

@@ -5,18 +5,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	pathpkg "path"
-	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/diagnostic"
-	"petris.dev/toby/internal/runtimeassets"
-	"petris.dev/toby/internal/sandbox"
-	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/tools"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/kit"
-	"petris.dev/toby/internal/tools/runtimepath"
 )
 
 // Name is this tool's canonical identifier.
@@ -37,81 +30,29 @@ const githubCLIInstallPath = "github_cli/install.sh"
 // provide constructs the tool implementation.
 func provide(params params) result {
 	svc := &githubCLITool{
-		Base:    tools.Base{Metadata: Meta},
-		http:    params.HTTP.Unwrap(),
-		logger:  params.Diagnostics.Logger("tools.github_cli"),
-		sandbox: params.Sandbox,
+		http:   params.HTTP.Unwrap(),
+		logger: params.Diagnostics.Logger("tools.github_cli"),
+	}
+	svc.ScriptInstaller = &kit.ScriptInstaller{
+		Base:           tools.Base{Metadata: Meta},
+		Sandbox:        params.Sandbox,
+		Command:        "gh",
+		InstallRelPath: githubCLIInstallPath,
+		LoadScript: func() ([]byte, error) {
+			return githubCLIFiles.ReadFile("resources/install.sh")
+		},
+		ArchiveURL: svc.archiveURL,
 	}
 	return result{Service: svc}
 }
 
 type githubCLITool struct {
-	tools.Base
-	http    *http.Client
-	logger  *diagnostic.Logger
-	sandbox sandbox.Service
+	*kit.ScriptInstaller
+	http   *http.Client
+	logger *diagnostic.Logger
 }
 
 var _ tools.Tool = (*githubCLITool)(nil)
-var _ runtimeassets.Contributor = (*githubCLITool)(nil)
-
-func (t *githubCLITool) ConfigureSandbox(ctx context.Context) error {
-	return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":")
-}
-
-func (t *githubCLITool) InitSandbox(ctx context.Context) error {
-	return t.Install(ctx, false)
-}
-
-func (t *githubCLITool) RuntimeAssets() ([]runtimeassets.Asset, error) {
-	data, err := githubCLIFiles.ReadFile("resources/install.sh")
-	if err != nil {
-		return nil, err
-	}
-
-	return []runtimeassets.Asset{{
-		Target: pathpkg.Join(layout.Runtime, githubCLIInstallPath),
-		Data:   data,
-		Mode:   0o755,
-	}}, nil
-}
-
-func (t *githubCLITool) Install(ctx context.Context, force bool) error {
-	if !force {
-		exists, err := helpers.CommandExists(
-			ctx,
-			t.sandbox.Exec,
-			sandbox.ExecOptions{
-				HideOutput: true,
-				Status:     "Checking installation",
-			},
-			"gh",
-		)
-		if err != nil || exists {
-			return err
-		}
-	}
-
-	archiveURL, err := t.archiveURL(ctx)
-	if err != nil {
-		return err
-	}
-	installer, err := runtimepath.Resolve(githubCLIInstallPath)
-	if err != nil {
-		return err
-	}
-	_, err = t.sandbox.Exec(
-		ctx,
-		[]string{installer, archiveURL},
-		sandbox.ExecOptions{Status: "Installing"},
-	)
-	return err
-}
-
-func (t *githubCLITool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"gh"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
-}
 
 func (t *githubCLITool) archiveURL(ctx context.Context) (string, error) {
 	arch, err := kit.GoAssetArch("gh")

@@ -22,7 +22,11 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	agentclient "petris.dev/toby/internal/agent/client"
 	"petris.dev/toby/internal/agent/clientresource"
@@ -31,6 +35,7 @@ import (
 	modelsconfig "petris.dev/toby/internal/config/models"
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic"
+	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandboxgateway"
 	"petris.dev/toby/internal/shutdown"
 )
@@ -38,6 +43,9 @@ import (
 const (
 	nativeModelsReleaseTimeout = shutdown.ClientResourceReleaseGrace
 	nativeModelsHeaderTimeout  = 10 * time.Second
+	nativeModelsListTimeout    = 2 * time.Minute
+	nativeModelsListAttempts   = 3
+	nativeModelsListRetryMin   = 100 * time.Millisecond
 	nativeModelsIdleTimeout    = 30 * time.Second
 )
 
@@ -68,6 +76,7 @@ func acquireNativeModelsResources(
 	config *appconfig.Service,
 	models map[string]modelsconfig.Config,
 	logger *diagnostic.Logger,
+	warnings *warning.Service,
 	cleanupContext func() context.Context,
 ) (result *nativeModelsResources, returnErr error) {
 	if ctx == nil {
@@ -148,27 +157,34 @@ func acquireNativeModelsResources(
 		}
 		clientID, err := registry.Acquire(ctx, effective)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"acquire models resource %q: %w",
+			warnModelsEndpoint(
+				warnings,
 				name,
 				err,
 			)
+			continue
 		}
-		items, err := registry.ListModels(ctx, clientID)
+		items, err := listNativeModels(
+			ctx,
+			registry,
+			clientID,
+		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list models resource %q: %w",
+			warnModelsEndpoint(
+				warnings,
 				name,
 				err,
 			)
+			continue
 		}
 		modelDocument, err := nativeModelsDocument(items)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode models resource %q: %w",
+			warnModelsEndpoint(
+				warnings,
 				name,
 				err,
 			)
+			continue
 		}
 		credential, err := newNativeModelsCredential()
 		if err != nil {
@@ -210,6 +226,18 @@ func acquireNativeModelsResources(
 		})
 	}
 
+	if len(endpoints) == 0 {
+		logger.DebugError(
+			"close unused models capability listener",
+			listener.Close(),
+		)
+		logger.DebugError(
+			"close unused models resource registry",
+			closeNativeModelsRegistry(registry, cleanupContext),
+		)
+		return nil, nil
+	}
+
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: nativeModelsHeaderTimeout,
@@ -229,6 +257,89 @@ func acquireNativeModelsResources(
 	go resources.serve()
 
 	return resources, nil
+}
+
+func listNativeModels(
+	ctx context.Context,
+	registry *clientresource.Registry,
+	clientID protocol.ClientResourceID,
+) ([]protocol.ModelsListItemResponse, error) {
+	listCtx, cancel := context.WithTimeout(ctx, nativeModelsListTimeout)
+	defer cancel()
+
+	delay := nativeModelsListRetryMin
+	var lastErr error
+	for attempt := 1; attempt <= nativeModelsListAttempts; attempt++ {
+		items, err := registry.ListModels(listCtx, clientID)
+		if err == nil {
+			return items, nil
+		}
+		lastErr = err
+		if !retryableModelsListError(err) ||
+			attempt == nativeModelsListAttempts {
+			return nil, err
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-listCtx.Done():
+			timer.Stop()
+			return nil, listCtx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+
+	return nil, lastErr
+}
+
+func retryableModelsListError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, io.EOF) {
+		return true
+	}
+	var remote agentclient.RemoteError
+	if errors.As(err, &remote) {
+		return remote.Retryable
+	}
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if st, ok := status.FromError(current); ok {
+			switch st.Code() {
+			case codes.Unavailable,
+				codes.DeadlineExceeded,
+				codes.ResourceExhausted:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func warnModelsEndpoint(
+	warnings *warning.Service,
+	name string,
+	err error,
+) {
+	if warnings == nil || err == nil {
+		return
+	}
+	warnings.WarnError(
+		warning.ModelsEndpointUnavailable,
+		fmt.Sprintf(
+			"models endpoint %q is unavailable; skipping it",
+			name,
+		),
+		err,
+		"models_endpoint", name,
+	)
 }
 
 func nativeModelsDocument(

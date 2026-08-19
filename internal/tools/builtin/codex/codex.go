@@ -5,8 +5,7 @@ package codex
 import (
 	"context"
 
-	appconfig "petris.dev/toby/internal/config/app"
-	"petris.dev/toby/internal/config/session"
+	sessionconfig "petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/toolfiles"
 	"petris.dev/toby/internal/tools"
@@ -30,16 +29,17 @@ var Meta = tools.Metadata{
 
 // provide constructs the tool implementation.
 func provide(params params) result {
+	simple := kit.NewSimple(
+		params.Sandbox,
+		tools.Base{Metadata: Meta},
+		[]string{".codex"},
+		[]string{"npm", "install", "-g", "@openai/codex"},
+		nil,
+	)
+	simple.Yolo = kit.YoloFromConfig(params.Config)
 	svc := &codexTool{
-		Simple: kit.NewSimple(
-			params.Sandbox,
-			tools.Base{Metadata: Meta},
-			[]string{".codex"},
-			[]string{"npm", "install", "-g", "@openai/codex"},
-			nil,
-		),
+		Simple:        simple,
 		sessionConfig: params.SessionConfig,
-		config:        params.Config,
 	}
 	return result{Service: svc}
 }
@@ -47,19 +47,10 @@ func provide(params params) result {
 type codexTool struct {
 	*kit.Simple
 	sessionConfig *sessionconfig.Holder
-	config        *appconfig.LaunchHolder
-	yolo          bool
 }
 
 var _ tools.Tool = (*codexTool)(nil)
 var _ toolfiles.Contributor = (*codexTool)(nil)
-
-func (t *codexTool) PrepareHost(ctx context.Context, opts *tools.Options) error {
-	current := t.config.Current()
-	t.yolo = current != nil && current.Settings().YoloEnabled()
-
-	return t.Simple.PrepareHost(ctx, opts)
-}
 
 func (t *codexTool) ToolFiles(ownership toolfiles.Ownership) ([]toolfiles.File, error) {
 	cfg, err := t.sessionConfig.Config()
@@ -88,7 +79,7 @@ func (t *codexTool) launchArgs(extra []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if t.yolo {
+	if t.YoloEnabled() {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	args = append(args, extra...)

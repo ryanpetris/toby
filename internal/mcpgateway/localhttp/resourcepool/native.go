@@ -303,7 +303,7 @@ func (n *Native) waitReady(
 				return nil
 			}
 			if !retryable {
-				return err
+				return mcpgateway.Permanent(err)
 			}
 			lastErr = err
 		}

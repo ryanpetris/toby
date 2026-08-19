@@ -118,7 +118,7 @@ func (a *acquired) ServeConnector(
 	a.mu.Unlock()
 	defer a.wait.Done()
 
-	sessionCtx, cancel := mergeContexts(ctx, a.lifetime)
+	sessionCtx, cancel := mcpgateway.MergeContexts(ctx, a.lifetime)
 	defer cancel()
 
 	if err := a.launch.Serve(sessionCtx, conn); err != nil &&
@@ -166,24 +166,5 @@ func (a *acquired) Release(ctx context.Context) error {
 		return ctx.Err()
 	case <-a.done:
 		return a.releaseErr
-	}
-}
-
-func mergeContexts(
-	first context.Context,
-	second context.Context,
-) (context.Context, context.CancelFunc) {
-	if first == nil {
-		first = context.Background()
-	}
-	if second == nil {
-		second = context.Background()
-	}
-
-	ctx, cancel := context.WithCancel(first)
-	stop := context.AfterFunc(second, cancel)
-	return ctx, func() {
-		stop()
-		cancel()
 	}
 }

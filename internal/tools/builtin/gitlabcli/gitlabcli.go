@@ -5,18 +5,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	pathpkg "path"
-	"path/filepath"
 	"strings"
 
 	"petris.dev/toby/internal/diagnostic"
-	"petris.dev/toby/internal/runtimeassets"
-	"petris.dev/toby/internal/sandbox"
-	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/tools"
-	"petris.dev/toby/internal/tools/helpers"
 	"petris.dev/toby/internal/tools/kit"
-	"petris.dev/toby/internal/tools/runtimepath"
 )
 
 // Name is this tool's canonical identifier.
@@ -37,81 +30,29 @@ const gitlabCLIInstallPath = "gitlab_cli/install.sh"
 // provide constructs the tool implementation.
 func provide(params params) result {
 	svc := &gitlabCLITool{
-		Base:    tools.Base{Metadata: Meta},
-		http:    params.HTTP.Unwrap(),
-		logger:  params.Diagnostics.Logger("tools.gitlab_cli"),
-		sandbox: params.Sandbox,
+		http:   params.HTTP.Unwrap(),
+		logger: params.Diagnostics.Logger("tools.gitlab_cli"),
+	}
+	svc.ScriptInstaller = &kit.ScriptInstaller{
+		Base:           tools.Base{Metadata: Meta},
+		Sandbox:        params.Sandbox,
+		Command:        "glab",
+		InstallRelPath: gitlabCLIInstallPath,
+		LoadScript: func() ([]byte, error) {
+			return gitlabCLIFiles.ReadFile("resources/install.sh")
+		},
+		ArchiveURL: svc.archiveURL,
 	}
 	return result{Service: svc}
 }
 
 type gitlabCLITool struct {
-	tools.Base
-	http    *http.Client
-	logger  *diagnostic.Logger
-	sandbox sandbox.Service
+	*kit.ScriptInstaller
+	http   *http.Client
+	logger *diagnostic.Logger
 }
 
 var _ tools.Tool = (*gitlabCLITool)(nil)
-var _ runtimeassets.Contributor = (*gitlabCLITool)(nil)
-
-func (t *gitlabCLITool) ConfigureSandbox(ctx context.Context) error {
-	return t.sandbox.AppendEnvironment(ctx, "PATH", filepath.Join(layout.Home, ".local", "bin"), ":")
-}
-
-func (t *gitlabCLITool) InitSandbox(ctx context.Context) error {
-	return t.Install(ctx, false)
-}
-
-func (t *gitlabCLITool) RuntimeAssets() ([]runtimeassets.Asset, error) {
-	data, err := gitlabCLIFiles.ReadFile("resources/install.sh")
-	if err != nil {
-		return nil, err
-	}
-
-	return []runtimeassets.Asset{{
-		Target: pathpkg.Join(layout.Runtime, gitlabCLIInstallPath),
-		Data:   data,
-		Mode:   0o755,
-	}}, nil
-}
-
-func (t *gitlabCLITool) Install(ctx context.Context, force bool) error {
-	if !force {
-		exists, err := helpers.CommandExists(
-			ctx,
-			t.sandbox.Exec,
-			sandbox.ExecOptions{
-				HideOutput: true,
-				Status:     "Checking installation",
-			},
-			"glab",
-		)
-		if err != nil || exists {
-			return err
-		}
-	}
-
-	archiveURL, err := t.archiveURL(ctx)
-	if err != nil {
-		return err
-	}
-	installer, err := runtimepath.Resolve(gitlabCLIInstallPath)
-	if err != nil {
-		return err
-	}
-	_, err = t.sandbox.Exec(
-		ctx,
-		[]string{installer, archiveURL},
-		sandbox.ExecOptions{Status: "Installing"},
-	)
-	return err
-}
-
-func (t *gitlabCLITool) Launch(ctx context.Context, extra []string) error {
-	_, err := t.sandbox.Exec(ctx, append([]string{"glab"}, extra...), sandbox.ExecOptions{Foreground: true})
-	return err
-}
 
 func (t *gitlabCLITool) archiveURL(ctx context.Context) (string, error) {
 	arch, err := kit.GoAssetArch("glab")
