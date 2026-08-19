@@ -16,6 +16,26 @@ import (
 	"petris.dev/toby/internal/tools/fake"
 )
 
+func TestInstallAllowsCodexPackageScripts(t *testing.T) {
+	cdx, sandbox, _ := newTestCodex(t, testConfig(t, false))
+	var got []string
+	sandbox.ExecFunc = func(_ context.Context, argv []string, _ sandboxapi.ExecOptions) (int, error) {
+		if len(argv) != 0 && argv[0] == "which" {
+			return 1, nil
+		}
+		got = append([]string(nil), argv...)
+		return 0, nil
+	}
+
+	if err := cdx.Install(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"npm", "install", "-g", "--allow-scripts=@openai/codex", "@openai/codex"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+}
+
 func TestLaunchAddsTobyConfigOverrides(t *testing.T) {
 	cdx, sandbox, holder := newTestCodex(t, testConfig(t, false))
 	holder.Set(sessionconfig.Config{

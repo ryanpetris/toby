@@ -30,7 +30,7 @@ func provide(params params) result {
 		params.Sandbox,
 		tools.Base{Metadata: Meta},
 		[]string{".copilot"},
-		[]string{"npm", "install", "-g", "@github/copilot"},
+		[]string{"npm", "install", "-g", "--allow-scripts=@github/copilot", "@github/copilot"},
 		nil,
 	)
 	simple.LaunchCommand = "copilot"

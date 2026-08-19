@@ -34,7 +34,7 @@ func provide(params params) result {
 		params.Sandbox,
 		tools.Base{Metadata: Meta},
 		nil,
-		[]string{"npm", "install", "-g", "opencode-ai"},
+		[]string{"npm", "install", "-g", "--allow-scripts=opencode-ai", "opencode-ai"},
 		map[string]string{
 			"OPENCODE_CONFIG_DIR": filepath.Dir(opencodeconfig.NativePriorityConfigPath),
 		},

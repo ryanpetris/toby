@@ -33,7 +33,7 @@ func provide(params params) result {
 		params.Sandbox,
 		tools.Base{Metadata: Meta},
 		[]string{".codex"},
-		[]string{"npm", "install", "-g", "@openai/codex"},
+		[]string{"npm", "install", "-g", "--allow-scripts=@openai/codex", "@openai/codex"},
 		nil,
 	)
 	simple.Yolo = kit.YoloFromConfig(params.Config)

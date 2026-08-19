@@ -36,7 +36,7 @@ func provide(params params) result {
 		params.Sandbox,
 		tools.Base{Metadata: Meta},
 		nil,
-		[]string{"npm", "install", "-g", "t3"},
+		[]string{"npm", "install", "-g", "--allow-scripts=t3", "t3"},
 		map[string]string{"T3CODE_NO_BROWSER": "1"},
 	)
 	simple.InstallCheckCommand = "t3"

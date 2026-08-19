@@ -22,15 +22,15 @@ primary tool is the final foreground child.
 
 | Tool | CLI | Group | Installation |
 | --- | --- | --- | --- |
-| `opencode` | `opencode` | AI | `npm install -g opencode-ai` |
+| `opencode` | `opencode` | AI | `npm install -g --allow-scripts=opencode-ai opencode-ai` |
 | `claude` | `claude` | AI | `npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code` |
-| `codex` | `codex` | AI | `npm install -g @openai/codex` |
-| `copilot` | `copilot` | AI | `npm install -g @github/copilot` |
+| `codex` | `codex` | AI | `npm install -g --allow-scripts=@openai/codex @openai/codex` |
+| `copilot` | `copilot` | AI | `npm install -g --allow-scripts=@github/copilot @github/copilot` |
 | `cursor` | `cursor` | AI | Linux archive from `cursor.com/install` |
 | `dcode` | `dcode` | AI | `uv tool install --prerelease allow deepagents-code` |
 | `grok` | `grok` | AI | Linux archive from `x.ai/cli` |
 | `speckit` | `speckit` | System | `uv tool install` from GitHub Spec Kit |
-| `t3` | `t3` | AI | `npm install -g t3` |
+| `t3` | `t3` | AI | `npm install -g --allow-scripts=t3 t3` |
 | `emdash` | `emdash` | UI | Linux AppImage from GitHub releases |
 | `docker` | `docker` | System | CLI must already exist in the OCI image |
 | `npm` | `npm` | System | Supplied by the OCI image |
@@ -44,7 +44,9 @@ primary tool is the final foreground child.
 
 Most tools install into the private home on first use:
 
-- npm tools use a prefix beneath `/toby/home/.local` and a private-home cache;
+- npm tools use a prefix beneath `/toby/home/.local` and a private-home cache,
+  and pass `--allow-scripts=<package>` for the package they install so that
+  package's lifecycle scripts run under npm's default ignore-scripts policy;
 - uv tools use private-home tool and cache paths;
 - archive installers are embedded scripts mounted transiently beneath
   `/run/toby`; and

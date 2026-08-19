@@ -36,6 +36,10 @@ func TestProvideChecksInstalledT3Binary(t *testing.T) {
 	if svc.InstallCheckCommand != "t3" {
 		t.Fatalf("InstallCheckCommand = %q, want t3", svc.InstallCheckCommand)
 	}
+	want := []string{"npm", "install", "-g", "--allow-scripts=t3", "t3"}
+	if !reflect.DeepEqual(svc.InstallCommand, want) {
+		t.Fatalf("InstallCommand = %#v, want %#v", svc.InstallCommand, want)
+	}
 }
 
 func newTestT3(t *testing.T) (*t3Tool, *fake.Sandbox) {
