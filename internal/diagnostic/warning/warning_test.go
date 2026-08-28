@@ -26,7 +26,7 @@ func TestSuppressionFromList(t *testing.T) {
 	}
 	if !ids.Set || ids.All || !ids.Suppresses(ProjectDuplicate) ||
 		!ids.Suppresses(ProjectMissing) ||
-		ids.Suppresses(PermissionAutoDeny) {
+		ids.Suppresses(PermissionPathInvalid) {
 		t.Fatalf("id suppression = %#v", ids)
 	}
 
@@ -47,7 +47,7 @@ func TestSuppressionFromListSkipsUnknownIDs(t *testing.T) {
 		t.Fatalf("unknown = %#v", unknown)
 	}
 	if !suppression.Suppresses(ProjectMissing) ||
-		suppression.Suppresses(PermissionAutoDeny) {
+		suppression.Suppresses(PermissionPathInvalid) {
 		t.Fatalf("suppression = %#v", suppression)
 	}
 }

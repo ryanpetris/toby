@@ -27,8 +27,6 @@ const (
 	ExecutionNonInteractive ExecutionMode = "noninteractive"
 	// ExecutionDirectTerminal attaches directly to the host terminal.
 	ExecutionDirectTerminal ExecutionMode = "direct_terminal"
-	// ExecutionManagedPTY uses a Toby-managed pseudoterminal.
-	ExecutionManagedPTY ExecutionMode = "managed_pty"
 )
 
 // NetworkMode selects the Bubblewrap network namespace policy.
@@ -289,7 +287,7 @@ func (c Command) validate() error {
 		}
 	}
 	switch c.Mode {
-	case ExecutionNonInteractive, ExecutionDirectTerminal, ExecutionManagedPTY:
+	case ExecutionNonInteractive, ExecutionDirectTerminal:
 	default:
 		return fmt.Errorf("invalid execution mode %q", c.Mode)
 	}

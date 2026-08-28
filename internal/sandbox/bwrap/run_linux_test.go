@@ -106,7 +106,7 @@ func TestRunRetainsExactSourcesSerializesCommandsAndRemovesOverlay(t *testing.T)
 		},
 		{
 			Argv:         []string{"/bin/true"},
-			Mode:         ExecutionManagedPTY,
+			Mode:         ExecutionNonInteractive,
 			Capabilities: CapabilityDropAll,
 		},
 	}

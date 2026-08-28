@@ -71,8 +71,7 @@ func NewToolSandbox(options ToolSandboxOptions) (*ToolSandbox, error) {
 		mode = ExecutionDirectTerminal
 	}
 	if mode != ExecutionNonInteractive &&
-		mode != ExecutionDirectTerminal &&
-		mode != ExecutionManagedPTY {
+		mode != ExecutionDirectTerminal {
 		return nil, fmt.Errorf("invalid foreground execution mode %q", mode)
 	}
 

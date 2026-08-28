@@ -165,9 +165,8 @@ settings:
   allowExternalProjects: false
   debug: false
   yolo: false
-  managedTerminal: true
   suppressWarnings:
-    - permission.auto-deny
+    - permission.path-invalid
 ```
 
 | Key | Behavior |
@@ -177,12 +176,7 @@ settings:
 | `allowExternalProjects` | Allows resolved direct-launch project paths outside `XDG_PROJECTS_DIR`. Relative paths still resolve from `XDG_PROJECTS_DIR`, so `../outside` selects its sibling only when this setting is enabled. Defaults to false. |
 | `debug` | Enables raw, append-only startup output (including normally hidden lifecycle probes) and marks safe session introspection as debug-enabled. |
 | `yolo` | Enables a selected tool's permission-bypass mode and approves actions governed by ordinary `ask` policy. |
-| `managedTerminal` | Lets Toby mediate the foreground PTY and display approval prompts. Defaults to true. |
 | `suppressWarnings` | Registered warning IDs, or `["*"]` for every warning. |
-
-With `managedTerminal: false`, the foreground process uses plain terminal
-passthrough. Actions that require a prompt and are not already allowed are
-denied.
 
 When `<project>/.toby/config.yaml` exists while
 `autoloadProjectConfig` is false, Toby emits `project.autoload-disabled` and
@@ -198,7 +192,6 @@ Registered warning IDs are:
 - `mcp.image-unavailable`
 - `mcp.server-invalid`
 - `models.endpoint-unavailable`
-- `permission.auto-deny`
 - `permission.path-invalid`
 - `project.autoload-disabled`
 - `project.duplicate`
@@ -513,8 +506,7 @@ Launch settings are:
 The launch `profile` selects its home volume and the default tool volumes just
 like the host setting.
 
-`managedTerminal` is a host setting or CLI flag, not a launch-file key.
-`--quiet` is also launch-only and has no configuration key. It suppresses
+`--quiet` is launch-only and has no configuration key. It suppresses
 non-foreground startup output while preserving fatal errors and the
 foreground application's original streams. Effective debug and quiet modes
 are mutually exclusive.

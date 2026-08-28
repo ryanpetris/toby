@@ -341,10 +341,6 @@ func mergeLaunchOverrides(dst *appconfig.LaunchOverrides, src appconfig.LaunchOv
 		yolo := *src.Yolo
 		dst.Yolo = &yolo
 	}
-	if src.ManagedTerminal != nil {
-		managed := *src.ManagedTerminal
-		dst.ManagedTerminal = &managed
-	}
 }
 
 func configuredLaunchExtra(params, extra []string) []string {

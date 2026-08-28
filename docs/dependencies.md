@@ -22,7 +22,6 @@ file and every changed indirect dependency in the Go module cache.
 | github.com/evanphx/json-patch/v5 | v5.9.11 | BSD-3-Clause |
 | github.com/google/go-containerregistry | v0.21.7 | Apache-2.0 |
 | github.com/modelcontextprotocol/go-sdk | v1.2.0 | MIT |
-| github.com/muesli/cancelreader | v0.2.2 | MIT |
 | github.com/opencontainers/go-digest | v1.0.0 | Apache-2.0 |
 | github.com/opencontainers/image-spec | v1.1.1 | Apache-2.0 |
 | github.com/opencontainers/runtime-spec | v1.2.1 | Apache-2.0 |
@@ -65,6 +64,7 @@ file and every changed indirect dependency in the Go module cache.
 | github.com/mattn/go-runewidth | v0.0.23 | MIT |
 | github.com/moby/sys/user | v0.4.0 | Apache-2.0 |
 | github.com/moby/sys/userns | v0.1.0 | Apache-2.0 |
+| github.com/muesli/cancelreader | v0.2.2 | MIT |
 | github.com/pkg/errors | v0.9.1 | BSD-2-Clause |
 | github.com/rivo/uniseg | v0.4.7 | MIT |
 | github.com/rogpeppe/go-internal | v1.14.1 | BSD-3-Clause |

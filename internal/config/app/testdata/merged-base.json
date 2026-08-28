@@ -6,7 +6,7 @@
 		},
 		"settings": {
 			"debug": false,
-			"suppressWarnings": ["permission.auto-deny"]
+			"suppressWarnings": ["permission.path-invalid"]
 		},
 		"permissions": {
 			"paths": {"~/src": "allow"}

@@ -250,15 +250,6 @@ func (e *Executor) executeAttempt(
 			payloadTarget,
 			claimTerminal,
 		)
-	case ExecutionManagedPTY:
-		result.code, result.err = e.executeManagedPTY(
-			ctx,
-			command,
-			streams,
-			attemptInvocation,
-			notifyStarted,
-			retryOutput,
-		)
 	default:
 		result.code = 1
 		result.err = fmt.Errorf(

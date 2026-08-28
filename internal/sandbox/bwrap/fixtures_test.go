@@ -34,9 +34,6 @@ var bwrapSQLiteShellSuffixFixture string
 //go:embed testdata/direct-job-control.sh
 var directJobControlScriptFixture string
 
-//go:embed testdata/managed-job-control.sh
-var managedJobControlScriptFixture string
-
 //go:embed testdata/background-job-control.sh
 var backgroundJobControlScriptFixture string
 

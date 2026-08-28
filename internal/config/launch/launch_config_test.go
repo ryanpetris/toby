@@ -52,7 +52,7 @@ func TestLoadLaunchConfigDefaultsNameAndResolvesProjectPaths(t *testing.T) {
 		t.Fatalf("sandbox config = %#v", cfg.Sandbox)
 	}
 	if !cfg.Settings.SuppressWarnings.Suppresses(warning.ProjectMissing) ||
-		!cfg.Settings.SuppressWarnings.Suppresses(warning.PermissionAutoDeny) {
+		!cfg.Settings.SuppressWarnings.Suppresses(warning.PermissionPathInvalid) {
 		t.Fatalf("suppress warnings = %#v", cfg.Settings.SuppressWarnings)
 	}
 	wantProjects := []tools.ProjectMount{
@@ -209,7 +209,7 @@ func TestBuildConfiguredLaunchResolvesCommandNames(t *testing.T) {
 	if got, want := launch.Overrides.ToolProfiles, map[string]string{"github_cli": "personal"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("tool profiles = %#v, want %#v", got, want)
 	}
-	if !launch.Overrides.SuppressWarnings.Suppresses(warning.PermissionAutoDeny) ||
+	if !launch.Overrides.SuppressWarnings.Suppresses(warning.PermissionPathInvalid) ||
 		launch.Overrides.SuppressWarnings.Suppresses(warning.ProjectMissing) {
 		t.Fatalf("suppress warnings = %#v", launch.Overrides.SuppressWarnings)
 	}
@@ -303,122 +303,6 @@ func TestBuildOverlayConfiguredLaunchKeepsCLIPrimaryAndAddsConfigToolsProjects(t
 	}
 	if !reflect.DeepEqual(launch.Options.Projects, wantProjects) {
 		t.Fatalf("projects = %#v, want %#v", launch.Options.Projects, wantProjects)
-	}
-}
-
-func TestBuildOverlayConfiguredLaunchPreservesManagedTerminalOverride(t *testing.T) {
-	home := t.TempDir()
-	configPath := filepath.Join(home, "project-config.yaml")
-	writeTestFile(t, configPath, []byte(projectNameFixture))
-	registry, err := tools.NewRegistry([]tools.Tool{
-		configTestTool{Base: tools.Base{Metadata: tools.Metadata{Name: "opencode", LaunchHelp: "Launch OpenCode"}}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := config.Paths{
-		Home:        home,
-		ProjectRoot: filepath.Join(home, "Projects"),
-	}
-	primaryProject := tools.ProjectMount{
-		Name:   "app",
-		Source: filepath.Join(paths.ProjectRoot, "app"),
-	}
-
-	tests := []struct {
-		name        string
-		host        bool
-		overrideSet bool
-		override    bool
-		want        bool
-	}{
-		{
-			name:        "explicit true overrides false host",
-			host:        false,
-			overrideSet: true,
-			override:    true,
-			want:        true,
-		},
-		{
-			name:        "explicit false overrides true host",
-			host:        true,
-			overrideSet: true,
-			override:    false,
-			want:        false,
-		},
-		{
-			name: "absent remains absent",
-			host: false,
-			want: false,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			hostValue := "false"
-			if test.host {
-				hostValue = "true"
-			}
-			hostDir := t.TempDir()
-			writeTestFile(
-				t,
-				filepath.Join(hostDir, "config.yaml"),
-				[]byte("settings:\n  managedTerminal: "+hostValue+"\n"),
-			)
-			base, err := appconfig.Load(hostDir, home)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var override *bool
-			if test.overrideSet {
-				value := test.override
-				override = &value
-			}
-			parsed := DirectLaunch{
-				Options: tools.Options{Env: "app"},
-				Overrides: appconfig.LaunchOverrides{
-					ManagedTerminal: override,
-				},
-				RequestedTools: []string{"opencode"},
-			}
-			launch, err := BuildOverlayConfiguredLaunch(
-				Params{Registry: registry, Paths: paths, Config: base},
-				configPath,
-				parsed,
-				"opencode",
-				primaryProject,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if !test.overrideSet {
-				if launch.Overrides.ManagedTerminal != nil {
-					t.Fatalf(
-						"managed terminal override = %v, want nil",
-						*launch.Overrides.ManagedTerminal,
-					)
-				}
-			} else {
-				if launch.Overrides.ManagedTerminal == nil ||
-					*launch.Overrides.ManagedTerminal != test.override {
-					t.Fatalf(
-						"managed terminal override = %#v, want %v",
-						launch.Overrides.ManagedTerminal,
-						test.override,
-					)
-				}
-
-				*override = !test.override
-				if *launch.Overrides.ManagedTerminal != test.override {
-					t.Fatal("managed terminal override retained the source pointer")
-				}
-			}
-
-			if got := base.WithOverrides(launch.Overrides).Settings().ManagedTerminalEnabled(); got != test.want {
-				t.Fatalf("managed terminal enabled = %v, want %v", got, test.want)
-			}
-		})
 	}
 }
 

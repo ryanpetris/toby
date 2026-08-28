@@ -50,7 +50,7 @@ func TestLoadDeepMergesNativeConfiguration(t *testing.T) {
 	if !settings.AllowExternalProjectsEnabled() {
 		t.Fatal("allowExternalProjects was not enabled")
 	}
-	if !settings.SuppressWarnings.Suppresses(warning.PermissionAutoDeny) {
+	if !settings.SuppressWarnings.Suppresses(warning.PermissionPathInvalid) {
 		t.Fatalf("suppression = %#v", settings.SuppressWarnings)
 	}
 	if got := service.PermissionPaths()[filepath.Join(home, "src")]; got != "allow" {

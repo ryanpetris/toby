@@ -46,9 +46,6 @@ var execPrimaryFixture string
 //go:embed testdata/custom-projects.yaml
 var customProjectsFixture string
 
-//go:embed testdata/project-name.yaml
-var projectNameFixture string
-
 //go:embed testdata/secondary-tool-params.yaml
 var secondaryToolParamsFixture string
 

@@ -2,8 +2,8 @@
 
 package bwrap
 
-// Verifies provenance-based output commitment, exact bytes, bounded buffering,
-// and preservation of managed-terminal stream identity.
+// Verifies provenance-based output commitment, exact bytes, and bounded
+// buffering.
 
 import (
 	"bytes"
@@ -86,6 +86,14 @@ func TestPayloadOutputGateOverflowFlushesAndRejectsReplay(t *testing.T) {
 	}
 }
 
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write(data []byte) (int, error) {
+	return 0, w.err
+}
+
 func TestPayloadOutputGateReturnsWriterFailureImmediately(t *testing.T) {
 	sentinel := errors.New("output failed")
 	gate := newPayloadOutputGate()
@@ -124,40 +132,6 @@ func TestPayloadOutputGateReportsCommitFailure(t *testing.T) {
 	}
 }
 
-func TestRetryOutputPreservesManagedTerminalIdentity(t *testing.T) {
-	controller, terminal, err := pty.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer controller.Close()
-	defer terminal.Close()
-
-	output, err := newRetryAttemptOutput(
-		ProcessIO{
-			Stdin:  terminal,
-			Stdout: terminal,
-			Stderr: terminal,
-		},
-		ExecutionManagedPTY,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if output.streams.Stdout != terminal {
-		t.Fatalf(
-			"managed stdout type = %T, want original *os.File",
-			output.streams.Stdout,
-		)
-	}
-	if _, _, interactive := terminalFiles(output.streams); !interactive {
-		t.Fatal("retry-authorized managed streams lost terminal identity")
-	}
-
-	output.abortPreparation()
-	<-output.readyDone
-	output.close()
-}
-
 func TestRetryOutputPassesDirectTerminalStderrToPayload(t *testing.T) {
 	controller, terminal, err := pty.Open()
 	if err != nil {
@@ -166,10 +140,7 @@ func TestRetryOutputPassesDirectTerminalStderrToPayload(t *testing.T) {
 	defer controller.Close()
 	defer terminal.Close()
 
-	output, err := newRetryAttemptOutput(
-		ProcessIO{Stderr: terminal},
-		ExecutionDirectTerminal,
-	)
+	output, err := newRetryAttemptOutput(ProcessIO{Stderr: terminal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,29 +188,6 @@ func TestRetryOutputPassesDirectTerminalStderrToPayload(t *testing.T) {
 	}
 	<-output.readyDone
 	output.close()
-}
-
-func TestManagedRetryOutputFlushesAfterTerminalForegroundCloses(t *testing.T) {
-	var output bytes.Buffer
-	sink := managedForegroundOutput{
-		foreground: &terminalForeground{closed: true},
-		fallback:   &output,
-	}
-	gate := newPayloadOutputGate()
-	if err := gate.attach(sink); err != nil {
-		t.Fatal(err)
-	}
-
-	diagnostic := []byte("bwrap: final overlay failure\n")
-	if _, err := gate.Write(diagnostic); err != nil {
-		t.Fatal(err)
-	}
-	if err := gate.finish(true); err != nil {
-		t.Fatal(err)
-	}
-	if got := output.Bytes(); !bytes.Equal(got, diagnostic) {
-		t.Fatalf("final diagnostic = %q, want %q", got, diagnostic)
-	}
 }
 
 func TestPayloadOutputGateShortWriteFails(t *testing.T) {

@@ -23,7 +23,6 @@ const (
 
 type retryAttemptOutput struct {
 	streams ProcessIO
-	mode    ExecutionMode
 	gate    *payloadOutputGate
 
 	readyReader   *os.File
@@ -35,10 +34,7 @@ type retryAttemptOutput struct {
 	readyErr      error
 }
 
-func newRetryAttemptOutput(
-	streams ProcessIO,
-	mode ExecutionMode,
-) (*retryAttemptOutput, error) {
+func newRetryAttemptOutput(streams ProcessIO) (*retryAttemptOutput, error) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create payload-ready pipe: %w", err)
@@ -46,29 +42,26 @@ func newRetryAttemptOutput(
 
 	output := &retryAttemptOutput{
 		streams:     streams,
-		mode:        mode,
 		gate:        newPayloadOutputGate(),
 		readyReader: reader,
 		readyWriter: writer,
 		readyDone:   make(chan struct{}),
 	}
-	if mode != ExecutionManagedPTY {
-		if err := output.gate.attach(streams.Stderr); err != nil {
+	if err := output.gate.attach(streams.Stderr); err != nil {
+		output.close()
+		return nil, err
+	}
+	if stderr, ok := streams.Stderr.(*os.File); ok && stderr != nil {
+		output.payloadStderr, err = duplicateDescriptor(
+			stderr,
+			"payload stderr",
+		)
+		if err != nil {
 			output.close()
 			return nil, err
 		}
-		if stderr, ok := streams.Stderr.(*os.File); ok && stderr != nil {
-			output.payloadStderr, err = duplicateDescriptor(
-				stderr,
-				"payload stderr",
-			)
-			if err != nil {
-				output.close()
-				return nil, err
-			}
-		}
-		output.streams.Stderr = output.gate
 	}
+	output.streams.Stderr = output.gate
 	output.watching = true
 	go output.watchReady()
 
@@ -152,22 +145,6 @@ func (o *retryAttemptOutput) abortPreparation() {
 		)
 		o.payloadStderr = nil
 	}
-}
-
-func (o *retryAttemptOutput) attachManagedSink(output io.Writer) error {
-	if o == nil || o.mode != ExecutionManagedPTY {
-		return nil
-	}
-
-	return o.gate.attach(output)
-}
-
-func (o *retryAttemptOutput) failures() <-chan error {
-	if o == nil || o.gate == nil {
-		return nil
-	}
-
-	return o.gate.failures
 }
 
 func (o *retryAttemptOutput) canRetry() bool {

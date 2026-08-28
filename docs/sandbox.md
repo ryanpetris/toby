@@ -147,24 +147,13 @@ synthetic credential.
 
 Toby supports:
 
-- noninteractive stdin/stdout/stderr pipes;
-- direct terminal ownership; and
-- a managed PTY that preserves normal job-control behavior while Toby presents
-  approval prompts.
-
-Managed terminal mode is enabled by default. Set
-`settings.managedTerminal: false` or pass `--managed-terminal=false` for a
-plain passthrough. Without a managed terminal, an operation that needs a prompt
-and is not already allowed is denied.
+- noninteractive stdin/stdout/stderr pipes; and
+- direct terminal ownership, used whenever stdin is a terminal.
 
 Inside a Herdr pane (detected through the `HERDR_PANE_ID` environment
 variable), direct-terminal launches hand the terminal foreground process group
 to the application itself, so Herdr's foreground-process detection identifies
-the launched tool rather than Toby's supervisor chain. Because Herdr
-classifies the pane by the terminal the CLI owns, this needs direct terminal
-ownership: with yolo enabled the approval modal is unused and Herdr detection
-selects direct-terminal mode automatically; without yolo the managed terminal
-takes precedence and pane detection sees Toby. Suspend, resume, signal
+the launched tool rather than Toby's supervisor chain. Suspend, resume, signal
 forwarding, and terminal restoration follow the claimed application group.
 
 The invoking CLI owns foreground bytes and signals. The agent is not in the

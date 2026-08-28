@@ -4,35 +4,31 @@
 // passes it in, so nothing here needs to know which actions exist.
 package permission
 
-// Resolve applies the policy precedence and returns the decision, or signals that the
-// caller must prompt the user (mustAsk). When mustAsk is true the returned decision is
-// meaningless. rule is the configured rule for the action (RuleUnset when nothing is
-// configured); defaultRule is the caller's default, used only when nothing is
-// configured. canAsk reports whether a prompt is possible at all (an interactive
-// terminal with approvals enabled); when it is false an ask becomes a deny.
+// Resolve applies the policy precedence and returns the decision. rule is the
+// configured rule for the action (RuleUnset when nothing is configured);
+// defaultRule is the caller's default, used only when nothing is configured.
 //
 // Precedence:
 //
 //  1. an explicit deny rule always wins, even under yolo;
-//  2. an explicit always-ask rule prompts, even under yolo;
+//  2. an explicit always-ask rule denies, even under yolo;
 //  3. yolo approves everything else;
 //  4. an explicit allow rule;
 //  5. an explicit ask rule, otherwise the caller's default;
-//  6. an ask outcome (and an unspecified default) becomes a prompt when canAsk,
-//     otherwise a deny.
+//  6. an ask outcome (and an unspecified default) becomes a deny.
 //
 // always-ask overrides yolo only as an explicit config rule; a caller default of
 // always-ask does not, since yolo is the user's own override.
-func Resolve(rule, defaultRule Rule, yolo, canAsk bool) (decision Decision, mustAsk bool) {
+func Resolve(rule, defaultRule Rule, yolo bool) Decision {
 	switch {
 	case rule == RuleDeny:
-		return Deny, false
+		return Deny
 	case rule == RuleAlwaysAsk:
-		return ask(canAsk)
+		return Deny
 	case yolo:
-		return Allow, false
+		return Allow
 	case rule == RuleAllow:
-		return Allow, false
+		return Allow
 	}
 
 	if rule == RuleUnset {
@@ -41,18 +37,10 @@ func Resolve(rule, defaultRule Rule, yolo, canAsk bool) (decision Decision, must
 
 	switch rule {
 	case RuleAllow:
-		return Allow, false
+		return Allow
 	case RuleDeny:
-		return Deny, false
+		return Deny
 	default: // RuleAsk, RuleAlwaysAsk as a default, or an unspecified default
-		return ask(canAsk)
+		return Deny
 	}
-}
-
-// ask returns a prompt outcome when prompting is possible, otherwise a deny.
-func ask(canAsk bool) (Decision, bool) {
-	if canAsk {
-		return Deny, true
-	}
-	return Deny, false
 }

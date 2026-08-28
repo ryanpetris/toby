@@ -66,7 +66,6 @@ type SettingsConfig struct {
 	AllowExternalProjects   *bool
 	Debug                   *bool
 	Yolo                    *bool
-	ManagedTerminal         *bool
 	UnknownSuppressWarnings []string
 }
 
@@ -126,7 +125,6 @@ type settingsSchema struct {
 	AllowExternalProjects *bool    `json:"allowExternalProjects" yaml:"allowExternalProjects"`
 	Debug                 *bool    `json:"debug" yaml:"debug"`
 	Yolo                  *bool    `json:"yolo" yaml:"yolo"`
-	ManagedTerminal       *bool    `json:"managedTerminal" yaml:"managedTerminal"`
 }
 
 type toolSchema struct {
@@ -365,10 +363,6 @@ func (s settingsSchema) resolve() SettingsConfig {
 		yolo := *s.Yolo
 		cfg.Yolo = &yolo
 	}
-	if s.ManagedTerminal != nil {
-		managed := *s.ManagedTerminal
-		cfg.ManagedTerminal = &managed
-	}
 	return cfg
 }
 
@@ -606,15 +600,6 @@ func (c SettingsConfig) YoloEnabled() bool {
 	return c.Yolo != nil && *c.Yolo
 }
 
-// ManagedTerminalEnabled reports whether Toby interposes its managed terminal for the
-// interactive foreground tool (raw-passthrough shadow plus the approval modal). It
-// defaults to on; only an explicit `settings.managedTerminal: false` (or
-// --managed-terminal=false) turns it off, falling back to a plain passthrough — which
-// means approval prompts cannot be shown, so anything not explicitly allowed is denied.
-func (c SettingsConfig) ManagedTerminalEnabled() bool {
-	return c.ManagedTerminal == nil || *c.ManagedTerminal
-}
-
 func (s *Service) resolutionContext() ([]string, string) {
 	configDirs := []string{}
 	if s != nil && s.Dir != "" {
@@ -725,7 +710,6 @@ type LaunchOverrides struct {
 	Pull             image.PullPolicy
 	Debug            *bool
 	Yolo             *bool
-	ManagedTerminal  *bool
 	SuppressWarnings warning.Suppression
 }
 
@@ -751,10 +735,6 @@ func (s *Service) WithOverrides(o LaunchOverrides) *Service {
 	if o.Yolo != nil {
 		yolo := *o.Yolo
 		settings.Yolo = &yolo
-	}
-	if o.ManagedTerminal != nil {
-		managed := *o.ManagedTerminal
-		settings.ManagedTerminal = &managed
 	}
 	next.config.Settings = settings
 

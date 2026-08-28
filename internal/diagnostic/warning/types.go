@@ -19,8 +19,6 @@ const (
 	ProjectDuplicate ID = "project.duplicate"
 	// ProjectMissing warns that a configured project path is absent.
 	ProjectMissing ID = "project.missing"
-	// PermissionAutoDeny warns that a permission request was denied automatically.
-	PermissionAutoDeny ID = "permission.auto-deny"
 	// PermissionPathInvalid warns that a permission path mode is not allow or deny.
 	PermissionPathInvalid ID = "permission.path-invalid"
 	// AgentBinaryMismatch warns that the client and agent builds differ.
@@ -50,7 +48,6 @@ var registeredIDs = []ID{
 	MCPImageUnavailable,
 	MCPServerInvalid,
 	ModelsEndpointUnavailable,
-	PermissionAutoDeny,
 	PermissionPathInvalid,
 	ProjectAutoloadDisabled,
 	ProjectDuplicate,

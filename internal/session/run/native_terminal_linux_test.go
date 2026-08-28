@@ -2,12 +2,10 @@
 
 package run
 
-// Verifies native foreground mode selection preserves the caller's terminal
-// stream topology.
+// Verifies native foreground mode selection.
 
 import (
 	"io"
-	"os"
 	"strings"
 	"testing"
 
@@ -16,7 +14,7 @@ import (
 	"petris.dev/toby/internal/sandbox/bwrap"
 )
 
-func TestNativeForegroundModePreservesRedirectedStreams(t *testing.T) {
+func TestNativeForegroundModeSelectsByTerminalInput(t *testing.T) {
 	master, terminal, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
@@ -30,102 +28,24 @@ func TestNativeForegroundModePreservesRedirectedStreams(t *testing.T) {
 		}
 	})
 
-	output, err := os.OpenFile(terminal.Name(), os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := output.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	errorOutput, err := os.OpenFile(terminal.Name(), os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := errorOutput.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-
-	otherMaster, otherTerminal, err := pty.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := otherMaster.Close(); err != nil {
-			t.Error(err)
-		}
-		if err := otherTerminal.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-
 	for _, test := range []struct {
-		name    string
-		managed bool
-		stdin   io.Reader
-		stdout  io.Writer
-		stderr  io.Writer
-		want    bwrap.ExecutionMode
+		name  string
+		stdin io.Reader
+		want  bwrap.ExecutionMode
 	}{
 		{
-			name:    "managed-single-terminal",
-			managed: true,
-			stdin:   terminal,
-			stdout:  output,
-			stderr:  errorOutput,
-			want:    bwrap.ExecutionManagedPTY,
+			name:  "terminal-input",
+			stdin: terminal,
+			want:  bwrap.ExecutionDirectTerminal,
 		},
 		{
-			name:    "managed-redirected-stdout",
-			managed: true,
-			stdin:   terminal,
-			stdout:  io.Discard,
-			stderr:  errorOutput,
-			want:    bwrap.ExecutionDirectTerminal,
-		},
-		{
-			name:    "managed-redirected-stderr",
-			managed: true,
-			stdin:   terminal,
-			stdout:  output,
-			stderr:  io.Discard,
-			want:    bwrap.ExecutionDirectTerminal,
-		},
-		{
-			name:    "managed-distinct-output-terminal",
-			managed: true,
-			stdin:   terminal,
-			stdout:  output,
-			stderr:  otherTerminal,
-			want:    bwrap.ExecutionDirectTerminal,
-		},
-		{
-			name:    "managed-without-terminal-input",
-			managed: true,
-			stdin:   strings.NewReader("input"),
-			stdout:  output,
-			stderr:  errorOutput,
-			want:    bwrap.ExecutionNonInteractive,
-		},
-		{
-			name:    "unmanaged-terminal",
-			managed: false,
-			stdin:   terminal,
-			stdout:  output,
-			stderr:  errorOutput,
-			want:    bwrap.ExecutionDirectTerminal,
+			name:  "redirected-input",
+			stdin: strings.NewReader("input"),
+			want:  bwrap.ExecutionNonInteractive,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := nativeForegroundMode(
-				test.managed,
-				test.stdin,
-				test.stdout,
-				test.stderr,
-			)
+			got := nativeForegroundMode(test.stdin)
 			if got != test.want {
 				t.Fatalf("mode = %q, want %q", got, test.want)
 			}

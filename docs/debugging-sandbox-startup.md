@@ -552,21 +552,8 @@ URLs, headers, and redirect locations.
 
 ## Diagnose foreground terminal behavior
 
-Managed terminal mode is enabled by default. If a terminal application behaves
-differently, compare:
-
-```sh
-toby --managed-terminal=false exec my-app -- your-command
-```
-
-The plain mode removes Toby's approval UI. Any action requiring a prompt and
-not explicitly allowed is then denied; Toby emits
-`permission.auto-deny` when applicable.
-
-Managed-PTY mode is selected only when stdin, stdout, and stderr refer to the
-same terminal. Terminal stdin combined with redirected output, or
-`--managed-terminal=false`, selects direct-terminal mode so stdout and stderr
-remain independently redirected.
+Direct-terminal mode is selected whenever stdin is a terminal; stdout and
+stderr remain independently redirected.
 
 Noninteractive and background Bubblewrap children detach from any controlling
 terminal. If their configured stdin is a terminal, Toby replaces it with

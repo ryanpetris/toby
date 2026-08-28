@@ -25,7 +25,7 @@ func TestToolSandboxCollectsNativeDeclarations(t *testing.T) {
 	project := validPlan().Projects[0]
 	sandbox, err := NewToolSandbox(ToolSandboxOptions{
 		Projects:       []Project{project},
-		ForegroundMode: ExecutionManagedPTY,
+		ForegroundMode: ExecutionDirectTerminal,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestToolSandboxRunsLifecycleAndForegroundThroughAttachedRun(
 		ForegroundStreams: ProcessIO{
 			Stdout: &foregroundOutput,
 		},
-		ForegroundMode: ExecutionManagedPTY,
+		ForegroundMode: ExecutionDirectTerminal,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestToolSandboxRunsLifecycleAndForegroundThroughAttachedRun(
 	defer executor.mu.Unlock()
 	if got, want := executor.modes, []ExecutionMode{
 		ExecutionNonInteractive,
-		ExecutionManagedPTY,
+		ExecutionDirectTerminal,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("execution modes = %q, want %q", got, want)
 	}
@@ -247,7 +247,7 @@ func TestToolSandboxControlsHiddenLifecycleOutputWithoutChangingForeground(
 				ForegroundStreams: ProcessIO{
 					Stdout: &foregroundOutput,
 				},
-				ForegroundMode:     ExecutionManagedPTY,
+				ForegroundMode:     ExecutionDirectTerminal,
 				RevealHiddenOutput: reveal,
 			})
 			if err != nil {

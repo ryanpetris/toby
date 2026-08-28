@@ -48,9 +48,7 @@ func isAgentSubcommandInvocation(
 	arguments []string,
 	subcommandName string,
 ) bool {
-	flags := rootFlagValues{
-		managedTerminal: true,
-	}
+	flags := rootFlagValues{}
 	root := &cobra.Command{
 		Use:              "toby",
 		Version:          version.String(),

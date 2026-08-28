@@ -17,9 +17,7 @@ import (
 
 	"golang.org/x/term"
 
-	appconfig "petris.dev/toby/internal/config/app"
 	"petris.dev/toby/internal/diagnostic/exitcode"
-	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/sandbox/bwrap"
 	"petris.dev/toby/internal/sandbox/layout"
 	"petris.dev/toby/internal/sandbox/mount"
@@ -177,28 +175,10 @@ func (r *NativeRunner) prepareNativeLaunchStorage(
 	return result, nil
 }
 
-func nativeForegroundMode(
-	managed bool,
-	stdin io.Reader,
-	stdout io.Writer,
-	stderr io.Writer,
-) bwrap.ExecutionMode {
+func nativeForegroundMode(stdin io.Reader) bwrap.ExecutionMode {
 	input, ok := stdin.(*os.File)
 	if !ok || input == nil || !term.IsTerminal(int(input.Fd())) {
 		return bwrap.ExecutionNonInteractive
-	}
-
-	output, outputTerminal := stdout.(*os.File)
-	errorOutput, errorTerminal := stderr.(*os.File)
-	if managed &&
-		outputTerminal &&
-		output != nil &&
-		errorTerminal &&
-		errorOutput != nil &&
-		term.IsTerminal(int(output.Fd())) &&
-		term.IsTerminal(int(errorOutput.Fd())) &&
-		sameNativeTerminal(input, output, errorOutput) {
-		return bwrap.ExecutionManagedPTY
 	}
 
 	return bwrap.ExecutionDirectTerminal
@@ -219,49 +199,6 @@ func nativeTerminalType(mode bwrap.ExecutionMode) string {
 // the Bubblewrap supervisor chain.
 func nativePayloadClaimsTerminal(environment func(string) string) bool {
 	return environment("HERDR_PANE_ID") != ""
-}
-
-func sameNativeTerminal(files ...*os.File) bool {
-	if len(files) < 2 {
-		return true
-	}
-
-	first, err := files[0].Stat()
-	if err != nil {
-		return false
-	}
-	for _, file := range files[1:] {
-		current, err := file.Stat()
-		if err != nil || !os.SameFile(first, current) {
-			return false
-		}
-	}
-	return true
-}
-
-func warnIfNativeAutoDeny(
-	warnings *warning.Service,
-	config *appconfig.Service,
-	mode bwrap.ExecutionMode,
-) {
-	settings := config.Settings()
-	if settings.YoloEnabled() || mode == bwrap.ExecutionManagedPTY {
-		return
-	}
-
-	reason := "unavailable unless stdin, stdout, and stderr share one terminal"
-	if !settings.ManagedTerminalEnabled() {
-		reason = "off (settings.managedTerminal is false)"
-	}
-	warnings.Warn(
-		warning.PermissionAutoDeny,
-		fmt.Sprintf(
-			"approval prompts are %s; actions that are not explicitly allowed will be denied",
-			reason,
-		),
-		"reason", reason,
-		"managed_terminal", settings.ManagedTerminalEnabled(),
-	)
 }
 
 func resolveNativeWorkdir(

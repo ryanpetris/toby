@@ -13,7 +13,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/google/go-containerregistry v0.21.7
 	github.com/modelcontextprotocol/go-sdk v1.2.0
-	github.com/muesli/cancelreader v0.2.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.2.1
@@ -54,6 +53,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
+	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect

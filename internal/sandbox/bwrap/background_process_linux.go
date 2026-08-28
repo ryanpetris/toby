@@ -401,11 +401,6 @@ func validateBackgroundInvocation(
 			ExecutionNonInteractive,
 		)
 	}
-	if streams.RegisterPrompter != nil {
-		return fmt.Errorf(
-			"background Bubblewrap must not register an approval prompter",
-		)
-	}
 	if err := validateBackgroundStream("stdin", streams.Stdin); err != nil {
 		return err
 	}

@@ -117,7 +117,7 @@ func TestBubblewrapVerticalSliceUsesNativeStateAndSequentialOverlay(
 			strconv.Itoa(fixture.execFD),
 			strconv.Itoa(fixture.statusFD),
 		},
-		Mode:         ExecutionManagedPTY,
+		Mode:         ExecutionNonInteractive,
 		Capabilities: CapabilityDropAll,
 	}
 	started := time.Now()

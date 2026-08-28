@@ -21,8 +21,6 @@ import (
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
-
-	sandboxapi "petris.dev/toby/internal/sandbox"
 )
 
 type blockingBackgroundReader struct {
@@ -114,7 +112,7 @@ func TestStartBackgroundRequiresFixedNoninteractivePolicy(t *testing.T) {
 			name: "interactive",
 			invocation: &Invocation{
 				Args: backgroundTestArgs("sleep", "30"),
-				Mode: ExecutionManagedPTY,
+				Mode: ExecutionDirectTerminal,
 			},
 		},
 		{
@@ -131,16 +129,6 @@ func TestStartBackgroundRequiresFixedNoninteractivePolicy(t *testing.T) {
 					"sleep", "30",
 				},
 				Mode: ExecutionNonInteractive,
-			},
-		},
-		{
-			name: "approval prompter",
-			invocation: &Invocation{
-				Args: backgroundTestArgs("sleep", "30"),
-				Mode: ExecutionNonInteractive,
-			},
-			streams: ProcessIO{
-				RegisterPrompter: func(sandboxapi.ApprovalPrompter) {},
 			},
 		},
 		{

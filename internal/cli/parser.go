@@ -82,7 +82,6 @@ func parseLaunchCommand(cmd *cobra.Command, args []string, primary string, conte
 	}
 	applyDebugFlag(cmd, &result.Overrides)
 	applyYoloFlag(cmd, &result.Overrides)
-	applyManagedTerminalFlag(cmd, &result.Overrides)
 	for _, item := range contextTools {
 		if item.Name() == primary {
 			continue
@@ -121,17 +120,6 @@ func applyYoloFlag(cmd *cobra.Command, overrides *appconfig.LaunchOverrides) {
 		return
 	}
 	overrides.Yolo = &yolo
-}
-
-func applyManagedTerminalFlag(cmd *cobra.Command, overrides *appconfig.LaunchOverrides) {
-	if cmd == nil || overrides == nil || !flagChanged(cmd, "managed-terminal") {
-		return
-	}
-	managed, err := cmd.Flags().GetBool("managed-terminal")
-	if err != nil {
-		return
-	}
-	overrides.ManagedTerminal = &managed
 }
 
 func launchCommandArgs(args []string, argsLenAtDash int) (string, []string, error) {

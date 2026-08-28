@@ -41,9 +41,7 @@ func NewRootCommand(params Params) *cobra.Command {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	flags := rootFlagValues{
-		managedTerminal: true,
-	}
+	flags := rootFlagValues{}
 	cmd := &cobra.Command{
 		Use:              "toby",
 		Short:            "Run Toby Sandbox development environments.",
@@ -80,7 +78,6 @@ func NewRootCommand(params Params) *cobra.Command {
 			}
 			applyDebugFlag(cmd, &launch.Overrides)
 			applyYoloFlag(cmd, &launch.Overrides)
-			applyManagedTerminalFlag(cmd, &launch.Overrides)
 			launch.Options.Quiet = flags.quiet
 			return runSession(cmd.Context(), params, &launch.Options, launch.Overrides, launch.Extra, launch.RequestedTools, launch.Primary)
 		},
@@ -130,11 +127,10 @@ func NewRootCommand(params Params) *cobra.Command {
 }
 
 type rootFlagValues struct {
-	configPath      string
-	debug           bool
-	quiet           bool
-	yolo            bool
-	managedTerminal bool
+	configPath string
+	debug      bool
+	quiet      bool
+	yolo       bool
 }
 
 func addRootPersistentFlags(
@@ -164,12 +160,6 @@ func addRootPersistentFlags(
 		"yolo",
 		false,
 		"Launch the tool with its permission-bypass flag for this launch.",
-	)
-	cmd.PersistentFlags().BoolVar(
-		&values.managedTerminal,
-		"managed-terminal",
-		true,
-		"Run the foreground tool under Toby's managed terminal (approval prompts); --managed-terminal=false uses a plain passthrough.",
 	)
 }
 

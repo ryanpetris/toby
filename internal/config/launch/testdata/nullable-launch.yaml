@@ -7,7 +7,7 @@ settings:
   debug: false
   yolo: true
   suppressWarnings:
-    - permission.auto-deny
+    - permission.path-invalid
 tools:
   gh:
     primary: true

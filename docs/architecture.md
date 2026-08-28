@@ -60,8 +60,8 @@ only narrower, revocable capabilities created for its run.
 
 Startup presentation is launch-owned and is separate from application I/O.
 The foreground process always receives the original stdin, stdout, and stderr
-objects so terminal detection, raw mode, resizing, job control, signals, and
-approval prompts do not depend on the presentation mode.
+objects so terminal detection, raw mode, resizing, job control, and signals do
+not depend on the presentation mode.
 
 Startup operations form a presentation hierarchy. A tool lifecycle action owns
 a display-name scope and is the parent of its direct Bubblewrap commands. The
@@ -82,8 +82,8 @@ The invoking `toby` process owns:
 - exact opened filesystem capabilities used to render Bubblewrap arguments;
 - the run's writable overlay;
 - lifecycle and foreground Bubblewrap children;
-- terminal stdin, stdout, stderr, signal forwarding, and managed-PTY state;
-- host Git execution and interactive approval authority; and
+- terminal stdin, stdout, stderr, and signal forwarding;
+- host Git execution and approval authority; and
 - the agent session, resource-lease translations, sandbox resource
   socket, and models loopback capability for that launch.
 
@@ -550,8 +550,7 @@ values are carried in a bounded sealed descriptor through Bubblewrap's `--args`
 support, keeping secret values out of observable process arguments. The
 sidecar command follows Bubblewrap's `--` separator in the process arguments.
 
-The executor selects among noninteractive, direct-terminal, and managed-PTY
-modes. Noninteractive and background children start in a new session so they
+The executor selects between noninteractive and direct-terminal modes. Noninteractive and background children start in a new session so they
 cannot inherit a controlling terminal. A terminal supplied as stdin is replaced
 with `/dev/null` for those commands, while explicit file or pipe input remains
 connected.
@@ -619,18 +618,10 @@ job-control stops of the claimed group through procfs, coordinates suspend
 and resume for it with `PIDFD_SIGNAL_PROCESS_GROUP` continuation, mirrors
 graceful termination to the claimed group, and restores the terminal
 foreground from either the Bubblewrap group or the claimed payload group when
-the command ends. Because the managed terminal attaches the application to a
-separate Toby-owned PTY session, Herdr detection with yolo active selects
-direct-terminal mode; without yolo the managed terminal and its approval
-modal take precedence.
+the command ends.
 
-Managed-PTY mode is used only when it is enabled and stdin, stdout, and stderr
-are the same terminal. It preserves terminal job-control semantics while
-allowing Toby to display approval prompts. If terminal stdin is present but an
-output stream is redirected, or managed-terminal mode is disabled, Toby uses
-direct-terminal mode and preserves the three streams independently. With
-managed mode disabled, operations not explicitly allowed cannot prompt and are
-denied.
+Direct-terminal mode is used whenever stdin is a terminal and preserves the
+three streams independently.
 
 ## Generated files
 

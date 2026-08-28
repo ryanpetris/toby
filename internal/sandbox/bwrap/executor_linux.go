@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"petris.dev/toby/internal/diagnostic"
-	sandboxapi "petris.dev/toby/internal/sandbox"
 	"petris.dev/toby/internal/shutdown"
 )
 
@@ -43,14 +42,12 @@ type ExecutorOptions struct {
 }
 
 // ProcessIO supplies one invocation's host-side streams and optional lifecycle
-// callbacks. A managed PTY necessarily combines sandbox stdout and stderr on
-// Stdout.
+// callbacks.
 type ProcessIO struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 
-	RegisterPrompter      func(sandboxapi.ApprovalPrompter)
 	RegisterSignalHandler func(
 		func(syscall.Signal) error,
 	) func()
@@ -207,7 +204,7 @@ func (e *Executor) Execute(
 
 	deadline := time.Now().Add(e.retryTimeout)
 	for {
-		output, err := newRetryAttemptOutput(streams, invocation.Mode)
+		output, err := newRetryAttemptOutput(streams)
 		if err != nil {
 			return 1, err
 		}

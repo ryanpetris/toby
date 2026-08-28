@@ -24,7 +24,7 @@ func TestBuildPlanDerivesReservedTargetsAndPolicies(t *testing.T) {
 		Environment:        base.Environment,
 		Identity:           base.Identity,
 		CommandArgv:        []string{"sh", "-c", "true"},
-		ExecutionMode:      ExecutionManagedPTY,
+		ExecutionMode:      ExecutionDirectTerminal,
 		RootCommand:        true,
 		Projects: []ProjectInput{{
 			Name:     "app",
