@@ -75,7 +75,10 @@ func newRetryAttemptOutput(
 	return output, nil
 }
 
-func (o *retryAttemptOutput) prepare(invocation *Invocation) error {
+func (o *retryAttemptOutput) prepare(
+	invocation *Invocation,
+	claimTerminal bool,
+) error {
 	if o == nil || o.gate == nil ||
 		o.readyReader == nil || o.readyWriter == nil {
 		return fmt.Errorf("payload-ready output is not initialized")
@@ -108,6 +111,7 @@ func (o *retryAttemptOutput) prepare(invocation *Invocation) error {
 		strconv.Itoa(readyFD),
 		strconv.Itoa(stderrFD),
 		"-1",
+		terminalClaimArgument(claimTerminal),
 		"--",
 	)
 	invocation.Args = append(arguments, payload...)

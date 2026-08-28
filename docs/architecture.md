@@ -608,6 +608,22 @@ Toby kills and reaps the still-unreaped exact child by its positive PID and
 refuses the run. It never falls back to a negative numeric signal for a
 Bubblewrap child group.
 
+When the launch environment identifies a terminal multiplexer that classifies
+a pane by its terminal's foreground process (a Herdr pane, detected through
+`HERDR_PANE_ID`), direct-terminal application launches set the shim's
+terminal-claim flag. The payload then becomes its own foreground
+process-group leader on the host terminal, so the observed foreground process
+is the application itself rather than the Bubblewrap supervisor chain. The
+executor learns the payload's host PID from the transferred pidfd, observes
+job-control stops of the claimed group through procfs, coordinates suspend
+and resume for it with `PIDFD_SIGNAL_PROCESS_GROUP` continuation, mirrors
+graceful termination to the claimed group, and restores the terminal
+foreground from either the Bubblewrap group or the claimed payload group when
+the command ends. Because the managed terminal attaches the application to a
+separate Toby-owned PTY session, Herdr detection with yolo active selects
+direct-terminal mode; without yolo the managed terminal and its approval
+modal take precedence.
+
 Managed-PTY mode is used only when it is enabled and stdin, stdout, and stderr
 are the same terminal. It preserves terminal job-control semantics while
 allowing Toby to display approval prompts. If terminal stdin is present but an

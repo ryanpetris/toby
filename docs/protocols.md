@@ -638,17 +638,22 @@ Only a later command reusing an already-used run overlay is eligible for the
 bounded deferred-unmount retry. Toby inserts this trusted immediate exec shim:
 
 ```text
-/toby/bin/tobys exec <ready-fd|-1> <stderr-fd|-1> <signal-fd|-1> -- <argv...>
+/toby/bin/tobys exec <ready-fd|-1> <stderr-fd|-1> <signal-fd|-1> <claim-terminal:0|1> -- <argv...>
 ```
 
 The helper is recognized only when `TOBY_SANDBOX=1`. It restores an inherited
-direct-terminal stderr descriptor when present. For foreground commands, it
-opens a pidfd for its exact process and sends that descriptor with marker
-`0x01` over the Unix `SOCK_SEQPACKET` capability at `signal-fd`. For
-retry-authorized commands, it then writes `0x01` to `ready-fd`. It closes the
-capability descriptors, resolves the command with `execvp`-like `PATH`
-behavior, and immediately calls `exec`; the transferred pidfd continues to
-identify the resulting application process. It exits `127` when no command is
+direct-terminal stderr descriptor when present. When `claim-terminal` is `1`,
+it then moves itself into a new process group and makes that group the
+terminal foreground owner on its stdin before anything else observes the
+process; a failed claim aborts the launch so the application never reads the
+terminal from a background group. For foreground commands, it opens a pidfd
+for its exact process and sends that descriptor with marker `0x01` over the
+Unix `SOCK_SEQPACKET` capability at `signal-fd`. For retry-authorized
+commands, it then writes `0x01` to `ready-fd`. It closes the capability
+descriptors, resolves the command with `execvp`-like `PATH` behavior, and
+immediately calls `exec`; the transferred pidfd continues to identify the
+resulting application process, and under a terminal claim that process leads
+the process group named by its host PID. It exits `127` when no command is
 found and `126` when the command cannot be invoked.
 
 Before the ready byte, relevant attempt output is buffered verbatim up to

@@ -371,6 +371,8 @@ func runDirectTerminalJobControlHelper(t *testing.T) {
 		&Invocation{},
 		nil,
 		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -431,6 +433,8 @@ func runDirectBackgroundJobControlHelper(t *testing.T) {
 		&Invocation{},
 		nil,
 		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)

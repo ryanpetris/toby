@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -114,7 +115,10 @@ func (r *payloadSignalRelay) registerHandler(
 	return r.register(r.target.Signal)
 }
 
-func (r *payloadSignalRelay) prepare(invocation *Invocation) error {
+func (r *payloadSignalRelay) prepare(
+	invocation *Invocation,
+	claimTerminal bool,
+) error {
 	if r == nil || r.writer == nil {
 		return fmt.Errorf("payload-signal relay is not initialized")
 	}
@@ -130,6 +134,7 @@ func (r *payloadSignalRelay) prepare(invocation *Invocation) error {
 	index := invocation.payloadArgIndex
 	if isPayloadDispatch(invocation.Args, index) {
 		invocation.Args[index+4] = strconv.Itoa(signalFD)
+		invocation.Args[index+5] = terminalClaimArgument(claimTerminal)
 	} else {
 		payload := append([]string(nil), invocation.Args[index:]...)
 		arguments := append([]string(nil), invocation.Args[:index]...)
@@ -140,6 +145,7 @@ func (r *payloadSignalRelay) prepare(invocation *Invocation) error {
 			"-1",
 			"-1",
 			strconv.Itoa(signalFD),
+			terminalClaimArgument(claimTerminal),
 			"--",
 		)
 		invocation.Args = append(arguments, payload...)
@@ -153,11 +159,19 @@ func (r *payloadSignalRelay) prepare(invocation *Invocation) error {
 
 func isPayloadDispatch(arguments []string, index int) bool {
 	return index > 0 &&
-		index+5 < len(arguments) &&
+		index+6 < len(arguments) &&
 		arguments[index] == layout.SandboxBinary() &&
 		arguments[index+1] == "exec" &&
 		arguments[index+4] == "-1" &&
-		arguments[index+5] == "--"
+		(arguments[index+5] == "0" || arguments[index+5] == "1") &&
+		arguments[index+6] == "--"
+}
+
+func terminalClaimArgument(claimTerminal bool) string {
+	if claimTerminal {
+		return "1"
+	}
+	return "0"
 }
 
 func (r *payloadSignalRelay) close() error {
@@ -286,6 +300,43 @@ func receivePayloadPIDFD(file *os.File) (int, bool, error) {
 	return descriptors[0], true, nil
 }
 
+// pidfdProcessID resolves the host-namespace PID a pidfd refers to from its
+// kernel fdinfo record.
+func pidfdProcessID(pidfd int) (int, error) {
+	data, err := os.ReadFile(
+		"/proc/self/fdinfo/" + strconv.Itoa(pidfd),
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"read payload process descriptor info: %w",
+			err,
+		)
+	}
+
+	for line := range strings.Lines(string(data)) {
+		value, found := strings.CutPrefix(line, "Pid:")
+		if !found {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, fmt.Errorf(
+				"parse payload process descriptor PID: %w",
+				err,
+			)
+		}
+		if pid <= 0 {
+			return 0, fmt.Errorf(
+				"payload process %d is not visible",
+				pid,
+			)
+		}
+		return pid, nil
+	}
+
+	return 0, fmt.Errorf("payload process descriptor has no PID record")
+}
+
 func closePayloadDescriptors(descriptors []int) {
 	for _, descriptor := range descriptors {
 		diagnostic.DiscardError(
@@ -300,6 +351,7 @@ type payloadSignalTarget struct {
 	mu sync.Mutex
 
 	pidfd   int
+	hostPID int
 	pending []syscall.Signal
 	closed  bool
 }
@@ -366,6 +418,15 @@ func (t *payloadSignalTarget) Attach(pidfd int) error {
 	}
 
 	t.pidfd = pidfd
+	pid, pidErr := pidfdProcessID(pidfd)
+	diagnostic.DiscardError(
+		"the payload host PID only augments terminal foreground handling",
+		"resolve payload process descriptor PID",
+		pidErr,
+	)
+	if pidErr == nil {
+		t.hostPID = pid
+	}
 	var signalErr error
 	for _, signal := range t.pending {
 		signalErr = errors.Join(
@@ -376,6 +437,56 @@ func (t *payloadSignalTarget) Attach(pidfd int) error {
 	t.pending = nil
 
 	return signalErr
+}
+
+// HostPID returns the payload's host-namespace PID, or zero while the payload
+// identity is unknown. Under a terminal claim this PID is also the payload's
+// process-group ID.
+func (t *payloadSignalTarget) HostPID() int {
+	if t == nil {
+		return 0
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hostPID
+}
+
+// SignalGroup signals the payload's entire process group through the retained
+// pidfd. It is a no-op until the payload identity is attached.
+func (t *payloadSignalTarget) SignalGroup(signal syscall.Signal) error {
+	if t == nil {
+		return nil
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed || t.pidfd < 0 {
+		return nil
+	}
+
+	var err error
+	for {
+		err = unix.PidfdSendSignal(
+			t.pidfd,
+			unix.Signal(signal),
+			nil,
+			pidfdSignalProcessGroup,
+		)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil && !errors.Is(err, unix.ESRCH) {
+		return fmt.Errorf(
+			"send %s to exact sandbox payload group: %w",
+			signal,
+			err,
+		)
+	}
+
+	return nil
 }
 
 func (t *payloadSignalTarget) Close() {

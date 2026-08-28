@@ -28,6 +28,9 @@ const (
 
 // ExecutorOptions bounds graceful process-tree cancellation and the narrow
 // retry window for a reused overlay whose previous mount is still detaching.
+// PayloadClaimsTerminal makes direct-terminal payloads take over the host
+// terminal foreground process group, so terminal multiplexers that identify a
+// pane by its foreground process observe the application itself.
 type ExecutorOptions struct {
 	Executable                string
 	TerminationGrace          time.Duration
@@ -35,6 +38,7 @@ type ExecutorOptions struct {
 	OverlayReuseRetryTimeout  time.Duration
 	OverlayReuseRetryInterval time.Duration
 	ExternalInterrupts        bool
+	PayloadClaimsTerminal     bool
 	Logger                    *diagnostic.Logger
 }
 
@@ -58,14 +62,15 @@ type ProcessIO struct {
 type Executor struct {
 	mu sync.RWMutex
 
-	executable         string
-	backgroundLauncher *backgroundLauncher
-	terminationGrace   time.Duration
-	terminationReap    time.Duration
-	retryTimeout       time.Duration
-	retryInterval      time.Duration
-	externalInterrupts bool
-	logger             *diagnostic.Logger
+	executable            string
+	backgroundLauncher    *backgroundLauncher
+	terminationGrace      time.Duration
+	terminationReap       time.Duration
+	retryTimeout          time.Duration
+	retryInterval         time.Duration
+	externalInterrupts    bool
+	payloadClaimsTerminal bool
+	logger                *diagnostic.Logger
 }
 
 var _ io.Closer = (*Executor)(nil)
@@ -112,14 +117,15 @@ func NewExecutor(options ExecutorOptions) (*Executor, error) {
 	}
 
 	return &Executor{
-		executable:         executable,
-		backgroundLauncher: newBackgroundLauncher(),
-		terminationGrace:   grace,
-		terminationReap:    reapGrace,
-		retryTimeout:       retryTimeout,
-		retryInterval:      retryInterval,
-		externalInterrupts: options.ExternalInterrupts,
-		logger:             options.Logger,
+		executable:            executable,
+		backgroundLauncher:    newBackgroundLauncher(),
+		terminationGrace:      grace,
+		terminationReap:       reapGrace,
+		retryTimeout:          retryTimeout,
+		retryInterval:         retryInterval,
+		externalInterrupts:    options.ExternalInterrupts,
+		payloadClaimsTerminal: options.PayloadClaimsTerminal,
+		logger:                options.Logger,
 	}, nil
 }
 

@@ -41,19 +41,20 @@ run_shell_child() {
 	exec 0<&200
 	if [ "$1" = "/toby/bin/tobys" ] &&
 		[ "$2" = "exec" ] &&
-		[ "$6" = "--" ]; then
+		[ "$7" = "--" ]; then
 		ready_fd=$3
 		stderr_fd=$4
 		signal_fd=$5
+		claim_terminal=$6
 		if [ -n "$payload_helper" ]; then
 			trap - INT TERM HUP QUIT
 			export TOBY_SANDBOX=1
 			exec "$payload_helper" \
 				exec \
-				"$ready_fd" "$stderr_fd" "$signal_fd" \
-				-- "${@:7}"
+				"$ready_fd" "$stderr_fd" "$signal_fd" "$claim_terminal" \
+				-- "${@:8}"
 		fi
-		shift 6
+		shift 7
 		if [ "$stderr_fd" -ge 3 ]; then
 			eval "exec 2>&${stderr_fd}"
 			eval "exec ${stderr_fd}>&-"

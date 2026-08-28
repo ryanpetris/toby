@@ -33,13 +33,14 @@ func TestMain(m *testing.M) {
 }
 
 func TestPayloadInvocationRecognizesExactSandboxShape(t *testing.T) {
-	readyFD, stderrFD, signalFD, payload, handled := execInvocation(
+	readyFD, stderrFD, signalFD, claimTerminal, payload, handled := execInvocation(
 		[]string{
 			"/toby/bin/tobys",
 			"exec",
 			"9",
 			"10",
 			"11",
+			"1",
 			"--",
 			"/bin/tool",
 			"--flag",
@@ -58,34 +59,61 @@ func TestPayloadInvocationRecognizesExactSandboxShape(t *testing.T) {
 	if signalFD != 11 {
 		t.Fatalf("signal FD = %d, want 11", signalFD)
 	}
+	if !claimTerminal {
+		t.Fatal("terminal claim was not recognized")
+	}
 	if want := []string{"/bin/tool", "--flag"}; !reflect.DeepEqual(payload, want) {
 		t.Fatalf("payload = %q, want %q", payload, want)
+	}
+
+	_, _, _, claimTerminal, _, handled = execInvocation(
+		[]string{
+			"/toby/bin/tobys",
+			"exec",
+			"9",
+			"10",
+			"11",
+			"0",
+			"--",
+			"/bin/tool",
+		},
+		"1",
+	)
+	if !handled {
+		t.Fatal("claimless payload invocation was not handled")
+	}
+	if claimTerminal {
+		t.Fatal("terminal claim was recognized for claimless invocation")
 	}
 }
 
 func TestPayloadInvocationRejectsUntrustedShapes(t *testing.T) {
 	tests := [][]string{
-		{"/toby/bin/tobys", "exec", "2", "-1", "11", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "not-fd", "-1", "11", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "bad-fd", "11", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "9", "11", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "-1", "bad-fd", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "-1", "9", "--", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "-1", "11", "/bin/true"},
-		{"/toby/bin/tobys", "exec", "9", "-1", "11", "--"},
+		{"/toby/bin/tobys", "exec", "2", "-1", "11", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "not-fd", "-1", "11", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "bad-fd", "11", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "9", "11", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "bad-fd", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "9", "0", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "11", "2", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "11", "true", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "11", "--", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "11", "0", "/bin/true"},
+		{"/toby/bin/tobys", "exec", "9", "-1", "11", "0", "--"},
 	}
 	for _, arguments := range tests {
-		if _, _, _, _, handled := execInvocation(arguments, "1"); handled {
+		if _, _, _, _, _, handled := execInvocation(arguments, "1"); handled {
 			t.Errorf("invalid payload invocation was handled: %q", arguments)
 		}
 	}
-	if _, _, _, _, handled := execInvocation(
+	if _, _, _, _, _, handled := execInvocation(
 		[]string{
 			"/toby/bin/tobys",
 			"exec",
 			"9",
 			"-1",
 			"11",
+			"0",
 			"--",
 			"/bin/true",
 		},
@@ -131,6 +159,7 @@ func TestExecutePayloadSignalsReadyAndPreservesExecContract(t *testing.T) {
 		descriptors[1],
 		-1,
 		signalFD,
+		nil,
 		payload,
 		environment,
 		func(path string, arguments, currentEnvironment []string) error {
@@ -169,6 +198,60 @@ func TestExecutePayloadSignalsReadyAndPreservesExecContract(t *testing.T) {
 			"exec environment = %q, want %q",
 			gotEnvironment,
 			environment,
+		)
+	}
+}
+
+func TestExecutePayloadClaimsTerminalBeforeExec(t *testing.T) {
+	var sequence []string
+	sentinel := errors.New("exec intercepted")
+
+	code, err := executePayload(
+		-1,
+		-1,
+		-1,
+		func() error {
+			sequence = append(sequence, "claim")
+			return nil
+		},
+		[]string{"/bin/true"},
+		nil,
+		func(string, []string, []string) error {
+			sequence = append(sequence, "exec")
+			return sentinel
+		},
+	)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("execute error = %v, want %v", err, sentinel)
+	}
+	if code != payloadCannotInvokeCode {
+		t.Fatalf("execute code = %d, want %d", code, payloadCannotInvokeCode)
+	}
+	if want := []string{"claim", "exec"}; !reflect.DeepEqual(sequence, want) {
+		t.Fatalf("call sequence = %q, want %q", sequence, want)
+	}
+
+	claimErr := errors.New("terminal claim failed")
+	code, err = executePayload(
+		-1,
+		-1,
+		-1,
+		func() error { return claimErr },
+		[]string{"/bin/true"},
+		nil,
+		func(string, []string, []string) error {
+			t.Fatal("payload was executed after a failed terminal claim")
+			return nil
+		},
+	)
+	if !errors.Is(err, claimErr) {
+		t.Fatalf("claim failure error = %v, want %v", err, claimErr)
+	}
+	if code != payloadCannotInvokeCode {
+		t.Fatalf(
+			"claim failure code = %d, want %d",
+			code,
+			payloadCannotInvokeCode,
 		)
 	}
 }
@@ -272,6 +355,39 @@ func TestPayloadDispatchRestoresTerminalStderrBeforeReady(t *testing.T) {
 	}
 }
 
+func TestPayloadDispatchTerminalClaimFailsWithoutTerminal(t *testing.T) {
+	command := exec.Command(
+		os.Args[0],
+		"exec",
+		"-1",
+		"-1",
+		"-1",
+		"1",
+		"--",
+		"/bin/true",
+	)
+	command.Env = []string{"TOBY_SANDBOX=1"}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+
+	runErr := command.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		t.Fatalf("dispatch subprocess: %v", runErr)
+	}
+	if exitErr.ExitCode() != payloadCannotInvokeCode {
+		t.Fatalf(
+			"exit code = %d, want %d; stderr = %q",
+			exitErr.ExitCode(),
+			payloadCannotInvokeCode,
+			stderr.String(),
+		)
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte("claim terminal foreground")) {
+		t.Fatalf("stderr = %q, want terminal claim failure", stderr.String())
+	}
+}
+
 func runPayloadDispatchSubprocess(
 	t *testing.T,
 	directory string,
@@ -302,6 +418,7 @@ func runPayloadDispatchSubprocess(
 		strconv.Itoa(childExtraFileBaseFD),
 		strconv.Itoa(stderrFD),
 		strconv.Itoa(signalFD),
+		"0",
 		"--",
 	}
 	arguments = append(arguments, payload...)

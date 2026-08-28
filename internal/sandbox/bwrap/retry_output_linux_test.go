@@ -177,16 +177,19 @@ func TestRetryOutputPassesDirectTerminalStderrToPayload(t *testing.T) {
 		Args:            []string{"--", "/bin/true"},
 		payloadArgIndex: 1,
 	}
-	if err := output.prepare(invocation); err != nil {
+	if err := output.prepare(invocation, true); err != nil {
 		t.Fatal(err)
 	}
 
-	readyFD, stderrFD, signalFD, payload, handled := execInvocation(
+	readyFD, stderrFD, signalFD, claimTerminal, payload, handled := execInvocation(
 		invocation.Args[1:],
 		"1",
 	)
 	if !handled {
 		t.Fatalf("prepared payload invocation = %q", invocation.Args)
+	}
+	if !claimTerminal {
+		t.Fatal("prepared payload invocation lost the terminal claim")
 	}
 	if readyFD != childExtraFileBaseFD {
 		t.Fatalf("ready FD = %d, want %d", readyFD, childExtraFileBaseFD)

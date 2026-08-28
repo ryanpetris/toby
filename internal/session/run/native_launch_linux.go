@@ -212,6 +212,15 @@ func nativeTerminalType(mode bwrap.ExecutionMode) string {
 	return os.Getenv("TERM")
 }
 
+// nativePayloadClaimsTerminal reports whether direct-terminal application
+// launches should transfer the host terminal foreground process group to the
+// sandbox payload. Herdr identifies a pane's agent by the terminal's
+// foreground process, which must then be the launched tool itself rather than
+// the Bubblewrap supervisor chain.
+func nativePayloadClaimsTerminal(environment func(string) string) bool {
+	return environment("HERDR_PANE_ID") != ""
+}
+
 func sameNativeTerminal(files ...*os.File) bool {
 	if len(files) < 2 {
 		return true

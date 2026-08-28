@@ -17,7 +17,7 @@ import (
 
 const usage = `Usage:
   tobys resource connect -- <client-resource-id>
-  tobys exec <ready-fd|-1> <stderr-fd|-1> <signal-fd|-1> -- <command> [args...]
+  tobys exec <ready-fd|-1> <stderr-fd|-1> <signal-fd|-1> <claim-terminal:0|1> -- <command> [args...]
 `
 
 // Run dispatches one sandbox-only helper command.

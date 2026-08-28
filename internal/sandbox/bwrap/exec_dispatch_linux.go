@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,7 +37,7 @@ func DispatchExec(
 	sandboxEnvironment string,
 	stderr io.Writer,
 ) (code int, handled bool) {
-	readyFD, stderrFD, signalFD, payload, handled := execInvocation(
+	readyFD, stderrFD, signalFD, claimTerminal, payload, handled := execInvocation(
 		arguments,
 		sandboxEnvironment,
 	)
@@ -47,22 +48,27 @@ func DispatchExec(
 		stderr = io.Discard
 	}
 
+	var claim func() error
+	if claimTerminal {
+		claim = claimForegroundTerminal
+	}
+	// A successful exec replaces this process, so reaching this point always
+	// carries a dispatch error.
 	code, err := executePayload(
 		readyFD,
 		stderrFD,
 		signalFD,
+		claim,
 		payload,
 		os.Environ(),
 		unix.Exec,
 	)
-	if err != nil {
-		_, writeErr := fmt.Fprintln(stderr, err)
-		diagnostic.DiscardError(
-			"Fx construction is unavailable",
-			"write sandbox payload dispatch error",
-			writeErr,
-		)
-	}
+	_, writeErr := fmt.Fprintln(stderr, err)
+	diagnostic.DiscardError(
+		"Fx construction is unavailable",
+		"write sandbox payload dispatch error",
+		writeErr,
+	)
 
 	return code, true
 }
@@ -74,39 +80,42 @@ func execInvocation(
 	readyFD int,
 	stderrFD int,
 	signalFD int,
+	claimTerminal bool,
 	payload []string,
 	handled bool,
 ) {
 	if sandboxEnvironment != "1" ||
-		len(arguments) < 7 ||
+		len(arguments) < 8 ||
 		arguments[1] != "exec" ||
-		arguments[5] != "--" {
-		return 0, 0, 0, nil, false
+		(arguments[5] != "0" && arguments[5] != "1") ||
+		arguments[6] != "--" {
+		return 0, 0, 0, false, nil, false
 	}
 
 	readyFD, err := strconv.Atoi(arguments[2])
 	if err != nil ||
 		(readyFD != -1 && readyFD < childExtraFileBaseFD) {
-		return 0, 0, 0, nil, false
+		return 0, 0, 0, false, nil, false
 	}
 	stderrFD, err = strconv.Atoi(arguments[3])
 	if err != nil ||
 		(stderrFD != -1 && stderrFD < childExtraFileBaseFD) ||
 		(stderrFD >= childExtraFileBaseFD && stderrFD == readyFD) {
-		return 0, 0, 0, nil, false
+		return 0, 0, 0, false, nil, false
 	}
 	signalFD, err = strconv.Atoi(arguments[4])
 	if err != nil ||
 		(signalFD != -1 && signalFD < childExtraFileBaseFD) ||
 		(signalFD >= childExtraFileBaseFD &&
 			(signalFD == readyFD || signalFD == stderrFD)) {
-		return 0, 0, 0, nil, false
+		return 0, 0, 0, false, nil, false
 	}
 
 	return readyFD,
 		stderrFD,
 		signalFD,
-		append([]string(nil), arguments[6:]...),
+		arguments[5] == "1",
+		append([]string(nil), arguments[7:]...),
 		true
 }
 
@@ -114,6 +123,7 @@ func executePayload(
 	readyFD int,
 	stderrFD int,
 	signalFD int,
+	claimTerminal func() error,
 	payload []string,
 	environment []string,
 	execute payloadExecFunc,
@@ -141,6 +151,12 @@ func executePayload(
 				"close inherited sandbox payload stderr: %w",
 				err,
 			)
+		}
+	}
+
+	if claimTerminal != nil {
+		if err := claimTerminal(); err != nil {
+			return payloadCannotInvokeCode, err
 		}
 	}
 
@@ -178,6 +194,37 @@ func executePayload(
 	}
 
 	return executePayloadCommand(payload, environment, execute)
+}
+
+// claimForegroundTerminal moves the payload into its own process group and
+// makes that group the terminal foreground owner before exec, so host-side
+// process detection sees the application itself as the foreground process.
+// A partial transfer would leave the application reading the terminal from a
+// background group, so any failure aborts the launch.
+func claimForegroundTerminal() error {
+	// TIOCSPGRP from the new, still-background group raises SIGTTOU; ignore
+	// it across the transfer and restore the default disposition before exec.
+	signal.Ignore(syscall.SIGTTOU)
+	defer signal.Reset(syscall.SIGTTOU)
+
+	if err := unix.Setpgid(0, 0); err != nil {
+		return fmt.Errorf(
+			"create sandbox payload process group: %w",
+			err,
+		)
+	}
+	if err := unix.IoctlSetPointerInt(
+		0,
+		unix.TIOCSPGRP,
+		unix.Getpgrp(),
+	); err != nil {
+		return fmt.Errorf(
+			"claim terminal foreground for sandbox payload: %w",
+			err,
+		)
+	}
+
+	return nil
 }
 
 func publishPayloadPIDFD(signalFD int) error {

@@ -237,8 +237,18 @@ func (r *NativeRunner) Run(
 		return fmt.Errorf("native launch requires a primary tool")
 	}
 
+	// A payload terminal claim needs direct terminal ownership; the managed
+	// terminal attaches the application to a separate Toby-owned PTY session.
+	// With yolo active its approval modal is unused, so prefer the direct
+	// terminal there and let the payload claim the foreground.
+	managedTerminal := settings.ManagedTerminalEnabled()
+	if managedTerminal &&
+		settings.YoloEnabled() &&
+		nativePayloadClaimsTerminal(os.Getenv) {
+		managedTerminal = false
+	}
 	mode := nativeForegroundMode(
-		settings.ManagedTerminalEnabled(),
+		managedTerminal,
 		r.stdin,
 		r.stdout,
 		r.stderr,
@@ -254,8 +264,9 @@ func (r *NativeRunner) Run(
 		return err
 	}
 	executor, err := bwrap.NewExecutor(bwrap.ExecutorOptions{
-		ExternalInterrupts: true,
-		Logger:             r.logger,
+		ExternalInterrupts:    true,
+		PayloadClaimsTerminal: nativePayloadClaimsTerminal(os.Getenv),
+		Logger:                r.logger,
 	})
 	if err != nil {
 		return err

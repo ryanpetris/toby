@@ -157,6 +157,16 @@ Managed terminal mode is enabled by default. Set
 plain passthrough. Without a managed terminal, an operation that needs a prompt
 and is not already allowed is denied.
 
+Inside a Herdr pane (detected through the `HERDR_PANE_ID` environment
+variable), direct-terminal launches hand the terminal foreground process group
+to the application itself, so Herdr's foreground-process detection identifies
+the launched tool rather than Toby's supervisor chain. Because Herdr
+classifies the pane by the terminal the CLI owns, this needs direct terminal
+ownership: with yolo enabled the approval modal is unused and Herdr detection
+selects direct-terminal mode automatically; without yolo the managed terminal
+takes precedence and pane detection sees Toby. Suspend, resume, signal
+forwarding, and terminal restoration follow the claimed application group.
+
 The invoking CLI owns foreground bytes and signals. The agent is not in the
 terminal path. The trusted payload shim passes the CLI a pidfd for the exact
 application process before immediately replacing itself with that application.

@@ -116,8 +116,14 @@ func (e *Executor) executeAttempt(
 				retryOutput.payloadStarted()
 		}
 	}()
+	claimTerminal := e.payloadClaimsTerminal &&
+		attemptInvocation.Mode == ExecutionDirectTerminal &&
+		payloadTarget != nil
 	if retryOutput != nil {
-		if err := retryOutput.prepare(attemptInvocation); err != nil {
+		if err := retryOutput.prepare(
+			attemptInvocation,
+			claimTerminal,
+		); err != nil {
 			retryOutput.abortPreparation()
 			return executionAttempt{
 				code: 1,
@@ -134,7 +140,10 @@ func (e *Executor) executeAttempt(
 	}
 	if payloadSignals != nil {
 		streams.RegisterSignalHandler = payloadSignals.registerHandler
-		if err := payloadSignals.prepare(attemptInvocation); err != nil {
+		if err := payloadSignals.prepare(
+			attemptInvocation,
+			claimTerminal,
+		); err != nil {
 			return executionAttempt{code: 1, err: err}
 		}
 	}
@@ -238,6 +247,8 @@ func (e *Executor) executeAttempt(
 			attemptInvocation,
 			notifyStarted,
 			streams.RegisterSignalHandler,
+			payloadTarget,
+			claimTerminal,
 		)
 	case ExecutionManagedPTY:
 		result.code, result.err = e.executeManagedPTY(

@@ -6,13 +6,16 @@ package bwrap
 // direct and managed host-terminal executions.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -34,7 +37,16 @@ func (e *Executor) executeDirectTerminal(
 	invocation *Invocation,
 	notifyStarted func(int),
 	registerSignalHandler func(func(syscall.Signal) error) func(),
+	payloadTarget *payloadSignalTarget,
+	claimTerminal bool,
 ) (code int, returnErr error) {
+	// claimedPayload is set only when the payload takes over the terminal
+	// foreground; it then leads its own process group named by its host PID.
+	var claimedPayload *payloadSignalTarget
+	if claimTerminal {
+		claimedPayload = payloadTarget
+	}
+
 	terminal, ok := command.Stdin.(*os.File)
 	if !ok {
 		return 1, fmt.Errorf("direct-terminal stdin is not a terminal file")
@@ -100,6 +112,7 @@ func (e *Executor) executeDirectTerminal(
 	waitErr, controlErr := e.waitForDirectTerminal(
 		ctx,
 		group,
+		claimedPayload,
 		terminal,
 		parentGroup,
 		wait,
@@ -109,6 +122,7 @@ func (e *Executor) executeDirectTerminal(
 	restoreErr := restoreDirectTerminalForeground(
 		terminal,
 		group.PID(),
+		claimedPayload.HostPID(),
 		parentGroup,
 	)
 	code, resultErr := childResult(waitErr)
@@ -123,6 +137,7 @@ func (e *Executor) executeDirectTerminal(
 func restoreDirectTerminalForeground(
 	terminal *os.File,
 	childGroup int,
+	payloadGroup int,
 	parentGroup int,
 ) error {
 	foregroundGroup, err := terminalForegroundGroup(terminal)
@@ -132,7 +147,8 @@ func restoreDirectTerminalForeground(
 			err,
 		)
 	}
-	if foregroundGroup != childGroup {
+	if foregroundGroup != childGroup &&
+		(payloadGroup <= 0 || foregroundGroup != payloadGroup) {
 		return nil
 	}
 	return setTerminalForegroundGroup(terminal, parentGroup)
@@ -141,6 +157,7 @@ func restoreDirectTerminalForeground(
 func (e *Executor) waitForDirectTerminal(
 	ctx context.Context,
 	group *processGroupIdentity,
+	claimedPayload *payloadSignalTarget,
 	terminal *os.File,
 	parentGroup int,
 	wait <-chan error,
@@ -168,6 +185,21 @@ func (e *Executor) waitForDirectTerminal(
 	)
 	defer unregister()
 
+	observeState := func() error {
+		if err := handleDirectChildStateChange(
+			group,
+			terminal,
+			parentGroup,
+		); err != nil {
+			return err
+		}
+		return handleDirectPayloadStateChange(
+			claimedPayload,
+			terminal,
+			parentGroup,
+		)
+	}
+
 	statePoll := time.NewTicker(25 * time.Millisecond)
 	defer statePoll.Stop()
 
@@ -183,15 +215,14 @@ func (e *Executor) waitForDirectTerminal(
 			if err := group.Signal(currentSignal); err != nil {
 				returnErr = errors.Join(returnErr, err)
 			}
+			if err := claimedPayload.SignalGroup(currentSignal); err != nil {
+				returnErr = errors.Join(returnErr, err)
+			}
 		case <-childChanged:
-			err := handleDirectChildStateChange(
-				group,
-				terminal,
-				parentGroup,
-			)
-			if err != nil {
-				terminated := e.terminateCommand(
+			if err := observeState(); err != nil {
+				terminated := e.terminateDirectTerminal(
 					group,
+					claimedPayload,
 					wait,
 				)
 				return terminated.waitErr, errors.Join(
@@ -201,14 +232,10 @@ func (e *Executor) waitForDirectTerminal(
 				)
 			}
 		case <-statePoll.C:
-			err := handleDirectChildStateChange(
-				group,
-				terminal,
-				parentGroup,
-			)
-			if err != nil {
-				terminated := e.terminateCommand(
+			if err := observeState(); err != nil {
+				terminated := e.terminateDirectTerminal(
 					group,
+					claimedPayload,
 					wait,
 				)
 				return terminated.waitErr, errors.Join(
@@ -218,8 +245,9 @@ func (e *Executor) waitForDirectTerminal(
 				)
 			}
 		case <-ctx.Done():
-			terminated := e.terminateCommand(
+			terminated := e.terminateDirectTerminal(
 				group,
+				claimedPayload,
 				wait,
 			)
 			return terminated.waitErr, errors.Join(
@@ -229,6 +257,20 @@ func (e *Executor) waitForDirectTerminal(
 			)
 		}
 	}
+}
+
+// terminateDirectTerminal sends the graceful termination signal to a payload
+// that owns its own foreground process group before tearing down the
+// Bubblewrap group, which no longer contains that payload.
+func (e *Executor) terminateDirectTerminal(
+	group *processGroupIdentity,
+	claimedPayload *payloadSignalTarget,
+	wait <-chan error,
+) terminationResult {
+	payloadErr := claimedPayload.SignalGroup(syscall.SIGTERM)
+	result := e.terminateCommand(group, wait)
+	result.signalErr = errors.Join(payloadErr, result.signalErr)
+	return result
 }
 
 func handleDirectChildStateChange(
@@ -330,6 +372,99 @@ func resumeDirectTerminal(
 		return fmt.Errorf("continue resumed terminal child: %w", err)
 	}
 	return nil
+}
+
+// handleDirectPayloadStateChange coordinates suspension for a payload that
+// owns the terminal foreground in its own process group. The payload is not a
+// child of this process, so job-control stops are observed through its
+// procfs state and resumed through its retained pidfd.
+func handleDirectPayloadStateChange(
+	claimedPayload *payloadSignalTarget,
+	terminal *os.File,
+	parentGroup int,
+) error {
+	payloadGroup := claimedPayload.HostPID()
+	if payloadGroup <= 0 {
+		return nil
+	}
+
+	stopped, err := payloadGroupStopped(payloadGroup)
+	if err != nil || !stopped {
+		return err
+	}
+	foregroundGroup, err := terminalForegroundGroup(terminal)
+	if err != nil {
+		return fmt.Errorf(
+			"inspect terminal before payload suspension: %w",
+			err,
+		)
+	}
+	if foregroundGroup != payloadGroup {
+		return nil
+	}
+
+	if err := setTerminalForegroundGroup(terminal, parentGroup); err != nil {
+		return fmt.Errorf(
+			"reclaim terminal from stopped payload: %w",
+			err,
+		)
+	}
+	if err := stopProcessGroup(parentGroup); err != nil {
+		return err
+	}
+	return resumeDirectPayloadTerminal(
+		claimedPayload,
+		terminal,
+		payloadGroup,
+		parentGroup,
+	)
+}
+
+func resumeDirectPayloadTerminal(
+	claimedPayload *payloadSignalTarget,
+	terminal *os.File,
+	payloadGroup int,
+	parentGroup int,
+) error {
+	foregroundGroup, foregroundErr := terminalForegroundGroup(terminal)
+	if foregroundErr == nil && foregroundGroup == parentGroup {
+		foregroundErr = setTerminalForegroundGroup(terminal, payloadGroup)
+	}
+	continueErr := claimedPayload.SignalGroup(syscall.SIGCONT)
+	if foregroundErr != nil {
+		foregroundErr = fmt.Errorf(
+			"return terminal to resumed payload: %w",
+			foregroundErr,
+		)
+	}
+	return errors.Join(foregroundErr, continueErr)
+}
+
+// payloadGroupStopped reports whether the payload group leader is in the
+// job-control stopped state. A missing process reads as not stopped; the exit
+// path owns that condition.
+func payloadGroupStopped(pid int) (bool, error) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ESRCH) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf(
+			"inspect payload group leader %d state: %w",
+			pid,
+			err,
+		)
+	}
+
+	// The single-character state field follows the parenthesized command name.
+	end := bytes.LastIndexByte(data, ')')
+	if end < 0 || end+2 >= len(data) {
+		return false, fmt.Errorf(
+			"payload group leader %d state record is malformed",
+			pid,
+		)
+	}
+	return data[end+2] == 'T', nil
 }
 
 func terminalForegroundGroup(terminal *os.File) (int, error) {
