@@ -198,7 +198,10 @@ its returned error, HTTP response, or closed stream uses the debug level for
 its additional diagnostic record.
 Text startup presentation writes to the original stderr stream so an
 interactive renderer retains the stream's terminal identity; structured
-startup records use the diagnostic logger.
+startup records use the diagnostic logger. The interactive renderer runs only
+when stdin and stderr are the same terminal, and it reads that terminal's
+input while it runs: its capability probe replies are consumed instead of
+queueing as unread input for the foreground application.
 
 Toby reserves stdout for foreground application output and documented command
 results intended for scripts. Startup presentation, incidental output,

@@ -3,12 +3,16 @@ package status
 // Bubble Tea model for bounded concurrent startup operations rendered inline.
 
 import (
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"petris.dev/toby/internal/diagnostic"
 )
 
 const (
@@ -52,6 +56,7 @@ type progressStop struct{}
 
 type progressModel struct {
 	ready      chan struct{}
+	signalSelf func(os.Signal) error
 	rows       []progressRow
 	transcript string
 	width      int
@@ -63,7 +68,18 @@ type progressModel struct {
 var _ tea.Model = progressModel{}
 
 func newProgressModel(ready chan struct{}) progressModel {
-	return progressModel{ready: ready}
+	return progressModel{
+		ready:      ready,
+		signalSelf: signalOwnProcess,
+	}
+}
+
+func signalOwnProcess(signal os.Signal) error {
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return process.Signal(signal)
 }
 
 func (m progressModel) Init() tea.Cmd {
@@ -76,6 +92,8 @@ func (m progressModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
+	case tea.KeyPressMsg:
+		return m.handleKey(message)
 	case progressUpdate:
 		m.rows = append(m.rows[:0], message.Rows...)
 		m.transcript = message.Transcript
@@ -90,6 +108,36 @@ func (m progressModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// handleKey restores the control-key semantics that raw-mode input removed:
+// interrupt and quit become process signals so the ordinary shutdown paths
+// react, and suspend is delegated to Bubble Tea, which releases the terminal
+// before stopping the process.
+func (m progressModel) handleKey(
+	key tea.KeyPressMsg,
+) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "ctrl+c":
+		m.forwardSignal(os.Interrupt)
+	case "ctrl+\\":
+		m.forwardSignal(syscall.SIGQUIT)
+	case "ctrl+z":
+		return m, tea.Suspend
+	}
+
+	return m, nil
+}
+
+func (m progressModel) forwardSignal(signal os.Signal) {
+	if m.signalSelf == nil {
+		return
+	}
+	diagnostic.DiscardError(
+		"startup presentation cannot report its own delivery failure",
+		"forward startup control key as process signal",
+		m.signalSelf(signal),
+	)
 }
 
 func (m progressModel) View() tea.View {

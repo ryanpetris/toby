@@ -71,6 +71,87 @@ func TestServiceRendersLiveOCIProgressThroughTerminalStderr(t *testing.T) {
 	operation.Finish(nil)
 }
 
+func TestServiceConsumesItsTerminalProbeReplies(t *testing.T) {
+	service, master := newPTYStatusService(t)
+	if err := service.Begin(Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	operation := service.StartOperation("Probing terminal")
+	readPTYUntil(t, master, "Probing terminal")
+
+	// Answer the renderer's synchronized-output probe the way a real
+	// terminal would.
+	if _, err := master.Write(
+		[]byte("\x1b[?2026;2$y\x1b[?2027;0$y"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The renderer wraps frames in synchronized updates only after it reads
+	// the probe reply from the terminal input, so this sequence proves the
+	// reply never leaks to the foreground application.
+	readPTYUntil(t, master, ansi.SetModeSynchronizedOutput)
+	operation.Finish(nil)
+}
+
+func TestServicePresentsPlainWithoutInteractiveTerminalInput(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := terminal.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := master.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pipeReader.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := pipeWriter.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	diagnostics, err := diagnostic.NewService(diagnostic.Options{
+		Level:  slog.LevelDebug,
+		Format: diagnostic.FormatText,
+		Stderr: terminal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := newServiceWithStreams(diagnostics, pipeReader, terminal)
+	if err := service.Begin(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Finish(nil); err != nil {
+			t.Error(err)
+		}
+	})
+
+	operation := service.StartOperation("Preparing plain startup")
+	output := readPTYUntil(t, master, "Preparing plain startup...")
+	if bytes.ContainsRune(output, 0x1b) {
+		t.Fatalf(
+			"plain startup wrote terminal control sequences: %q",
+			output,
+		)
+	}
+	operation.Finish(nil)
+}
+
 func newPTYStatusService(t *testing.T) (*Service, *os.File) {
 	t.Helper()
 
@@ -102,7 +183,7 @@ func newPTYStatusService(t *testing.T) (*Service, *os.File) {
 		t.Fatal(err)
 	}
 
-	service := newServiceWithStderr(diagnostics, terminal)
+	service := newServiceWithStreams(diagnostics, terminal, terminal)
 	t.Cleanup(func() {
 		if err := service.Finish(nil); err != nil {
 			t.Error(err)

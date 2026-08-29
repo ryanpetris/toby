@@ -4,9 +4,12 @@ package status
 // before foreground handoff.
 
 import (
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -250,5 +253,66 @@ func TestProgressModelPreservesProgressAtNarrowWidths(t *testing.T) {
 	if !strings.Contains(content, "50%") ||
 		!strings.Contains(content, "256.0/512.0 MiB") {
 		t.Fatalf("narrow progress omitted its measurement: %q", content)
+	}
+}
+
+func TestProgressModelForwardsControlKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         tea.KeyPressMsg
+		wantSignal  os.Signal
+		wantSuspend bool
+	}{
+		{
+			name:       "interrupt",
+			key:        tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl},
+			wantSignal: os.Interrupt,
+		},
+		{
+			name:       "quit",
+			key:        tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl},
+			wantSignal: syscall.SIGQUIT,
+		},
+		{
+			name:        "suspend",
+			key:         tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl},
+			wantSuspend: true,
+		},
+		{
+			name: "ordinary keys are ignored",
+			key:  tea.KeyPressMsg{Code: 'x'},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var forwarded os.Signal
+			model := newProgressModel(make(chan struct{}))
+			model.signalSelf = func(signal os.Signal) error {
+				forwarded = signal
+				return nil
+			}
+
+			_, command := model.Update(tt.key)
+			if tt.wantSuspend {
+				if command == nil {
+					t.Fatal("suspend key produced no command")
+				}
+				if _, ok := command().(tea.SuspendMsg); !ok {
+					t.Fatalf("suspend key produced %T", command())
+				}
+				return
+			}
+			if command != nil {
+				t.Fatalf("control key produced a command: %T", command())
+			}
+			if forwarded != tt.wantSignal {
+				t.Fatalf(
+					"forwarded signal = %v, want %v",
+					forwarded,
+					tt.wantSignal,
+				)
+			}
+		})
 	}
 }

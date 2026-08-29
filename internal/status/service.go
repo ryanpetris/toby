@@ -42,7 +42,8 @@ type Service struct {
 	diagnostics *diagnostic.Service
 	logger      *diagnostic.Logger
 	out         io.Writer
-	terminal    bool
+	input       *os.File
+	interactive bool
 	structured  bool
 	captureAll  bool
 	mode        Mode
@@ -65,11 +66,12 @@ type Service struct {
 
 // NewService builds the process-wide startup presentation over stderr.
 func NewService(diagnostics *diagnostic.Service) *Service {
-	return newServiceWithStderr(diagnostics, os.Stderr)
+	return newServiceWithStreams(diagnostics, os.Stdin, os.Stderr)
 }
 
-func newServiceWithStderr(
+func newServiceWithStreams(
 	diagnostics *diagnostic.Service,
+	stdin *os.File,
 	stderr *os.File,
 ) *Service {
 	if diagnostics == nil {
@@ -83,10 +85,13 @@ func newServiceWithStderr(
 
 	service := newService(
 		stderr,
-		stderr != nil && term.IsTerminal(int(stderr.Fd())),
+		interactiveTerminal(stdin, stderr),
 		false,
 		defaultTranscriptLimit,
 	)
+	if service.interactive {
+		service.input = stdin
+	}
 	service.diagnostics = diagnostics
 	service.logger = diagnostics.Logger("status")
 	service.structured = diagnostics.Format() == diagnostic.FormatJSON
@@ -94,9 +99,29 @@ func newServiceWithStderr(
 	return service
 }
 
+// interactiveTerminal reports whether startup presentation owns a full
+// interactive terminal: stderr and stdin are the same terminal device. The
+// Bubble Tea renderer probes the terminal through its output and reads the
+// replies from its input, so rendering to a terminal whose input belongs to
+// someone else would leave those replies queued for the foreground
+// application.
+func interactiveTerminal(stdin *os.File, stderr *os.File) bool {
+	if stdin == nil || stderr == nil ||
+		!term.IsTerminal(int(stderr.Fd())) ||
+		!term.IsTerminal(int(stdin.Fd())) {
+		return false
+	}
+
+	stdinInfo, stdinErr := stdin.Stat()
+	stderrInfo, stderrErr := stderr.Stat()
+	return stdinErr == nil &&
+		stderrErr == nil &&
+		os.SameFile(stdinInfo, stderrInfo)
+}
+
 func newService(
 	out io.Writer,
-	terminal bool,
+	interactive bool,
 	captureAll bool,
 	transcriptLimit int,
 ) *Service {
@@ -107,7 +132,7 @@ func newService(
 
 	return &Service{
 		out:             out,
-		terminal:        terminal,
+		interactive:     interactive,
 		captureAll:      captureAll,
 		transcriptLimit: transcriptLimit,
 		operations:      make(map[OperationID]*operationState),
@@ -132,9 +157,9 @@ func (s *Service) Begin(options Options) error {
 		s.mode = ModeQuiet
 	case s.structured:
 		s.mode = ModePlain
-	case options.Debug && s.terminal:
+	case options.Debug && s.interactive:
 		s.mode = ModeDebugTTY
-	case options.Debug || !s.terminal:
+	case options.Debug || !s.interactive:
 		s.mode = ModePlain
 	default:
 		s.mode = ModeInteractive
@@ -769,9 +794,17 @@ func (s *Service) changePendingBytes(delta int) bool {
 func (s *Service) startProgramLocked() error {
 	ready := make(chan struct{})
 	model := newProgressModel(ready)
+	// A typed nil *os.File must become an untyped nil reader so Bubble Tea
+	// disables input instead of falling back to process stdin. Without an
+	// input the terminal stays in cooked mode and every capability probe
+	// reply would sit unread in the shared input queue.
+	var input io.Reader
+	if s.input != nil {
+		input = s.input
+	}
 	program := tea.NewProgram(
 		model,
-		tea.WithInput(nil),
+		tea.WithInput(input),
 		tea.WithOutput(s.out),
 		tea.WithoutSignalHandler(),
 	)

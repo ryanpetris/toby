@@ -88,8 +88,14 @@ command transcript when extraction progress begins. Debug and redirected modes
 remain append-only and preserve the Buildah output. A successful startup
 clears the presentation before the application starts. A
 failed startup also clears it and reports only
-`Toby startup failed. Re-run with --debug for details.` When stderr is not a
-terminal, startup output is append-only without Bubble Tea controls.
+`Toby startup failed. Re-run with --debug for details.` Interactive
+presentation requires stdin and stderr to be the same terminal: the renderer
+probes terminal capabilities through stderr and must read the replies from
+that terminal's input, so it owns keyboard input while it runs. Keystrokes
+typed during startup are consumed rather than forwarded to the application;
+Ctrl+C, Ctrl+Z, and Ctrl+\ keep their usual interrupt, suspend, and quit
+meanings. When stdin or stderr is redirected or they are different terminals,
+startup output is append-only without Bubble Tea controls.
 
 For scripts that require only the foreground application's output, pass:
 
