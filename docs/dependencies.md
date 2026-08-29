@@ -30,9 +30,9 @@ file and every changed indirect dependency in the Go module cache.
 | github.com/spf13/cobra | v1.10.2 | Apache-2.0 |
 | go.uber.org/dig | v1.19.0 | MIT |
 | go.uber.org/fx | v1.24.0 | MIT |
-| golang.org/x/crypto | v0.52.0 | BSD-3-Clause |
-| golang.org/x/sys | v0.46.0 | BSD-3-Clause |
-| golang.org/x/term | v0.43.0 | BSD-3-Clause |
+| golang.org/x/crypto | v0.55.0 | BSD-3-Clause |
+| golang.org/x/sys | v0.47.0 | BSD-3-Clause |
+| golang.org/x/term | v0.45.0 | BSD-3-Clause |
 | google.golang.org/grpc | v1.82.1 | Apache-2.0 |
 | google.golang.org/protobuf | v1.36.11 | BSD-3-Clause |
 | gopkg.in/yaml.v3 | v3.0.1 | MIT and Apache-2.0 |
@@ -76,10 +76,10 @@ file and every changed indirect dependency in the Go module cache.
 | github.com/yosida95/uritemplate/v3 | v3.0.2 | BSD-3-Clause |
 | go.uber.org/multierr | v1.10.0 | MIT |
 | go.uber.org/zap | v1.26.0 | MIT |
-| golang.org/x/net | v0.54.0 | BSD-3-Clause |
+| golang.org/x/net | v0.58.0 | BSD-3-Clause |
 | golang.org/x/oauth2 | v0.36.0 | BSD-3-Clause |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause |
-| golang.org/x/text | v0.37.0 | BSD-3-Clause |
+| golang.org/x/text | v0.41.0 | BSD-3-Clause |
 | google.golang.org/genproto/googleapis/rpc | v0.0.0-20260414002931-afd174a4e478 | Apache-2.0 |
 | gopkg.in/check.v1 | v1.0.0-20201130134442-10cb98267c6c | BSD-2-Clause |
 | gotest.tools/v3 | v3.5.2 | Apache-2.0 |
