@@ -126,11 +126,11 @@ func TestRunnerCreatesIsolatedSessions(t *testing.T) {
 
 	snapshot := validSessionSnapshot()
 	snapshot.Runtime.Name = "first"
-	if server := runner.server(nil, snapshot); server == nil {
+	if server := runner.server(Clients{}, snapshot); server == nil {
 		t.Fatal("first server is nil")
 	}
 	snapshot.Runtime.Name = "second"
-	if server := runner.server(nil, snapshot); server == nil {
+	if server := runner.server(Clients{}, snapshot); server == nil {
 		t.Fatal("second server is nil")
 	}
 
@@ -163,7 +163,7 @@ func TestRunnerServeWaitsForClientClose(t *testing.T) {
 	go func() {
 		serveResult <- runner.Serve(
 			t.Context(),
-			nil,
+			Clients{},
 			validSessionSnapshot(),
 			serverTransport,
 		)
@@ -199,7 +199,7 @@ func TestRunnerServeClosesSessionWhenContextEnds(t *testing.T) {
 	go func() {
 		serveResult <- runner.Serve(
 			ctx,
-			nil,
+			Clients{},
 			validSessionSnapshot(),
 			serverTransport,
 		)
@@ -227,7 +227,7 @@ func TestRunnerServeValidatesInputs(t *testing.T) {
 
 	if err := runner.Serve(
 		nilContext,
-		nil,
+		Clients{},
 		validSessionSnapshot(),
 		transport,
 	); err == nil {
@@ -235,7 +235,7 @@ func TestRunnerServeValidatesInputs(t *testing.T) {
 	}
 	if err := runner.Serve(
 		t.Context(),
-		nil,
+		Clients{},
 		validSessionSnapshot(),
 		nil,
 	); err == nil {
@@ -243,7 +243,7 @@ func TestRunnerServeValidatesInputs(t *testing.T) {
 	}
 	if err := runner.Serve(
 		t.Context(),
-		nil,
+		Clients{},
 		SessionSnapshot{},
 		transport,
 	); err == nil {
@@ -253,7 +253,7 @@ func TestRunnerServeValidatesInputs(t *testing.T) {
 	var nilRunner *Runner
 	if err := nilRunner.Serve(
 		t.Context(),
-		nil,
+		Clients{},
 		validSessionSnapshot(),
 		transport,
 	); err == nil {

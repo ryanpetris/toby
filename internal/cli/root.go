@@ -108,6 +108,7 @@ func NewRootCommand(params Params) *cobra.Command {
 
 	systemCommands := []*cobra.Command{
 		newAgentCommand(params),
+		newApprovalsCommand(params),
 		newCompletionCommand(),
 	}
 	for _, command := range systemCommands {

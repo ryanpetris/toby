@@ -244,14 +244,24 @@ The connector does not know:
 The built-in `toby` target starts a fresh MCP server session for each connector.
 It exposes host Git operations and bounded documentation/session resources.
 The MCP tool names are `git_commit`, `git_fetch`, `git_push`, `git_rebase`,
-`git_tag`, and `resources_read`. Approval rules still use the host-action ids
-`git.commit`, `git.fetch`, `git.push`, `git.rebase`, and `git.tag`.
+`git_tag`, `approvals_wait`, and `resources_read`. Approval rules still use
+the host-action ids `git.commit`, `git.fetch`, `git.push`, `git.rebase`, and
+`git.tag`.
 
 Host Git requests return to the launch process as typed host-action messages on
 the client-opened `OpenSession` gRPC stream. They are sent only in response to a
 request initiated through that launch's sandbox connector. The launch process
 resolves repositories, uses host credentials and signing configuration, and
 applies approval policy. The agent has no standing Git authority.
+
+When an action's permission resolves to ask, the tool returns an approval id
+instead of running: the launch holds the exact request as a pending approval,
+and the agent is told to have the user run `toby approvals <id>` in another
+terminal and to call `approvals_wait` with the id. Approving executes the held
+request in the launch process and `approvals_wait` returns the result the
+original tool call would have produced; denying is final for that record, and
+a repeated identical tool call creates a fresh approval. The sandbox cannot
+reach the agent socket, so only host-side processes can decide approvals.
 
 Session introspection contains sandbox-visible projects, mounts, tools, models
 summaries, and MCP status. It excludes host paths, capability paths, upstream

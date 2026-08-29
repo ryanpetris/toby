@@ -10,7 +10,7 @@ func TestResolve(t *testing.T) {
 		rule Rule
 		def  Rule
 		yolo bool
-		want Decision
+		want Outcome
 	}{
 		// Explicit deny wins over everything, including yolo.
 		{"explicit deny", RuleDeny, RuleAllow, false, Deny},
@@ -22,28 +22,28 @@ func TestResolve(t *testing.T) {
 		{"yolo approves explicit ask", RuleAsk, RuleAllow, true, Allow},
 		{"yolo approves default-deny", RuleUnset, RuleDeny, true, Allow},
 
-		// Explicit always-ask overrides yolo; a default of always-ask does not.
-		{"always-ask overrides yolo", RuleAlwaysAsk, RuleAllow, true, Deny},
-		{"always-ask denies without yolo", RuleAlwaysAsk, RuleAllow, false, Deny},
+		// Explicit always-ask overrides yolo and asks; a default of always-ask does not.
+		{"always-ask overrides yolo", RuleAlwaysAsk, RuleAllow, true, Ask},
+		{"always-ask asks without yolo", RuleAlwaysAsk, RuleAllow, false, Ask},
 		{"default always-ask still yields to yolo", RuleUnset, RuleAlwaysAsk, true, Allow},
 
 		// Explicit allow.
 		{"explicit allow", RuleAllow, RuleAsk, false, Allow},
 
-		// Explicit ask denies (overriding a permissive default).
-		{"explicit ask denies", RuleAsk, RuleAllow, false, Deny},
+		// Explicit ask asks (overriding a permissive default).
+		{"explicit ask asks", RuleAsk, RuleAllow, false, Ask},
 
 		// Caller default when unset.
 		{"default allow", RuleUnset, RuleAllow, false, Allow},
 		{"default deny", RuleUnset, RuleDeny, false, Deny},
-		{"default ask denies", RuleUnset, RuleAsk, false, Deny},
-		{"unspecified default denies", RuleUnset, RuleUnset, false, Deny},
+		{"default ask asks", RuleUnset, RuleAsk, false, Ask},
+		{"unspecified default asks", RuleUnset, RuleUnset, false, Ask},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Resolve(tt.rule, tt.def, tt.yolo); got != tt.want {
-				t.Fatalf("decision = %v, want %v", got, tt.want)
+				t.Fatalf("outcome = %v, want %v", got, tt.want)
 			}
 		})
 	}

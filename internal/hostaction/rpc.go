@@ -27,6 +27,10 @@ const (
 	CodeProjectNotVisible = -32007
 	// CodePermissionDenied reports a denied host action.
 	CodePermissionDenied = -32008
+	// CodeApprovalRequired reports a host action held for an out-of-band approval.
+	CodeApprovalRequired = -32009
+	// CodeApprovalNotFound reports an unknown or already-swept approval id.
+	CodeApprovalNotFound = -32010
 )
 
 // RPCRequest is one JSON-RPC request.

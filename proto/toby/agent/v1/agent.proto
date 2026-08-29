@@ -199,6 +199,45 @@ message StopResponse {
   string correlation_id = 1;
 }
 
+// PendingApproval describes one undecided launch approval.
+message PendingApproval {
+  string approval_id = 1;
+  string action = 2;
+  string name = 3;
+  string message = 4;
+  int64 created_unix_milliseconds = 5;
+  string launch_session_id = 6;
+}
+
+// ApprovalListRequest asks every connected launch for its pending approvals.
+message ApprovalListRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+}
+
+// ApprovalListResponse aggregates pending approvals across launches.
+message ApprovalListResponse {
+  string correlation_id = 1;
+  repeated PendingApproval approvals = 2;
+  uint64 unreachable_sessions = 3;
+}
+
+// ApprovalDecideRequest records one approval decision.
+message ApprovalDecideRequest {
+  string correlation_id = 1;
+  string session_id = 2;
+  string approval_id = 3;
+  bool approve = 4;
+}
+
+// ApprovalDecideResponse reports the recorded decision.
+message ApprovalDecideResponse {
+  string correlation_id = 1;
+  PendingApproval approval = 2;
+  string status = 3;
+  bool changed = 4;
+}
+
 // ResourceListRequest selects the session that owns the listing operation.
 message ResourceListRequest {
   string correlation_id = 1;
@@ -464,6 +503,10 @@ service AgentService {
   rpc Status(StatusRequest) returns (StatusResponse);
   // Stop begins graceful agent-service teardown.
   rpc Stop(StopRequest) returns (StopResponse);
+  // ListApprovals aggregates pending launch approvals.
+  rpc ListApprovals(ApprovalListRequest) returns (ApprovalListResponse);
+  // DecideApproval records one approval decision on its owning launch.
+  rpc DecideApproval(ApprovalDecideRequest) returns (ApprovalDecideResponse);
   // ListResources streams non-secret active resources.
   rpc ListResources(ResourceListRequest) returns (stream ResourceListItem);
   // ReadResourceLog streams one exact or latest retained JSONL file.

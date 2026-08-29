@@ -96,6 +96,8 @@ The `docker` tool is an explicit high-trust exception that exposes the host
 Docker daemon through a run-scoped relay. Docker is not otherwise required or
 used by Toby.
 
+Manage the rest of the system with `toby volume`, `toby image`, `toby agent`,
+and `toby approvals` (decide pending host-action approvals from any terminal).
 Run `toby --help` for the complete command list and `toby <command> --help` for
 command-specific options.
 

@@ -113,6 +113,18 @@ host Git travel over the client-opened `OpenSession` stream and are handled by
 the launch process. They are emitted only after a sandbox request reaches the
 launch connector and is forwarded to the agent resource serving that request.
 
+When a host action's permission resolves to ask, the launch parks the exact
+request as a pending approval named by a short id and answers
+approval-required. The user decides from any terminal with `toby approvals`,
+which reaches connected launches through two unary agent RPCs. Approving
+re-dispatches the held request through the launch's own host-action router
+under a one-shot in-process grant and saves the response; the agent collects
+that response through the built-in MCP `approvals_wait` tool, receiving the
+result the original tool call would have produced. Denials are final per
+record. Approval state, decisions, and execution never leave the launch
+process: the agent only routes listings and decisions, and launch teardown
+joins in-flight approved executions before denying the undecided remainder.
+
 `toby agent stop`, `SIGINT`, and `SIGTERM` begin the same bounded agent
 shutdown. The agent sends each connected launch a shutdown request with
 a 17-second client deadline while retaining a private 20-second deadline. A

@@ -4,27 +4,27 @@
 // passes it in, so nothing here needs to know which actions exist.
 package permission
 
-// Resolve applies the policy precedence and returns the decision. rule is the
+// Resolve applies the policy precedence and returns the outcome. rule is the
 // configured rule for the action (RuleUnset when nothing is configured);
 // defaultRule is the caller's default, used only when nothing is configured.
 //
 // Precedence:
 //
 //  1. an explicit deny rule always wins, even under yolo;
-//  2. an explicit always-ask rule denies, even under yolo;
+//  2. an explicit always-ask rule asks, even under yolo;
 //  3. yolo approves everything else;
 //  4. an explicit allow rule;
 //  5. an explicit ask rule, otherwise the caller's default;
-//  6. an ask outcome (and an unspecified default) becomes a deny.
+//  6. an unspecified default asks.
 //
 // always-ask overrides yolo only as an explicit config rule; a caller default of
 // always-ask does not, since yolo is the user's own override.
-func Resolve(rule, defaultRule Rule, yolo bool) Decision {
+func Resolve(rule, defaultRule Rule, yolo bool) Outcome {
 	switch {
 	case rule == RuleDeny:
 		return Deny
 	case rule == RuleAlwaysAsk:
-		return Deny
+		return Ask
 	case yolo:
 		return Allow
 	case rule == RuleAllow:
@@ -41,6 +41,6 @@ func Resolve(rule, defaultRule Rule, yolo bool) Decision {
 	case RuleDeny:
 		return Deny
 	default: // RuleAsk, RuleAlwaysAsk as a default, or an unspecified default
-		return Deny
+		return Ask
 	}
 }

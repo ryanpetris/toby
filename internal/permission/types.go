@@ -1,6 +1,6 @@
 package permission
 
-// Rule values and the binary decision they resolve to.
+// Rule values and the policy outcome they resolve to.
 
 import "fmt"
 
@@ -53,22 +53,28 @@ func (r Rule) String() string {
 	}
 }
 
-// Decision is the final, binary outcome handed to a caller.
-type Decision int
+// Outcome is the resolved policy outcome handed to a caller.
+type Outcome int
 
-var _ fmt.Stringer = Decision(0)
+var _ fmt.Stringer = Outcome(0)
 
 const (
 	// Deny refuses the requested action.
-	Deny Decision = iota // refuse the action
+	Deny Outcome = iota // refuse the action
 	// Allow permits the requested action.
 	Allow // permit the action
+	// Ask requires the user's decision before the action may run.
+	Ask // ask the user
 )
 
 // String returns the canonical textual representation.
-func (d Decision) String() string {
-	if d == Allow {
+func (o Outcome) String() string {
+	switch o {
+	case Allow:
 		return "allow"
+	case Ask:
+		return "ask"
+	default:
+		return "deny"
 	}
-	return "deny"
 }

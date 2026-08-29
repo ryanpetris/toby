@@ -14,6 +14,7 @@ import (
 	"petris.dev/toby/internal/config/session"
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/diagnostic/warning"
+	"petris.dev/toby/internal/hostaction/methods/approvals"
 	"petris.dev/toby/internal/hostaction/methods/git"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/sandbox"
@@ -47,6 +48,7 @@ func processModule() fx.Option {
 		shutdown.Module(),
 		agent.ClientModule(),
 		approval.Module(),
+		approvals.Module(),
 		git.Module(),
 		status.Module(),
 		lifecycle.Module(),
@@ -132,6 +134,7 @@ type sessionRunnerParams struct {
 	Lifecycle     *lifecycle.Runner
 	Sandbox       *bwrap.ToolService
 	Git           *git.Service
+	Approvals     *approvals.Service
 	Approval      *approval.Service
 	Status        *status.Service
 	Warnings      *warning.Service

@@ -21,6 +21,7 @@ func newSessionRunner(params sessionRunnerParams) run.Runner {
 		Lifecycle:     params.Lifecycle,
 		Sandbox:       params.Sandbox,
 		Git:           params.Git,
+		Approvals:     params.Approvals,
 		Approval:      params.Approval,
 		Status:        params.Status,
 		Warnings:      params.Warnings,

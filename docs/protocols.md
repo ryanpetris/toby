@@ -137,6 +137,8 @@ The service exposes these RPCs:
 | `ReleaseResource` | unary | Release one lease owned by the session |
 | `Status` | unary | Return non-secret agent state and activity counts |
 | `Stop` | unary | Acknowledge and begin graceful agent shutdown |
+| `ListApprovals` | unary | Aggregate pending launch approvals |
+| `DecideApproval` | unary | Record one approval decision on its owning launch |
 | `ListResources` | server stream | Return non-secret active resource entries |
 | `ReadResourceLog` | server stream | Return one retained JSONL operation log |
 | `ListModels` | server stream | Discover or return cached models for one lease |
@@ -556,10 +558,27 @@ The supported method parameters are:
 | `git.push` | `repository`, `branch`, optional `origin`, optional `tags` |
 | `git.rebase` | `repository` and exactly one of `base`, `continue`, or `abort` |
 | `git.tag` | `repository`, `tag`, `message`, optional `target` |
+| `approvals.list` | none |
+| `approvals.decide` | `approval_id`, `approve` |
+| `approvals.wait` | `approval_id`, optional `timeout_ms` |
 
 Repository values name sandbox-visible projects, not host paths. The launch
 resolves them against its immutable project snapshot and applies action
 approval before starting Git.
+
+When an action's permission resolves to ask, the launch holds the exact
+request as a pending approval and answers with error `-32009`, whose `data`
+carries `approval_id`, `name`, and `message`. The user decides with
+`toby approvals`; approving re-dispatches the held request through the
+launch's own router under a one-shot in-process grant and saves the JSON-RPC
+response on the record. `approvals.wait` blocks until the record is decided
+(its `timeout_ms` is capped at 30 minutes, default 5) and reports
+`{"approval_id", "status", "action", "response"}` where `status` is
+`approved`, `denied`, or `pending` and `response` is the saved response of the
+executed request. `approvals.list` reports the launch's pending records, and
+`approvals.decide` records one decision, reporting `changed: false` when the
+record was already decided; denies are final. All records are denied at launch
+teardown after in-flight executions are joined.
 
 JSON-RPC errors use the standard parse, invalid-request, method-not-found,
 invalid-params, and internal codes, plus:
@@ -568,10 +587,19 @@ invalid-params, and internal codes, plus:
 | ---: | --- |
 | `-32007` | Project is not visible to the launch |
 | `-32008` | Permission was denied |
+| `-32009` | Approval is required; `data` names the pending approval |
+| `-32010` | Approval id is unknown or already swept |
 
 The agent does not execute Git and has no standing Git credential authority.
 The live launch process handles the request; losing the agent session revokes
 that route.
+
+The `toby approvals` CLI reaches pending approvals through two unary
+`AgentService` RPCs: `ListApprovals` aggregates `approvals.list` across the
+connected launch sessions (counting launches that do not answer within five
+seconds as unreachable), and `DecideApproval` fans `approvals.decide` out
+sequentially until one launch claims the approval id. Both reuse each
+session's reverse host-action channel; the agent never holds approval state.
 
 ## Private Git supervisor protocol
 

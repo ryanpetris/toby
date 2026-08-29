@@ -30,6 +30,7 @@ import (
 	"petris.dev/toby/internal/diagnostic/exitcode"
 	"petris.dev/toby/internal/diagnostic/warning"
 	"petris.dev/toby/internal/hostaction"
+	"petris.dev/toby/internal/hostaction/methods/approvals"
 	"petris.dev/toby/internal/hostaction/methods/git"
 	"petris.dev/toby/internal/lifecycle"
 	"petris.dev/toby/internal/oci"
@@ -57,6 +58,7 @@ type NativeRunnerParams struct {
 	Lifecycle     *lifecycle.Runner
 	Sandbox       *bwrap.ToolService
 	Git           *git.Service
+	Approvals     *approvals.Service
 	Approval      *approval.Service
 	Status        *status.Service
 	Warnings      *warning.Service
@@ -79,6 +81,7 @@ type NativeRunner struct {
 	lifecycle     *lifecycle.Runner
 	sandbox       *bwrap.ToolService
 	git           *git.Service
+	approvals     *approvals.Service
 	approval      *approval.Service
 	status        *status.Service
 	warnings      *warning.Service
@@ -105,6 +108,7 @@ func NewNativeRunner(params NativeRunnerParams) *NativeRunner {
 		lifecycle:     params.Lifecycle,
 		sandbox:       params.Sandbox,
 		git:           params.Git,
+		approvals:     params.Approvals,
 		approval:      params.Approval,
 		status:        params.Status,
 		warnings:      params.Warnings,
@@ -473,10 +477,17 @@ func (r *NativeRunner) Run(
 		r.git.SetResolver(nil)
 		r.git.SetApprover(nil)
 	}()
-	router, err := hostaction.NewRouter([]hostaction.Capability{r.git})
+	router, err := hostaction.NewRouter(
+		[]hostaction.Capability{r.git, r.approvals},
+	)
 	if err != nil {
 		return err
 	}
+	// Teardown order matters: joining the approve-time executor precedes the
+	// final DenyAll so completed executions never race a swept registry.
+	r.approvals.Bind(r.approval.Registry(), router.Handle)
+	defer r.approval.Registry().DenyAll()
+	defer r.approvals.Close()
 	hostActionHandler.SetRouter(router)
 	backgroundOperation := r.status.StartOperation("Registering resources")
 
@@ -757,6 +768,8 @@ func (r *NativeRunner) validate() error {
 		return fmt.Errorf("native runner sandbox facade is not configured")
 	case r.git == nil:
 		return fmt.Errorf("native runner Git capability is not configured")
+	case r.approvals == nil:
+		return fmt.Errorf("native runner approvals capability is not configured")
 	case r.approval == nil:
 		return fmt.Errorf("native runner approval service is not configured")
 	case r.status == nil:

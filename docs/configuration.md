@@ -241,8 +241,11 @@ path overrides the default. `--yolo` adds `/`. Modes other than `allow` or
 `deny` are skipped with `permission.path-invalid`.
 
 Action rules are `allow`, `deny`, `ask`, or `always-ask`. `always-ask` still
-requires confirmation under `--yolo`. When a prompt cannot be displayed, an
-action that requires one is denied.
+requires a decision under `--yolo`. An action whose rule resolves to ask is
+held as a pending approval: the tool returns an approval id, and the user
+decides it from any terminal with `toby approvals <id>` (see
+[docs/management.md](management.md)). Approving runs the held action and
+delivers its result to the waiting agent; denying is final for that approval.
 
 ### `resources.models`
 

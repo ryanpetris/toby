@@ -68,11 +68,12 @@ func NewRunner(params RunnerParams) (*Runner, error) {
 }
 
 func (r *Runner) server(
-	client GitClient,
+	clients Clients,
 	snapshot SessionSnapshot,
 ) *mcp.Server {
 	session := &Session{
-		Git:       client,
+		Git:       clients.Git,
+		Approvals: clients.Approvals,
 		Snapshot:  snapshot.Clone(),
 		Resources: append([]Resource(nil), r.resources...),
 	}
@@ -92,7 +93,7 @@ func (r *Runner) server(
 // connection to end. Canceling ctx closes the connection before returning.
 func (r *Runner) Serve(
 	ctx context.Context,
-	client GitClient,
+	clients Clients,
 	snapshot SessionSnapshot,
 	transport mcp.Transport,
 ) error {
@@ -109,7 +110,7 @@ func (r *Runner) Serve(
 		return fmt.Errorf("serve Toby MCP session: invalid snapshot: %w", err)
 	}
 
-	session, err := r.server(client, snapshot).Connect(ctx, transport, nil)
+	session, err := r.server(clients, snapshot).Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("connect Toby MCP session: %w", err)
 	}

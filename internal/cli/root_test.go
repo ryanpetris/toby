@@ -69,6 +69,7 @@ func TestRootHelpGroupsCommands(t *testing.T) {
 		"codex":      rootCommandGroupAI,
 		"exec":       rootCommandGroupTools,
 		"agent":      rootCommandGroupSystem,
+		"approvals":  rootCommandGroupSystem,
 		"volume":     rootCommandGroupStorage,
 		"image":      rootCommandGroupStorage,
 		"completion": rootCommandGroupSystem,

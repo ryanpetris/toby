@@ -21,6 +21,7 @@ import (
 	"petris.dev/toby/internal/mcpgateway/sidecar"
 	"petris.dev/toby/internal/sandbox/pasta"
 	"petris.dev/toby/internal/tobymcp"
+	approvalsservice "petris.dev/toby/internal/tobymcp/services/approvals"
 	gitservice "petris.dev/toby/internal/tobymcp/services/git"
 	sessionservice "petris.dev/toby/internal/tobymcp/services/session"
 
@@ -34,6 +35,7 @@ func Module() fx.Option {
 	return fx.Module(
 		"mcpgateway",
 		tobymcp.Module(),
+		approvalsservice.Module(),
 		gitservice.Module(),
 		sessionservice.Module(),
 		pasta.Module(),

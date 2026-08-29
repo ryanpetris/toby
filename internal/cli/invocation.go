@@ -20,6 +20,9 @@ func IsConfigFreeInvocation(arguments []string) bool {
 	if isConfigFreeAgentInvocation(arguments) {
 		return true
 	}
+	if isConfigFreeApprovalsInvocation(arguments) {
+		return true
+	}
 	if isConfigFreeVolumeInvocation(arguments) {
 		return true
 	}

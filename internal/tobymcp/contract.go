@@ -1,15 +1,17 @@
 package tobymcp
 
-// Defines the contributor contract and live reverse Git capability consumed
+// Defines the contributor contract and the live reverse capabilities consumed
 // by each native MCP connection.
 
 import (
 	"context"
 	"fmt"
 	"io/fs"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"petris.dev/toby/internal/hostaction/methods/approvals"
 	"petris.dev/toby/internal/hostaction/methods/git"
 )
 
@@ -25,6 +27,19 @@ type GitClient interface {
 	Rebase(context.Context, git.RebaseParams) (git.Result, error)
 	// Tag creates an annotated Git tag.
 	Tag(context.Context, git.TagParams) (git.Result, error)
+}
+
+// ApprovalsClient waits on launch approval decisions through the live launch
+// client.
+type ApprovalsClient interface {
+	// Wait blocks until the approval is decided or the timeout elapses.
+	Wait(ctx context.Context, approvalID string, timeout time.Duration) (approvals.WaitResult, error)
+}
+
+// Clients groups one connection's live launch-owned reverse capabilities.
+type Clients struct {
+	Git       GitClient
+	Approvals ApprovalsClient
 }
 
 // Contributor provides tools and resources to the sandbox MCP server.

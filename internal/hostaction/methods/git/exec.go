@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"petris.dev/toby/internal/approval"
 	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/hostaction"
 )
@@ -179,6 +180,10 @@ func readGitCapture(file *os.File) (string, error) {
 }
 
 func errnoFor(err error) error {
+	var pending *approval.PendingError
+	if errors.As(err, &pending) {
+		return syscall.EAGAIN
+	}
 	if errors.Is(err, ErrProjectNotVisible) || errors.Is(err, ErrPermissionDenied) {
 		return syscall.EACCES
 	}
@@ -190,6 +195,10 @@ func errnoFor(err error) error {
 }
 
 func rpcErrorCode(err error) int {
+	var pending *approval.PendingError
+	if errors.As(err, &pending) {
+		return hostaction.CodeApprovalRequired
+	}
 	if errors.Is(err, ErrPermissionDenied) {
 		return hostaction.CodePermissionDenied
 	}
@@ -203,4 +212,18 @@ func rpcErrorCode(err error) int {
 		return hostaction.CodeInternalError
 	}
 	return hostaction.CodeInternalError
+}
+
+// rpcErrorData supplies the structured error data paired with an error's RPC
+// code; only approval-required errors carry any.
+func rpcErrorData(err error) any {
+	var pending *approval.PendingError
+	if errors.As(err, &pending) {
+		return hostaction.ApprovalRequiredData{
+			ApprovalID: pending.ID,
+			Name:       pending.Name,
+			Message:    pending.Message,
+		}
+	}
+	return nil
 }

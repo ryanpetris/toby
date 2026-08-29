@@ -263,6 +263,28 @@ Prune selects only dangling objects. `--force` skips confirmation but does not
 override an active object lease. When no dangling objects exist, the command
 prints `No dangling images.`
 
+## Approvals
+
+When a host action's permission rule resolves to ask, the launch holds the
+request as a pending approval and the requesting agent receives an approval
+id. Decide it from any terminal:
+
+```sh
+toby approvals
+toby approvals <approval-id>
+toby approvals <approval-id> approve
+toby approvals <approval-id> deny
+```
+
+The bare command lists pending approvals across connected launches (id,
+action, age, and description). Naming an id describes the action and asks
+`Approve? [y/N]`; anything other than `y`/`yes` records a deny. Approving runs
+the held action in its launch process, which delivers the result to the
+waiting agent; denying is final, and a repeated identical action creates a new
+approval. Deciding an unknown id fails with exit code 1, and launches that do
+not answer within five seconds are reported as unreachable. The command talks
+only to the per-user agent and does not load launch configuration.
+
 ## Per-user agent
 
 A launch normally starts one agent at:
@@ -296,6 +318,7 @@ toby agent status
 toby agent resources
 toby agent logs <resource-id> [--operation <operation-id>]
 toby agent stop
+toby approvals [<approval-id>] [approve|deny]
 tobyd [--persistent]
 ```
 

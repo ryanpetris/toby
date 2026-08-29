@@ -7,10 +7,12 @@ import (
 )
 
 // Session is the per-connection execution context shared across tool and
-// resource calls. Snapshot is the sole introspection source. Git is a live
-// launch-owned reverse capability and Resources is a detached service catalog.
+// resource calls. Snapshot is the sole introspection source. Git and Approvals
+// are live launch-owned reverse capabilities and Resources is a detached
+// service catalog.
 type Session struct {
 	Git       GitClient
+	Approvals ApprovalsClient
 	Snapshot  SessionSnapshot
 	Resources []Resource
 	mu        sync.Mutex

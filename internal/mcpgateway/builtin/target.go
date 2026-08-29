@@ -15,6 +15,7 @@ import (
 	"petris.dev/toby/internal/mcpgateway"
 	"petris.dev/toby/internal/mcpgateway/connector"
 	"petris.dev/toby/internal/tobymcp"
+	approvalsservice "petris.dev/toby/internal/tobymcp/services/approvals"
 	gitservice "petris.dev/toby/internal/tobymcp/services/git"
 )
 
@@ -79,7 +80,10 @@ func (a *acquired) ServeConnector(
 	transport := &mcp.IOTransport{Reader: conn, Writer: conn}
 	if err := a.runner.Serve(
 		sessionCtx,
-		gitservice.NewReverseGitClient(a.caller),
+		tobymcp.Clients{
+			Git:       gitservice.NewReverseGitClient(a.caller),
+			Approvals: approvalsservice.NewReverseApprovalsClient(a.caller),
+		},
 		a.snapshot,
 		transport,
 	); err != nil && sessionCtx.Err() == nil {

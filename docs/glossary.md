@@ -42,6 +42,15 @@ code to match rather than redefining a term here.
 - **primary tool** — the application tool a run launches in the foreground (the
   one the user named). Use this term when distinguishing it from selected
   dependency or context tools.
+- **approval** — one held host-action request awaiting the user's decision in
+  the launch CLI. Approving executes exactly the held request there and stores
+  its result for the waiting agent; denying is final for that record. All
+  records end with their launch.
+- **approval id** — the short token naming one approval. Tools return it in an
+  approval-required result, and the user passes it to `toby approvals`.
+- **grant** — the in-process, non-serializable marker that authorizes exactly
+  one execution of an approved held request. Grants never cross a process or
+  wire boundary.
 - **image** — an OCI manifest or index together with its verified content.
 - **image source** — the registry reference, OCI image-layout archive, or
   Dockerfile build used to materialize an image.

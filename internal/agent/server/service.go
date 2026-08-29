@@ -295,6 +295,17 @@ func (s *Service) session(id protocol.SessionID) *agentSession {
 	return s.sessions[id]
 }
 
+func (s *Service) sessionsSnapshot() []*agentSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sessions := make([]*agentSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
 func (s *Service) sessionCount() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
