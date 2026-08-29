@@ -16,7 +16,7 @@ func TestResolve(t *testing.T) {
 		{"explicit deny", RuleDeny, RuleAllow, false, Deny},
 		{"explicit deny beats yolo", RuleDeny, RuleAllow, true, Deny},
 
-		// Yolo approves everything that isn't an explicit deny — including explicit ask
+		// Yolo approves everything that isn't an explicit deny, including explicit ask
 		// and a default of deny.
 		{"yolo approves unset", RuleUnset, RuleAsk, true, Allow},
 		{"yolo approves explicit ask", RuleAsk, RuleAllow, true, Allow},

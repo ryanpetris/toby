@@ -14,7 +14,9 @@ import (
 
 	"petris.dev/toby/internal/agent/client"
 	"petris.dev/toby/internal/agent/protocol"
+	"petris.dev/toby/internal/diagnostic"
 	"petris.dev/toby/internal/diagnostic/exitcode"
+	"petris.dev/toby/internal/hostaction/methods/approvals"
 	"petris.dev/toby/internal/version"
 )
 
@@ -198,17 +200,12 @@ func decideApproval(
 	output := cmd.OutOrStdout()
 	switch {
 	case decision.Changed && approve:
-		_, err = fmt.Fprintf(
-			output,
-			"Approved %s (%s). The launch runs it now; the waiting agent receives the result.\n",
-			approvalID,
-			description,
-		)
+		_, err = fmt.Fprintf(output, "Approved %s (%s).\n", approvalID, description)
 	case decision.Changed:
 		_, err = fmt.Fprintf(output, "Denied %s (%s).\n", approvalID, description)
-	case approve && decision.Status == "approved":
+	case approve && decision.Status == approvals.StatusApproved:
 		_, err = fmt.Fprintf(output, "Approval %s was already approved.\n", approvalID)
-	case !approve && decision.Status == "denied":
+	case !approve && decision.Status == approvals.StatusDenied:
 		_, err = fmt.Fprintf(output, "Approval %s was already denied.\n", approvalID)
 	case approve:
 		return exitcode.New(
@@ -233,10 +230,15 @@ func reportUnreachableLaunches(cmd *cobra.Command, unreachable uint64) {
 	if unreachable == 0 {
 		return
 	}
-	fmt.Fprintf(
+	_, writeErr := fmt.Fprintf(
 		cmd.ErrOrStderr(),
 		"%d launch session(s) did not answer; their approvals are not shown.\n",
 		unreachable,
+	)
+	diagnostic.DiscardError(
+		"the unreachable-launch note is incidental diagnostics",
+		"write unreachable-launch note",
+		writeErr,
 	)
 }
 
