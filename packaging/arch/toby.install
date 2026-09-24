@@ -12,6 +12,6 @@ post_upgrade() {
     echo "toby: restart each user's daemon to use the new version: toby daemon restart"
 }
 
-post_remove() {
-    rm -rf /usr/lib/toby/versions
+pre_remove() {
+    /usr/lib/toby/dist/toby internal collect-versions --uninstall || true
 }

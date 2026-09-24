@@ -1,5 +1,9 @@
 #!/bin/sh
 set -e
-if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
-    systemctl disable --now toby-versions.timer || true
+if [ "$1" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl disable --now toby-versions.timer || true
+    fi
+    # Versions machines still use stay until they stop.
+    /usr/lib/toby/dist/toby internal collect-versions --uninstall || true
 fi

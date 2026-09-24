@@ -228,14 +228,24 @@ fn lock(versions: &Path) -> io::Result<nix::fcntl::Flock<std::fs::File>> {
 }
 
 /// Installs `binary` as `<versions>/<version>/toby` and points `current` at
-/// it (a package's post-install step, plan §3.3). Running processes keep
-/// the file they started from.
-pub fn install(binary: &Path, versions: &Path, version: &str) -> io::Result<()> {
+/// it (a package's post-install step, plan §3.3). A different binary with a
+/// version already installed goes into `<version>+<digest>`: machines may
+/// be running the one installed. Returns the directory's name.
+pub fn install(binary: &Path, versions: &Path, version: &str) -> io::Result<String> {
     use std::os::unix::fs::PermissionsExt;
     if !version_name(version) {
         return Err(io::Error::other(format!("{version:?} is not a version name")));
     }
     let _lock = lock(versions)?;
+    let digest = toby_store::hash::hash_file(binary)?;
+    let same =
+        |dir: &str| toby_store::hash::hash_file(&versions.join(dir).join("toby")).is_ok_and(|d| d == digest);
+    let version = if !versions.join(version).join("toby").exists() || same(version) {
+        version.to_string()
+    } else {
+        format!("{version}+{}", &digest[..12])
+    };
+    let version = version.as_str();
     let dir = versions.join(version);
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))?;
@@ -247,7 +257,33 @@ pub fn install(binary: &Path, versions: &Path, version: &str) -> io::Result<()> 
     let link = versions.join(".current.new");
     let _ = std::fs::remove_file(&link);
     std::os::unix::fs::symlink(version, &link)?;
-    std::fs::rename(&link, versions.join("current"))
+    std::fs::rename(&link, versions.join("current"))?;
+    Ok(version.to_string())
+}
+
+/// Removes every version nothing uses, `current` included, before the
+/// package goes (as root). Returns the versions still in use.
+pub fn uninstall(versions: &Path) -> io::Result<Vec<String>> {
+    if !nix::unistd::getuid().is_root() {
+        return Err(io::Error::other("only root sees every process that may use a version"));
+    }
+    let lock = lock(versions)?;
+    let used = used_by_processes(versions)?;
+    let _ = std::fs::remove_file(versions.join("current"));
+    let mut kept = Vec::new();
+    for v in installed(versions)? {
+        if used.contains(&v) {
+            kept.push(v);
+        } else {
+            std::fs::remove_dir_all(versions.join(&v))?;
+        }
+    }
+    if kept.is_empty() {
+        let _ = std::fs::remove_file(versions.join(LOCK));
+        drop(lock);
+        let _ = std::fs::remove_dir(versions);
+    }
+    Ok(kept)
 }
 
 /// Every process's use of installed versions, whoever runs it: its
@@ -367,9 +403,19 @@ mod tests {
         super::install(&binary, &versions, "1.0.0").unwrap();
         std::fs::write(&binary, b"two").unwrap();
         super::install(&binary, &versions, "1.1.0").unwrap();
+        // The same binary again changes nothing; another one with the same
+        // version gets a directory of its own.
+        assert_eq!(super::install(&binary, &versions, "1.1.0").unwrap(), "1.1.0");
+        std::fs::write(&binary, b"rebuilt").unwrap();
+        let rebuilt = super::install(&binary, &versions, "1.1.0").unwrap();
+        assert!(rebuilt.starts_with("1.1.0+"), "{rebuilt}");
+        assert_eq!(current(&versions).as_deref(), Some(rebuilt.as_str()));
+        assert_eq!(std::fs::read(versions.join("1.1.0/toby")).unwrap(), b"two");
+        std::fs::write(&binary, b"two").unwrap();
+        super::install(&binary, &versions, "1.1.0").unwrap();
         assert_eq!(current(&versions).as_deref(), Some("1.1.0"));
         assert_eq!(std::fs::read(versions.join("1.0.0/toby")).unwrap(), b"one");
-        assert_eq!(installed(&versions).unwrap(), ["1.0.0", "1.1.0"]);
+        assert_eq!(installed(&versions).unwrap().len(), 3);
         assert!(super::install(&binary, &versions, "../x").is_err());
         // A file held open, as toby-fs holds what a guest runs.
         let open = std::fs::File::open(versions.join("1.0.0/toby")).unwrap();

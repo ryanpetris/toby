@@ -83,6 +83,33 @@ mkdir -p "$dest/usr/bin"
 ln -sfn ../lib/toby/versions/current/toby "$dest/usr/bin/toby"
 install -Dm0644 "$repo/LICENSE" "$licenses/LICENSE"
 
+echo "==> Licenses of what toby is built from"
+# Every crate the build can use (dev-dependencies too), with mimalloc's C
+# source inside its crate, and the musl C library.
+if command -v cargo >/dev/null 2>&1; then
+    (cd "$repo" && cargo metadata --format-version 1 --locked --filter-platform "$arch-unknown-linux-musl") |
+        jq -r '.packages[] | select(.source != null) | [.name, .version, (.license // ""), (.manifest_path | sub("/Cargo.toml$"; ""))] | @tsv' |
+        while IFS="$(printf '\t')" read -r name ver lic dir; do
+            d=$licenses/crates/$name-$ver
+            mkdir -p "$d"
+            echo "$lic" > "$d/LICENSE-ID"
+            find "$dir" -maxdepth 1 -type f \( -iname 'LICEN[CS]E*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+                -exec cp {} "$d/" \;
+            find "$dir" -maxdepth 4 -path '*/c_src/*' -type f -iname 'LICENSE*' -exec cp {} "$d/" \; 2>/dev/null || true
+        done
+else
+    echo "stage.sh: cargo is not available, so the crates' licenses are left out" >&2
+fi
+musl_gcc=$(command -v musl-gcc 2>/dev/null || true)
+for musl in /usr/share/licenses/musl/COPYRIGHT /usr/share/doc/musl/copyright /usr/share/doc/musl-dev/copyright \
+    "${musl_gcc%/bin/musl-gcc}/usr/share/licenses/musl/COPYRIGHT"; do
+    if [ -f "$musl" ]; then
+        install -Dm0644 "$musl" "$licenses/musl/COPYRIGHT"
+        break
+    fi
+done
+[ -f "$licenses/musl/COPYRIGHT" ] || echo "stage.sh: musl's COPYRIGHT was not found" >&2
+
 echo "==> Cloud Hypervisor"
 tag=$(bundled cloud-hypervisor tag | unquote)
 asset=$(bundled cloud-hypervisor assets | for_arch)

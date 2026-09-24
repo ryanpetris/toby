@@ -399,6 +399,9 @@ pub enum InternalCommand {
     CollectVersions {
         #[arg(long, default_value = toby_config::global::BUNDLED_VERSIONS)]
         versions: PathBuf,
+        /// Remove every version nothing uses, current and new ones too
+        #[arg(long)]
+        uninstall: bool,
     },
 }
 

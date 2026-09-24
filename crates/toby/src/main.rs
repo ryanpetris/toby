@@ -100,10 +100,24 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             InternalCommand::Net { machine } => internal::net(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::InstallVersion { versions } => {
                 let exe = std::env::current_exe()?;
-                toby_daemon::versions::install(&exe, &versions, env!("CARGO_PKG_VERSION"))?;
-                collect_versions(&versions)
+                let installed = toby_daemon::versions::install(&exe, &versions, env!("CARGO_PKG_VERSION"))?;
+                println!("Installed version {installed}");
+                // Old versions that cannot go now are tried again later.
+                let _ = collect_versions(&versions);
+                Ok(ExitCode::SUCCESS)
             }
-            InternalCommand::CollectVersions { versions } => collect_versions(&versions),
+            InternalCommand::CollectVersions { versions, uninstall: false } => collect_versions(&versions),
+            InternalCommand::CollectVersions { versions, uninstall: true } => {
+                let kept = toby_daemon::versions::uninstall(&versions)?;
+                if !kept.is_empty() {
+                    eprintln!(
+                        "toby: versions {} are in use; remove them from {} once their machines stop",
+                        kept.join(", "),
+                        versions.display()
+                    );
+                }
+                Ok(ExitCode::SUCCESS)
+            }
         },
         Command::Guest(cmd) => match cmd {
             GuestCommand::Relay => {

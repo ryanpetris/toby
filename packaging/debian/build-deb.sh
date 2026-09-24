@@ -30,17 +30,12 @@ ARCH=$arch DOWNLOADS=${DOWNLOADS:-$out/downloads} "$repo/packaging/stage.sh" "$r
 doc=$root/usr/share/doc/toby
 mkdir -p "$doc"
 {
-    echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"
-    echo "Upstream-Name: toby"
-    echo
-    echo "Files: *"
-    echo "License: MIT"
-    echo
+    echo "Toby is under the MIT license. The package also contains the programs"
+    echo "and code below, under their own licenses."
     for f in $(cd "$root/usr/share/licenses/toby" && find . -type f | sort); do
-        echo "Files: $f"
-        echo "Comment: bundled; the license text follows"
-        sed 's/^$/./; s/^/ /' "$root/usr/share/licenses/toby/$f"
         echo
+        echo "==> ${f#./}"
+        cat "$root/usr/share/licenses/toby/$f"
     done
 } > "$doc/copyright"
 rm -rf "$root/usr/share/licenses"
