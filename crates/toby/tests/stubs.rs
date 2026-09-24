@@ -7,23 +7,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_toby");
 
 const INVOCATIONS: &[&[&str]] = &[
     &["run", "-f", "launch.toml"],
-    &["exec", "--", "true"],
-    &[
-        "exec",
-        "--as-root",
-        "--home",
-        "h",
-        "--root",
-        "r",
-        "--cwd",
-        "/",
-        "--",
-        "id",
-    ],
-    &["shell"],
-    &["sessions", "ls"],
-    &["sessions", "kill", "s1"],
-    &["attach"],
     &["machine", "ls"],
     &["machine", "stop", "--all"],
     &["machine", "logs", "m1", "-f"],

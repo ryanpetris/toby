@@ -10,7 +10,8 @@ decisions stay on the host.
 
 Toby is under development and cannot run tools yet; most commands report that
 they are not implemented. The design and milestones are in
-[`plans/vm-rewrite.md`](plans/vm-rewrite.md).
+[`plans/vm-rewrite.md`](plans/vm-rewrite.md); documentation for what exists is
+in [`docs/`](docs/README.md).
 
 ## Requirements
 

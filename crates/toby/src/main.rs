@@ -1,13 +1,15 @@
 //! The single Toby binary: the CLI and every host and guest component.
 
 mod cli;
+mod client;
 mod internal;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, GuestCommand, InternalCommand, ToolArgs};
+use cli::{Cli, Command, GuestCommand, InternalCommand, SessionsCommand, ToolArgs};
+use toby_proto::types::Identity;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -17,7 +19,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse_from(argv);
 
     match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("toby: {err:#}");
             ExitCode::FAILURE
@@ -29,13 +31,34 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread().enable_all().build()?)
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn identity(as_root: bool) -> Identity {
+    if as_root { Identity::Root } else { Identity::User }
+}
+
+/// A login shell of the session's account.
+const SHELL: &[&str] = &["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -l"];
+
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let name = match cli.command {
         Command::Run { .. } => "run",
-        Command::Exec(_) => "exec",
-        Command::Shell(_) => "shell",
-        Command::Sessions(_) => "sessions",
-        Command::Attach { .. } => "attach",
+        Command::Exec(a) => {
+            let argv = a
+                .command
+                .into_iter()
+                .map(|s| {
+                    s.into_string()
+                        .map_err(|s| anyhow::anyhow!("argument is not UTF-8: {s:?}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            return runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), a.cwd));
+        }
+        Command::Shell(a) => {
+            let argv = SHELL.iter().map(|s| s.to_string()).collect();
+            return runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), None));
+        }
+        Command::Sessions(SessionsCommand::Ls) => return runtime()?.block_on(client::list()),
+        Command::Sessions(SessionsCommand::Kill { id }) => return runtime()?.block_on(client::kill(&id)),
+        Command::Attach { session } => return runtime()?.block_on(client::attach(session)),
         Command::Machine(_) => "machine",
         Command::Mount(_) => "mount",
         Command::Unmount { .. } => "unmount",
@@ -57,23 +80,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             InternalCommand::Machine {
                 machine,
                 supervise: false,
-            } => return internal::machine(&machine),
+            } => return internal::machine(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::Machine { supervise: true, .. } => "internal machine --supervise",
-            InternalCommand::Fs { machine } => return internal::fs(&machine),
-            InternalCommand::Vm { machine } => return internal::vm(&machine),
-            InternalCommand::Net { machine } => return internal::net(&machine),
+            InternalCommand::Fs { machine } => return internal::fs(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::Vm { machine } => return internal::vm(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::Net { machine } => return internal::net(&machine).map(|()| ExitCode::SUCCESS),
         },
         Command::Guest(cmd) => match cmd {
             GuestCommand::Relay => {
-                return Ok(
-                    runtime()?.block_on(toby_guest::relay::run(toby_guest::paths::GuestPaths::from_env()))?
-                );
+                runtime()?.block_on(toby_guest::relay::run(toby_guest::paths::GuestPaths::from_env()))?;
+                return Ok(ExitCode::SUCCESS);
             }
             GuestCommand::Session { id } => {
-                return Ok(runtime()?.block_on(toby_guest::session::run(
+                runtime()?.block_on(toby_guest::session::run(
                     toby_guest::paths::GuestPaths::from_env(),
                     &id,
-                ))?);
+                ))?;
+                return Ok(ExitCode::SUCCESS);
             }
             GuestCommand::Connect { .. } => "guest connect",
             GuestCommand::Helper { .. } => "guest helper",

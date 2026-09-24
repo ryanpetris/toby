@@ -51,6 +51,10 @@ pub struct Forget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ping {}
 
+/// Asks for the relay's version and the guest boot ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hello {}
+
 messages! {
     pub enum Request {
         1 => Spawn(Spawn),
@@ -60,6 +64,7 @@ messages! {
         5 => Kill(Kill),
         6 => Forget(Forget),
         7 => Ping(Ping),
+        8 => Hello(Hello),
     }
 }
 
@@ -78,6 +83,13 @@ pub struct SessionList {
     pub sessions: Vec<SessionInfo>,
 }
 
+/// The relay's identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayInfo {
+    pub version: String,
+    pub boot_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Failed {
     pub error: String,
@@ -89,6 +101,7 @@ messages! {
         65 => Spawned(Spawned),
         66 => SessionList(SessionList),
         67 => Failed(Failed),
+        68 => RelayInfo(RelayInfo),
     }
 }
 

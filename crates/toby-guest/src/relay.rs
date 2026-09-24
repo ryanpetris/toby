@@ -162,6 +162,10 @@ impl Relay {
                 .forget(&f.session_id)
                 .map(|()| Response::Done(relay::Done {})),
             Request::Ping(_) => Ok(Response::Done(relay::Done {})),
+            Request::Hello(_) => Ok(Response::RelayInfo(relay::RelayInfo {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                boot_id: boot_id(),
+            })),
         };
         result.unwrap_or_else(Response::failed)
     }

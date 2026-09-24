@@ -72,12 +72,15 @@ impl Machine {
 
     /// Marks the machine ready once the relay control channel works.
     async fn relay_up(&self) {
-        if self.relay.ensure().await.is_err() {
-            return;
-        }
+        let info = match self.relay.call(&relay::Request::Hello(relay::Hello {})).await {
+            Ok(relay::Response::RelayInfo(info)) => info,
+            _ => return,
+        };
         self.update_status(|s| {
             s.state = State::Ready;
             s.proto = Some(types::V1);
+            s.relay_version = Some(info.version);
+            s.boot_id = Some(info.boot_id);
         });
         if !self.ready_sent.swap(true, std::sync::atomic::Ordering::AcqRel) {
             (self.on_ready)();
@@ -130,10 +133,6 @@ impl Machine {
                     return Ok(());
                 };
                 frame::send(&mut s, &Reply::version(version)).await?;
-                self.update_status(|st| {
-                    st.relay_version = Some(hello.version.clone());
-                    st.boot_id = Some(hello.boot_id.clone());
-                });
                 self.relay.reset().await;
                 self.relay_up().await;
             }

@@ -66,7 +66,12 @@ fn resolve_account(paths: &GuestPaths, identity: Identity) -> io::Result<Account
             uid: 0,
             gid: 0,
             home: "/root".into(),
-            shell: "/bin/sh".into(),
+            shell: if std::path::Path::new("/bin/bash").exists() {
+                "/bin/bash"
+            } else {
+                "/bin/sh"
+            }
+            .into(),
         }),
         Identity::User => {
             let user: UserInfo = record::read(&paths.user_file()).map_err(|e| {

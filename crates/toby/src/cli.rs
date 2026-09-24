@@ -98,6 +98,9 @@ pub struct MachineSelector {
     /// Root
     #[arg(long)]
     pub root: Option<String>,
+    /// Machine ID
+    #[arg(long, conflicts_with_all = ["home", "root"])]
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Args)]

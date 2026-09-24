@@ -44,6 +44,113 @@ impl Drop for RawMode {
     }
 }
 
+/// DEC private modes whose state is restored when an attachment ends.
+const TRACKED_MODES: &[u16] = &[47, 1047, 1049, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004];
+
+/// Follows the terminal modes a session enables in its output, so that the
+/// user's terminal can be put back when the attachment ends.
+#[derive(Debug, Default)]
+pub struct Modes {
+    enabled: std::collections::BTreeSet<u16>,
+    cursor_hidden: bool,
+    keyboard_pushes: u32,
+    state: ParseState,
+    params: Vec<u8>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+}
+
+impl Modes {
+    /// Scans output bytes; sequences may be split across calls.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match self.state {
+                ParseState::Ground => {
+                    if b == 0x1b {
+                        self.state = ParseState::Escape;
+                    }
+                }
+                ParseState::Escape => {
+                    self.state = if b == b'[' {
+                        ParseState::Csi
+                    } else {
+                        ParseState::Ground
+                    };
+                    self.params.clear();
+                }
+                ParseState::Csi => {
+                    if (0x40..=0x7e).contains(&b) {
+                        self.csi(b);
+                        self.state = ParseState::Ground;
+                    } else if self.params.len() < 32 {
+                        self.params.push(b);
+                    } else {
+                        self.state = ParseState::Ground;
+                    }
+                }
+            }
+        }
+    }
+
+    fn numbers(rest: &[u8]) -> Vec<u16> {
+        rest.split(|&c| c == b';')
+            .filter_map(|n| std::str::from_utf8(n).ok()?.parse().ok())
+            .collect()
+    }
+
+    fn csi(&mut self, fin: u8) {
+        let (lead, rest) = match self.params.first() {
+            Some(&c @ (b'?' | b'>' | b'<' | b'=')) => (Some(c), &self.params[1..]),
+            _ => (None, &self.params[..]),
+        };
+        match (lead, fin) {
+            (Some(b'?'), b'h' | b'l') => {
+                let on = fin == b'h';
+                for n in Self::numbers(rest) {
+                    if n == 25 {
+                        self.cursor_hidden = !on;
+                    } else if TRACKED_MODES.contains(&n) {
+                        if on {
+                            self.enabled.insert(n);
+                        } else {
+                            self.enabled.remove(&n);
+                        }
+                    }
+                }
+            }
+            (Some(b'>'), b'u') => self.keyboard_pushes += 1,
+            (Some(b'<'), b'u') => {
+                let n = Self::numbers(rest).first().copied().unwrap_or(1) as u32;
+                self.keyboard_pushes = self.keyboard_pushes.saturating_sub(n.max(1));
+            }
+            _ => {}
+        }
+    }
+
+    /// Sequences that turn off every mode the session left on.
+    pub fn restore_sequence(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        // Leave the alternate screen first so the rest applies to the main screen.
+        for n in self.enabled.iter().rev() {
+            out.extend(format!("\x1b[?{n}l").as_bytes());
+        }
+        if self.cursor_hidden {
+            out.extend(b"\x1b[?25h");
+        }
+        if self.keyboard_pushes > 0 {
+            out.extend(format!("\x1b[<{}u", self.keyboard_pushes).as_bytes());
+        }
+        out.extend(b"\x1b[0m");
+        out
+    }
+}
+
 /// Terminal size as (rows, cols), if stdout is a terminal.
 pub fn size() -> Option<(u16, u16)> {
     crossterm::terminal::size().ok().map(|(cols, rows)| (rows, cols))
@@ -189,6 +296,35 @@ pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Re
     let mut input = spawn_input(tty);
     let mut filter = DetachFilter::default();
 
+    let mut modes = Modes::default();
+    let result = attach_inner(
+        connect,
+        want_replay,
+        redraw,
+        tty,
+        &mut input,
+        &mut filter,
+        &mut modes,
+    )
+    .await;
+    if tty && io::stdout().is_terminal() {
+        let mut o = io::stdout().lock();
+        let _ = o.write_all(&modes.restore_sequence());
+        let _ = o.flush();
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attach_inner(
+    connect: Connect,
+    want_replay: bool,
+    redraw: bool,
+    tty: bool,
+    input: &mut mpsc::Receiver<Input>,
+    filter: &mut DetachFilter,
+    modes: &mut Modes,
+) -> io::Result<Outcome> {
     let mut conn = connect().await?;
     let welcome = hello(&mut conn, want_replay).await?;
     let mut remote_tty = welcome.tty;
@@ -214,8 +350,8 @@ pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Re
         let lost: io::Error = loop {
             tokio::select! {
                 f = frames.recv() => match f {
-                    Some(Ok(ServerFrame::Stdout(o))) => write_out(&o.bytes, false),
-                    Some(Ok(ServerFrame::Replay(r))) => write_out(&r.bytes, false),
+                    Some(Ok(ServerFrame::Stdout(o))) => { modes.feed(&o.bytes); write_out(&o.bytes, false) }
+                    Some(Ok(ServerFrame::Replay(r))) => { modes.feed(&r.bytes); write_out(&r.bytes, false) }
                     Some(Ok(ServerFrame::Stderr(e))) => write_out(&e.bytes, true),
                     Some(Ok(ServerFrame::Exit(e))) => { reader.abort(); return Ok(Outcome::Exited(e.status)); }
                     Some(Ok(ServerFrame::Detached(d))) => { reader.abort(); return Ok(Outcome::Replaced(d.reason)); }
@@ -277,6 +413,42 @@ pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn restore(chunks: &[&[u8]]) -> String {
+        let mut m = Modes::default();
+        for c in chunks {
+            m.feed(c);
+        }
+        String::from_utf8(m.restore_sequence()).unwrap()
+    }
+
+    #[test]
+    fn nothing_to_restore_for_plain_output() {
+        assert_eq!(restore(&[b"hello \x1b[31mred\x1b[0m"]), "\x1b[0m");
+    }
+
+    #[test]
+    fn restores_only_modes_left_on() {
+        let s = restore(&[b"\x1b[?1049h\x1b[?2004h\x1b[?25l", b"\x1b[?2004l"]);
+        assert_eq!(s, "\x1b[?1049l\x1b[?25h\x1b[0m");
+        assert_eq!(
+            restore(&[b"\x1b[?1049h", b"\x1b[?1049l\x1b[?25l\x1b[?25h"]),
+            "\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn sequences_split_across_chunks() {
+        assert_eq!(
+            restore(&[b"\x1b", b"[?10", b"00;1006h"]),
+            "\x1b[?1006l\x1b[?1000l\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn keyboard_protocol_pushes_are_popped() {
+        assert_eq!(restore(&[b"\x1b[>1u\x1b[>3u\x1b[<u"]), "\x1b[<1u\x1b[0m");
+    }
 
     #[test]
     fn detach_key() {

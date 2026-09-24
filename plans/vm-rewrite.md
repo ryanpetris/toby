@@ -189,9 +189,12 @@ Rules:
   the runtime tree (§9.4). A future macOS package additionally ships the
   Linux aarch64 build of the same binary for guests.
 - Versioned install: packages install the binary as
-  `/usr/lib/toby/<version>/toby` with `/usr/bin/toby` pointing at the
-  current version. Unit files reference `/usr/lib/toby/current/toby` (a
-  symlink updated on install), and every long-running stable process
+  `/usr/lib/toby/versions/<version>/toby`, with the symlink
+  `/usr/lib/toby/versions/current` → `<version>` and `/usr/bin/toby` pointing
+  at `versions/current/toby`. Unit files reference
+  `/usr/lib/toby/versions/current/toby` (the symlink is updated on install),
+  and the versions directory is what guests see as `/run/toby/fs/versions`
+  (§9.4). Every long-running stable process
   records which version it runs. Old version directories are removed only
   when no running machine or process uses them (`toby doctor --gc`, and
   automatically by `tobyd`).
@@ -612,9 +615,11 @@ writes runtime units into `/run/systemd/system` of the real root
 Debian 13 and Arch kernels and dracut):
 
 - `run-toby-fs.mount`: `What=toby`, `Type=virtiofs`, `Where=/run/toby/fs`,
-  `Options=ro,nosuid,nodev` (the runtime subtree is read-only; attachments
-  are bind-mounted from `/run/toby/fs/projects/<id>` with their own options).
-- `toby-relay.service`: `ExecStart=/run/toby/fs/runtime/<ver>/toby guest relay`,
+  `Options=nosuid,nodev`. The share is mounted read-write because a
+  read-only virtiofs superblock would make every bind of it read-only;
+  `toby-fs` refuses writes to the runtime versions itself, and attachments
+  are bind-mounted from `/run/toby/fs/projects/<id>` with their own options.
+- `toby-relay.service`: `ExecStart=/run/toby/fs/versions/<ver>/toby guest relay`,
   where `<ver>` is read by the hook from the kernel command line
   (`toby.version=<ver>`, set by `toby internal vm`) so images never need
   rebuilding for a new Toby version; `Restart=always`,
@@ -646,18 +651,21 @@ Debian cloud image has no network without a cloud-init datasource; `net-up`
 ### 9.4 Guest runtime tree (served by `toby-fs`)
 
 ```text
-/run/toby/fs/                    (virtio-fs tag "toby", read-only except attachments)
-  runtime/
+/run/toby/fs/                    (virtio-fs tag "toby"; read-only except attachments)
+  versions/
     <ver>/toby                   the single binary, one directory per installed version
     current -> <ver>             (symlink the host flips on upgrade)
-    mkosi/                       bundled mkosi (builder machines only)
-    images/default/              bundled default-image mkosi configuration (builder machines only)
+  mkosi/                         bundled mkosi (builder machines only)
+  images/default/                bundled default-image mkosi configuration (builder machines only)
+  dracut/99toby/                 the dracut module installed by boot adaptation (builder machines only)
   projects/<attach-id>/          (passthrough to host directories)
 ```
 
 Stable processes (relay, sessions) run from the exact version directory they
-started with; helpers and new sessions use `current`. A version directory is
-served as long as any machine still runs something from it.
+started with; helpers and new sessions use the version `current` points to
+when they start. A version directory is served as long as any machine still
+runs something from it. The dracut module is installed with the package at
+`/usr/share/toby/dracut/99toby/` (source: `packaging/dracut/99toby/`).
 
 ### 9.5 Guest paths
 
@@ -669,7 +677,7 @@ served as long as any machine still runs something from it.
 | `127.0.0.1:41100` | capability: models + remote MCP proxy (port configurable) |
 | `/home/<user>` | home disk |
 | `/toby/workspace/<name>` | default attachment target |
-| `/run/toby/bin/` | symlinks created at boot: `toby` → `/run/toby/fs/runtime/current/toby`, plus multi-call names `toby-connect`, `toby-session`, `toby-helper` → `toby`. Nothing is installed into the root. |
+| `/run/toby/bin/` | symlinks created at boot: `toby` → `/run/toby/fs/versions/current/toby`, plus multi-call names `toby-connect`, `toby-session`, `toby-helper` → `toby`. Nothing is installed into the root. |
 
 ### 9.6 Boot-time helpers (run by `toby-machine` after relay hello)
 
@@ -708,8 +716,10 @@ filesystems under one device).
 ### 10.1 Tree
 
 - `/` synthetic, read-only.
-- `/runtime` read-only view of the installed runtime directory
-  (`/usr/lib/toby/guest/<arch>/…`).
+- `/versions` read-only view of the installed versions directory
+  (`/usr/lib/toby/versions`: `<version>/toby` and `current`).
+- `/mkosi` and `/images/default` read-only views of the bundled mkosi and
+  default image configuration (builder machines only).
 - `/projects/<attach-id>` passthrough file systems added and removed at
   runtime.
 
@@ -864,12 +874,18 @@ to exactly one pre-configured target. Header parsing is fuzzed.
 
 | Request | Result |
 | --- | --- |
-| `Hello{versions}` | chosen version, relay version, boot id |
-| `Spawn{session_id, argv, env, cwd, identity, tty: {rows, cols} or none, keep_after_exit}` | runs `systemd-run --scope --collect --unit=toby-s-<id> -- /run/toby/fs/runtime/<ver>/toby guest session …` (`<ver>` = `runtime/current` at spawn time, resolved to a fixed version so the session keeps it); returns once the session socket exists |
-| `Listen{listener_id, bind}` | bind `tcp:127.0.0.1:<port>` or `unix:<path>` (mode, owner) in the guest |
+| `Hello` | relay version, boot id (the version itself is negotiated by the `Control` header) |
+| `Spawn{spec: {session_id, argv, env, cwd, identity, tty: {rows, cols} or none, keep_after_exit}, version}` | runs `systemd-run --scope --collect --unit=toby-s-<id> -- /run/toby/fs/versions/<version>/toby guest session --id <id>` (`toby-machine` passes the target of `versions/current`, so the session keeps that exact version); returns once the session socket exists |
+| `Listen{listener_id, bind, mode}` | bind `tcp:127.0.0.1:<port>` or `unix:<path>` in the guest |
 | `Unlisten{listener_id}` | close listener |
 | `Sessions` | list live sessions and exit records |
+| `Kill{session_id, signal}` | signal the session's process group |
+| `Forget{session_id}` | discard an exited session's record |
 | `Ping` | liveness |
+
+`toby-machine` also connects to the relay on its own start, so a restarted
+`toby-machine` does not wait for a `RelayHello`. The exact wire format is in
+`docs/protocols.md`.
 
 Spawn uses `systemd-run --scope` so sessions live in their own cgroup and
 survive relay restarts; `toby-session` drops to the identity itself.
@@ -941,11 +957,11 @@ WantedBy=sockets.target
 # tobyd.service
 [Service]
 Type=notify
-ExecStart=/usr/lib/toby/current/toby internal daemon
+ExecStart=/usr/lib/toby/versions/current/toby internal daemon
 Restart=on-failure
 
 # toby-proxy.socket / toby-proxy.service  (same pattern, %t/toby/proxy.sock,
-#   ExecStart=/usr/lib/toby/current/toby internal proxy)
+#   ExecStart=/usr/lib/toby/versions/current/toby internal proxy)
 
 # toby-fs@.service
 [Unit]
@@ -953,14 +969,14 @@ StopWhenUnneeded=yes
 [Service]
 Type=notify
 LimitNOFILE=1048576
-ExecStart=/usr/lib/toby/current/toby internal fs --machine %i
+ExecStart=/usr/lib/toby/versions/current/toby internal fs --machine %i
 
 # toby-net@.service
 [Unit]
 StopWhenUnneeded=yes
 [Service]
 Type=exec
-ExecStart=/usr/lib/toby/current/toby internal net --machine %i   # reads machine.toml, execs passt
+ExecStart=/usr/lib/toby/versions/current/toby internal net --machine %i   # reads machine.toml, execs passt
 
 # toby-vm@.service
 [Unit]
@@ -969,7 +985,7 @@ After=toby-fs@%i.service toby-net@%i.service
 Wants=toby-machine@%i.service
 [Service]
 Type=exec                       # readiness is reported by toby-machine@
-ExecStart=/usr/lib/toby/current/toby internal vm --machine %i    # reads machine.toml, execs cloud-hypervisor
+ExecStart=/usr/lib/toby/versions/current/toby internal vm --machine %i    # reads machine.toml, execs cloud-hypervisor
 KillMode=mixed
 TimeoutStopSec=45
 
@@ -979,11 +995,11 @@ PartOf=toby-vm@%i.service
 After=toby-vm@%i.service
 [Service]
 Type=notify
-ExecStart=/usr/lib/toby/current/toby internal machine --machine %i
+ExecStart=/usr/lib/toby/versions/current/toby internal machine --machine %i
 Restart=on-failure
 ```
 
-`/usr/lib/toby/current` resolves when a unit starts, so already-running
+`/usr/lib/toby/versions/current` resolves when a unit starts, so already-running
 units keep their version and newly started ones use the new one. The
 `internal vm` and `internal net` launchers only read desired state and
 `exec` the real program.
@@ -1319,7 +1335,7 @@ and MCP images (`[mcp.<name>].image`) alike:
 - **mkosi is bundled**: a pinned mkosi release (Python; LGPL-2.1-or-later,
   shipped as source with its license) installed at `/usr/share/toby/mkosi/`
   and served read-only to builder machines through the runtime tree
-  (`/run/toby/fs/runtime/mkosi/`), so every build uses the version Toby was
+  (`/run/toby/fs/mkosi/`), so every build uses the version Toby was
   tested with. Pinned in `packaging/bundled.toml` like Cloud Hypervisor.
 - Architecture is part of every image's identity.
 
@@ -1364,7 +1380,7 @@ image, so the first build needs a different starting point:
    tools tree (which mkosi keeps in the output directory) live under
    `/cache/mkosi`.
 2. Produce the root tree (as root, streamed to the build log):
-   - mkosi: `/run/toby/fs/runtime/mkosi/bin/mkosi
+   - mkosi: `/run/toby/fs/mkosi/bin/mkosi
      -C /build/context --format=directory --architecture=<arch>
      --output-directory=/cache/mkosi/out --output=<build-id>
      --workspace-directory=/cache/mkosi/work --incremental=yes
@@ -1410,8 +1426,9 @@ Runs inside the root tree as root, in a private mount namespace
 leak into the export (for every source kind; idempotent, so
 mkosi configurations that already include the kernel, dracut and systemd
 only get the hook and initramfs). Detects the distro from
-`/etc/os-release` (`ID`, `ID_LIKE`) and uses its package manager for
-anything missing:
+`/etc/os-release` (`ID`, `ID_LIKE`) and uses its package manager only for
+what is missing (a tree that already has a kernel, dracut, systemd and sudo
+needs no package manager at all; mkosi trees often lack one):
 
 | Family | Packages installed if missing |
 | --- | --- |
@@ -1423,7 +1440,7 @@ anything missing:
 Then:
 
 1. Install the `99toby` dracut module into
-   `/usr/lib/dracut/modules.d/99toby/` (copied from the runtime tree).
+   `/usr/lib/dracut/modules.d/99toby/` (copied from `/run/toby/fs/dracut/99toby/`).
 2. Run `systemd-hwdb update`, then generate the initramfs:
    `dracut --no-hostonly --force --kver <kver> --add toby --add-drivers "…virtio list…" /boot/toby-initramfs.img`.
 3. Make `/sbin/init` resolve to systemd; mask units that make no sense in a
@@ -1718,8 +1735,8 @@ Hypervisor loads it with `--firmware` or `--kernel` on aarch64).
 ```text
 toby <tool> [--home H] [--root R] [--project PATH]… [--ephemeral] [--attach|--new] [--yolo] [--install] [--upgrade] [-- args…]
 toby run -f <launch.toml>        # named launch file (§14.6)
-toby exec [--as-root] [--home H --root R] [--cwd DIR] -- CMD…
-toby shell [--as-root] [--home H --root R]
+toby exec [--as-root] [--home H --root R | --machine ID] [--cwd DIR] -- CMD…
+toby shell [--as-root] [--home H --root R | --machine ID]
 
 toby sessions ls | kill <id>
 toby attach [<session>]           # reattach a session (tmux-style)

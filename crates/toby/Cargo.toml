@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+libc.workspace = true
 mimalloc.workspace = true
 nix.workspace = true
 tokio.workspace = true
@@ -24,10 +25,10 @@ toby-guest.workspace = true
 toby-machine.workspace = true
 toby-proto.workspace = true
 toby-svc.workspace = true
+toby-term.workspace = true
 toby-vfs.workspace = true
 
 [dev-dependencies]
-libc.workspace = true
 tempfile.workspace = true
 
 [lints]

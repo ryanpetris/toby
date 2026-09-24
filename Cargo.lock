@@ -1044,6 +1044,7 @@ dependencies = [
  "toby-machine",
  "toby-proto",
  "toby-svc",
+ "toby-term",
  "toby-vfs",
  "tokio",
 ]
