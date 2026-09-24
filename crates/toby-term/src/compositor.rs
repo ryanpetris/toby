@@ -216,6 +216,8 @@ fn write_row(screen: &Screen, row: usize, from: usize, to: usize, out: &mut Vec<
     let blank = Cell::default();
     let mut prev = &blank;
     let cols = screen.cols();
+    // A wide character at the end is written whole.
+    let to = if to < cols && screen.cell(row, to - 1).flags.contains(Flags::WIDE_CHAR) { to + 1 } else { to };
     for col in from..to {
         let cell = screen.cell(row, col);
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -386,8 +388,14 @@ impl Scan {
                 _ => {}
             },
             State::CsiIgnore => {
-                if (0x40..=0x7e).contains(&b) {
-                    self.state = State::Ground;
+                match b {
+                    0x1b => {
+                        self.state = State::Escape;
+                        self.sequence.clear();
+                        self.sequence.push(b);
+                    }
+                    0x40..=0x7e => self.state = State::Ground,
+                    _ => {}
                 }
                 return;
             }
@@ -621,6 +629,11 @@ impl Compositor {
         }
     }
 
+    /// The terminal's size.
+    pub fn size(&self) -> (u16, u16) {
+        (self.rows, self.cols)
+    }
+
     /// The session's terminal size.
     pub fn session_size(&self) -> (u16, u16) {
         (self.rows - 1, self.cols)
@@ -674,13 +687,15 @@ impl Compositor {
         let mut pass = Vec::with_capacity(bytes.len());
         self.scan.feed(bytes, self.limit(), &mut pass);
         // The session's screen sees what the terminal sees.
-        self.screen.feed(&pass);
         let mut at = 0;
         for end in std::mem::take(&mut self.scan.soft_resets) {
-            self.mirror.feed(&pass[at..end]);
-            self.mirror.feed(SOFT_RESET);
+            for screen in [&mut self.screen, &mut self.mirror] {
+                screen.feed(&pass[at..end]);
+                screen.feed(SOFT_RESET);
+            }
             at = end;
         }
+        self.screen.feed(&pass[at..]);
         self.mirror.feed(&pass[at..]);
         out.extend_from_slice(&pass);
         let bar_hit = self.mirror.text(usize::from(self.rows - 1)) != self.bar_text();
@@ -726,6 +741,7 @@ impl Compositor {
         if self.shown.is_none() && fresh.is_some() {
             self.shown = fresh;
             self.armed = Instant::now() + ARMING;
+            self.pasting = false;
         }
         let mut out = Vec::new();
         self.draw(&mut out);
@@ -743,6 +759,7 @@ impl Compositor {
     /// Opens the overlay on the first approval waiting, if any.
     pub fn open_approvals(&mut self) -> Vec<u8> {
         self.shown = self.first_pending();
+        self.pasting = false;
         self.armed = Instant::now();
         let mut out = Vec::new();
         self.draw(&mut out);
@@ -766,10 +783,8 @@ impl Compositor {
             match input.windows(6).position(|w| w == b"\x1b[201~") {
                 Some(p) => {
                     self.pasting = false;
-                    let (mut out, decision, rest) = self.key(&input[p + 6..]);
-                    let mut session = input[..p + 6].to_vec();
-                    session.append(&mut out.split_off(0));
-                    return (Vec::new(), decision, [session, rest].concat());
+                    let (out, decision, rest) = self.key(&input[p + 6..]);
+                    return (out, decision, [&input[..p + 6], &rest[..]].concat());
                 }
                 None => return (Vec::new(), None, input.to_vec()),
             }
@@ -1281,9 +1296,13 @@ mod tests {
         t.comp.armed = Instant::now();
         assert_eq!(t.comp.key(b"\x1b[200~first").2, b"\x1b[200~first");
         assert_eq!(t.comp.key(b"y").2, b"y", "still pasting");
-        let (_, decision, forward) = t.comp.key(b"end\x1b[201~");
-        assert_eq!((decision, forward), (None, b"end\x1b[201~".to_vec()));
-        assert_eq!(t.key(b"y"), Some(("a1".into(), true)));
+        // The end of the paste and a key in one read.
+        let (out, decision, forward) = t.comp.key(b"end\x1b[201~y");
+        assert_eq!((decision, forward), (Some(("a1".into(), true)), b"end\x1b[201~".to_vec()));
+        t.apply(out);
+        assert!(!t.comp.overlay_open());
+        let screen: String = (0..11).map(|r| t.row(r) + "\n").collect();
+        assert!(!screen.contains("y approve"), "the overlay is gone from the terminal: {screen}");
     }
 
     #[test]

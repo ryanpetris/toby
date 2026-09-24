@@ -834,7 +834,9 @@ impl Attached {
             }
             if self.interactive {
                 // A size change meanwhile went nowhere.
-                if let Some((rows, cols)) = size() {
+                if let Some((rows, cols)) = size()
+                    && self.comp.as_ref().is_some_and(|c| c.size() != (rows, cols))
+                {
                     self.resized(rows, cols)?;
                 }
                 let _ = nudge(&mut c, self.reserved).await;
@@ -977,7 +979,11 @@ mod tests {
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5:3u\x1b[57442;5:3u"), (vec![], None));
         assert_eq!(f.feed(b"\x1b[97;1:1u"), (vec![], Some(Command::Approvals)));
         let mut f = DetachFilter::default();
-        assert_eq!(f.feed(b"\x1b[92;197u\x1b[100;129u"), (vec![], Some(Command::Detach)), "with Num and Caps Lock");
+        assert_eq!(
+            f.feed(b"\x1b[92;197u\x1b[100;129u"),
+            (vec![], Some(Command::Detach)),
+            "with Num and Caps Lock"
+        );
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;"), (vec![], None), "the rest comes with the next read");
         assert_eq!(f.feed(b"5ud"), (vec![], Some(Command::Detach)));
