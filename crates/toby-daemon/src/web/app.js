@@ -128,11 +128,16 @@ function socket(path) {
   return new WebSocket(url, ["toby", secret()]);
 }
 
-// Appends to a log, keeping its last 5000 pieces.
+// Appends to a log, keeping about its last million characters.
+const KEEP = 1000000;
 function append(pre, text) {
   const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
   pre.append(text);
-  while (pre.childNodes.length > 5000) pre.firstChild.remove();
+  pre.kept = (pre.kept || 0) + text.length;
+  while (pre.kept > KEEP && pre.firstChild) {
+    pre.kept -= pre.firstChild.textContent.length;
+    pre.firstChild.remove();
+  }
   if (bottom) pre.scrollTop = pre.scrollHeight;
 }
 

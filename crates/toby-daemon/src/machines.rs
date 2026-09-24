@@ -268,7 +268,13 @@ impl Machines {
             let state = status.as_ref().map_or("starting", |s| state_name(s.state));
             return Observed { state, status };
         }
-        if self.supervisor.active(id, &runtime).await {
+        // The service manager can be slow to answer; a machine it does not
+        // answer for is shown as unknown.
+        let Ok(active) = tokio::time::timeout(LIST_TIMEOUT, self.supervisor.active(id, &runtime)).await
+        else {
+            return Observed { state: "unknown", status: None };
+        };
+        if active {
             // Without its host process a machine is either coming up or
             // going down; a stop was requested for the latter.
             let state = if self.stopping.lock().unwrap().contains_key(id) { "stopping" } else { "starting" };

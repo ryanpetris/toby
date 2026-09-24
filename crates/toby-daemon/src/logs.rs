@@ -174,8 +174,8 @@ pub async fn mcp(d: Arc<Daemon>, name: String, mut socket: WebSocket) {
             if gone {
                 follow.abort();
                 // Its spawn may still be on the way: the session can appear
-                // just after.
-                for _ in 0..10 {
+                // up to the relay's 10 s spawn limit later.
+                for _ in 0..60 {
                     let killed = match crate::control::Control::connect(&runtime).await {
                         Ok(mut c) => c.kill(&id, libc_sigkill()).await.is_ok(),
                         Err(_) => false,
