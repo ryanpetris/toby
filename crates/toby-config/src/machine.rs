@@ -54,6 +54,17 @@ pub struct MachineSpec {
     /// sessions run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_grants: Vec<McpGrant>,
+    /// Server sessions of connections whose grant has ended, until they are
+    /// known to be gone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_revoked: Vec<RevokedConnection>,
+}
+
+/// A connection to MCP server `name` whose grant has ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokedConnection {
+    pub name: String,
+    pub session: String,
 }
 
 /// A configured MCP server the machine may reach for these sessions.

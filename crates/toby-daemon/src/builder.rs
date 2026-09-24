@@ -348,6 +348,7 @@ impl Builder {
             services: None,
             tools: Vec::new(),
             mcp_grants: Vec::new(),
+            mcp_revoked: Vec::new(),
         }
     }
 

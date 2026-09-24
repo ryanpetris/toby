@@ -319,13 +319,16 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
                         Err(_) => false,
                     };
                     if granted && !still {
-                        d.machines.end_connections(name, vec![session]);
+                        d.machines.revoke_connection(&spec.id, name, &session);
                         return refused(format!("no tool of this machine uses the MCP server {name}"));
                     }
                     CapResponse::Splice(splice)
                 }
                 // The reason can name host files: the host's log has it.
                 Err(e) => {
+                    if granted {
+                        d.machines.forget_connection(&spec.id, name, &session);
+                    }
                     eprintln!("mcp {name}: {e}");
                     refused(format!("{name} could not be started; see: toby daemon logs"))
                 }

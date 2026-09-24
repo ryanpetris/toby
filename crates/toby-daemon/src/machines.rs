@@ -109,6 +109,8 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
+    /// Machines whose MCP connections are being checked.
+    sweeping: Mutex<std::collections::HashSet<String>>,
     /// Serializes changes to the machines' `yolo-sessions` files.
     yolo_file: Mutex<()>,
     /// Serializes checking and adding forwards across machines.
@@ -205,6 +207,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
+            sweeping: Mutex::default(),
             yolo_file: Mutex::default(),
             forwards_lock: Default::default(),
             models_cache: Default::default(),
@@ -476,6 +479,7 @@ impl Machines {
                 services: None,
                 tools: Vec::new(),
                 mcp_grants: Vec::new(),
+                mcp_revoked: Vec::new(),
             },
         };
         let id = template.id.clone();
@@ -1347,23 +1351,92 @@ impl Machines {
         granted
     }
 
-    /// Ends the server sessions of connections whose grant is gone, in the
-    /// background.
-    pub fn end_connections(&self, name: &str, sessions: Vec<String>) {
-        if sessions.is_empty() {
+    /// Forgets a connection whose server did not start.
+    pub fn forget_connection(&self, machine: &str, name: &str, session: &str) {
+        let _ = self.update_desired(machine, |s| {
+            for g in s.mcp_grants.iter_mut().filter(|g| g.name == name) {
+                g.connections.retain(|c| c != session);
+            }
+            Ok(())
+        });
+    }
+
+    /// Ends a connection whose grant ended while its server started: noted
+    /// as revoked, so the sweep kills it.
+    pub fn revoke_connection(&self, machine: &str, name: &str, session: &str) {
+        let _ = self.update_desired(machine, |s| {
+            for g in s.mcp_grants.iter_mut().filter(|g| g.name == name) {
+                g.connections.retain(|c| c != session);
+            }
+            s.mcp_revoked
+                .push(toby_config::machine::RevokedConnection { name: name.into(), session: session.into() });
+            Ok(())
+        });
+    }
+
+    /// Kills the servers of revoked connections and forgets granted ones
+    /// whose server has ended, asking each server's machine; a revoked one
+    /// is forgotten only once its server is seen gone. In the background,
+    /// one at a time per machine.
+    fn sweep_connections(self: &std::sync::Arc<Self>, spec: &MachineSpec) {
+        if spec.mcp_revoked.is_empty() && spec.mcp_grants.iter().all(|g| g.connections.is_empty()) {
             return;
         }
-        let pair = crate::services::pair_name(name);
-        let Some(services) = self.records().into_iter().find(|s| s.home.as_deref() == Some(pair.as_str()))
-        else {
+        if !self.sweeping.lock().unwrap().insert(spec.id.clone()) {
             return;
-        };
-        let runtime = self.runtime(&services.id);
+        }
+        let this = self.clone();
+        let spec = spec.clone();
         tokio::spawn(async move {
-            let Ok(mut c) = Control::connect(&runtime).await else { return };
-            for session in sessions {
-                let _ = c.kill(&session, libc_signal::SIGKILL).await;
+            let mut names: Vec<String> = spec.mcp_revoked.iter().map(|r| r.name.clone()).collect();
+            names
+                .extend(spec.mcp_grants.iter().filter(|g| !g.connections.is_empty()).map(|g| g.name.clone()));
+            names.sort();
+            names.dedup();
+            // Server sessions still running, by server; None when its
+            // machine could not be asked.
+            let mut running: HashMap<String, Option<Vec<String>>> = HashMap::new();
+            for name in names {
+                let pair = crate::services::pair_name(&name);
+                let services = this.records().into_iter().find(|s| s.home.as_deref() == Some(pair.as_str()));
+                let live = match &services {
+                    None => Some(Vec::new()),
+                    Some(m) => match this.observe(&m.id).await.state {
+                        "stopped" => Some(Vec::new()),
+                        _ => this.sessions_of(&m.id).await.map(|l| {
+                            l.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect::<Vec<_>>()
+                        }),
+                    },
+                };
+                if let (Some(m), Some(live)) = (&services, &live) {
+                    for r in spec.mcp_revoked.iter().filter(|r| r.name == name && live.contains(&r.session)) {
+                        if let Ok(mut c) = Control::connect(&this.runtime(&m.id)).await {
+                            let _ = c.kill(&r.session, libc_signal::SIGKILL).await;
+                        }
+                    }
+                }
+                running.insert(name, live);
             }
+            // Only what was seen gone is forgotten; a kill is confirmed by
+            // the next sweep.
+            let gone = |name: &str, session: &str| {
+                running.get(name).is_some_and(|l| l.as_ref().is_some_and(|l| !l.iter().any(|s| s == session)))
+            };
+            let changes = spec.mcp_revoked.iter().any(|r| gone(&r.name, &r.session))
+                || spec.mcp_grants.iter().any(|g| g.connections.iter().any(|c| gone(&g.name, c)));
+            if !changes {
+                this.sweeping.lock().unwrap().remove(&spec.id);
+                return;
+            }
+            let _ = this.update_desired(&spec.id, |s| {
+                s.mcp_revoked.retain(|r| !gone(&r.name, &r.session));
+                for g in &mut s.mcp_grants {
+                    let name = g.name.clone();
+                    g.connections.retain(|c| !gone(&name, c));
+                }
+                Ok(())
+            });
+            this.sweeping.lock().unwrap().remove(&spec.id);
         });
     }
 
@@ -1385,20 +1458,24 @@ impl Machines {
         if spec.mcp_grants.iter().all(|g| g.sessions.iter().all(|s| live.contains(s))) {
             return;
         }
-        let mut ended: Vec<(String, Vec<String>)> = Vec::new();
-        let _ = self.update_desired(&spec.id, |s| {
-            for g in &mut s.mcp_grants {
-                g.sessions.retain(|x| live.contains(x));
-            }
-            let (gone, kept): (Vec<_>, Vec<_>) =
-                std::mem::take(&mut s.mcp_grants).into_iter().partition(|g| g.sessions.is_empty());
-            s.mcp_grants = kept;
-            ended = gone.into_iter().map(|g| (g.name, g.connections)).collect();
-            Ok(())
-        });
-        for (name, sessions) in ended {
-            self.end_connections(&name, sessions);
-        }
+        // The ended grants' connections are revoked in the same write, so
+        // nothing is lost if a kill fails or tobyd restarts.
+        let _ =
+            self.update_desired(&spec.id, |s| {
+                for g in &mut s.mcp_grants {
+                    g.sessions.retain(|x| live.contains(x));
+                }
+                let (gone, kept): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut s.mcp_grants).into_iter().partition(|g| g.sessions.is_empty());
+                s.mcp_grants = kept;
+                for g in gone {
+                    let name = g.name;
+                    s.mcp_revoked.extend(g.connections.into_iter().map(|session| {
+                        toby_config::machine::RevokedConnection { name: name.clone(), session }
+                    }));
+                }
+                Ok(())
+            });
     }
 
     /// Whether the machine may reach MCP server `name` now: as the
@@ -1593,8 +1670,17 @@ impl Machines {
         loop {
             tokio::time::sleep(GRANTS_CHECK).await;
             // At once, so one machine that does not answer delays no other.
-            let granted: Vec<_> = self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()).collect();
+            let granted: Vec<_> = self
+                .records()
+                .into_iter()
+                .filter(|s| !s.mcp_grants.is_empty() || !s.mcp_revoked.is_empty())
+                .collect();
             futures_util::future::join_all(granted.iter().map(|spec| self.release_grants(spec))).await;
+            for spec in
+                self.records().iter().filter(|s| !s.mcp_revoked.is_empty() || !s.mcp_grants.is_empty())
+            {
+                self.sweep_connections(spec);
+            }
         }
     }
 
