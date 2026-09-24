@@ -23,7 +23,7 @@ use crate::link::{RelayControl, open_relay};
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Guest connections must send their header quickly.
 const GUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
-/// Guest connections allowed to be waiting for their header at once.
+/// Guest connections handled at once; more are dropped.
 const MAX_PENDING_GUEST: usize = 32;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Longest time a boot helper may run.
@@ -52,7 +52,7 @@ pub struct Machine {
     on_ready: Box<dyn Fn() + Send + Sync>,
     /// Serializes readiness checks and boot helpers.
     booting: tokio::sync::Mutex<()>,
-    /// Bounds guest connections that have not sent their header yet.
+    /// Bounds guest connections being handled at once.
     pending_guest: Arc<tokio::sync::Semaphore>,
 }
 
@@ -159,6 +159,18 @@ impl Machine {
     /// have run for the current guest boot. Returns whether it is ready.
     async fn relay_up(&self) -> bool {
         let _booting = self.booting.lock().await;
+        self.check_relay().await
+    }
+
+    /// Like `relay_up`, but does nothing while a check is already running:
+    /// used for guest hellos, which any guest process can send.
+    async fn relay_up_if_idle(&self) {
+        if let Ok(_booting) = self.booting.try_lock() {
+            self.check_relay().await;
+        }
+    }
+
+    async fn check_relay(&self) -> bool {
         let info = match self.relay.call(&relay::Request::Hello(relay::Hello {})).await {
             Ok(relay::Response::RelayInfo(info)) => info,
             _ => return false,
@@ -238,12 +250,11 @@ impl Machine {
     async fn guest_conn(
         self: Arc<Self>,
         mut s: UnixStream,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        _permit: tokio::sync::OwnedSemaphorePermit,
     ) -> io::Result<()> {
         let header: GuestHeader = tokio::time::timeout(GUEST_HEADER_TIMEOUT, frame::recv(&mut s))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no header"))??;
-        drop(permit);
         match header {
             GuestHeader::RelayHello(hello) => {
                 let Some(version) = types::negotiate(&hello.proto_versions) else {
@@ -253,7 +264,7 @@ impl Machine {
                 frame::send(&mut s, &Reply::version(version)).await?;
                 // Any guest process can send this, so it only prompts a check
                 // over the control channel; the relay's answers there decide.
-                self.relay_up().await;
+                self.relay_up_if_idle().await;
             }
             GuestHeader::Accepted(_) => {
                 frame::send(&mut s, &Reply::refused("unknown listener")).await?;

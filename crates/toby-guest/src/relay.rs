@@ -175,7 +175,16 @@ impl Relay {
         let dir = self.paths.session_dir(&id);
         let sock = dir.join(session_files::SOCKET);
 
-        // A spawn repeated after a lost reply finds its session already there.
+        // A spawn repeated after a lost reply must not run the command twice:
+        // every spawned ID leaves a marker that outlives its session.
+        let marker = self.paths.sessions().join(".spawned").join(&id);
+        if marker.exists() && !dir.exists() {
+            let existing: SpawnSpec = record::read(&marker)?;
+            if existing != spec {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("session {id} exists")));
+            }
+            return Ok(id);
+        }
         if dir.exists() {
             let existing: SpawnSpec = record::read(&dir.join(session_files::SPEC))?;
             if existing != spec {
@@ -191,6 +200,10 @@ impl Relay {
             return Ok(id);
         }
         session::prepare(&self.paths, &spec)?;
+        if let Some(parent) = marker.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        record::write(&marker, &spec)?;
 
         let mut cmd = match self.launcher {
             Launcher::SystemdScope => {
@@ -247,6 +260,13 @@ impl Relay {
             }
             if tokio::time::Instant::now() >= deadline {
                 let _ = child.kill().await;
+                if self.launcher == Launcher::SystemdScope {
+                    // The scope holds the session even after systemd-run is gone.
+                    let _ = tokio::process::Command::new("systemctl")
+                        .args(["stop", &format!("toby-s-{id}.scope")])
+                        .status()
+                        .await;
+                }
                 let _ = std::fs::remove_dir_all(&dir);
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
             }

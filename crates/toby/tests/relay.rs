@@ -286,3 +286,26 @@ async fn failed_starts_report_the_reason() {
     assert!(f.error.contains("could not start"), "{}", f.error);
     assert!(!env.dir.path().join("sessions/x1").exists());
 }
+
+#[tokio::test]
+async fn a_repeated_spawn_does_not_rerun_a_finished_command() {
+    let env = env();
+    let mut c = control(&env).await;
+    let marker = env.dir.path().join("ran");
+    let cmd = format!("echo x >> {}", marker.display());
+    let mut spec = spec("once", &["sh", "-c", &cmd]);
+    spec.keep_after_exit = false;
+    let spawn = relay::Spawn { spec, version: None };
+
+    call(&mut c, Request::Spawn(spawn.clone())).await;
+    for _ in 0..500 {
+        if !env.dir.path().join("sessions/once").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let resp = call(&mut c, Request::Spawn(spawn)).await;
+    assert_eq!(resp, Response::Spawned(relay::Spawned { session_id: "once".into() }));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x\n");
+}
