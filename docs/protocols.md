@@ -177,3 +177,15 @@ or `_`.
 
 Response types: 64 `Welcome`, 65 `Done`, 66 `Failed { error }`, 67
 `Attachments`.
+
+## Host services
+
+A guest connection that reaches a host service through a capability (the
+models proxy on `proxy.sock`, tobyd's `capability.sock`) starts with one
+frame from `toby internal machine` naming the machine; the service's own
+protocol (HTTP for the models proxy) follows. Services accept connections
+only from processes of their own user.
+
+| Type | Header |
+| --- | --- |
+| 1 | `FromMachine { machine_id }` |

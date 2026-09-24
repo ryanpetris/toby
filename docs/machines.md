@@ -29,6 +29,22 @@ A machine with no sessions and nothing mounted with `--persist` or
 `toby mount` stops after `daemon.idle_timeout` (15 minutes by default;
 `"0"` keeps machines running). Detached sessions keep a machine running.
 
+## Ports
+
+```sh
+toby forward add 3000                 # host 127.0.0.1:3000 -> machine port 3000
+toby forward add 8080:3000            # host port 8080 -> machine port 3000
+toby forward add 5432 --to-host       # machine port 5432 -> host 127.0.0.1:5432
+toby forward ls
+toby forward rm ID
+```
+
+A forward lasts while its machine runs (`--persist` recreates it at every
+start) and keeps the machine from stopping when idle. A host address can be
+forwarded by one machine at a time. `ADDR:HOSTPORT:GUESTPORT` listens on
+another host address, such as `0.0.0.0` to accept connections from other
+computers.
+
 ## The daemon
 
 `tobyd` keeps track of machines, builds images and starts and stops

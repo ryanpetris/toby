@@ -1602,7 +1602,18 @@ operation at a time per machine):
    `$HOME`). Generated values are stable per machine (§16.2), so rewriting
    is idempotent.
 4. Spawn `launch` as a session with a TTY in the chosen attachment's
-   directory.
+   directory. The tool runs directly (so its session shows its name, for
+   `--attach`) with `~/.local/bin` and the manifest's `path` entries first
+   on `PATH`; install, update and check commands run in a login shell with
+   the same `PATH`.
+
+Forwards with `when = "login"` exist while a session of the tool runs
+(Codex's sign-in calls back to `localhost:1455`; Claude Code's sign-in is a
+link plus a pasted code and needs none). Projects attached for a tool
+session, and such forwards, are shared by later sessions and removed when
+no session uses them. Tool settings (`[tools.<name>]`: `models`, `params`,
+`mcp`) and model providers are read from the configuration file when used,
+so they apply without restarting `tobyd`.
 
 Templating: `minijinja`. Context: `models.url`, `models.token`, `mcp[]`,
 `connect` (`/run/toby/bin/toby-connect`, a multi-call symlink to the
@@ -1736,7 +1747,8 @@ DELETE /v1/machines/{id}/attachments/{aid}
 POST   /v1/machines/{id}/forwards          {direction, host, guest, pinned}
 DELETE /v1/machines/{id}/forwards/{fid}
 
-POST   /v1/sessions                        {machine|home+root, tool|argv, identity, tty, cwd, attach} → {id, session_socket}
+POST   /v1/sessions                        {machine|home+root, tool, yolo, argv, env, identity, tty, cwd, attachments} → {id, session_socket, control_socket, warnings}
+POST   /v1/machines/{id}/tools/{name}/prepare  {upgrade} → build id (requires check, install/update, files)
 GET    /v1/sessions                        list (all machines)
 POST   /v1/sessions/{id}/kill              {signal}; without a signal: hangup, terminate, then kill
 GET    /v1/sessions/{id}/io        (WS)    web terminal (proxied through tobyd; not used by the CLI)
