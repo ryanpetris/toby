@@ -98,6 +98,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 internal::vm_stop(&machine).map(|()| ExitCode::SUCCESS)
             }
             InternalCommand::Net { machine } => internal::net(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::InstallVersion { versions } => {
+                let exe = std::env::current_exe()?;
+                toby_daemon::versions::install(&exe, &versions, env!("CARGO_PKG_VERSION"))?;
+                collect_versions(&versions)
+            }
+            InternalCommand::CollectVersions { versions } => collect_versions(&versions),
         },
         Command::Guest(cmd) => match cmd {
             GuestCommand::Relay => {
@@ -118,6 +124,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         },
         Command::Tool(argv) => runtime()?.block_on(tool::run(argv)),
     }
+}
+
+/// Removes unused versions of a package's versions directory.
+fn collect_versions(versions: &std::path::Path) -> anyhow::Result<ExitCode> {
+    let c = toby_daemon::versions::collect_system(versions)?;
+    for v in &c.removed {
+        println!("removed version {v}");
+    }
+    for (v, e) in &c.failed {
+        eprintln!("toby: version {v} could not be removed: {e}");
+    }
+    Ok(if c.failed.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 fn helper(cmd: HelperCommand) -> anyhow::Result<()> {

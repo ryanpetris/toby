@@ -390,6 +390,16 @@ pub enum InternalCommand {
         #[arg(long)]
         machine: String,
     },
+    /// Install this binary as the current version (packages, as root)
+    InstallVersion {
+        #[arg(long, default_value = toby_config::global::BUNDLED_VERSIONS)]
+        versions: PathBuf,
+    },
+    /// Remove versions no process uses (packages, as root)
+    CollectVersions {
+        #[arg(long, default_value = toby_config::global::BUNDLED_VERSIONS)]
+        versions: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

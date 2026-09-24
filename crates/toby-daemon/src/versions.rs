@@ -219,6 +219,113 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
     Ok(Collected { removed, used, failed })
 }
 
+/// Takes the versions lock, creating the directory and lock file as needed.
+fn lock(versions: &Path) -> io::Result<nix::fcntl::Flock<std::fs::File>> {
+    std::fs::create_dir_all(versions)?;
+    let file =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(versions.join(LOCK))?;
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))
+}
+
+/// Installs `binary` as `<versions>/<version>/toby` and points `current` at
+/// it (a package's post-install step, plan §3.3). Running processes keep
+/// the file they started from.
+pub fn install(binary: &Path, versions: &Path, version: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if !version_name(version) {
+        return Err(io::Error::other(format!("{version:?} is not a version name")));
+    }
+    let _lock = lock(versions)?;
+    let dir = versions.join(version);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))?;
+    let staged = dir.join(".toby.new");
+    std::fs::copy(binary, &staged)?;
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::File::open(&staged)?.sync_all()?;
+    std::fs::rename(&staged, dir.join("toby"))?;
+    let link = versions.join(".current.new");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(version, &link)?;
+    std::fs::rename(&link, versions.join("current"))
+}
+
+/// Every process's use of installed versions, whoever runs it: its
+/// executable, mapped files and open files. `toby-fs` holds the files a
+/// guest runs open, so machines' relays and sessions count too. Needs
+/// root to see other users' processes.
+fn used_by_processes(versions: &Path) -> io::Result<BTreeSet<String>> {
+    let canonical = std::fs::canonicalize(versions)?;
+    let version_of = |path: &str| {
+        let path = path.trim_end_matches(" (deleted)");
+        Path::new(path)
+            .strip_prefix(&canonical)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .map(|v| v.as_os_str().to_string_lossy().into_owned())
+    };
+    let mut used = BTreeSet::new();
+    for p in std::fs::read_dir("/proc")? {
+        let p = p?;
+        if p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()).is_none() {
+            continue;
+        }
+        let mut paths: Vec<String> = Vec::new();
+        if let Ok(exe) = std::fs::read_link(p.path().join("exe")) {
+            paths.push(exe.to_string_lossy().into_owned());
+        }
+        if let Ok(maps) = std::fs::read_to_string(p.path().join("maps")) {
+            paths.extend(maps.lines().filter_map(|l| l.split_once('/').map(|(_, rest)| format!("/{rest}"))));
+        }
+        if let Ok(fds) = std::fs::read_dir(p.path().join("fd")) {
+            paths.extend(
+                fds.flatten()
+                    .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+                    .map(|l| l.to_string_lossy().into_owned()),
+            );
+        }
+        used.extend(paths.iter().filter_map(|path| version_of(path)));
+    }
+    Ok(used)
+}
+
+/// Removes installed versions no process uses, as root for a package's
+/// versions directory: after an install, and from a timer.
+pub fn collect_system(versions: &Path) -> io::Result<Collected> {
+    if !nix::unistd::getuid().is_root() {
+        return Err(io::Error::other("only root sees every process that may use a version"));
+    }
+    let _lock = lock(versions)?;
+    let used = used_by_processes(versions)?;
+    let (mut removed, mut failed) = (Vec::new(), Vec::new());
+    for e in std::fs::read_dir(versions)?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(v) = name.strip_prefix(".removing-") {
+            let _ = std::fs::rename(e.path(), versions.join(v));
+        }
+    }
+    let Some(current) = current(versions) else { return Ok(Collected { removed, used, failed }) };
+    for v in installed(versions)? {
+        let dir = versions.join(&v);
+        if !removable(&dir, &v, &used, &current, installed_for(&dir)) {
+            continue;
+        }
+        let aside = versions.join(format!(".removing-{v}"));
+        if let Err(e) = std::fs::rename(&dir, &aside) {
+            failed.push((v, e.to_string()));
+            continue;
+        }
+        match std::fs::remove_dir_all(&aside) {
+            Ok(()) => removed.push(v),
+            Err(e) => {
+                let _ = std::fs::rename(&aside, &dir);
+                failed.push((v, e.to_string()));
+            }
+        }
+    }
+    Ok(Collected { removed, used, failed })
+}
+
 /// Restarts the models proxy and machines' host processes that run an
 /// older version than `current`, so they pick up an upgrade.
 pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::paths::Paths) {
@@ -250,6 +357,26 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use super::*;
+
+    #[test]
+    fn installs_and_sees_versions_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = dir.path().join("versions");
+        let binary = dir.path().join("toby");
+        std::fs::write(&binary, b"one").unwrap();
+        super::install(&binary, &versions, "1.0.0").unwrap();
+        std::fs::write(&binary, b"two").unwrap();
+        super::install(&binary, &versions, "1.1.0").unwrap();
+        assert_eq!(current(&versions).as_deref(), Some("1.1.0"));
+        assert_eq!(std::fs::read(versions.join("1.0.0/toby")).unwrap(), b"one");
+        assert_eq!(installed(&versions).unwrap(), ["1.0.0", "1.1.0"]);
+        assert!(super::install(&binary, &versions, "../x").is_err());
+        // A file held open, as toby-fs holds what a guest runs.
+        let open = std::fs::File::open(versions.join("1.0.0/toby")).unwrap();
+        assert!(used_by_processes(&versions).unwrap().contains("1.0.0"));
+        drop(open);
+        assert!(!used_by_processes(&versions).unwrap().contains("1.0.0"));
+    }
 
     fn install(versions: &Path, v: &str) {
         let dir = versions.join(v);
