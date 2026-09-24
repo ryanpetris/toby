@@ -240,6 +240,8 @@ mod tests {
         assert!(!go("0.17.0", day), "in use");
         assert!(!go("0.18.0", day), "current");
         assert!(!go("0.16.0", Some(Duration::from_secs(60))), "just installed");
+        let old = SystemTime::now() - Duration::from_secs(86400);
+        std::fs::File::open(v.join("0.16.0")).unwrap().set_modified(old).unwrap();
         assert!(!go("0.16.0", installed_for(&v.join("0.16.0"))), "installed now, whatever its times say");
         assert!(!go("partial", day), "no binary");
     }
