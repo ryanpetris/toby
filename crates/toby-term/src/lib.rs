@@ -272,7 +272,25 @@ pub struct DetachFilter {
     held: Vec<u8>,
 }
 
+/// Whether standard input has data within `wait`.
+fn readable(wait: Duration) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut pfd = libc::pollfd { fd: io::stdin().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd.
+    unsafe { libc::poll(&mut pfd, 1, wait.as_millis() as i32) > 0 }
+}
+
 impl DetachFilter {
+    /// Whether bytes wait for the rest of a sequence.
+    pub fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// The held bytes, as they are.
+    pub fn release(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
+
     /// Returns the bytes to send and the command, if one was given; input
     /// after a command is dropped. The prefix key also works as the kitty
     /// keyboard protocol reports it, and its release and repeats are not
@@ -372,15 +390,20 @@ fn spawn_stdin(
         let mut stdin = io::stdin().lock();
         let mut buf = vec![0u8; 16 * 1024];
         loop {
-            let n = match stdin.read(&mut buf) {
-                Ok(0) | Err(_) => {
-                    let _ = data.blocking_send(Data::Close);
-                    return;
-                }
-                Ok(n) => n,
+            // Bytes held for the rest of a sequence go on as they are when
+            // nothing follows soon: they were keys (Alt with `[`, say).
+            let (bytes, command) = if filter.holding() && !readable(Duration::from_millis(50)) {
+                (filter.release(), None)
+            } else {
+                let n = match stdin.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        let _ = data.blocking_send(Data::Close);
+                        return;
+                    }
+                    Ok(n) => n,
+                };
+                if interactive { filter.feed(&buf[..n]) } else { (buf[..n].to_vec(), None) }
             };
-            let (bytes, command) =
-                if interactive { filter.feed(&buf[..n]) } else { (buf[..n].to_vec(), None) };
             if !bytes.is_empty() {
                 let sent = if overlay.load(Ordering::Acquire) {
                     events.blocking_send(Event::Keys(bytes)).is_ok()
