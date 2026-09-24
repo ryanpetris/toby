@@ -849,7 +849,7 @@ impl Attached {
         let result = write_out(out, false);
         if let Some(c) = &mut self.comp {
             // Another approval, or the overlay opening, arms again.
-            let showing = c.overlay_open().then(|| c.shown().map(str::to_string)).flatten();
+            let showing = c.drawn().map(str::to_string);
             if showing.is_some() && showing != self.drawn {
                 c.shown_now();
             }

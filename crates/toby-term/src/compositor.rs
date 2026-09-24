@@ -598,6 +598,9 @@ pub struct Compositor {
     shown: Option<String>,
     /// The drawn overlay: first row and column (1-based) and its lines.
     overlay: Option<(u16, u16, Vec<String>)>,
+    /// The approval the drawn overlay is for: drawing waits while the
+    /// session is inside an escape sequence, so it can lag `shown`.
+    drawn: Option<String>,
     /// When the overlay starts taking keys.
     armed: Instant,
     /// Approvals seen here, and answered here (when).
@@ -630,6 +633,7 @@ impl Compositor {
             status: Status::default(),
             shown: None,
             overlay: None,
+            drawn: None,
             armed: Instant::now(),
             seen: Default::default(),
             answered: Default::default(),
@@ -691,6 +695,7 @@ impl Compositor {
             let saved = self.save();
             self.neutral(&saved, &mut out);
             self.overlay = None;
+            self.drawn = None;
             self.sync_rows(&mut out);
             self.restore(&saved, &mut out);
         }
@@ -726,6 +731,7 @@ impl Compositor {
         self.scan.bottom = rows - 1;
         self.scan.region_lost = true;
         self.overlay = None;
+        self.drawn = None;
         self.repaint = true;
         let mut out = Vec::new();
         self.draw(&mut out);
@@ -780,9 +786,9 @@ impl Compositor {
         self.overlay.is_some()
     }
 
-    /// The approval the overlay is for.
-    pub fn shown(&self) -> Option<&str> {
-        self.shown.as_deref()
+    /// The approval the overlay on the terminal is for.
+    pub fn drawn(&self) -> Option<&str> {
+        self.drawn.as_deref().filter(|_| self.overlay.is_some())
     }
 
     /// The overlay has just reached the terminal: keys decide only after
@@ -812,10 +818,15 @@ impl Compositor {
                 None => return (Vec::new(), None, input.to_vec()),
             }
         }
-        let Some(id) = self.shown.clone().filter(|_| self.overlay.is_some()) else {
+        let Some(id) = self.drawn.clone().filter(|_| self.overlay.is_some()) else {
             return (Vec::new(), None, input.to_vec());
         };
         let (keys, session) = split_input(input);
+        // The terminal still shows an approval that is no longer the one
+        // to decide: no key decides until it does.
+        if self.shown.as_ref() != Some(&id) {
+            return (Vec::new(), None, session);
+        }
         // Pasting when the last paste marker starts one.
         let last = |m: &[u8]| session.windows(6).rposition(|w| w == m);
         if let Some(start) = last(b"\x1b[200~") {
@@ -1027,6 +1038,7 @@ impl Compositor {
             self.emit(out, format!("\x1b[{rows};1H\x1b[2K").as_bytes());
         } else if self.overlay.as_ref().map(|(_, _, l)| l) != lines.as_ref().map(|(_, _, l)| l) {
             self.overlay = None;
+            self.drawn = None;
             self.sync_rows(out);
         }
         let bar = self.bar_text();
@@ -1049,6 +1061,7 @@ impl Compositor {
                 self.emit(out, format!("\x1b[{r};{left}H\x1b#5{style}{line}\x1b[0m").as_bytes());
             }
             self.overlay = Some((top, left, lines));
+            self.drawn = self.shown.clone();
         }
         self.restore(&saved, out);
     }
@@ -1380,6 +1393,23 @@ mod tests {
         let mode = *t.comp.mirror.term.mode();
         assert!(!mode.contains(TermMode::INSERT));
         assert_eq!(t.comp.mirror.term.grid().cursor.charsets[CharsetIndex::G0], StandardCharset::Ascii);
+    }
+
+    #[test]
+    fn keys_decide_only_the_approval_on_the_terminal() {
+        let mut t = Terminal::new(12, 50);
+        t.status(status(&[("a1", "one"), ("a2", "two")]));
+        assert_eq!(t.comp.drawn(), Some("a1"));
+        // While the session leaves a string open, no overlay is on the
+        // terminal, and keys decide nothing.
+        t.session(b"\x1b]0;title");
+        assert_eq!(t.comp.drawn(), None);
+        assert_eq!(t.key(b"y"), None);
+        t.session(b"\x07");
+        assert_eq!(t.comp.drawn(), Some("a1"));
+        assert_eq!(t.key(b"y"), Some(("a1".into(), true)));
+        assert_eq!(t.comp.drawn(), Some("a2"), "the next one is written at once");
+        assert_eq!(t.key(b"n"), Some(("a2".into(), false)));
     }
 
     #[test]

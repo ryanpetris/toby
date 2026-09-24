@@ -61,7 +61,9 @@ async function refresh(force) {
   const res = await fetch(location.pathname + location.search, { headers: authorized({ "x-toby-part": "main" }) });
   if (mine !== generation) return res.status !== 401;
   if (res.status === 401 || res.ok) {
-    document.querySelector("main").innerHTML = await res.text();
+    const html = await res.text();
+    if (mine !== generation) return res.status !== 401;
+    document.querySelector("main").innerHTML = html;
     changed = Date.now();
   }
   return res.status !== 401;
