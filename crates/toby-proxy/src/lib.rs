@@ -48,7 +48,13 @@ pub struct Proxy {
     pub paths: Paths,
     pub home: PathBuf,
     client: HttpsClient,
+    /// Where HTTP MCP servers Toby runs were, and since when.
+    endpoints: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, String, u16)>>,
 }
+
+/// How long an HTTP MCP server's place is used before tobyd is asked
+/// again, which also tells tobyd it is still in use.
+const ENDPOINT_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn text(status: StatusCode, msg: impl Into<String>) -> Response<Body> {
     let body = Full::new(Bytes::from(msg.into() + "\n")).map_err(|never| match never {}).boxed();
@@ -103,7 +109,7 @@ impl Proxy {
             .enable_http1()
             .build();
         let client = Client::builder(TokioExecutor::new()).build(https);
-        Ok(Proxy { config_path, paths, home, client })
+        Ok(Proxy { config_path, paths, home, client, endpoints: Default::default() })
     }
 
     async fn handle(&self, machine: &str, req: Request<Incoming>) -> Response<Body> {
@@ -200,21 +206,47 @@ impl Proxy {
         path: &str,
         headers: Vec<(String, String)>,
     ) -> Response<Body> {
-        let (machine, port) = match self.endpoint(name).await {
-            Ok(e) => e,
-            Err(e) => {
-                // tobyd's message may name host paths: host only.
-                eprintln!("mcp {name}: {e}");
-                return text(
-                    StatusCode::BAD_GATEWAY,
-                    format!("{name} could not be started; see toby mcp logs {name}"),
-                );
+        let cached = self
+            .endpoints
+            .lock()
+            .unwrap()
+            .get(name)
+            .filter(|(at, _, _)| at.elapsed() < ENDPOINT_FOR)
+            .map(|(_, m, p)| (m.clone(), *p));
+        let dialled = match cached {
+            Some((machine, port)) => {
+                toby_machine::link::dial_local(&self.paths.machine_runtime(&machine).vsock(), port)
+                    .await
+                    .ok()
+                    .map(|s| (s, port))
             }
+            None => None,
         };
-        let runtime = self.paths.machine_runtime(&machine);
-        let stream = match dial(&runtime, port).await {
-            Ok(s) => s,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+        let (stream, port) = match dialled {
+            Some(d) => d,
+            None => {
+                let (machine, port) = match self.endpoint(name).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        self.endpoints.lock().unwrap().remove(name);
+                        // tobyd's message may name host paths: host only.
+                        eprintln!("mcp {name}: {e}");
+                        return text(
+                            StatusCode::BAD_GATEWAY,
+                            format!("{name} could not be started; see toby mcp logs {name}"),
+                        );
+                    }
+                };
+                let vsock = self.paths.machine_runtime(&machine).vsock();
+                match toby_machine::link::dial_local(&vsock, port).await {
+                    Ok(s) => {
+                        let entry = (std::time::Instant::now(), machine, port);
+                        self.endpoints.lock().unwrap().insert(name.to_string(), entry);
+                        (s, port)
+                    }
+                    Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+                }
+            }
         };
         let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
             Ok(c) => c,
@@ -433,16 +465,6 @@ pub fn ensure_token(paths: &Paths, machine: &str) -> io::Result<String> {
     }
     std::fs::rename(&tmp, &path)?;
     Ok(token)
-}
-
-/// Opens a connection to `port` of a machine's 127.0.0.1 through its relay.
-async fn dial(runtime: &toby_config::paths::MachineRuntime, port: u16) -> io::Result<UnixStream> {
-    use toby_proto::stream::{Dial, HostHeader};
-    use toby_proto::types::Endpoint;
-    let header = HostHeader::Dial(Dial { target: Endpoint::Tcp { addr: format!("127.0.0.1:{port}") } });
-    let (s, reply) = toby_machine::link::open_relay(&runtime.vsock(), &header).await?;
-    reply.into_result().map_err(io::Error::other)?;
-    Ok(s)
 }
 
 #[cfg(test)]

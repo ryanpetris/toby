@@ -14,7 +14,7 @@
     <a href="/machines/{{ m.id }}/logs">logs</a>
   </td>
 </tr>
-{% if m.state == "ready" %}
+{% if m.state == "ready" or m.attachments or m.forwards %}
 <tr><td></td><td colspan="5">
   <div class="card">
     <b>Mounts</b>
@@ -23,26 +23,32 @@
       <span class="state-{{ a.state }}">{{ a.state }}</span>
       <button data-method="DELETE" data-url="/v1/machines/{{ m.id }}/attachments/{{ a.id }}">Remove</button></div>
     {% else %}<div class="muted">none</div>{% endfor %}
+    {% if m.state == "ready" %}
     <form class="inline" data-url="/v1/machines/{{ m.id }}/attachments">
+      <input type="hidden" name="pinned" value="true" data-bool>
       <input name="host" placeholder="host path" required size="30">
       <input name="at" placeholder="at (optional)" size="22">
       <label><input type="checkbox" name="read_only"> read-only</label>
       <label><input type="checkbox" name="persist"> keep</label>
       <button class="go">Mount</button>
     </form>
+    {% endif %}
     <b>Forwards</b>
     {% for f in m.forwards %}
     <div>{{ f.host }} {{ "→" if f.direction == "host-to-guest" else "←" }} {{ f.guest }}
       <span class="state-{{ f.state }}">{{ f.state }}</span>
       <button data-method="DELETE" data-url="/v1/machines/{{ m.id }}/forwards/{{ f.id }}">Remove</button></div>
     {% else %}<div class="muted">none</div>{% endfor %}
+    {% if m.state == "ready" %}
     <form class="inline" data-url="/v1/machines/{{ m.id }}/forwards">
+      <input type="hidden" name="pinned" value="true" data-bool>
       <select name="direction"><option value="host-to-guest">host → guest</option><option value="guest-to-host">guest → host</option></select>
       <input name="host" placeholder="127.0.0.1:3000" required size="18">
       <input name="guest" placeholder="127.0.0.1:3000" required size="18">
       <label><input type="checkbox" name="persist"> keep</label>
       <button class="go">Forward</button>
     </form>
+    {% endif %}
   </div>
 </td></tr>
 {% endif %}

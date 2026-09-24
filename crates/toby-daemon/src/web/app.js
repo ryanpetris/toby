@@ -48,6 +48,8 @@ function editing() {
 }
 
 let pending = false;
+// Only the newest refresh's answer is shown.
+let generation = 0;
 
 async function refresh(force) {
   if (!force && editing()) {
@@ -55,7 +57,9 @@ async function refresh(force) {
     return;
   }
   pending = false;
+  const mine = ++generation;
   const res = await fetch(location.pathname + location.search, { headers: authorized({ "x-toby-part": "main" }) });
+  if (mine !== generation) return res.status !== 401;
   if (res.status === 401 || res.ok) {
     document.querySelector("main").innerHTML = await res.text();
     changed = Date.now();
@@ -107,6 +111,7 @@ document.addEventListener("submit", (e) => {
   for (const el of f.elements) {
     if (!el.name) continue;
     if (el.type === "checkbox") body[el.name] = el.checked;
+    else if (el.dataset.bool !== undefined) body[el.name] = el.value === "true";
     else if (el.dataset.number !== undefined) body[el.name] = Number(el.value);
     else if (el.value !== "") body[el.name] = el.value;
   }
@@ -121,15 +126,19 @@ function socket(path) {
   return new WebSocket(url, ["toby", secret()]);
 }
 
+// Appends to a log, keeping its last 5000 pieces.
+function append(pre, text) {
+  const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+  pre.append(text);
+  while (pre.childNodes.length > 5000) pre.firstChild.remove();
+  if (bottom) pre.scrollTop = pre.scrollHeight;
+}
+
 // Log pages: <pre class="log" data-ws="/v1/…/logs">.
 function follow(pre) {
   const ws = socket(pre.dataset.ws);
-  ws.onmessage = (m) => {
-    const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-    pre.textContent += m.data + "\n";
-    if (bottom) pre.scrollTop = pre.scrollHeight;
-  };
-  ws.onclose = () => { pre.textContent += "[closed]\n"; };
+  ws.onmessage = (m) => append(pre, m.data + "\n");
+  ws.onclose = () => append(pre, "[closed]\n");
 }
 
 // Build output: <pre class="log" data-stream="/v1/builds/…/logs">, read as
@@ -142,9 +151,15 @@ async function stream(pre) {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-    pre.textContent += text.decode(value, { stream: true });
-    if (bottom) pre.scrollTop = pre.scrollHeight;
+    append(pre, text.decode(value, { stream: true }));
+  }
+  // The build ended: show how.
+  const state = document.getElementById("build-state");
+  const status = await fetch(pre.dataset.stream.replace(/\/logs$/, ""), { headers: authorized({}) });
+  if (state && status.ok) {
+    const s = (await status.json()).state;
+    state.textContent = s;
+    state.className = "state-" + s;
   }
 }
 

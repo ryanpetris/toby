@@ -169,6 +169,7 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
 struct Running {
     machine: String,
     session: String,
+    port: u16,
     used: std::time::Instant,
 }
 
@@ -176,16 +177,6 @@ static HTTP_SERVERS: LazyLock<Mutex<HashMap<String, Running>>> = LazyLock::new(D
 
 /// How long a local HTTP server may take to listen.
 const LISTEN_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Opens a connection to `port` of machine `machine`'s 127.0.0.1 through
-/// its relay; nothing listens on the host.
-pub async fn dial(runtime: &toby_config::paths::MachineRuntime, port: u16) -> io::Result<UnixStream> {
-    use toby_proto::stream::{Dial, HostHeader};
-    let header = HostHeader::Dial(Dial { target: Endpoint::Tcp { addr: format!("127.0.0.1:{port}") } });
-    let (s, reply) = toby_machine::link::open_relay(&runtime.vsock(), &header).await?;
-    reply.into_result().map_err(io::Error::other)?;
-    Ok(s)
-}
 
 /// Where HTTP MCP server `name` listens: its services machine and port
 /// (plan §16.3). It is started when first asked for, and stopped after
@@ -202,19 +193,24 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<(String, u16), 
     // Not the machine's lock, which ensure_machine takes.
     let lock = server_lock(&format!("http {name}"));
     let _lock = lock.lock().await;
-    let known = HTTP_SERVERS.lock().unwrap().get(name).map(|r| (r.machine.clone(), r.session.clone()));
-    if let Some((machine, session)) = known {
+    let known =
+        HTTP_SERVERS.lock().unwrap().get(name).map(|r| (r.machine.clone(), r.session.clone(), r.port));
+    if let Some((machine, session, was)) = known {
         let alive = match Control::connect(&d.machines.runtime(&machine)).await {
             Ok(mut c) => {
                 c.sessions().await.is_ok_and(|l| l.iter().any(|s| s.id == session && s.exit.is_none()))
             }
             Err(_) => false,
         };
-        if alive {
+        if alive && was == port {
             if let Some(r) = HTTP_SERVERS.lock().unwrap().get_mut(name) {
                 r.used = std::time::Instant::now();
             }
             return Ok((machine, port));
+        }
+        // Configured with another port since: started again.
+        if alive {
+            let _ = d.machines.kill_session(&session, None).await;
         }
         HTTP_SERVERS.lock().unwrap().remove(name);
     }
@@ -246,14 +242,14 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<(String, u16), 
     let mut c = Control::connect(&runtime).await.map_err(|e| e.to_string())?;
     c.spawn(session).await.map_err(|e| format!("starting {name}: {e}"))?;
     let deadline = tokio::time::Instant::now() + LISTEN_TIMEOUT;
-    while dial(&runtime, port).await.is_err() {
+    while toby_machine::link::dial_local(&runtime.vsock(), port).await.is_err() {
         if tokio::time::Instant::now() > deadline {
             let _ = d.machines.kill_session(&id, None).await;
             return Err(format!("{name} does not listen on port {port}; see toby mcp logs {name}"));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let running = Running { machine: machine.clone(), session: id, used: std::time::Instant::now() };
+    let running = Running { machine: machine.clone(), session: id, port, used: std::time::Instant::now() };
     HTTP_SERVERS.lock().unwrap().insert(name.to_string(), running);
     tokio::spawn(stop_when_unused(d, name.to_string()));
     Ok((machine, port))

@@ -60,6 +60,15 @@ pub async fn open_relay(vsock: &Path, header: &HostHeader) -> io::Result<(UnixSt
     Ok((s, reply))
 }
 
+/// Opens a connection to `port` of the guest's 127.0.0.1 through its relay.
+pub async fn dial_local(vsock: &Path, port: u16) -> io::Result<UnixStream> {
+    use toby_proto::stream::Dial;
+    let target = types::Endpoint::Tcp { addr: format!("127.0.0.1:{port}") };
+    let (s, reply) = open_relay(vsock, &HostHeader::Dial(Dial { target })).await?;
+    reply.into_result().map_err(io::Error::other)?;
+    Ok(s)
+}
+
 /// The relay control channel, reconnected on demand.
 pub struct RelayControl {
     vsock: PathBuf,
