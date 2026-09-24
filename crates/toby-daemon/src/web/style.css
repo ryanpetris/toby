@@ -1,0 +1,39 @@
+:root {
+  --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #e3e3de; --accent: #2f5fd0;
+  --bad: #b3261e; --good: #1e7a3a; --card: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151514; --fg: #e8e8e3; --muted: #9a9a93; --line: #2d2d2a; --accent: #7fa2ff;
+    --bad: #ff8a80; --good: #7ed69a; --card: #1c1c1a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; gap: 20px; align-items: baseline; padding: 12px 20px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header b { font-size: 16px; }
+nav { display: flex; gap: 14px; flex-wrap: wrap; }
+nav a { color: var(--muted); text-decoration: none; }
+nav a.here { color: var(--fg); font-weight: 600; }
+main { padding: 16px 20px 40px; max-width: 1200px; }
+h2 { font-size: 15px; margin: 22px 0 8px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+pre.log { background: var(--card); border: 1px solid var(--line); padding: 10px; overflow: auto;
+  max-height: 70vh; white-space: pre-wrap; word-break: break-all; }
+button { font: inherit; padding: 3px 10px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--card); color: var(--fg); cursor: pointer; }
+button.go { border-color: var(--accent); color: var(--accent); }
+button.stop { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+input, select { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--card); color: var(--fg); }
+form.inline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+.muted { color: var(--muted); }
+.state-ready, .state-approved, .state-succeeded, .state-running { color: var(--good); }
+.state-failed, .state-denied { color: var(--bad); }
+.card { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+#error { color: var(--bad); margin: 8px 0; white-space: pre-wrap; }

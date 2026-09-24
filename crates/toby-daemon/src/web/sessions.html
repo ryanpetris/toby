@@ -1,0 +1,17 @@
+<h2>Sessions</h2>
+<table>
+<tr><th>Session</th><th>Machine</th><th>Command</th><th>State</th><th>Started</th><th>Version</th><th></th></tr>
+{% for s in sessions %}
+<tr>
+  <td class="mono">{{ s.id }}</td>
+  <td class="mono">{{ s.machine }}</td>
+  <td>{{ s.argv0 }}</td>
+  <td class="state-{{ 'running' if not s.exit else 'exited' }}">{{ "running" if not s.exit else "exited" }}{% if s.attached %} · attached{% endif %}</td>
+  <td>{{ s.started | age }}</td>
+  <td>{{ s.version or "" }}</td>
+  <td>{% if not s.exit %}<button class="stop" data-url="/v1/sessions/{{ s.id }}/kill" data-body="{}" data-confirm="End session {{ s.id }}?">End</button>{% endif %}</td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="muted">No sessions.</td></tr>
+{% endfor %}
+</table>

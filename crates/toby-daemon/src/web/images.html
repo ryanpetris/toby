@@ -1,0 +1,28 @@
+<h2>Images</h2>
+<table>
+<tr><th>Image</th><th>Source</th><th>Kernel</th><th>Roots</th><th>Created</th><th></th></tr>
+{% for i in images %}
+<tr>
+  <td class="mono">{{ i.id }}{% if i.current_default %} <span class="muted">default</span>{% endif %}</td>
+  <td>{{ i.source }}</td>
+  <td>{{ i.kernel }}</td>
+  <td>{{ i.roots | join(", ") }}</td>
+  <td>{{ i.created | age }}</td>
+  <td>{% if not i.roots and not i.current_default %}<button class="stop" data-method="DELETE" data-url="/v1/images/{{ i.id }}" data-confirm="Remove image {{ i.id }}?">Remove</button>{% endif %}</td>
+</tr>
+{% else %}
+<tr><td colspan="6" class="muted">No images.</td></tr>
+{% endfor %}
+</table>
+<p><button data-url="/v1/images/prepare" data-body='{"default":true}'>Prepare the default image</button>
+<button data-url="/v1/images/prune" data-body="{}">Remove unused images</button></p>
+<h2>Builds</h2>
+<table>
+<tr><th>Build</th><th>State</th><th></th></tr>
+{% for b in builds %}
+<tr><td class="mono">{{ b.id }}</td><td class="state-{{ b.state }}">{{ b.state }}{% if b.error %} <span class="muted">{{ b.error }}</span>{% endif %}</td>
+<td><a href="/builds/{{ b.id }}">output</a></td></tr>
+{% else %}
+<tr><td colspan="3" class="muted">No builds in the last hour.</td></tr>
+{% endfor %}
+</table>

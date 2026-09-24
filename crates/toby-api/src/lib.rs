@@ -322,6 +322,41 @@ pub struct Decide {
     pub decision: String,
 }
 
+/// `POST /v1/web/token`: a one-time login URL for the web UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebToken {
+    pub url: String,
+}
+
+/// `GET /v1/mcp`: a configured MCP server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpInfo {
+    pub name: String,
+    /// `stdio` or `http`.
+    pub kind: String,
+    /// `isolated`, `machine` (the tool's) or `proxy` (HTTP).
+    pub placement: String,
+    /// An isolated server's services machine, and its state.
+    pub machine: Option<String>,
+    pub state: Option<String>,
+}
+
+/// A change, sent on `GET /v1/events` (a WebSocket) as one JSON text
+/// message each. Clients fetch what changed through the other routes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    /// `machine`, `session`, `approval` or `build`; `resync` when events
+    /// were missed and everything should be fetched again.
+    pub kind: String,
+    pub id: String,
+    /// The new state, such as `ready`, `running`, `pending` or
+    /// `succeeded`; `removed` when it is gone.
+    pub state: String,
+    /// The machine of a session or approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+}
+
 /// `POST /v1/versions/gc`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionsCollected {

@@ -194,6 +194,8 @@ pub struct Daemon {
     /// How long a machine without sessions keeps running, e.g. `"15m"`;
     /// `"0"` keeps machines running.
     pub idle_timeout: Option<String>,
+    /// The port of the web UI on 127.0.0.1; any free port when unset.
+    pub web_port: Option<u16>,
 }
 
 impl Daemon {

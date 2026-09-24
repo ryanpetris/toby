@@ -113,6 +113,13 @@ impl Api {
         Ok(sender.send_request(req).await?)
     }
 
+    /// Changes as tobyd reports them (`GET /v1/events`).
+    pub async fn events(&self) -> anyhow::Result<Events> {
+        let stream = UnixStream::connect(&self.sock).await.context("connecting to tobyd")?;
+        let (ws, _) = tokio_tungstenite::client_async("ws://tobyd/v1/events", stream).await?;
+        Ok(Events(ws))
+    }
+
     async fn call<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -220,4 +227,25 @@ pub fn segment(s: &str) -> String {
         }
     }
     out
+}
+
+/// A stream of tobyd's events.
+pub struct Events(tokio_tungstenite::WebSocketStream<UnixStream>);
+
+impl Events {
+    /// The next event, or `None` once the connection ends.
+    pub async fn next(&mut self) -> Option<toby_api::Event> {
+        use futures_util::StreamExt;
+        loop {
+            match self.0.next().await? {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => {
+                    if let Ok(e) = serde_json::from_str(&t) {
+                        return Some(e);
+                    }
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => return None,
+                Ok(_) => {}
+            }
+        }
+    }
 }

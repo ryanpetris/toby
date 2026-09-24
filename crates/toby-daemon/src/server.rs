@@ -26,6 +26,8 @@ pub struct Daemon {
     pub builder: Arc<Builder>,
     pub builds: Builds,
     pub approvals: crate::approvals::Approvals,
+    pub events: crate::events::Events,
+    pub web: crate::web::Web,
 }
 
 type Shared = State<Arc<Daemon>>;
@@ -53,6 +55,9 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/machines", get(machines))
         .route("/v1/machines/ensure", post(ensure))
         .route("/v1/machines/{id}/stop", post(stop))
+        .route("/v1/machines/{id}/logs", get(machine_logs))
+        .route("/v1/mcp", get(mcp_servers))
+        .route("/v1/mcp/{name}/logs", get(mcp_logs))
         .route("/v1/machines/{id}/attachments", post(add_attachment))
         .route("/v1/machines/{id}/attachments/{aid}", delete(remove_attachment))
         .route("/v1/machines/{id}/forwards", post(add_forward))
@@ -64,7 +69,6 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/images/{id}", delete(remove_image))
         .route("/v1/images/prune", post(prune))
         .route("/v1/images/prepare", post(prepare))
-        .route("/v1/builds", post(start_build))
         .route("/v1/builds/{id}", get(build_status))
         .route("/v1/builds/{id}/logs", get(build_logs))
         .route("/v1/bootstrap", post(bootstrap))
@@ -75,12 +79,15 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/homes", get(homes).post(create_home))
         .route("/v1/homes/{name}", delete(remove_home))
         .route("/v1/versions/gc", post(collect_versions))
+        .route("/v1/events", get(events))
+        .route("/v1/web/token", post(web_token))
+        .route("/v1/builds", get(builds).post(start_build))
         .route("/v1/approvals", get(approvals))
         .route("/v1/approvals/{id}", post(decide))
         .with_state(daemon)
 }
 
-async fn daemon_info(State(d): Shared) -> ApiResult<api::DaemonInfo> {
+pub(crate) async fn daemon_info(State(d): Shared) -> ApiResult<api::DaemonInfo> {
     let m = &d.machines;
     let backend = m.supervisor.backend();
     let linger = match backend {
@@ -105,7 +112,7 @@ async fn daemon_info(State(d): Shared) -> ApiResult<api::DaemonInfo> {
 
 // Machines
 
-async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo>> {
+pub(crate) async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo>> {
     Ok(Json(d.machines.list().await))
 }
 
@@ -186,7 +193,7 @@ async fn create_session(
     }))
 }
 
-async fn sessions(State(d): Shared) -> ApiResult<Vec<api::MachineSession>> {
+pub(crate) async fn sessions(State(d): Shared) -> ApiResult<Vec<api::MachineSession>> {
     let out = d
         .machines
         .sessions()
@@ -227,7 +234,7 @@ fn source(s: api::Source) -> ImageSource {
     }
 }
 
-async fn images(State(d): Shared) -> ApiResult<Vec<api::ImageInfo>> {
+pub(crate) async fn images(State(d): Shared) -> ApiResult<Vec<api::ImageInfo>> {
     let store = &d.builder.store;
     let default = d.builder.default_image()?.map(|i| i.id);
     let mut used: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -352,7 +359,7 @@ async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response
 
 // Roots and homes
 
-async fn roots(State(d): Shared) -> ApiResult<Vec<api::RootInfo>> {
+pub(crate) async fn roots(State(d): Shared) -> ApiResult<Vec<api::RootInfo>> {
     let store = &d.builder.store;
     let out = store
         .roots()?
@@ -424,7 +431,7 @@ async fn remove_root(State(d): Shared, Path(name): Path<String>) -> ApiResult<()
     d.builder.store.remove_root(&name).map(Json).map_err(Into::into)
 }
 
-async fn homes(State(d): Shared) -> ApiResult<Vec<api::HomeInfo>> {
+pub(crate) async fn homes(State(d): Shared) -> ApiResult<Vec<api::HomeInfo>> {
     let out = d
         .builder
         .store
@@ -475,7 +482,71 @@ async fn collect_versions(State(d): Shared) -> ApiResult<api::VersionsCollected>
     }))
 }
 
-async fn approvals(State(d): Shared) -> ApiResult<Vec<api::ApprovalInfo>> {
+async fn machine_logs(
+    State(d): Shared,
+    Path(id): Path<String>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Result<Response, Error> {
+    d.machines.record(&id)?;
+    Ok(ws.on_upgrade(move |socket| crate::logs::machine(d, id, socket)))
+}
+
+pub(crate) async fn mcp_servers(State(d): Shared) -> ApiResult<Vec<api::McpInfo>> {
+    use toby_config::global::{McpKind, Placement};
+    let config = d.machines.current_config();
+    let machines = d.machines.list().await;
+    let mut out = vec![api::McpInfo {
+        name: "toby".into(),
+        kind: "built-in".into(),
+        placement: "daemon".into(),
+        machine: None,
+        state: None,
+    }];
+    for (name, s) in &config.mcp {
+        let pair = crate::services::pair_name(name);
+        let m = machines.iter().find(|m| m.home.as_deref() == Some(pair.as_str()));
+        out.push(api::McpInfo {
+            name: name.clone(),
+            kind: match s.kind {
+                McpKind::Stdio => "stdio",
+                McpKind::Http => "http",
+            }
+            .into(),
+            placement: match (s.kind, s.placement()) {
+                (McpKind::Http, _) => "proxy",
+                (_, Placement::Machine) => "machine",
+                (_, Placement::Isolated) => "isolated",
+            }
+            .into(),
+            machine: m.map(|m| m.id.clone()),
+            state: m.map(|m| m.state.clone()),
+        });
+    }
+    Ok(Json(out))
+}
+
+async fn mcp_logs(
+    State(d): Shared,
+    Path(name): Path<String>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| crate::logs::mcp(d, name, socket))
+}
+
+async fn web_token(State(d): Shared) -> ApiResult<api::WebToken> {
+    let url = d.web.login_url(d.clone()).await?;
+    Ok(Json(api::WebToken { url }))
+}
+
+async fn events(State(d): Shared, ws: axum::extract::WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| crate::events::serve(d, socket))
+}
+
+pub(crate) async fn builds(State(d): Shared) -> ApiResult<Vec<api::BuildStatus>> {
+    Ok(Json(d.builds.list().iter().map(|b| b.status()).collect()))
+}
+
+pub(crate) async fn approvals(State(d): Shared) -> ApiResult<Vec<api::ApprovalInfo>> {
     let list = d.approvals.list()?;
     Ok(Json(
         list.into_iter()

@@ -10,4 +10,5 @@
   machine, and how ownership works.
 - [Sessions](sessions.md): running commands and shells in a machine,
   detaching and reattaching.
+- [Web UI](web.md): `toby web`.
 - [Protocols](protocols.md): the wire formats between Toby's processes.

@@ -1,0 +1,35 @@
+<h2>Homes</h2>
+<table>
+<tr><th>Home</th><th>User</th><th>Default root</th><th>Created</th><th></th></tr>
+{% for h in homes %}
+<tr><td>{{ h.name }}</td><td>{{ h.username }} ({{ h.uid }})</td><td>{{ h.default_root or "" }}</td><td>{{ h.created | age }}</td>
+<td><button class="stop" data-method="DELETE" data-url="/v1/homes/{{ h.name }}" data-confirm="Remove home {{ h.name }} and everything in it?">Remove</button></td></tr>
+{% else %}
+<tr><td colspan="5" class="muted">No homes.</td></tr>
+{% endfor %}
+</table>
+<form class="inline" data-url="/v1/homes">
+  <input name="name" placeholder="name" required size="12">
+  <input name="username" placeholder="user" required size="10" value="{{ user }}">
+  <input name="uid" placeholder="uid" required size="6" value="{{ uid }}" data-number>
+  <button class="go">Create home</button>
+</form>
+<h2>Roots</h2>
+<table>
+<tr><th>Root</th><th>Image</th><th>Created</th><th></th></tr>
+{% for r in roots %}
+<tr><td>{{ r.name }}</td><td class="mono">{{ r.image }}{% if r.newer_image %} <span class="muted">newer: {{ r.newer_image }}</span>{% endif %}</td><td>{{ r.created | age }}</td>
+<td>
+  {% if r.newer_image %}<button data-url="/v1/roots/{{ r.name }}/rebase" data-body='{{ {"image": r.newer_image} | tojson }}' data-confirm="Rebase {{ r.name }} on {{ r.newer_image }}?">Rebase</button>{% endif %}
+  <button data-url="/v1/roots/{{ r.name }}/reset" data-body="{}" data-confirm="Reset {{ r.name }} to its image?">Reset</button>
+  <button class="stop" data-method="DELETE" data-url="/v1/roots/{{ r.name }}" data-confirm="Remove root {{ r.name }}?">Remove</button>
+</td></tr>
+{% else %}
+<tr><td colspan="4" class="muted">No roots.</td></tr>
+{% endfor %}
+</table>
+<form class="inline" data-url="/v1/roots">
+  <input name="name" placeholder="name" required size="12">
+  <input name="image" placeholder="image or default" required size="30" value="default">
+  <button class="go">Create root</button>
+</form>

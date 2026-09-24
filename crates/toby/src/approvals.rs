@@ -72,24 +72,50 @@ pub fn ui(api: Arc<Api>, machine: String) -> (toby_term::Ui, tokio::task::JoinHa
     let (status_tx, status) = tokio::sync::watch::channel(toby_term::compositor::Status::default());
     let (decisions, mut decided) = tokio::sync::mpsc::channel::<toby_term::compositor::Decision>(8);
     let task = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        // Status is fetched again when tobyd reports a change to the machine
+        // or its approvals, and now and then in case events are missed.
+        let mut events = api.events().await.ok();
+        let mut refresh = true;
+        let mut last = tokio::time::Instant::now();
         loop {
+            if refresh || last.elapsed() >= std::time::Duration::from_secs(30) {
+                refresh = false;
+                last = tokio::time::Instant::now();
+                if let Some(s) = status_of(&api, &machine).await {
+                    status_tx.send_if_modified(|old| {
+                        let changed = *old != s;
+                        *old = s;
+                        changed
+                    });
+                }
+            }
             tokio::select! {
-                _ = tick.tick() => {
-                    if let Some(s) = status_of(&api, &machine).await {
-                        status_tx.send_if_modified(|old| {
-                            let changed = *old != s;
-                            *old = s;
-                            changed
-                        });
+                e = async {
+                    match &mut events {
+                        Some(ev) => ev.next().await,
+                        None => std::future::pending().await,
                     }
+                } => match e {
+                    Some(e) => {
+                        refresh = e.kind == "resync"
+                            || (e.kind == "machine" && e.id == machine)
+                            || (e.kind == "approval" && e.machine.as_deref() == Some(machine.as_str()));
+                    }
+                    // tobyd went away (a restart): connect again shortly.
+                    None => events = None,
+                },
+                // Without events, status is polled.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)), if events.is_none() => {
+                    events = api.events().await.ok();
+                    refresh = true;
                 }
                 d = decided.recv() => {
                     let Some((id, approve)) = d else { return };
                     let decision = toby_api::Decide { decision: if approve { "approve" } else { "deny" }.into() };
                     let _: anyhow::Result<()> = api.post(&format!("/v1/approvals/{}", segment(&id)), &decision).await;
-                    tick.reset_immediately();
+                    refresh = true;
                 }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
             }
         }
     });

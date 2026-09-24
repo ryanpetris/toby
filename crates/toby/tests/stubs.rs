@@ -9,7 +9,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["run", "-f", "launch.toml"],
     &["config", "get", "daemon.backend"],
     &["config", "set", "daemon.backend", "direct"],
-    &["web"],
 ];
 
 fn assert_stub(mut cmd: Command, label: &str) {

@@ -1,0 +1,10 @@
+<h2>MCP servers</h2>
+<table>
+<tr><th>Server</th><th>Kind</th><th>Runs</th><th>Machine</th><th></th></tr>
+{% for s in servers %}
+<tr><td>{{ s.name }}</td><td>{{ s.kind }}</td><td>{{ s.placement }}</td>
+<td>{% if s.machine %}<span class="mono">{{ s.machine }}</span> <span class="state-{{ s.state }}">{{ s.state }}</span>{% endif %}</td>
+<td>{% if s.machine %}<a href="/mcp/{{ s.name }}/logs">logs</a>
+{% if s.state != "stopped" %}<button class="stop" data-url="/v1/machines/{{ s.machine }}/stop">Restart</button>{% endif %}{% endif %}</td></tr>
+{% endfor %}
+</table>

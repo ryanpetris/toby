@@ -1,0 +1,18 @@
+<h2>Approvals</h2>
+<table>
+<tr><th>Action</th><th>Machine</th><th>Asked</th><th>Status</th><th></th></tr>
+{% for a in approvals %}
+<tr>
+  <td><b>{{ a.kind }}</b><div>{{ a.summary }}</div>{% if a.detail %}<pre class="mono">{{ a.detail }}</pre>{% endif %}</td>
+  <td class="mono">{{ a.machine }}</td>
+  <td>{{ a.created | age }}</td>
+  <td class="state-{{ a.status }}">{{ a.status }}</td>
+  <td>{% if a.status == "pending" %}
+    <button class="go" data-url="/v1/approvals/{{ a.id }}" data-body='{"decision":"approve"}'>Approve</button>
+    <button class="stop" data-url="/v1/approvals/{{ a.id }}" data-body='{"decision":"deny"}'>Deny</button>
+  {% endif %}</td>
+</tr>
+{% else %}
+<tr><td colspan="5" class="muted">No approvals.</td></tr>
+{% endfor %}
+</table>

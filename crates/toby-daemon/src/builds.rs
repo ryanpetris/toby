@@ -97,6 +97,13 @@ impl Builds {
         self.builds.lock().unwrap().get(id).cloned()
     }
 
+    /// Builds running or finished within the last hour.
+    pub fn list(&self) -> Vec<Arc<Build>> {
+        let mut all: Vec<_> = self.builds.lock().unwrap().values().cloned().collect();
+        all.sort_by(|a, b| b.id.cmp(&a.id));
+        all
+    }
+
     /// Starts `job` in the background; its output goes to the build's log.
     /// The job returns the image it produced, if any.
     pub fn start<F>(&self, logs: PathBuf, kind: &str, job: F) -> std::io::Result<Arc<Build>>

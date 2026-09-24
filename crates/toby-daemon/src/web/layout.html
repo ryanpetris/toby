@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toby · {{ title }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <b>Toby</b>
+  <nav>
+  {% for p in pages %}<a href="/{{ p[0] }}"{% if p[0] == page %} class="here"{% endif %}>{{ p[1] }}</a>{% endfor %}
+  </nav>
+</header>
+<div id="error"></div>
+<main>{{ main | safe }}</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -263,6 +263,20 @@ fn executable(p: &Path) -> bool {
     nix::unistd::access(p, nix::unistd::AccessFlags::X_OK).is_ok() && p.is_file()
 }
 
+/// `toby web`: opens the web UI with a one-time login URL (plan §21).
+pub async fn web() -> anyhow::Result<ExitCode> {
+    let api = Api::connect().await?;
+    let token: toby_api::WebToken = api.post("/v1/web/token", &()).await?;
+    println!("{}", token.url);
+    let _ = std::process::Command::new("xdg-open")
+        .arg(&token.url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `toby doctor --gc`: removes installed versions nothing uses (plan §3.3).
 pub async fn collect_versions() -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;

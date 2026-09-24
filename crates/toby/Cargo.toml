@@ -12,6 +12,7 @@ name = "toby"
 path = "src/main.rs"
 
 [dependencies]
+futures-util.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 http-body-util.workspace = true
@@ -37,6 +38,7 @@ toby-term.workspace = true
 toby-tools.workspace = true
 toby-vfs.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

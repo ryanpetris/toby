@@ -79,7 +79,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config(_) => "config",
         Command::Doctor { gc: false } => return runtime()?.block_on(admin::doctor()),
         Command::Doctor { gc: true } => return runtime()?.block_on(admin::collect_versions()),
-        Command::Web => "web",
+        Command::Web => return runtime()?.block_on(admin::web()),
         Command::Internal(cmd) => match cmd {
             InternalCommand::Daemon => return internal::daemon().map(|()| ExitCode::SUCCESS),
             InternalCommand::Proxy => return internal::proxy().map(|()| ExitCode::SUCCESS),

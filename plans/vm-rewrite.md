@@ -1888,8 +1888,10 @@ so they are recreated on every start.
 
 ## 21. Web UI (milestone 10)
 
-- Served by `tobyd` (`axum`) from an embedded bundle (`rust-embed`);
-  server-rendered pages with htmx unless complexity demands a SPA.
+- Served by `tobyd` (`axum`) on 127.0.0.1 (`daemon.web_port`, or a free
+  port) from the first `toby web` on; pages rendered with `minijinja` and
+  embedded in the binary, with a small script for actions, live updates
+  over `/v1/events` and log streams.
 - Pages: machines (start/stop, mounts, forwards), homes, roots
   (reset/rebase), images and builds (logs), sessions (list, kill), MCP
   status and logs, approvals queue.

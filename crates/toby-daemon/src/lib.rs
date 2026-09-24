@@ -5,7 +5,9 @@ pub mod builder;
 pub mod builds;
 pub mod control;
 pub mod download;
+pub mod events;
 pub mod git;
+pub mod logs;
 pub mod machines;
 pub mod mcp;
 pub mod server;
@@ -13,6 +15,7 @@ pub mod services;
 pub mod supervisor;
 pub mod tools;
 pub mod versions;
+pub mod web;
 
 use std::io;
 use std::sync::Arc;
@@ -119,7 +122,15 @@ pub async fn run(
     let approvals = approvals::Approvals::new(paths.state.join("approvals"));
     // Nothing waits for approvals asked before a restart.
     approvals.expire_all();
-    let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default(), approvals });
+    let daemon = Arc::new(server::Daemon {
+        machines,
+        builder,
+        builds: Default::default(),
+        approvals,
+        events: Default::default(),
+        web: Default::default(),
+    });
+    tokio::spawn(events::watch(daemon.clone()));
     tokio::spawn(services::serve(daemon.clone(), capability));
     {
         // Host processes still on an older version pick up this one.

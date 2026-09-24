@@ -1,0 +1,52 @@
+<h2>Machines</h2>
+<table>
+<tr><th>Machine</th><th>Home / root</th><th>State</th><th>Sessions</th><th>Up</th><th></th></tr>
+{% for m in machines %}
+<tr>
+  <td class="mono">{{ m.id }}</td>
+  <td>{{ m.home or "–" }} / {{ m.root }}</td>
+  <td class="state-{{ m.state }}">{{ m.state }}{% if m.error %} <span class="muted">{{ m.error }}</span>{% endif %}</td>
+  <td>{{ m.sessions }}</td>
+  <td>{{ m.uptime_secs | duration }}</td>
+  <td>
+    {% if m.state != "stopped" %}<button class="stop" data-url="/v1/machines/{{ m.id }}/stop" data-confirm="Stop {{ m.id }}?">Stop</button>
+    {% elif m.home %}<button class="go" data-url="/v1/machines/ensure" data-body='{{ {"home": m.home, "root": m.root} | tojson }}'>Start</button>{% endif %}
+    <a href="/machines/{{ m.id }}/logs">logs</a>
+  </td>
+</tr>
+{% if m.state == "ready" %}
+<tr><td></td><td colspan="5">
+  <div class="card">
+    <b>Mounts</b>
+    {% for a in m.attachments %}
+    <div>{{ a.host }} → <code>{{ a.at }}</code>{% if a.read_only %} (read-only){% endif %}
+      <span class="state-{{ a.state }}">{{ a.state }}</span>
+      <button data-method="DELETE" data-url="/v1/machines/{{ m.id }}/attachments/{{ a.id }}">Remove</button></div>
+    {% else %}<div class="muted">none</div>{% endfor %}
+    <form class="inline" data-url="/v1/machines/{{ m.id }}/attachments">
+      <input name="host" placeholder="host path" required size="30">
+      <input name="at" placeholder="at (optional)" size="22">
+      <label><input type="checkbox" name="read_only"> read-only</label>
+      <label><input type="checkbox" name="persist"> keep</label>
+      <button class="go">Mount</button>
+    </form>
+    <b>Forwards</b>
+    {% for f in m.forwards %}
+    <div>{{ f.host }} {{ "→" if f.direction == "host-to-guest" else "←" }} {{ f.guest }}
+      <span class="state-{{ f.state }}">{{ f.state }}</span>
+      <button data-method="DELETE" data-url="/v1/machines/{{ m.id }}/forwards/{{ f.id }}">Remove</button></div>
+    {% else %}<div class="muted">none</div>{% endfor %}
+    <form class="inline" data-url="/v1/machines/{{ m.id }}/forwards">
+      <select name="direction"><option value="host-to-guest">host → guest</option><option value="guest-to-host">guest → host</option></select>
+      <input name="host" placeholder="127.0.0.1:3000" required size="18">
+      <input name="guest" placeholder="127.0.0.1:3000" required size="18">
+      <label><input type="checkbox" name="persist"> keep</label>
+      <button class="go">Forward</button>
+    </form>
+  </div>
+</td></tr>
+{% endif %}
+{% else %}
+<tr><td colspan="6" class="muted">No machines.</td></tr>
+{% endfor %}
+</table>
