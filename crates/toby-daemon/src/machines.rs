@@ -162,6 +162,9 @@ pub fn check_guest_path(at: &str) -> Result<()> {
     }
 }
 
+/// How long listing a machine's sessions may take.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub fn default_guest_path(host: &Path) -> Result<String> {
     let name = host.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
         Error::new(ErrorKind::BadRequest, "attach.invalid-target", "choose a mount point in the machine")
@@ -297,7 +300,12 @@ impl Machines {
         if observed.state == "ready"
             && let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await
         {
-            sessions = c.sessions().await.map(|l| l.iter().filter(|s| s.exit.is_none()).count()).unwrap_or(0);
+            sessions = tokio::time::timeout(LIST_TIMEOUT, c.sessions())
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .map(|l| l.iter().filter(|s| s.exit.is_none()).count())
+                .unwrap_or(0);
         }
         let now = Instant::now();
         let running = observed.state != "stopped";
@@ -1370,7 +1378,9 @@ impl Machines {
         let mut out = Vec::new();
         for spec in self.records() {
             let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { continue };
-            for s in c.sessions().await.unwrap_or_default() {
+            // A machine that does not answer soon is left out.
+            let list = tokio::time::timeout(LIST_TIMEOUT, c.sessions()).await.ok().and_then(|r| r.ok());
+            for s in list.unwrap_or_default() {
                 out.push((spec.id.clone(), s));
             }
         }

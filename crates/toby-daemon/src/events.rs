@@ -13,27 +13,39 @@ use crate::server::Daemon;
 
 const INTERVAL: Duration = Duration::from_secs(2);
 
+/// How long a snapshot may take; a machine that does not answer sooner is
+/// asked again next time.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct Events {
     tx: broadcast::Sender<Event>,
+    /// Wakes the watcher for a new listener.
+    subscribed: tokio::sync::Notify,
 }
 
 impl Default for Events {
     fn default() -> Events {
-        Events { tx: broadcast::channel(256).0 }
+        Events { tx: broadcast::channel(256).0, subscribed: tokio::sync::Notify::new() }
     }
 }
 
 impl Events {
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.tx.subscribe()
+        let rx = self.tx.subscribe();
+        self.subscribed.notify_one();
+        rx
     }
+}
+
+fn resync() -> Event {
+    Event { kind: "resync".into(), id: String::new(), state: String::new(), machine: None }
 }
 
 /// What is compared: each item's state, what else of it matters, and its
 /// machine.
 type Snapshot = HashMap<(&'static str, String), (String, String, Option<String>)>;
 
-async fn snapshot(d: &Daemon) -> Snapshot {
+async fn snapshot(d: &Daemon) -> Option<Snapshot> {
     let mut s = Snapshot::new();
     for m in d.machines.list().await {
         // Uptime and idle time change all the time.
@@ -45,27 +57,36 @@ async fn snapshot(d: &Daemon) -> Snapshot {
         let state = if session.exit.is_some() { "exited" } else { "running" };
         s.insert(("session", session.id), (state.into(), session.attached.to_string(), Some(machine)));
     }
-    for a in d.approvals.list().unwrap_or_default() {
+    // A list that cannot be read is not a list of nothing.
+    let Ok(approvals) = d.approvals.list() else { return None };
+    for a in approvals {
         s.insert(("approval", a.id), (a.status, String::new(), Some(a.machine)));
     }
     for b in d.builds.list() {
         let status = b.status();
         s.insert(("build", status.id), (status.state, String::new(), None));
     }
-    s
+    Some(s)
 }
 
-/// Sends changes while anyone listens.
+/// Sends changes while anyone listens. The first comparison after nobody
+/// listened sends `resync`: what changed before it is not known.
 pub async fn watch(d: Arc<Daemon>) {
     let mut previous: Option<Snapshot> = None;
     loop {
-        tokio::time::sleep(INTERVAL).await;
+        tokio::select! {
+            _ = tokio::time::sleep(INTERVAL) => {}
+            _ = d.events.subscribed.notified(), if previous.is_none() => {}
+        }
         let tx = &d.events.tx;
         if tx.receiver_count() == 0 {
             previous = None;
             continue;
         }
-        let now = snapshot(&d).await;
+        let Ok(Some(now)) = tokio::time::timeout(SNAPSHOT_TIMEOUT, snapshot(&d)).await else { continue };
+        if previous.is_none() {
+            let _ = tx.send(resync());
+        }
         if let Some(before) = &previous {
             for (key, (state, rest, machine)) in &now {
                 if before.get(key).is_none_or(|(s, r, _)| s != state || r != rest) {
@@ -99,9 +120,7 @@ pub async fn serve(d: Arc<Daemon>, mut socket: axum::extract::ws::WebSocket) {
             e = rx.recv() => {
                 let e = match e {
                     Ok(e) => e,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        Event { kind: "resync".into(), id: String::new(), state: String::new(), machine: None }
-                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => resync(),
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
                 let text = serde_json::to_string(&e).unwrap_or_default();

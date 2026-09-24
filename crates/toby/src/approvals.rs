@@ -34,7 +34,10 @@ pub async fn approvals(args: ApprovalsArgs) -> anyhow::Result<ExitCode> {
                 }
             }
             let () = api
-                .post(&format!("/v1/approvals/{}", segment(&id)), &toby_api::Decide { decision: verb.into() })
+                .post(
+                    &format!("/v1/approvals/{}", segment(&id)),
+                    &toby_api::Decide { decision: verb.into(), from: None },
+                )
                 .await?;
             println!("{}", if verb == "approve" { "approved" } else { "denied" });
         }
@@ -59,12 +62,7 @@ pub async fn approvals(args: ApprovalsArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Text from a guest, without control characters other than newlines or
-/// characters that reorder or hide text.
-fn clean(s: &str) -> String {
-    let invisible = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{00ad}' | '\u{180e}');
-    s.chars().map(|c| if (c.is_control() && c != '\n') || invisible(c) { ' ' } else { c }).collect()
-}
+use toby_api::clean_text as clean;
 
 /// Feeds an attached terminal's status line and approval overlay from
 /// tobyd, and sends the decisions made in the overlay.
@@ -114,7 +112,10 @@ pub fn ui(api: Arc<Api>, machine: String) -> (toby_term::Ui, tokio::task::JoinHa
                 }
                 d = decided.recv() => {
                     let Some((id, approve)) = d else { return };
-                    let decision = toby_api::Decide { decision: if approve { "approve" } else { "deny" }.into() };
+                    let decision = toby_api::Decide {
+                        decision: if approve { "approve" } else { "deny" }.into(),
+                        from: Some("overlay".into()),
+                    };
                     let sent: anyhow::Result<()> = api.post(&format!("/v1/approvals/{}", segment(&id)), &decision).await;
                     if sent.is_err() {
                         failed.push(id);

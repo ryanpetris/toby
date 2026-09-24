@@ -1169,6 +1169,7 @@ and restores the terminal on exit, error or panic. With a terminal (and
 [daemon]
 backend = "systemd-user"         # or "direct"
 idle_timeout = "15m"
+# web_port = 7474                # the web UI's port; default: a free one
 
 [network]
 # dns_host = "192.0.2.53"         # host resolver passt forwards guest DNS to; default: first IPv4 nameserver
@@ -1748,8 +1749,9 @@ capabilities.
 - Cloud Hypervisor runs with its seccomp filters enabled (default).
 - passt: no inbound forwarding; all inbound access is explicit forwards.
 - Relay rejects non-host vsock peers.
-- Web UI (§18): localhost only, one-time token → `SameSite=Strict` cookie,
-  `Host`/`Origin` checks on every request and WebSocket upgrade.
+- Web UI (§21): localhost only, one-time token → a session secret held in
+  the UI origin's storage and sent as a header on every data request and
+  WebSocket; local `Host` checks; no framing (`frame-ancestors 'none'`).
 - API authentication: Unix socket peer UID must equal the daemon's UID.
 
 ---
@@ -1762,7 +1764,7 @@ Served on `<rt>/tobyd.sock` for the CLI and, when enabled, on
 ```text
 GET    /v1/openapi.json                    this API's OpenAPI document
 GET    /v1/daemon                          version, backend, linger, paths
-GET    /v1/events                  (WS)    approvals, machine/session/attach/forward/build/MCP events
+GET    /v1/events                  (WS)    machine (with attachments and forwards), session, approval and build changes; resync
 
 GET    /v1/images                          list
 POST   /v1/images/prepare                  {default, mcp[], project, all, rebuild, pull} → build ids (§15.6)
@@ -1810,7 +1812,8 @@ POST   /v1/web/token                       one-time URL for the web UI
 machine is ready; builder jobs (builds, bootstrap, home formatting, tool
 preparation) return a build ID whose output streams from
 `/v1/builds/{id}/logs`. `GET /v1/events` reports changes to machines,
-sessions, approvals and builds; clients fetch what changed. Errors are
+sessions, approvals and builds; clients fetch what changed, and fetch
+everything again on `resync` (sent when changes may have been missed). Errors are
 `{code, message}` with a stable code such as `machine.pair-in-use`. The
 OpenAPI document is `GET /v1/openapi.json`. `GET /v1/sessions/{id}/io`
 stays reserved (§21).
@@ -1910,7 +1913,12 @@ so they are recreated on every start.
 - Browser terminals (xterm.js over `/v1/sessions/{id}/io`) are **not** part
   of M10 (decided); the API route stays reserved and is added after M11.
 - Access: `toby web` → `POST /v1/web/token` → opens
-  `http://127.0.0.1:<port>/login?token=…` → cookie. Localhost only.
+  `http://127.0.0.1:<port>/machines#login=…`; the page exchanges the
+  one-time token for a session secret kept in its origin's storage and
+  sends it as `Authorization` (WebSockets: subprotocols `toby` and the
+  secret). A page itself is a shell without data. Localhost only. A
+  cookie is not used because it would reach every port of 127.0.0.1,
+  including servers a guest runs behind host-to-guest forwards.
 
 ---
 

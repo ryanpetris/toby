@@ -6,15 +6,18 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
 use toby_config::global::Backend;
-use toby_proto::types::Identity;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use toby_proto::types::{Identity, SpawnSpec};
+use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc;
 
 use crate::server::Daemon;
 
 /// Lines already in a log that are sent first.
 const LINES: usize = 200;
-/// How often an MCP server's log is read again.
+/// How often a stopped services machine is looked at again.
 const POLL: Duration = Duration::from_secs(2);
+/// Longer lines are sent in parts.
+const MAX_LINE: usize = 64 * 1024;
 
 async fn send(socket: &mut WebSocket, text: String) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
@@ -23,6 +26,28 @@ async fn send(socket: &mut WebSocket, text: String) -> bool {
 /// Whether the client went away; other messages are ignored.
 async fn closed(socket: &mut WebSocket) -> bool {
     !matches!(socket.recv().await, Some(Ok(m)) if !matches!(m, Message::Close(_)))
+}
+
+/// Splits output into lines, whatever its encoding.
+#[derive(Default)]
+struct Lines(Vec<u8>);
+
+impl Lines {
+    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.0.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        loop {
+            let (end, newline) = match self.0.iter().position(|&b| b == b'\n') {
+                Some(i) if i <= MAX_LINE => (i, 1),
+                _ if self.0.len() >= MAX_LINE => (MAX_LINE, 0),
+                _ => break,
+            };
+            let line: Vec<u8> = self.0.drain(..end).collect();
+            self.0.drain(..newline);
+            out.push(String::from_utf8_lossy(&line).into_owned());
+        }
+        out
+    }
 }
 
 /// Streams the logs of machine `id`'s host processes, one line a message.
@@ -67,11 +92,19 @@ pub async fn machine(d: Arc<Daemon>, id: String, mut socket: WebSocket) {
         let _ = send(&mut socket, "the logs cannot be read".into()).await;
         return;
     };
-    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let mut stdout = child.stdout.take().expect("piped");
+    let mut lines = Lines::default();
+    let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
-            line = lines.next_line() => match line {
-                Ok(Some(l)) => if !send(&mut socket, l).await { return },
+            n = stdout.read(&mut buf) => match n {
+                Ok(n) if n > 0 => {
+                    for l in lines.push(&buf[..n]) {
+                        if !send(&mut socket, l).await {
+                            return;
+                        }
+                    }
+                }
                 _ => return,
             },
             gone = closed(&mut socket) => if gone { return },
@@ -80,7 +113,7 @@ pub async fn machine(d: Arc<Daemon>, id: String, mut socket: WebSocket) {
 }
 
 /// Streams an isolated MCP server's standard error while its services
-/// machine runs, reading the log in the machine every two seconds.
+/// machine runs: one `tail -F` in the machine, ended when the client goes.
 pub async fn mcp(d: Arc<Daemon>, name: String, mut socket: WebSocket) {
     let pair = crate::services::pair_name(&name);
     let Some(spec) = d.machines.records().into_iter().find(|s| s.home.as_deref() == Some(pair.as_str()))
@@ -89,49 +122,92 @@ pub async fn mcp(d: Arc<Daemon>, name: String, mut socket: WebSocket) {
         return;
     };
     let log = toby_guest::helper::serve::LOG;
-    let mut offset: Option<u64> = None;
+    let mut said_stopped = false;
     loop {
-        if d.machines.observe(&spec.id).await.state != "ready" {
-            if !send(&mut socket, format!("{name}'s machine is not running")).await {
+        if d.machines.observe(&spec.id).await.state == "ready" {
+            said_stopped = false;
+            let runtime = d.machines.runtime(&spec.id);
+            let session = SpawnSpec {
+                session_id: toby_config::new_id(),
+                argv: vec!["sh".into(), "-c".into(), format!("exec tail -n {LINES} -F \"$HOME/{log}\"")],
+                env: Vec::new(),
+                cwd: None,
+                identity: Identity::User,
+                tty: None,
+                keep_after_exit: false,
+                start_on_attach: true,
+                tool: None,
+            };
+            let id = session.session_id.clone();
+            // Output the page cannot take as fast as it comes is dropped.
+            let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+            let follow = tokio::spawn({
+                let runtime = runtime.clone();
+                async move {
+                    let mut out = |b: &[u8], stderr: bool| {
+                        if !stderr {
+                            let _ = tx.try_send(b.to_vec());
+                        }
+                    };
+                    crate::control::run_spec(&runtime, session, None, &mut out).await
+                }
+            });
+            let mut lines = Lines::default();
+            let gone = loop {
+                tokio::select! {
+                    chunk = rx.recv() => match chunk {
+                        Some(b) => {
+                            let mut sent = true;
+                            for l in lines.push(&b) {
+                                sent = sent && send(&mut socket, l).await;
+                            }
+                            if !sent {
+                                break true;
+                            }
+                        }
+                        // The machine stopped, or the log cannot be read.
+                        None => break false,
+                    },
+                    gone = closed(&mut socket) => if gone { break true },
+                }
+            };
+            if gone {
+                follow.abort();
+                if let Ok(mut c) = crate::control::Control::connect(&runtime).await {
+                    let _ = c.kill(&id, libc_sigkill()).await;
+                }
                 return;
             }
-        } else {
-            // The size first, then what is new (or the last lines at first).
-            let read = match offset {
-                None => format!("wc -c < \"$HOME/{log}\"; tail -n {LINES} \"$HOME/{log}\""),
-                Some(n) => format!("wc -c < \"$HOME/{log}\"; tail -c +{} \"$HOME/{log}\"", n + 1),
-            };
-            let mut out = Vec::new();
-            let mut collect = |b: &[u8], stderr: bool| {
-                if !stderr {
-                    out.extend_from_slice(b);
-                }
-            };
-            let argv = vec!["sh".into(), "-c".into(), read];
-            let runtime = d.machines.runtime(&spec.id);
-            if crate::control::run(&runtime, argv, Identity::User, Vec::new(), &mut collect).await.is_ok() {
-                let text = String::from_utf8_lossy(&out);
-                let (size, rest) = text.split_once('\n').unwrap_or((&text, ""));
-                let size: u64 = size.trim().parse().unwrap_or(0);
-                offset = match offset {
-                    // The log started over: read it from its beginning.
-                    Some(n) if size < n => {
-                        offset = Some(0);
-                        continue;
-                    }
-                    Some(n) => Some(n + rest.len() as u64),
-                    None => Some(size),
-                };
-                for line in rest.lines() {
-                    if !send(&mut socket, line.to_string()).await {
-                        return;
-                    }
-                }
+        } else if !said_stopped {
+            said_stopped = true;
+            if !send(&mut socket, format!("{name}'s machine is not running")).await {
+                return;
             }
         }
         tokio::select! {
             _ = tokio::time::sleep(POLL) => {}
             gone = closed(&mut socket) => if gone { return },
         }
+    }
+}
+
+fn libc_sigkill() -> i32 {
+    nix::sys::signal::Signal::SIGKILL as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_split_and_survive_bad_bytes() {
+        let mut l = Lines::default();
+        assert_eq!(l.push(b"one\ntw"), ["one"]);
+        assert_eq!(l.push(b"o\n\xff\n"), ["two", "\u{fffd}"]);
+        assert!(l.push(&vec![b'x'; MAX_LINE - 1]).is_empty());
+        let out = l.push(b"yz\n");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].len(), MAX_LINE);
+        assert_eq!(out[1], "z");
     }
 }

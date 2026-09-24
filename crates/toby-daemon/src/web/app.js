@@ -1,22 +1,70 @@
-// Actions call the JSON API; the page's main part is fetched again after
-// them and whenever tobyd reports a change.
+// A page's content is fetched with the session secret, which only this
+// origin's storage holds; actions call the JSON API, and the content is
+// fetched again after them and whenever tobyd reports a change.
 "use strict";
+
+const KEY = "toby-session";
+
+function secret() {
+  try { return localStorage.getItem(KEY) || ""; } catch (_) { return ""; }
+}
+
+function authorized(headers) {
+  return Object.assign({ authorization: "Bearer " + secret() }, headers);
+}
 
 function showError(text) {
   document.getElementById("error").textContent = text;
 }
 
-async function refresh() {
-  const res = await fetch(location.href, { headers: { "x-toby-part": "main" } });
-  if (!res.ok) return;
-  document.querySelector("main").innerHTML = await res.text();
+// `toby web` opens a page with #login=<token>, which becomes the secret.
+async function login() {
+  const m = location.hash.match(/^#login=([0-9a-f]+)$/);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  const res = await fetch("/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: m[1] }),
+  });
+  if (res.ok) {
+    try { localStorage.setItem(KEY, (await res.json()).session); } catch (_) {}
+  }
 }
+
+// Whether the user is filling in a form, which a refresh would wipe.
+function editing() {
+  const main = document.querySelector("main");
+  const active = document.activeElement;
+  if (active && main.contains(active) && active.matches("input, select, textarea")) return true;
+  for (const el of main.querySelectorAll("input, textarea")) {
+    if (el.type === "checkbox" ? el.checked !== el.defaultChecked : el.value !== el.defaultValue) return true;
+  }
+  for (const o of main.querySelectorAll("option")) {
+    if (o.selected !== o.defaultSelected) return true;
+  }
+  return false;
+}
+
+let pending = false;
+
+async function refresh(force) {
+  if (!force && editing()) {
+    pending = true;
+    return;
+  }
+  pending = false;
+  const res = await fetch(location.pathname + location.search, { headers: authorized({ "x-toby-part": "main" }) });
+  if (res.status === 401 || res.ok) document.querySelector("main").innerHTML = await res.text();
+}
+
+document.addEventListener("focusout", () => setTimeout(() => { if (pending && !editing()) refresh(); }, 0));
 
 async function call(method, url, body) {
   showError("");
   const res = await fetch(url, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers: authorized(body === undefined ? {} : { "content-type": "application/json" }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {
@@ -25,7 +73,6 @@ async function call(method, url, body) {
     showError(msg);
     return false;
   }
-  await refresh();
   return true;
 }
 
@@ -37,6 +84,7 @@ document.addEventListener("click", (e) => {
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
   b.disabled = true;
   call(b.dataset.method || "POST", b.dataset.url, b.dataset.body ? JSON.parse(b.dataset.body) : undefined)
+    .then(() => refresh(true))
     .finally(() => { b.disabled = false; });
 });
 
@@ -51,15 +99,19 @@ document.addEventListener("submit", (e) => {
     else if (el.dataset.number !== undefined) body[el.name] = Number(el.value);
     else if (el.value !== "") body[el.name] = el.value;
   }
-  call(f.dataset.method || "POST", f.dataset.url, body).then((ok) => { if (ok) f.reset(); });
+  call(f.dataset.method || "POST", f.dataset.url, body).then((ok) => {
+    if (ok) f.reset();
+    refresh(ok);
+  });
 });
 
 function socket(path) {
-  return new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + path);
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + path;
+  return new WebSocket(url, ["toby", secret()]);
 }
 
 // Log pages: <pre class="log" data-ws="/v1/…/logs">.
-for (const pre of document.querySelectorAll("pre[data-ws]")) {
+function follow(pre) {
   const ws = socket(pre.dataset.ws);
   ws.onmessage = (m) => {
     const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
@@ -71,30 +123,40 @@ for (const pre of document.querySelectorAll("pre[data-ws]")) {
 
 // Build output: <pre class="log" data-stream="/v1/builds/…/logs">, read as
 // it arrives.
-for (const pre of document.querySelectorAll("pre[data-stream]")) {
-  (async () => {
-    const res = await fetch(pre.dataset.stream);
-    const reader = res.body.getReader();
-    const text = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-      pre.textContent += text.decode(value, { stream: true });
-      if (bottom) pre.scrollTop = pre.scrollHeight;
-    }
-  })();
+async function stream(pre) {
+  const res = await fetch(pre.dataset.stream, { headers: authorized({}) });
+  if (!res.ok) return;
+  const reader = res.body.getReader();
+  const text = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const bottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent += text.decode(value, { stream: true });
+    if (bottom) pre.scrollTop = pre.scrollHeight;
+  }
 }
 
-if (!document.querySelector("pre[data-ws], pre[data-stream]")) {
+// Changes are missed while the socket is closed, so a new one refreshes.
+function events(again) {
   let timer = null;
-  const events = () => {
-    const ws = socket("/v1/events");
-    ws.onmessage = () => {
-      clearTimeout(timer);
-      timer = setTimeout(refresh, 300);
-    };
-    ws.onclose = () => setTimeout(events, 3000);
+  const ws = socket("/v1/events");
+  const soon = () => {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 300);
   };
-  events();
+  ws.onopen = () => { if (again) soon(); };
+  ws.onmessage = soon;
+  ws.onclose = () => setTimeout(() => events(true), 3000);
 }
+
+(async () => {
+  await login();
+  await refresh(true);
+  const logs = document.querySelectorAll("pre[data-ws], pre[data-stream]");
+  for (const pre of logs) {
+    if (pre.dataset.ws) follow(pre);
+    else stream(pre);
+  }
+  if (logs.length === 0 && secret()) events();
+})();

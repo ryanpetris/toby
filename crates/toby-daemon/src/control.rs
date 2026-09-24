@@ -107,6 +107,16 @@ pub async fn run_with_input(
         start_on_attach: true,
         tool: None,
     };
+    run_spec(runtime, spec, input, out).await
+}
+
+/// Runs a session as `spec` describes, like [`run_with_input`].
+pub async fn run_spec(
+    runtime: &MachineRuntime,
+    spec: SpawnSpec,
+    input: Option<Vec<u8>>,
+    out: &mut (dyn FnMut(&[u8], bool) + Send),
+) -> io::Result<ExitStatus> {
     let id = Control::connect(runtime).await?.spawn(spec).await?;
 
     let mut s = UnixStream::connect(runtime.session_sock()).await?;
