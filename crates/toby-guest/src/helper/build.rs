@@ -6,7 +6,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 
-const SCRIPTS: &[(&str, &str)] = &[
+/// The job scripts, by name.
+pub const SCRIPTS: &[(&str, &str)] = &[
     ("adapt.sh", include_str!("../../assets/adapt.sh")),
     ("build.sh", include_str!("../../assets/build.sh")),
     ("provision.sh", include_str!("../../assets/provision.sh")),

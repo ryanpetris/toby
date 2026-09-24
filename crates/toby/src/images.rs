@@ -84,8 +84,11 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                 .await
                 .with_context(|| format!("build log: {}", path.display()))?;
             println!("Default image {}", rec.id);
-            if all || !default {
-                // Rebuild the sources of existing roots whose image is behind.
+            // Without flags, "everything the configuration needs" is the
+            // default image until MCP and project images exist.
+            let _ = default;
+            if all {
+                // Every root's source, rebuilt when it is behind.
                 let mut sources: Vec<ImageSource> = Vec::new();
                 for root in b.store.roots()? {
                     let img = b.store.image(&root.image)?;
@@ -93,8 +96,20 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                         sources.push(img.source);
                     }
                 }
+                let mut failed = 0;
                 for source in sources {
-                    build(&b, source, "root").await?;
+                    let result = match b.current_image(&source) {
+                        Ok(Some(_)) if !rebuild => continue,
+                        Ok(_) => build(&b, source.clone(), "root").await.map(|_| ()),
+                        Err(e) => Err(e.into()),
+                    };
+                    if let Err(e) = result {
+                        eprintln!("toby: {}: {e:#}", source.describe());
+                        failed += 1;
+                    }
+                }
+                if failed > 0 {
+                    bail!("{failed} of the roots' images could not be built");
                 }
             }
         }
@@ -146,6 +161,9 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
             let keep: Vec<String> = newest.into_values().collect();
             for id in b.store.prune_images(u64::MAX, &keep)? {
                 println!("Removed image {id}");
+            }
+            for cache in b.prune_caches()? {
+                println!("Removed build cache {}", cache.display());
             }
         }
     }

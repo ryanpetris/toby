@@ -16,16 +16,24 @@ pub const HOME_SIZE: u64 = 100 << 30;
 /// Default virtual size of an image disk.
 pub const IMAGE_SIZE: u64 = 64 << 30;
 
-/// An exclusive lock on a disk file, held while a machine uses it.
+/// A lock on a disk file, held while a machine uses it: exclusive for a
+/// machine's root and home, shared for a disk used as a read-only base.
 pub struct DiskLock {
-    _lock: Flock<File>,
+    lock: Flock<File>,
     pub path: PathBuf,
 }
 
-/// Takes the exclusive lock on `path` without waiting.
-pub fn lock_disk(path: &Path) -> io::Result<DiskLock> {
+impl DiskLock {
+    /// The locked file; the lock lasts as long as any copy of it is open,
+    /// including one inherited by a program started with `exec`.
+    pub fn file(&self) -> &File {
+        &self.lock
+    }
+}
+
+fn lock_with(path: &Path, arg: FlockArg) -> io::Result<DiskLock> {
     let f = File::open(path)?;
-    let lock = Flock::lock(f, FlockArg::LockExclusiveNonblock).map_err(|(_, e)| {
+    let lock = Flock::lock(f, arg).map_err(|(_, e)| {
         if e == nix::errno::Errno::EWOULDBLOCK {
             io::Error::new(
                 io::ErrorKind::ResourceBusy,
@@ -35,7 +43,17 @@ pub fn lock_disk(path: &Path) -> io::Result<DiskLock> {
             io::Error::from(e)
         }
     })?;
-    Ok(DiskLock { _lock: lock, path: path.to_path_buf() })
+    Ok(DiskLock { lock, path: path.to_path_buf() })
+}
+
+/// Takes the exclusive lock on `path` without waiting.
+pub fn lock_disk(path: &Path) -> io::Result<DiskLock> {
+    lock_with(path, FlockArg::LockExclusiveNonblock)
+}
+
+/// Takes a shared lock on `path` without waiting.
+pub fn lock_disk_shared(path: &Path) -> io::Result<DiskLock> {
+    lock_with(path, FlockArg::LockSharedNonblock)
 }
 
 /// Whether some process holds the lock on `path`.
@@ -66,6 +84,18 @@ impl Store {
     }
     fn homes_dir(&self) -> PathBuf {
         self.paths.state.join("homes")
+    }
+
+    /// Serializes changes to records, so an image cannot be removed while a
+    /// root is being created from it.
+    fn lock(&self) -> io::Result<Flock<File>> {
+        std::fs::create_dir_all(&self.paths.state)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.paths.state.join("store.lock"))?;
+        Flock::lock(f, FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))
     }
 
     pub fn image_record_path(&self, id: &str) -> PathBuf {
@@ -108,29 +138,46 @@ impl Store {
         Ok(self.roots()?.into_iter().find(|r| r.image == id).map(|r| r.name))
     }
 
-    /// Removes an image; refused while a root is based on it.
+    /// Removes an image; refused while a root is based on it or a machine
+    /// (a builder) runs on it.
     pub fn remove_image(&self, id: &str) -> io::Result<()> {
+        let _lock = self.lock()?;
+        self.remove_image_locked(id)
+    }
+
+    fn remove_image_locked(&self, id: &str) -> io::Result<()> {
         self.image(id)?;
         if let Some(root) = self.image_referenced(id)? {
             return Err(io::Error::other(format!("image {id} is used by root {root}")));
         }
         let dir = self.paths.image_dir(id);
-        make_writable(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
+        let disk = dir.join("disk.qcow2");
+        let _in_use = match lock_disk(&disk) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            r => Some(r?),
+        };
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         std::fs::remove_file(self.image_record_path(id))
     }
 
     /// Removes unreferenced images created before `older_than`, except those
-    /// in `keep`. Returns the removed IDs.
+    /// in `keep` and those in use. Returns the removed IDs.
     pub fn prune_images(&self, older_than: u64, keep: &[String]) -> io::Result<Vec<String>> {
+        let _lock = self.lock()?;
         let mut removed = Vec::new();
         for img in self.images()? {
             if img.created < older_than
                 && !keep.contains(&img.id)
                 && self.image_referenced(&img.id)?.is_none()
             {
-                self.remove_image(&img.id)?;
-                removed.push(img.id);
+                match self.remove_image_locked(&img.id) {
+                    Ok(()) => removed.push(img.id),
+                    Err(e) if e.kind() == io::ErrorKind::ResourceBusy => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(removed)
@@ -150,21 +197,23 @@ impl Store {
             .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no root {name}")))
     }
 
-    async fn write_root_disk(&self, name: &str, image: &str) -> io::Result<()> {
+    /// Creates a root disk over `image` at `path`.
+    async fn write_root_disk(&self, path: &Path, image: &str) -> io::Result<()> {
         let backing = self.paths.image_dir(image).join("disk.qcow2");
         if !backing.is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("image {image} has no disk")));
         }
-        qcow2::create(&self.paths.root_disk(name), IMAGE_SIZE, Some(&backing)).await
+        qcow2::create(path, IMAGE_SIZE, Some(&backing)).await
     }
 
     pub async fn create_root(&self, name: &str, image: &str) -> io::Result<RootRecord> {
         check_name("root", name)?;
+        let _lock = self.lock()?;
         self.image(image)?;
         if self.root_record_path(name).exists() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("root {name} exists")));
         }
-        self.write_root_disk(name, image).await?;
+        self.write_root_disk(&self.paths.root_disk(name), image).await?;
         let rec = RootRecord { name: name.into(), image: image.into(), created: now() };
         records::store(&self.root_record_path(name), &rec)?;
         Ok(rec)
@@ -172,14 +221,19 @@ impl Store {
 
     /// Recreates the root's disk against `image` (the same image for a reset).
     async fn replace_root(&self, name: &str, image: &str) -> io::Result<RootRecord> {
+        let _lock = self.lock()?;
         let mut rec = self.root(name)?;
         self.image(image)?;
         let disk = self.paths.root_disk(name);
-        if disk.exists() {
-            let _lock = lock_disk(&disk)?;
-            std::fs::remove_file(&disk)?;
-        }
-        self.write_root_disk(name, image).await?;
+        let _in_use = match lock_disk(&disk) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            r => Some(r?),
+        };
+        // The old disk stays until its replacement exists.
+        let new = disk.with_extension("qcow2.new");
+        let _ = std::fs::remove_file(&new);
+        self.write_root_disk(&new, image).await?;
+        std::fs::rename(&new, &disk)?;
         rec.image = image.into();
         rec.created = now();
         records::store(&self.root_record_path(name), &rec)?;
@@ -196,6 +250,7 @@ impl Store {
     }
 
     pub fn remove_root(&self, name: &str) -> io::Result<()> {
+        let _lock = self.lock()?;
         self.root(name)?;
         let disk = self.paths.root_disk(name);
         if disk.exists() {
@@ -228,6 +283,7 @@ impl Store {
         size: u64,
     ) -> io::Result<HomeRecord> {
         check_name("home", name)?;
+        let _lock = self.lock()?;
         if self.home_record_path(name).exists() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("home {name} exists")));
         }
@@ -251,6 +307,7 @@ impl Store {
     }
 
     pub fn remove_home(&self, name: &str) -> io::Result<()> {
+        let _lock = self.lock()?;
         self.home(name)?;
         let disk = self.paths.home_disk(name);
         if disk.exists() {
@@ -270,17 +327,6 @@ fn check_name_or_id(id: &str) -> io::Result<()> {
     } else {
         Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid image ID {id:?}")))
     }
-}
-
-/// Image files are read-only; make them removable.
-fn make_writable(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let _ = std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(0o644));
-        }
-    }
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
 }
 
 #[cfg(test)]
@@ -347,6 +393,30 @@ mod tests {
         let err = s.reset_root("busy").await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::ResourceBusy);
         assert!(s.remove_root("busy").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebase_keeps_the_root() {
+        let (_d, s) = store();
+        image(&s, "img1", 1).await;
+        image(&s, "img2", 2).await;
+        s.create_root("work", "img1").await.unwrap();
+        let disk = s.paths.root_disk("work");
+        let before = std::fs::read(&disk).unwrap();
+        std::fs::remove_file(s.paths.image_dir("img2").join("disk.qcow2")).unwrap();
+        assert!(s.rebase_root("work", "img2").await.is_err());
+        assert_eq!(std::fs::read(&disk).unwrap(), before);
+        assert_eq!(s.root("work").unwrap().image, "img1");
+    }
+
+    #[tokio::test]
+    async fn images_in_use_are_kept() {
+        let (_d, s) = store();
+        image(&s, "img1", 1).await;
+        let _builder = lock_disk_shared(&s.paths.image_dir("img1").join("disk.qcow2")).unwrap();
+        assert_eq!(s.remove_image("img1").unwrap_err().kind(), io::ErrorKind::ResourceBusy);
+        assert!(s.prune_images(u64::MAX, &[]).unwrap().is_empty());
+        assert!(s.image("img1").is_ok());
     }
 
     #[tokio::test]

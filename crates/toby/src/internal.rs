@@ -212,6 +212,14 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
                 .stdout(log(name)?)
                 .stderr(log(&format!("{name}.err"))?)
                 .kill_on_drop(true);
+            // The parts must not outlive a supervisor that is killed.
+            // SAFETY: prctl is async-signal-safe.
+            unsafe {
+                c.pre_exec(|| {
+                    nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
+                        .map_err(std::io::Error::from)
+                });
+            }
             Ok(c.spawn()?)
         };
 
@@ -239,6 +247,7 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
         let api = cloud_hypervisor::Api::new(runtime.ch_api());
         let mut term = signal(SignalKind::terminate())?;
         let mut int = signal(SignalKind::interrupt())?;
+        let mut hup = signal(SignalKind::hangup())?;
 
         tokio::select! {
             _ = vm.wait() => {}
@@ -246,6 +255,7 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
             _ = net.wait() => { let _ = api.shutdown().await; let _ = api.shutdown_vmm().await; }
             _ = term.recv() => toby_machine::power_off(api.clone()).await,
             _ = int.recv() => toby_machine::power_off(api.clone()).await,
+            _ = hup.recv() => toby_machine::power_off(api.clone()).await,
         }
         if tokio::time::timeout(std::time::Duration::from_secs(45), vm.wait()).await.is_err() {
             let _ = vm.kill().await;
@@ -454,13 +464,60 @@ pub fn create_layer(host: &Host) -> anyhow::Result<()> {
 }
 
 /// `toby internal vm`: replaces itself with Cloud Hypervisor for the machine.
+/// Locks the disks the machine boots from: its root and home exclusively,
+/// an image or cloud image it layers over shared (plan §6.2).
+fn disk_locks(host: &Host) -> anyhow::Result<Vec<toby_store::store::DiskLock>> {
+    use toby_store::store::{lock_disk, lock_disk_shared};
+    let busy = |what: String| {
+        move |e: std::io::Error| {
+            if e.kind() == std::io::ErrorKind::ResourceBusy {
+                anyhow::anyhow!("{what} is in use by another machine")
+            } else {
+                anyhow::Error::from(e).context(format!("locking {what}"))
+            }
+        }
+    };
+    let mut locks = Vec::new();
+    match &host.spec.root {
+        RootSpec::Named(name) => {
+            locks.push(lock_disk(&host.paths.root_disk(name)).map_err(busy(format!("root {name}")))?)
+        }
+        RootSpec::Image { image } => locks.push(
+            lock_disk_shared(&host.paths.image_dir(image).join("disk.qcow2"))
+                .map_err(busy(format!("image {image}")))?,
+        ),
+        RootSpec::CloudImage { cloud_image } => {
+            locks.push(lock_disk_shared(cloud_image).map_err(busy(cloud_image.display().to_string()))?)
+        }
+    }
+    if let Some(home) = &host.spec.home {
+        locks.push(lock_disk(&host.paths.home_disk(home)).map_err(busy(format!("home {home}")))?);
+    }
+    Ok(locks)
+}
+
 pub fn vm(machine: &str) -> anyhow::Result<()> {
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+
     let host = Host::load(machine)?;
+    // Cloud Hypervisor inherits the locks, so they last exactly as long as
+    // the VM runs.
+    let locks = disk_locks(&host)?;
+    for l in &locks {
+        fcntl(l.file(), FcntlArg::F_SETFD(FdFlag::empty()))?;
+    }
     create_layer(&host)?;
     let spec = vm_spec(&host)?;
     let mut files: Vec<&Path> = spec.disks.iter().map(|d| d.path.as_path()).collect();
     match &spec.boot {
-        BootSpec::Kernel { kernel, initramfs, .. } => files.extend([kernel.as_path(), initramfs.as_path()]),
+        BootSpec::Kernel { kernel, initramfs, .. } => {
+            // An image's boot files are the store's own files, never links.
+            for f in [kernel, initramfs] {
+                if !std::fs::symlink_metadata(f).is_ok_and(|m| m.is_file()) {
+                    bail!("{} is missing", f.display());
+                }
+            }
+        }
         BootSpec::Firmware { path } => files.push(path),
     }
     for f in files {

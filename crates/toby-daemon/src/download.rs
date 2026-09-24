@@ -3,11 +3,18 @@
 
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest, Sha512};
 
 fn get(url: &str) -> io::Result<ureq::http::Response<ureq::Body>> {
-    ureq::get(url).call().map_err(|e| io::Error::other(format!("{url}: {e}")))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
+        .timeout_recv_body(Some(Duration::from_secs(3600)))
+        .build()
+        .into();
+    agent.get(url).call().map_err(|e| io::Error::other(format!("{url}: {e}")))
 }
 
 pub fn text(url: &str) -> io::Result<String> {

@@ -28,7 +28,8 @@ case $(uname -m) in
     *) mkosi_arch=$(uname -m) ;;
 esac
 
-# The cache disk keeps container layers and mkosi caches between builds.
+# The cache disk (one per image source) keeps container layers and mkosi
+# caches between builds of that source.
 cache=/dev/disk/by-id/virtio-cache
 mkdir -p /cache
 if ! mountpoint -q /cache; then
@@ -48,6 +49,10 @@ cleanup() {
     if [ -n "$container" ]; then
         buildah umount "$container" >/dev/null 2>&1 || true
         buildah rm "$container" >/dev/null 2>&1 || true
+    fi
+    # Images a newer build replaced; the cache keeps the current one's layers.
+    if command -v buildah >/dev/null 2>&1; then
+        buildah rmi --prune >/dev/null 2>&1 || true
     fi
     if [ "$kind" = mkosi ] || [ "$kind" = default ]; then
         rm -rf "/cache/mkosi/out/$id"
@@ -76,7 +81,8 @@ case $kind in
         # read-only here; build from a writable copy that keeps the tree.
         work=/cache/mkosi/conf
         mkdir -p "$work"
-        find "$work" -mindepth 1 -maxdepth 1 ! -name 'mkosi.tools*' -exec rm -rf {} +
+        find "$work" -mindepth 1 -maxdepth 1 ! -name mkosi.tools ! -name mkosi.tools.manifest \
+            ! -name mkosi.tools.build.cache -exec rm -rf {} +
         cp -a "$conf"/. "$work"/
         log "Building with mkosi"
         /run/toby/fs/mkosi/bin/mkosi -C "$work" --format=directory --architecture="$mkosi_arch" \
@@ -88,8 +94,8 @@ case $kind in
         ;;
     dockerfile)
         log "Building the Dockerfile"
-        buildah build --layers --network host -f "/build/context/$1" -t "toby/build:$id" /build/context
-        from_image "toby/build:$id"
+        buildah build --layers --network host -f "/build/context/$1" -t toby/build /build/context
+        from_image toby/build
         ;;
     registry)
         log "Pulling $1"
@@ -129,9 +135,6 @@ done
 cp -L "$kernel" "$boot/vmlinuz"
 cp "$tree/boot/toby-initramfs.img" "$boot/initramfs.img"
 echo "$kver" > "$boot/kernel-version"
-if [ -e "$tree/etc/os-release" ]; then
-    cp -L "$tree/etc/os-release" "$boot/os-release" 2>/dev/null || cp -L "$tree/usr/lib/os-release" "$boot/os-release"
-fi
 fstrim /out || true
 umount /out
 sync

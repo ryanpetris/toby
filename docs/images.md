@@ -22,7 +22,12 @@ the kernel and an initramfs. An image can be built from:
 `toby image ls` lists images with their source, kernel and the roots that
 use them. `toby image rm ID` removes an image no root uses, and
 `toby image prune` removes every image that is neither used by a root nor
-the newest build of its source.
+the newest build of its source, and the build caches of sources no image
+comes from any more.
+
+Each source has its own build cache (container layers, mkosi caches), so
+one source's build never affects another's. Builds of the same source run
+one after another.
 
 Build output streams to the terminal and is kept in
 `~/.local/state/toby/builds/`.
@@ -31,9 +36,12 @@ Build output streams to the terminal and is kept in
 
 The default image is Debian 13 with the common tools agents expect
 (curl, git, bash, Python, Node.js and so on). It also boots the builder
-machines and formats homes. `toby image prepare --default` builds it when
-it is missing or when the bundled configuration has changed, and does
-nothing otherwise; `--rebuild` forces a rebuild.
+machines and formats homes, so the first build or home creation builds it
+first. `toby image prepare --default` builds it when it is missing or
+when the bundled configuration or Toby's boot adaptation has changed, and
+does nothing otherwise; `--rebuild` forces a rebuild.
+`toby image prepare --all` also rebuilds the source of every root whose
+image is out of date.
 
 The very first default image needs a builder that does not exist yet, so
 Toby starts from the Debian 13 cloud image instead:
@@ -115,7 +123,9 @@ An image works with Toby if, after adaptation:
 Toby adapts every image after it is built: it installs whatever of
 systemd, sudo, dracut and a kernel is missing, adds its own initramfs
 module, generates the initramfs, and masks units that do not make sense in
-a Toby machine (console logins, first-boot setup, wait-online services).
+a Toby machine (console logins, first-boot setup, and network managers
+such as NetworkManager or systemd-networkd, since Toby configures the
+network itself).
 Automatic installation supports these distributions:
 
 | Family | Packages installed if missing |
@@ -125,10 +135,11 @@ Automatic installation supports these distributions:
 | Arch Linux | `systemd sudo dracut ca-certificates linux` |
 | openSUSE | `systemd sudo dracut ca-certificates kernel-default-base` |
 
-Images for other distributions must already provide systemd, a kernel and
-dracut, and carry the label `dev.toby.adapted=manual`, which tells Toby not
-to install packages. Images without systemd (for example Alpine) are not
-supported.
+Images for other distributions must already provide systemd, sudo, a
+kernel and dracut. A container image can carry the label
+`dev.toby.adapted=manual` to make Toby never install packages into it; the
+build then fails if anything is missing. Images without systemd (for
+example Alpine) are not supported.
 
 Toby needs nothing else from an image: networking, the user, the home and
 shared folders are set up by Toby's own programs, which the machine reads

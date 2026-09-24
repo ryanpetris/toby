@@ -4,7 +4,8 @@
 # it needs never leak into the exported image.
 #
 # usage: adapt.sh TREE
-# Environment: TOBY_ADAPT_MANUAL=1 skips package installation.
+# Environment: TOBY_ADAPTATION_VERSION (set by Toby) is recorded in the image;
+# TOBY_ADAPT_MANUAL=1 skips package installation.
 # Writes the kernel version to /run/toby/build/kernel-version.
 
 set -eu
@@ -13,7 +14,7 @@ if [ -z "${TOBY_ADAPT_NS:-}" ]; then
 fi
 
 tree=$1
-adaptation_version=1
+adaptation_version=${TOBY_ADAPTATION_VERSION:?}
 drivers="virtio_pci virtio_blk virtio_net virtio_console virtiofs vmw_vsock_virtio_transport ext4"
 
 mount --bind /proc "$tree/proc"
@@ -46,8 +47,16 @@ have() {
     in_tree sh -c "command -v $1" >/dev/null 2>&1
 }
 
+# The newest kernel version that has a kernel image (headers alone create a
+# modules directory too).
 newest_kernel() {
-    ls "$tree/usr/lib/modules" 2>/dev/null | sort -V | tail -n 1
+    for kver in $(ls "$tree/usr/lib/modules" 2>/dev/null | sort -rV); do
+        if [ -e "$tree/usr/lib/modules/$kver/vmlinuz" ] || [ -e "$tree/boot/vmlinuz-$kver" ] \
+            || [ -e "$tree/boot/vmlinuz-linux" ]; then
+            echo "$kver"
+            return
+        fi
+    done
 }
 
 family=
@@ -55,7 +64,6 @@ if [ -r "$tree/etc/os-release" ] || [ -r "$tree/usr/lib/os-release" ]; then
     os_release="$tree/etc/os-release"
     [ -r "$os_release" ] || os_release="$tree/usr/lib/os-release"
     ids=$(. "$os_release"; echo "${ID:-} ${ID_LIKE:-}")
-    distro=$(. "$os_release"; echo "${ID:-}")
     for id in $ids; do
         case $id in
             debian | ubuntu) family=apt ;;
@@ -82,7 +90,10 @@ if [ -n "$missing" ]; then
     case $family in
         apt)
             case $(uname -m) in aarch64) debarch=arm64 ;; *) debarch=amd64 ;; esac
-            if [ "$distro" = ubuntu ]; then kernel=linux-virtual; else kernel="linux-image-cloud-$debarch"; fi
+            case " $ids " in
+                *" ubuntu "*) kernel=linux-virtual ;;
+                *) kernel="linux-image-cloud-$debarch" ;;
+            esac
             pkgs="systemd systemd-sysv sudo dracut ca-certificates"
             case $missing in *kernel*) pkgs="$pkgs $kernel" ;; esac
             in_tree sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y -q --no-install-recommends $pkgs"
@@ -93,8 +104,10 @@ if [ -n "$missing" ]; then
             in_tree dnf install -y $pkgs
             ;;
         pacman)
-            in_tree pacman -Sy --noconfirm --needed systemd sudo dracut ca-certificates
-            case $missing in *kernel*) in_tree pacman -S --noconfirm --needed linux ;; esac
+            # Arch supports only full upgrades.
+            pkgs="systemd sudo dracut ca-certificates"
+            case $missing in *kernel*) pkgs="$pkgs linux" ;; esac
+            in_tree pacman -Syu --noconfirm --needed $pkgs
             ;;
         zypper)
             pkgs="systemd sudo dracut ca-certificates"
@@ -123,15 +136,21 @@ mkdir -p "$tree/boot"
 echo "==> Generating the initramfs for $kver"
 in_tree dracut --quiet --no-hostonly --force --kver "$kver" --add toby --add-drivers "$drivers" /boot/toby-initramfs.img
 
-if [ ! -e "$tree/sbin/init" ] && [ ! -L "$tree/sbin/init" ]; then
-    if [ -x "$tree/usr/lib/systemd/systemd" ]; then
-        ln -s /usr/lib/systemd/systemd "$tree/sbin/init"
-    else
-        ln -s /lib/systemd/systemd "$tree/sbin/init"
-    fi
-fi
+# systemd is init, whatever the image had there.
+case $(in_tree readlink -f /sbin/init 2>/dev/null) in
+    */systemd) ;;
+    *)
+        if [ -x "$tree/usr/lib/systemd/systemd" ]; then systemd=/usr/lib/systemd/systemd; else systemd=/lib/systemd/systemd; fi
+        in_tree ln -sfn "$systemd" /sbin/init
+        ;;
+esac
+# Toby configures the network itself (net-up); anything that would manage the
+# interface or resolver in the guest is masked, along with console logins and
+# first-boot setup.
 in_tree systemctl mask --quiet getty@tty1.service serial-getty@hvc0.service systemd-firstboot.service \
-    systemd-networkd-wait-online.service NetworkManager-wait-online.service || true
+    systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service \
+    NetworkManager.service NetworkManager-wait-online.service networking.service dhcpcd.service \
+    connman.service wicked.service || true
 : > "$tree/etc/machine-id"
 echo "$adaptation_version" > "$tree/usr/lib/toby-adaptation"
 

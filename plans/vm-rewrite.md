@@ -342,7 +342,7 @@ reported by `tobyd` and errors on mismatch.
   tools/*.toml                user tool manifests (override/extend built-ins)
 
 <state> = ~/.local/state/toby/
-  images/<image-id>.json      image record: source, arch, created, size, config
+  images/<image-id>.toml      image record: source, source hash, arch, created, kernel, config
   roots/<name>.toml           root record: image id, default for homes, created
   homes/<name>.toml           home record: username, uid, default root, created
   machines/<machine-id>/
@@ -360,7 +360,7 @@ reported by `tobyd` and errors on mismatch.
   homes/<name>.qcow2
   builder/<arch>/
     bootstrap-<distro>-<version>.qcow2   stock cloud image, used once (§15.2); deletable afterwards
-    cache.qcow2                          persistent build cache (§15.3)
+    caches/<source-key>.qcow2            persistent build cache, one per image source (§15.3)
 
 runtime (systemd-user back end) = /run/user/<uid>/toby/
 runtime (direct back end)       = $TOBY_RUNTIME_DIR or /tmp/toby-<uid>/ (0700, owner verified)
@@ -685,7 +685,7 @@ All run as `Root` through the relay, in order, idempotent:
 
 1. `toby-helper net-up --addr … --gw … --dns …`: configures the virtio-net
    interface (selected by driver, since its name follows the PCI slot),
-   default route and `lo` via netlink; the DNS server is passt's forwarder
+   default route and `lo` with the classic interface ioctls; the DNS server is passt's forwarder
    address (`10.0.2.3`), never a host address; writes `/run/toby/resolv.conf` and
    bind-mounts it over `/etc/resolv.conf` (handles a symlinked
    `/etc/resolv.conf`). Sets the hostname to the home name.
@@ -1370,11 +1370,19 @@ image, so the first build needs a different starting point:
 
 ### 15.3 Build steps
 
-1. `tobyd` creates `images/<new>/disk.qcow2` (sparse, default 64 GiB) and
-   starts a builder machine: the default image with an ephemeral layer,
-   `cache.qcow2` (serial `cache`), the output disk (serial `out`), the
-   build context attached read-only at `/build/context`, and the new image
-   directory `images/<new>.tmp/` attached writable at `/build/boot`. The
+1. `tobyd` creates `images/<new>.tmp/disk.qcow2` (sparse, default 64 GiB)
+   and starts a builder machine: the default image with an ephemeral layer,
+   the source's build cache (serial `cache`), the output disk (serial
+   `out`), the build context attached read-only at `/build/context` (for an
+   OCI archive, a private directory holding only the archive), and the empty
+   directory `images/<new>.tmp/boot/` attached writable at `/build/boot`.
+   Every image source has its own cache disk
+   (`builder/<arch>/caches/<source-key>.qcow2`, locked for the build, so
+   builds of one source run one after another): a build runs the source's
+   content as root, and a shared cache would let one source tamper with the
+   layers, mkosi tools tree or package cache another source's build uses,
+   including the default image's. `toby image prune` removes the caches of
+   sources no image comes from. The
    builder mounts the cache disk at `/cache` (ext4, formatted on first use)
    and bind-mounts `/cache/containers` onto `/var/lib/containers`; mkosi's
    package cache, incremental cache, workspace, output directory and default
@@ -1382,7 +1390,8 @@ image, so the first build needs a different starting point:
 2. Produce the root tree (as root, streamed to the build log):
    - mkosi: the configuration is copied to `/cache/mkosi/conf` (mkosi
      writes its default tools tree next to the configuration, which is
-     read-only in the builder; the copy keeps `mkosi.tools*` between builds),
+     read-only in the builder; the copy keeps the built tools tree between
+     builds),
      then `/run/toby/fs/mkosi/bin/mkosi
      -C /cache/mkosi/conf --format=directory --architecture=<arch>
      --output-directory=/cache/mkosi/out --output=<build-id>
@@ -1400,7 +1409,9 @@ image, so the first build needs a different starting point:
      cache locations.
    - Dockerfile: `buildah build --layers --network host -f <file>
      -t toby/build /build/context`, then `ctr=$(buildah from toby/build)`
-     and `tree=$(buildah mount $ctr)`.
+     and `tree=$(buildah mount $ctr)`. The tag is the same for every build
+     of the source, so `buildah rmi --prune` after the build drops what a
+     newer build replaced and keeps the current layers.
    - Registry: `buildah pull <ref>` then as above (registry credentials: an
      auth file given with a `{file:…}` substitution is attached read-only
      for this build only).
@@ -1410,13 +1421,17 @@ image, so the first build needs a different starting point:
    builder's network and resolver available.
 4. Export: `mkfs.ext4 -L toby-root /dev/disk/by-id/virtio-out`, mount at
    `/out`, `cp -a --sparse=always --one-file-system "$tree"/. /out/`, copy the kernel and
-   generated initramfs to `/build/boot/` (`vmlinuz`, `initramfs.img`),
-   capture the image config (container sources: `buildah inspect --type
-   image`; mkosi: empty config plus `os-release`) into the image record,
-   `fstrim /out`, unmount.
-5. Power off; move `images/<new>.tmp/` into place; mark files read-only;
-   write the image record (source, arch, kernel version, adaptation
-   version, config).
+   generated initramfs to `/build/boot/` (`vmlinuz`, `initramfs.img`,
+   `kernel-version`) with the image config (container sources: `buildah
+   inspect --type image`; mkosi: empty), `fstrim /out`, unmount.
+5. Power off. The guest controls `/build/boot`, so the host accepts only
+   regular files there (opened with `O_NOFOLLOW`, size-limited) and copies
+   them into files it creates itself; nothing is renamed, followed or
+   chmod'ed through a link. Move `images/<new>.tmp/` into place; mark files
+   read-only; write the image record (source, source hash, arch, kernel
+   version, adaptation version, config). Unfinished `images/*.tmp/` and
+   builder machine directories that no running build holds (each build
+   holds a lock on its own) are removed when the next build starts.
 6. Build logs stream to the CLI (`WebSocket /v1/builds/<id>/logs`).
 
 The same builder machinery formats new home disks (`mkfs.ext4 -L
@@ -1498,11 +1513,13 @@ toby image prepare [--all] [--default] [--mcp [<name>…]] [--project [PATH]] [-
   recorded source.
 - Up-to-date images are skipped: an image is current when its source hash
   (mkosi configuration directory hash + bundled mkosi version, Dockerfile +
-  context content hash, registry digest, or archive hash) and the boot
-  adaptation version match the image record. `--rebuild` forces a
-  rebuild; `--pull` re-resolves registry references and base images.
-- Builds run one after another through the builder machine with shared
-  build cache; progress and logs stream like single builds.
+  context content hash, registry reference as written, or archive hash, each
+  combined with a hash of the boot adaptation: the job scripts, the dracut
+  module and the adaptation version) and the adaptation version match the
+  image record. `--rebuild` forces a rebuild; `--pull` re-resolves registry
+  references and base images.
+- Builds run one after another; progress and logs stream like single
+  builds.
 - Existing roots keep their current image; `toby root ls` shows which roots
   are behind and `toby root rebase` moves them.
 
