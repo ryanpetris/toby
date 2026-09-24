@@ -321,6 +321,16 @@ pub struct Decide {
     pub decision: String,
 }
 
+/// `POST /v1/versions/gc`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionsCollected {
+    pub removed: Vec<String>,
+    /// Versions still in use.
+    pub kept: Vec<String>,
+    /// Versions that could not be removed, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Names removed by a prune.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pruned {

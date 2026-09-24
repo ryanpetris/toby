@@ -108,4 +108,7 @@ pub struct SessionInfo {
     pub started: u64,
     #[serde(default)]
     pub exit: Option<ExitStatus>,
+    /// The Toby version the session runs (its binary's version directory).
+    #[serde(default)]
+    pub version: Option<String>,
 }

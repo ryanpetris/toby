@@ -319,3 +319,98 @@ async fn a_failed_spawn_can_be_retried() {
         assert!(matches!(call(&mut c, Request::Spawn(spawn.clone())).await, Response::Failed(_)));
     }
 }
+
+#[tokio::test]
+async fn unsupported_protocol_versions_are_refused() {
+    let env = env();
+    // Relay control: only versions both sides know.
+    let mut c = open(&env);
+    frame::send(&mut c, &HostHeader::Control(Control { proto_versions: vec![2] })).await.unwrap();
+    let reply: Reply = frame::recv(&mut c).await.unwrap();
+    assert!(reply.into_result().is_err());
+    let mut c = open(&env);
+    frame::send(&mut c, &HostHeader::Control(Control { proto_versions: vec![1, 2] })).await.unwrap();
+    let reply: Reply = frame::recv(&mut c).await.unwrap();
+    assert_eq!(reply.into_result().unwrap(), Some(1));
+
+    // Session protocol: a client that only knows a later version is refused.
+    let mut c = control(&env).await;
+    let r =
+        call(&mut c, Request::Spawn(relay::Spawn { spec: spec("s1", &["sleep", "5"]), version: None })).await;
+    assert!(matches!(r, Response::Spawned(_)), "{r:?}");
+    let mut s = open(&env);
+    frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: "s1".into() })).await.unwrap();
+    let _: Reply = frame::recv(&mut s).await.unwrap();
+    let hello = ClientFrame::Hello(Hello {
+        versions: vec![2],
+        rows: 0,
+        cols: 0,
+        want_replay: false,
+        resume_from: None,
+    });
+    frame::send(&mut s, &hello).await.unwrap();
+    let f: ServerFrame =
+        tokio::time::timeout(Duration::from_secs(15), frame::recv(&mut s)).await.unwrap().unwrap();
+    assert!(matches!(f, ServerFrame::Refused(_)), "{f:?}");
+    call(&mut c, Request::Kill(relay::Kill { session_id: "s1".into(), signal: libc::SIGKILL })).await;
+}
+
+/// Output up to the first newline.
+async fn first_line(s: &mut DuplexStream) -> String {
+    let mut out = Vec::new();
+    while !out.contains(&b'\n') {
+        let f: ServerFrame =
+            tokio::time::timeout(Duration::from_secs(15), frame::recv(s)).await.unwrap().unwrap();
+        match f {
+            ServerFrame::Stdout(o) => out.extend(o.bytes),
+            ServerFrame::Replay(r) => out.extend(r.bytes),
+            _ => {}
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// An upgrade installs a new version next to the old one: sessions started
+/// before keep running the old binary, new ones run the new binary, and the
+/// relay reports each session's version.
+#[tokio::test]
+async fn sessions_keep_their_version_across_an_upgrade() {
+    let env = env();
+    for v in ["1.0.0", "1.1.0"] {
+        let dir = env.dir.path().join("fs/versions").join(v);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(BIN, dir.join("toby")).unwrap();
+    }
+    let mut c = control(&env).await;
+    // The command prints the session process's command line, then waits.
+    let show = ["sh", "-c", "tr '\\0' ' ' < /proc/$PPID/cmdline; echo; read x || true"];
+    let spawn = |id: &'static str, version: &'static str| {
+        let mut sp = spec(id, &show);
+        sp.start_on_attach = true;
+        Request::Spawn(relay::Spawn { spec: sp, version: Some(version.into()) })
+    };
+    assert!(matches!(call(&mut c, spawn("old", "1.0.0")).await, Response::Spawned(_)));
+    let mut old = attach(&env, "old").await;
+    let line = first_line(&mut old).await;
+    assert!(line.contains("/versions/1.0.0/toby guest session"), "{line}");
+
+    // After the upgrade (`current` moved), new sessions get the new version.
+    assert!(matches!(call(&mut c, spawn("new", "1.1.0")).await, Response::Spawned(_)));
+    let mut new = attach(&env, "new").await;
+    let line = first_line(&mut new).await;
+    assert!(line.contains("/versions/1.1.0/toby guest session"), "{line}");
+
+    let Response::SessionList(list) = call(&mut c, Request::Sessions(relay::Sessions {})).await else {
+        panic!("no session list")
+    };
+    let version = |id: &str| list.sessions.iter().find(|s| s.id == id).and_then(|s| s.version.clone());
+    assert_eq!(version("old").as_deref(), Some("1.0.0"));
+    assert_eq!(version("new").as_deref(), Some("1.1.0"));
+    assert!(list.sessions.iter().all(|s| s.exit.is_none()), "both still run");
+
+    for s in [&mut old, &mut new] {
+        frame::send(s, &ClientFrame::CloseStdin(toby_proto::session::CloseStdin {})).await.unwrap();
+        let (_, status) = wait_exit(s).await;
+        assert_eq!(status, ExitStatus::Code(0));
+    }
+}

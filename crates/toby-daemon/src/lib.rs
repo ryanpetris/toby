@@ -11,6 +11,7 @@ pub mod server;
 pub mod services;
 pub mod supervisor;
 pub mod tools;
+pub mod versions;
 
 use std::io;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use toby_config::paths::Paths;
 /// How often the direct back end's runtime directory is touched, so
 /// age-based cleanup of `/tmp` leaves it alone (plan §6.1).
 const TOUCH_INTERVAL: Duration = Duration::from_secs(3600);
+/// How often unused installed versions are removed.
+const VERSION_GC_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long requests in flight may finish after a stop is requested.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// Build logs older than this are removed when the daemon starts.
@@ -84,6 +87,17 @@ pub async fn run(
         tokio::spawn(machines.clone().idle_loop(timeout));
     }
     tokio::spawn(machines.clone().session_loop());
+    {
+        // Old versions nothing runs any more go (plan §3.3); a versions
+        // directory the user cannot write (a package's) is left alone.
+        let machines = machines.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = versions::collect(&machines).await;
+                tokio::time::sleep(VERSION_GC_INTERVAL).await;
+            }
+        });
+    }
     if backend == Backend::Direct {
         // A proxy that died is started again.
         let (machines, paths) = (machines.clone(), paths.clone());

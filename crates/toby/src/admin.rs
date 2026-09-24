@@ -254,6 +254,20 @@ fn executable(p: &Path) -> bool {
     nix::unistd::access(p, nix::unistd::AccessFlags::X_OK).is_ok() && p.is_file()
 }
 
+/// `toby doctor --gc`: removes installed versions nothing uses (plan §3.3).
+pub async fn collect_versions() -> anyhow::Result<ExitCode> {
+    let api = Api::connect().await?;
+    let r: toby_api::VersionsCollected = api.post("/v1/versions/gc", &()).await?;
+    for v in &r.removed {
+        println!("removed version {v}");
+    }
+    println!("in use: {}", r.kept.join(", "));
+    for (v, e) in &r.failed {
+        eprintln!("toby: version {v} could not be removed: {e}");
+    }
+    Ok(if r.failed.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
 /// `toby doctor`: checks the host setup (plan §20).
 pub async fn doctor() -> anyhow::Result<ExitCode> {
     let (config, paths) = load_config()?;

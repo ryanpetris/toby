@@ -73,7 +73,11 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// Check the host setup
-    Doctor,
+    Doctor {
+        /// Remove installed Toby versions nothing uses any more
+        #[arg(long)]
+        gc: bool,
+    },
     /// Open the web UI
     Web,
     /// Host-side component processes

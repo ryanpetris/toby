@@ -53,6 +53,8 @@ pub mod session_files {
     pub const SPEC: &str = "spec";
     pub const RECORD: &str = "record";
     pub const EXIT: &str = "exit";
+    /// The runtime version the relay started the session with.
+    pub const VERSION: &str = "version";
 }
 
 /// Whether `id` is safe to use as a single path component.

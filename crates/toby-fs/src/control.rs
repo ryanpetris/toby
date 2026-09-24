@@ -123,6 +123,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_versions_are_refused() {
+        let squash = toby_vfs::Squash { host_uid: 1000, host_gid: 1000, guest_uid: 1000, guest_gid: 1000 };
+        let tree = Arc::new(Tree::new(squash).unwrap());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(conn(tree, server));
+        frame::send(&mut client, &Request::Hello(fs::Hello { versions: vec![2] })).await.unwrap();
+        assert!(matches!(frame::recv::<Response, _>(&mut client).await.unwrap(), Response::Failed(_)));
+    }
+
+    #[tokio::test]
     async fn add_remove_and_list() {
         let dir = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
@@ -135,7 +145,10 @@ mod tests {
             frame::send(&mut client, &req).await.unwrap();
             frame::recv(&mut client).await.unwrap()
         };
-        assert!(matches!(call(Request::Hello(fs::Hello { versions: vec![1] })).await, Response::Welcome(_)));
+        assert!(matches!(
+            call(Request::Hello(fs::Hello { versions: vec![1, 2] })).await,
+            Response::Welcome(_)
+        ));
         let host = dir.path().to_string_lossy().into_owned();
         let a = fs::Add { id: "a1".into(), host_path: host.clone(), read_only: false };
         assert!(matches!(call(Request::Add(a.clone())).await, Response::Done(_)));

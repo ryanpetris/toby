@@ -166,10 +166,11 @@ pub async fn list() -> anyhow::Result<ExitCode> {
                 Some(ExitStatus::Signal(n)) => format!("killed by signal {n}"),
             };
             let attached = if s.session.attached { "yes" } else { "no" };
-            [s.session.id, s.machine, s.session.argv0, attached.into(), state]
+            let version = s.session.version.unwrap_or_default();
+            [s.session.id, s.machine, s.session.argv0, attached.into(), state, version]
         })
         .collect();
-    crate::table::print(["SESSION", "MACHINE", "COMMAND", "ATTACHED", "STATE"], rows);
+    crate::table::print(["SESSION", "MACHINE", "COMMAND", "ATTACHED", "STATE", "VERSION"], rows);
     Ok(ExitCode::SUCCESS)
 }
 

@@ -74,6 +74,7 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/roots/{name}", delete(remove_root))
         .route("/v1/homes", get(homes).post(create_home))
         .route("/v1/homes/{name}", delete(remove_home))
+        .route("/v1/versions/gc", post(collect_versions))
         .route("/v1/approvals", get(approvals))
         .route("/v1/approvals/{id}", post(decide))
         .with_state(daemon)
@@ -463,6 +464,12 @@ async fn create_home(State(d): Shared, Json(req): Json<api::CreateHome>) -> ApiR
         })
     })?;
     Ok(started(b))
+}
+
+async fn collect_versions(State(d): Shared) -> ApiResult<api::VersionsCollected> {
+    let kept = crate::versions::in_use(&d.machines).await.into_iter().collect();
+    let (removed, failed) = crate::versions::collect(&d.machines).await?;
+    Ok(Json(api::VersionsCollected { removed, kept, failed }))
 }
 
 async fn approvals(State(d): Shared) -> ApiResult<Vec<api::ApprovalInfo>> {

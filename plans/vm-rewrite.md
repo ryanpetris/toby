@@ -197,7 +197,12 @@ Rules:
   (§9.4). Every long-running stable process
   records which version it runs. Old version directories are removed only
   when no running machine or process uses them (`toby doctor --gc`, and
-  automatically by `tobyd`).
+  automatically by `tobyd` every hour): a version is in use while a host
+  process runs from it (every machine's `toby-fs` keeps the version the
+  machine started with, which is also its relay's), while a machine's relay
+  reports it, and while a session reports it (the relay records the version
+  it started each session with; `SessionInfo.version`). A versions
+  directory the user cannot write is left to the package manager.
 - Stable-tier behavior is preserved by *not restarting* stable processes on
   upgrade, not by keeping their code in separate binaries. The stable
   subcommands must still depend on as little as possible and their

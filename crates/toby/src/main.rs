@@ -77,7 +77,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Daemon(cmd) => return runtime()?.block_on(admin::daemon(cmd)),
         Command::Linger { state } => return runtime()?.block_on(admin::linger(state)),
         Command::Config(_) => "config",
-        Command::Doctor => return runtime()?.block_on(admin::doctor()),
+        Command::Doctor { gc: false } => return runtime()?.block_on(admin::doctor()),
+        Command::Doctor { gc: true } => return runtime()?.block_on(admin::collect_versions()),
         Command::Web => "web",
         Command::Internal(cmd) => match cmd {
             InternalCommand::Daemon => return internal::daemon().map(|()| ExitCode::SUCCESS),

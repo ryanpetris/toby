@@ -200,6 +200,8 @@ impl Relay {
             return Ok(id);
         }
         session::prepare(&self.paths, &spec)?;
+        let version = s.version.clone().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        std::fs::write(dir.join(session_files::VERSION), &version)?;
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -308,7 +310,14 @@ impl Relay {
             .flatten()
             .filter_map(|e| record::read::<SessionRecord>(&e.path().join(session_files::RECORD)).ok())
             .filter(|r| self.alive(r))
-            .map(|r| r.info)
+            .map(|r| {
+                let mut info = r.info;
+                info.version =
+                    std::fs::read_to_string(self.paths.session_dir(&info.id).join(session_files::VERSION))
+                        .ok()
+                        .map(|v| v.trim().to_string());
+                info
+            })
             .collect();
         out.sort_by(|a, b| a.started.cmp(&b.started).then(a.id.cmp(&b.id)));
         out

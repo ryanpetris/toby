@@ -767,6 +767,11 @@ impl Machine {
                             .filter(|s| !s.id.is_empty() && s.id.bytes().all(|b| b.is_ascii_alphanumeric()))
                             .map(|mut s| {
                                 s.argv0 = printable(s.argv0.as_bytes());
+                                s.version = s.version.filter(|v| {
+                                    !v.is_empty()
+                                        && v.bytes()
+                                            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+                                });
                                 s
                             })
                             .collect();

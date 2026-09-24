@@ -265,6 +265,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
             attached: false,
             started,
             exit: None,
+            version: None,
         },
         session_pid: std::process::id() as i32,
         child_pgid: child.as_ref().map(|c| c.pgid).unwrap_or(0),
