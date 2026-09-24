@@ -61,6 +61,10 @@ pub struct MachineSpec {
 pub struct McpGrant {
     pub name: String,
     pub sessions: Vec<String>,
+    /// Sessions of the server in its own machine that connections the
+    /// grant allowed run; they end with the grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

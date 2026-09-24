@@ -109,10 +109,6 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
-    /// Connections to isolated MCP servers that a launch's grant allowed:
-    /// (machine, server, services machine, server session). They end with
-    /// the grant.
-    granted_connections: Mutex<Vec<(String, String, String, String)>>,
     /// Serializes changes to the machines' `yolo-sessions` files.
     yolo_file: Mutex<()>,
     /// Serializes checking and adding forwards across machines.
@@ -209,7 +205,6 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
-            granted_connections: Mutex::default(),
             yolo_file: Mutex::default(),
             forwards_lock: Default::default(),
             models_cache: Default::default(),
@@ -1337,20 +1332,45 @@ impl Machines {
         !self.current_config().mcp_reachable(&without_grants, name)
     }
 
-    /// Notes a connection a grant allowed, which ends with the grant.
-    pub fn granted_connection(&self, machine: &str, name: &str, services: &str, session: &str) {
-        self.granted_connections.lock().unwrap().push((
-            machine.into(),
-            name.into(),
-            services.into(),
-            session.into(),
-        ));
+    /// Notes, before it starts, the server session of a connection that
+    /// only a grant allows; it ends with the grant. False when there is no
+    /// grant any more.
+    pub fn granted_connection(&self, machine: &str, name: &str, session: &str) -> bool {
+        let mut granted = false;
+        let _ = self.update_desired(machine, |s| {
+            if let Some(g) = s.mcp_grants.iter_mut().find(|g| g.name == name) {
+                g.connections.push(session.into());
+                granted = true;
+            }
+            Ok(())
+        });
+        granted
+    }
+
+    /// Ends the server sessions of connections whose grant is gone, in the
+    /// background.
+    pub fn end_connections(&self, name: &str, sessions: Vec<String>) {
+        if sessions.is_empty() {
+            return;
+        }
+        let pair = crate::services::pair_name(name);
+        let Some(services) = self.records().into_iter().find(|s| s.home.as_deref() == Some(pair.as_str()))
+        else {
+            return;
+        };
+        let runtime = self.runtime(&services.id);
+        tokio::spawn(async move {
+            let Ok(mut c) = Control::connect(&runtime).await else { return };
+            for session in sessions {
+                let _ = c.kill(&session, libc_signal::SIGKILL).await;
+            }
+        });
     }
 
     /// Takes back the grants of ended sessions, and ends the connections
     /// they allowed. It needs neither the machine's lock nor it running:
     /// a stopped machine has no sessions.
-    async fn release_grants(&self, spec: &MachineSpec) {
+    async fn release_grants(self: &std::sync::Arc<Self>, spec: &MachineSpec) {
         let creating: Vec<String> = self.creating.lock().unwrap().iter().cloned().collect();
         let mut live = match self.observe(&spec.id).await.state {
             "ready" => match self.sessions_of(&spec.id).await {
@@ -1362,34 +1382,22 @@ impl Machines {
         };
         live.extend(creating);
         live.extend(self.creating.lock().unwrap().iter().cloned());
-        let release = |spec: &mut MachineSpec| {
-            for g in &mut spec.mcp_grants {
-                g.sessions.retain(|s| live.contains(s));
-            }
-            spec.mcp_grants.retain(|g| !g.sessions.is_empty());
-        };
-        let mut released = spec.clone();
-        release(&mut released);
-        if released.mcp_grants == spec.mcp_grants {
+        if spec.mcp_grants.iter().all(|g| g.sessions.iter().all(|s| live.contains(s))) {
             return;
         }
-        let mut kept = Vec::new();
+        let mut ended: Vec<(String, Vec<String>)> = Vec::new();
         let _ = self.update_desired(&spec.id, |s| {
-            release(s);
-            kept = s.mcp_grants.iter().map(|g| g.name.clone()).collect();
+            for g in &mut s.mcp_grants {
+                g.sessions.retain(|x| live.contains(x));
+            }
+            let (gone, kept): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut s.mcp_grants).into_iter().partition(|g| g.sessions.is_empty());
+            s.mcp_grants = kept;
+            ended = gone.into_iter().map(|g| (g.name, g.connections)).collect();
             Ok(())
         });
-        let ended: Vec<(String, String)> = {
-            let mut all = self.granted_connections.lock().unwrap();
-            let (gone, stay): (Vec<_>, Vec<_>) =
-                std::mem::take(&mut *all).into_iter().partition(|c| c.0 == spec.id && !kept.contains(&c.1));
-            *all = stay;
-            gone.into_iter().map(|c| (c.2, c.3)).collect()
-        };
-        for (services, session) in ended {
-            if let Ok(mut c) = Control::connect(&self.runtime(&services)).await {
-                let _ = c.kill(&session, libc_signal::SIGKILL).await;
-            }
+        for (name, sessions) in ended {
+            self.end_connections(&name, sessions);
         }
     }
 
@@ -1425,6 +1433,7 @@ impl Machines {
                     None => s.mcp_grants.push(toby_config::machine::McpGrant {
                         name: n.clone(),
                         sessions: vec![session.into()],
+                        connections: Vec::new(),
                     }),
                 }
             }
@@ -1585,8 +1594,7 @@ impl Machines {
             tokio::time::sleep(GRANTS_CHECK).await;
             // At once, so one machine that does not answer delays no other.
             let granted: Vec<_> = self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()).collect();
-            let machines: &Machines = &self;
-            futures_util::future::join_all(granted.iter().map(|spec| machines.release_grants(spec))).await;
+            futures_util::future::join_all(granted.iter().map(|spec| self.release_grants(spec))).await;
         }
     }
 

@@ -130,9 +130,14 @@ fn command(d: &Daemon, name: &str, server: &McpServer) -> Result<Command, String
     Ok((command, env))
 }
 
-/// Starts the server for one connection in its services machine; returns
-/// the splice and the server's session.
-async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<(Splice, String), String> {
+/// Starts the server for one connection in its services machine, as
+/// session `session`.
+async fn start_isolated(
+    d: &Daemon,
+    name: &str,
+    server: &McpServer,
+    session: String,
+) -> Result<Splice, String> {
     let (command, env) = command(d, name, server)?;
     let machine = ensure_machine(d, name, server).await?;
 
@@ -151,7 +156,7 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<(S
     .into();
     argv.extend(command);
     let spec = SpawnSpec {
-        session_id: toby_config::new_id(),
+        session_id: session,
         argv,
         env,
         cwd: None,
@@ -161,10 +166,9 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<(S
         start_on_attach: false,
         tool: None,
     };
-    let session = spec.session_id.clone();
     let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
     c.spawn(spec).await.map_err(|e| format!("starting {name}: {e}"))?;
-    Ok((Splice { machine, target: Endpoint::Unix { path: socket } }, session))
+    Ok(Splice { machine, target: Endpoint::Unix { path: socket } })
 }
 
 /// An HTTP MCP server Toby runs, and when it was last asked for.
@@ -300,19 +304,33 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
     match (server.kind, server.placement()) {
         (McpKind::Http, _) => refused(format!("{name} is an HTTP server; tools use its URL")),
         (McpKind::Stdio, Placement::Machine) => refused(format!("{name} runs in the tool's machine")),
-        (McpKind::Stdio, Placement::Isolated) => match start_isolated(d, name, server).await {
-            Ok((splice, session)) => {
-                if d.machines.granted_only(spec, name) {
-                    d.machines.granted_connection(&spec.id, name, &splice.machine, &session);
+        (McpKind::Stdio, Placement::Isolated) => {
+            // A connection only a grant allows is noted with the grant before
+            // its server starts, and refused if the grant ended meanwhile.
+            let session = toby_config::new_id();
+            let granted = d.machines.granted_only(spec, name);
+            if granted && !d.machines.granted_connection(&spec.id, name, &session) {
+                return refused(format!("no tool of this machine uses the MCP server {name}"));
+            }
+            match start_isolated(d, name, server, session.clone()).await {
+                Ok(splice) => {
+                    let still = match d.machines.record(&spec.id) {
+                        Ok(now) => d.machines.mcp_allowed(&now, name).await,
+                        Err(_) => false,
+                    };
+                    if granted && !still {
+                        d.machines.end_connections(name, vec![session]);
+                        return refused(format!("no tool of this machine uses the MCP server {name}"));
+                    }
+                    CapResponse::Splice(splice)
                 }
-                CapResponse::Splice(splice)
+                // The reason can name host files: the host's log has it.
+                Err(e) => {
+                    eprintln!("mcp {name}: {e}");
+                    refused(format!("{name} could not be started; see: toby daemon logs"))
+                }
             }
-            // The reason can name host files: the host's log has it.
-            Err(e) => {
-                eprintln!("mcp {name}: {e}");
-                refused(format!("{name} could not be started; see: toby daemon logs"))
-            }
-        },
+        }
     }
 }
 
