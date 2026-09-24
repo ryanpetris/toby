@@ -118,6 +118,8 @@ const LOGGED_OUT: &str = "<!doctype html><meta charset=utf-8><title>Toby</title>
 #[derive(serde::Deserialize)]
 struct Login {
     token: String,
+    /// A page to go to, such as `/approvals`.
+    next: Option<String>,
 }
 
 async fn login(
@@ -133,7 +135,12 @@ async fn login(
     };
     d.web.sessions.lock().unwrap().insert(session.clone());
     let cookie = format!("{COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/");
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/machines")).into_response()
+    // Only a page of the UI itself.
+    let next = q
+        .next
+        .filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.contains('\\'))
+        .unwrap_or_else(|| "/machines".into());
+    ([(header::SET_COOKIE, cookie)], Redirect::to(&next)).into_response()
 }
 
 const APP_JS: &str = include_str!("app.js");
