@@ -10,8 +10,7 @@ workspace. Nothing from the old design is kept for compatibility; the pre-1.0
 rules in `AGENTS.md` still apply (no shims, no dual paths, delete replaced
 behavior completely).
 
-Items marked **VERIFY** are assumptions still to confirm: the static musl
-`mimalloc` build and CI KVM runners in M1, aarch64 firmware in M11, and the
+Items marked **VERIFY** are assumptions still to confirm: aarch64 firmware in M11, and the
 macOS items when that back end is designed. Two M0 items are still to be
 confirmed by later acceptance tests: full-screen terminal behavior over the
 session protocol (M2) and logout behavior of both back ends (M5).
@@ -201,8 +200,10 @@ Rules:
   upgrade, not by keeping their code in separate binaries. The stable
   subcommands must still depend on as little as possible and their
   protocols must stay versioned.
-- Allocator: musl's allocator is slow for heavy async workloads; use
-  `mimalloc` for the host subcommands (**VERIFY** static musl build in CI).
+- Allocator: musl's allocator is slow for heavy async workloads, so the
+  binary uses `mimalloc`. Building it for musl needs a musl C compiler
+  (`x86_64-linux-musl-gcc`: the `musl` package on Arch, `musl-tools` on
+  Debian and Ubuntu).
 
 ---
 
@@ -1946,8 +1947,9 @@ indicators, error message review, aarch64 enablement.
   and cached; tests for boot, exec, attach, forwards, reset, upgrades.
 - Terminal tests: scripted PTY sessions with expected screen snapshots
   (using the same emulator library as the compositor).
-- CI: GitHub-hosted Linux runners with `/dev/kvm` (**VERIFY** availability
-  on the chosen runner class); otherwise a self-hosted runner.
+- CI: GitHub-hosted `ubuntu-latest` runners, which provide `/dev/kvm`
+  (owned by group `kvm`, mode 0660; KVM jobs grant the runner user access
+  before running tests).
 
 ---
 

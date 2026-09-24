@@ -171,7 +171,7 @@ fallback is not needed.
   `vsock_loopback`; CID 3 is `ENODEV`) and, where possible, arrive with a peer
   CID other than 2; the relay's "peer CID must be 2" check is sufficient.
 
-## 6. PTY over vsock — GO for latency; terminal behavior tested in M2
+## 6. PTY over vsock — GO for latency; terminal behavior to be tested in M2
 
 - Round-trip latency of 1-byte messages over hybrid vsock: 26 µs average
   (2000 samples). Echo throughput: about 410 MB/s.
@@ -195,7 +195,7 @@ fallback is not needed.
 
 ## Other findings
 
-- GitHub-hosted runner KVM availability (§24) was not tested here; it is
-  checked when CI is created in M1.
+- GitHub-hosted `ubuntu-latest` runners provide `/dev/kvm` (group `kvm`,
+  mode 0660), as reported by the CI job added in M1.
 - The latest Cloud Hypervisor release is v53.0; it is the pinned version.
 - mkosi's latest release is v27; it is the pinned version.
