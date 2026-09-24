@@ -204,9 +204,11 @@ Rules:
   it or runs a binary from it (the relay records the version it started
   each session with; `SessionInfo.version`). `current`, versions installed
   within the last hour and incomplete directories stay, and nothing is
-  removed while a running machine does not answer. A versions directory
-  the user cannot write is left alone; packages must keep old versions
-  until nothing uses them (milestone 11).
+  removed while a running machine does not answer. Removal and switching
+  `current` both hold `flock` on `<versions>/.lock`, so `current` never
+  names a version being removed. A versions directory the user cannot
+  write is left alone; packages must keep old versions until nothing uses
+  them (milestone 11).
 - Stable-tier behavior is preserved by *not restarting* stable processes on
   upgrade, not by keeping their code in separate binaries. The stable
   subcommands must still depend on as little as possible and their

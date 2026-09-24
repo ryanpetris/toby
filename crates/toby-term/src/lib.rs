@@ -57,7 +57,7 @@ impl Drop for RawMode {
 }
 
 /// DEC private modes whose state is restored when an attachment ends.
-const TRACKED_MODES: &[u16] = &[47, 1047, 1049, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004];
+const TRACKED_MODES: &[u16] = &[6, 47, 1047, 1049, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004, 2026];
 
 /// Follows the terminal modes a session enables in its output, so that the
 /// user's terminal can be put back when the attachment ends.
@@ -66,6 +66,10 @@ pub struct Modes {
     enabled: std::collections::BTreeSet<u16>,
     cursor_hidden: bool,
     keyboard_pushes: u32,
+    /// Insert mode (`CSI 4 h`).
+    insert: bool,
+    /// G0 is not ASCII, or G1 is invoked (`SO`).
+    charset: bool,
     state: ParseState,
     params: Vec<u8>,
 }
@@ -75,6 +79,8 @@ enum ParseState {
     #[default]
     Ground,
     Escape,
+    /// After `ESC (`.
+    Charset,
     Csi,
 }
 
@@ -83,14 +89,23 @@ impl Modes {
     pub fn feed(&mut self, bytes: &[u8]) {
         for &b in bytes {
             match self.state {
-                ParseState::Ground => {
-                    if b == 0x1b {
-                        self.state = ParseState::Escape;
-                    }
-                }
+                ParseState::Ground => match b {
+                    0x1b => self.state = ParseState::Escape,
+                    0x0e => self.charset = true,
+                    0x0f => self.charset = false,
+                    _ => {}
+                },
                 ParseState::Escape => {
-                    self.state = if b == b'[' { ParseState::Csi } else { ParseState::Ground };
+                    self.state = match b {
+                        b'[' => ParseState::Csi,
+                        b'(' => ParseState::Charset,
+                        _ => ParseState::Ground,
+                    };
                     self.params.clear();
+                }
+                ParseState::Charset => {
+                    self.charset = b != b'B';
+                    self.state = ParseState::Ground;
                 }
                 ParseState::Csi => {
                     if (0x40..=0x7e).contains(&b) {
@@ -130,6 +145,7 @@ impl Modes {
                     }
                 }
             }
+            (None, b'h' | b'l') if Self::numbers(rest).contains(&4) => self.insert = fin == b'h',
             (Some(b'>'), b'u') => self.keyboard_pushes += 1,
             (Some(b'<'), b'u') => {
                 let n = Self::numbers(rest).first().copied().unwrap_or(1) as u32;
@@ -151,6 +167,12 @@ impl Modes {
         }
         if self.keyboard_pushes > 0 {
             out.extend(format!("\x1b[<{}u", self.keyboard_pushes).as_bytes());
+        }
+        if self.insert {
+            out.extend(b"\x1b[4l");
+        }
+        if self.charset {
+            out.extend(b"\x1b(B\x0f");
         }
         out.extend(b"\x1b[0m");
         out
@@ -220,6 +242,8 @@ const KITTY_MODIFIERS: std::ops::RangeInclusive<u32> = 57441..=57452;
 pub struct DetachFilter {
     /// The prefix key was pressed, as these bytes.
     pending: Option<Vec<u8>>,
+    /// The start of a control sequence the next read completes.
+    held: Vec<u8>,
 }
 
 impl DetachFilter {
@@ -228,6 +252,16 @@ impl DetachFilter {
     /// keyboard protocol reports it, and its release and repeats are not
     /// keys of their own.
     pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, Option<Command>) {
+        let mut input =
+            std::mem::take(&mut self.held).into_iter().chain(input.iter().copied()).collect::<Vec<u8>>();
+        // A control sequence cut by the read waits for its end.
+        if let Some(start) = input.iter().rposition(|b| *b == 0x1b)
+            && input[start + 1..].first() == Some(&b'[')
+            && input[start + 2..].iter().all(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+        {
+            self.held = input.split_off(start);
+        }
+        let input = &input[..];
         let mut out = Vec::with_capacity(input.len());
         let mut i = 0;
         while i < input.len() {
@@ -906,6 +940,15 @@ mod tests {
     }
 
     #[test]
+    fn origin_insert_sync_and_charsets_are_turned_off() {
+        assert_eq!(
+            restore(&[b"\x1b[?6h\x1b[?2026h\x1b[4h\x1b(0"]),
+            "\x1b[?2026l\x1b[?6l\x1b[4l\x1b(B\x0f\x1b[0m"
+        );
+        assert_eq!(restore(&[b"\x0e\x1b[4h\x1b[4l\x0f"]), "\x1b[0m");
+    }
+
+    #[test]
     fn keyboard_protocol_pushes_are_popped() {
         assert_eq!(restore(&[b"\x1b[>1u\x1b[>3u\x1b[<u"]), "\x1b[<1u\x1b[0m");
     }
@@ -930,6 +973,9 @@ mod tests {
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5:3u\x1b[57442;5:3u"), (vec![], None));
         assert_eq!(f.feed(b"\x1b[97;1:1u"), (vec![], Some(Command::Approvals)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"\x1b[92;"), (vec![], None), "the rest comes with the next read");
+        assert_eq!(f.feed(b"5ud"), (vec![], Some(Command::Detach)));
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5u"), (b"\x1b[92;5u".to_vec(), None));
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[120u"), (b"\x1b[92;5u\x1b[120u".to_vec(), None));

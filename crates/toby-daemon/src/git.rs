@@ -452,7 +452,7 @@ impl Repo {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let dir = tempfile::Builder::new().prefix("git-").tempdir_in(scratch).map_err(|e| e.to_string())?;
         let ok = |o: Output| if o.status.success() { Ok(o) } else { Err(output(&o)) };
-        ok(run_git(dir.path(), &["init", "-q", "--bare"], Vec::new()).await?)?;
+        ok(run_git(dir.path(), &["init", "-q", "--bare", "--template="], Vec::new()).await?)?;
         check_host_config(dir.path(), &self.guest_roots).await?;
         ok(run_git(dir.path(), &["remote", "add", "r", url], Vec::new()).await?)?;
         let args: &[&str] =
@@ -567,7 +567,8 @@ impl Private {
         let dir = tempfile::Builder::new().prefix("git-").tempdir_in(scratch).map_err(|e| e.to_string())?;
         let mut p = Private { dir, taken: Default::default() };
         let format = format!("--object-format={}", repo.object_format);
-        let out = p.run(&["init", "-q", "--bare", &format]).await?;
+        // No template: one named by the host's config could lie in a project.
+        let out = p.run(&["init", "-q", "--bare", "--template=", &format]).await?;
         if !out.status.success() {
             return Err(output(&out));
         }

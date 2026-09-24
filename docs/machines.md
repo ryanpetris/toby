@@ -76,7 +76,9 @@ until it restarts.
 more are removed by the daemon every hour, or at once with
 `toby doctor --gc`; `current` and versions installed within the last hour
 stay. Toby does not remove versions from a directory you cannot write,
-such as one a package installed.
+such as one a package installed. To install a version by hand, switch
+`current` while holding the versions directory's lock, for example
+`flock versions/.lock ln -sfn 0.18.0 versions/current`.
 
 ## Back ends
 

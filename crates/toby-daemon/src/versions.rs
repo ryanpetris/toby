@@ -15,6 +15,9 @@ use std::time::{Duration, SystemTime};
 use crate::control::Control;
 use crate::machines::Machines;
 
+/// Taken while `current` is switched or versions are removed.
+pub const LOCK: &str = ".lock";
+
 /// A version directory younger than this may still be being installed.
 const MIN_AGE: Duration = Duration::from_secs(3600);
 
@@ -174,7 +177,19 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
         )));
     }
     let used = in_use(machines).await.map_err(|e| io::Error::other(format!("{e}; nothing was removed")))?;
+    // Installers switch `current` holding the same lock, so it never names
+    // a version being removed.
+    let lock =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(versions.join(LOCK))?;
+    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive).map_err(|(_, e)| e)?;
     let (mut removed, mut failed) = (Vec::new(), Vec::new());
+    // Left by a removal that failed or was cut short.
+    for e in std::fs::read_dir(&versions)?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(v) = name.strip_prefix(".removing-") {
+            let _ = std::fs::rename(e.path(), versions.join(v));
+        }
+    }
     for v in installed(&versions)? {
         // Read again for each: an upgrade may switch it meanwhile.
         let Some(current) = current(&versions) else { break };
@@ -182,8 +197,7 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
         if !removable(&dir, &v, &used, &current, installed_for(&dir)) {
             continue;
         }
-        // Moved aside first, so an upgrade or rollback that switches
-        // `current` to it meanwhile finds it put back.
+        // Moved aside first, so nothing half removed looks installed.
         let aside = versions.join(format!(".removing-{v}"));
         match std::fs::rename(&dir, &aside) {
             Ok(()) => {}
@@ -193,13 +207,13 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
                 continue;
             }
         }
-        if self::current(&versions).as_deref() == Some(v.as_str()) {
-            let _ = std::fs::rename(&aside, &dir);
-            continue;
-        }
         match std::fs::remove_dir_all(&aside) {
             Ok(()) => removed.push(v),
-            Err(e) => failed.push((v, e.to_string())),
+            Err(e) => {
+                // Tried again next time.
+                let _ = std::fs::rename(&aside, &dir);
+                failed.push((v, e.to_string()));
+            }
         }
     }
     Ok(Collected { removed, used, failed })
