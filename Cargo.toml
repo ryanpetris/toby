@@ -39,11 +39,13 @@ toml = "1.1.6"
 toml_edit = "0.25.15"
 tower = "0.5.3"
 ulid = "3.0.0"
+unicode-width = "0.2.1"
 ureq = "3.4.2"
 vhost = { version = "0.15", features = ["vhost-user-backend"] }
 vhost-user-backend = "0.21"
 virtio-bindings = "0.2"
 virtio-queue = "0.17"
+vt100 = "0.16.2"
 vm-memory = { version = "=0.17.1", features = ["backend-mmap", "backend-atomic"] }
 vmm-sys-util = "0.15"
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

@@ -47,10 +47,13 @@ fn exit_code(status: ExitStatus) -> ExitCode {
     ExitCode::from(status.code().clamp(0, 255) as u8)
 }
 
+/// Attaches to a session. With a terminal, a status line shows `machine`
+/// and its approvals open as overlays.
 pub async fn attach_terminal(
     session_sock: PathBuf,
     control_sock: PathBuf,
     session_id: &str,
+    machine: &str,
     replay: bool,
     redraw: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -64,8 +67,19 @@ pub async fn attach_terminal(
             Box::pin(async move { signal(&control, id, sig).await })
         })
     };
+    let (ui, feeder) = match toby_term::local_tty() {
+        true => {
+            let (ui, task) =
+                crate::approvals::ui(std::sync::Arc::new(Api::connect().await?), machine.to_string());
+            (Some(ui), Some(task))
+        }
+        false => (None, None),
+    };
     let outcome =
-        toby_term::attach(connector(session_sock, session_id.to_string()), replay, redraw, signals).await;
+        toby_term::attach(connector(session_sock, session_id.to_string()), replay, redraw, signals, ui).await;
+    if let Some(task) = feeder {
+        task.abort();
+    }
     Ok(match outcome? {
         Outcome::Exited(status) => exit_code(status),
         Outcome::Replaced(reason) => {
@@ -107,23 +121,21 @@ pub async fn run_session(
         cwd,
         identity,
         tty: tty.then(|| {
-            let (rows, cols) = toby_term::size().unwrap_or((24, 80));
+            let (rows, cols) = toby_term::session_size().unwrap_or((24, 80));
             TtySize { rows, cols }
         }),
     };
     let created: toby_api::SessionCreated = api.post_again("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
-    let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
-    let result = attach_terminal(
+    attach_terminal(
         created.session_socket.into(),
         created.control_socket.into(),
         &created.id,
+        &created.machine,
         true,
         false,
     )
-    .await;
-    notices.abort();
-    result
+    .await
 }
 
 /// `toby attach [<session>]`.
@@ -144,7 +156,15 @@ pub async fn attach(session: Option<String>) -> anyhow::Result<ExitCode> {
         },
         1 => {
             let s = candidates.remove(0);
-            attach_terminal(s.session_socket.into(), s.control_socket.into(), &s.session.id, true, true).await
+            attach_terminal(
+                s.session_socket.into(),
+                s.control_socket.into(),
+                &s.session.id,
+                &s.machine,
+                true,
+                true,
+            )
+            .await
         }
         _ => bail!(
             "several detached sessions are running; choose one: {}",

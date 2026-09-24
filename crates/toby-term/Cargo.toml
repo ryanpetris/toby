@@ -12,6 +12,8 @@ crossterm.workspace = true
 libc.workspace = true
 toby-proto.workspace = true
 tokio.workspace = true
+unicode-width.workspace = true
+vt100.workspace = true
 
 [lints]
 workspace = true

@@ -66,27 +66,57 @@ fn clean(s: &str) -> String {
     s.chars().map(|c| if (c.is_control() && c != '\n') || invisible(c) { ' ' } else { c }).collect()
 }
 
-/// Prints a notice for approvals the machine asks for while a session is
-/// attached; the user answers with `toby approvals`.
-pub fn notices(api: Arc<Api>, machine: String) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut seen: Vec<String> = Vec::new();
+/// Feeds an attached terminal's status line and approval overlay from
+/// tobyd, and sends the decisions made in the overlay.
+pub fn ui(api: Arc<Api>, machine: String) -> (toby_term::Ui, tokio::task::JoinHandle<()>) {
+    let (status_tx, status) = tokio::sync::watch::channel(toby_term::compositor::Status::default());
+    let (decisions, mut decided) = tokio::sync::mpsc::channel::<toby_term::compositor::Decision>(8);
+    let task = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
-            if let Ok(list) = api.get::<Vec<toby_api::ApprovalInfo>>("/v1/approvals").await {
-                for a in list.iter().filter(|a| a.status == "pending" && a.machine == machine) {
-                    if !seen.contains(&a.id) {
-                        seen.push(a.id.clone());
-                        eprint!(
-                            "\r\n\x1b[K[toby] approval needed: {} (toby approvals {} approve)\r\n",
-                            clean(&a.summary).replace('\n', " "),
-                            a.id
-                        );
+            tokio::select! {
+                _ = tick.tick() => {
+                    if let Some(s) = status_of(&api, &machine).await {
+                        status_tx.send_if_modified(|old| {
+                            let changed = *old != s;
+                            *old = s;
+                            changed
+                        });
                     }
                 }
+                d = decided.recv() => {
+                    let Some((id, approve)) = d else { return };
+                    let decision = toby_api::Decide { decision: if approve { "approve" } else { "deny" }.into() };
+                    let _: anyhow::Result<()> = api.post(&format!("/v1/approvals/{}", segment(&id)), &decision).await;
+                    tick.reset_immediately();
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-    })
+    });
+    (toby_term::Ui { status, decisions }, task)
+}
+
+async fn status_of(api: &Api, machine: &str) -> Option<toby_term::compositor::Status> {
+    let machines: Vec<toby_api::MachineInfo> = api.get("/v1/machines").await.ok()?;
+    let m = machines.into_iter().find(|m| m.id == machine)?;
+    let mut items = vec![format!("{}/{}", m.home.as_deref().unwrap_or("-"), m.root)];
+    match m.forwards.len() {
+        0 => {}
+        1 => items.push("1 forward".into()),
+        n => items.push(format!("{n} forwards")),
+    }
+    let list: Vec<toby_api::ApprovalInfo> = api.get("/v1/approvals").await.ok()?;
+    let approvals = list
+        .into_iter()
+        .filter(|a| a.status == "pending" && a.machine == machine)
+        .map(|a| toby_term::compositor::Approval {
+            id: a.id,
+            kind: a.kind,
+            summary: clean(&a.summary).replace('\n', " "),
+            detail: clean(&a.detail),
+        })
+        .collect();
+    Some(toby_term::compositor::Status { items, approvals })
 }
 
 pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {

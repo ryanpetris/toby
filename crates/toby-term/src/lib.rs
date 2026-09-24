@@ -1,6 +1,8 @@
 //! Terminal handling for attached sessions: raw mode, the detach key, window
 //! size changes, and the client side of the session protocol (plan §13).
 
+pub mod compositor;
+
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::pin::Pin;
@@ -169,31 +171,55 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Stream for T {}
 pub type Connect =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = io::Result<UnixStream>> + Send>> + Send + Sync>;
 
-/// Splits input into bytes for the session and a detach request.
+/// What the user asked for with the prefix key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// `d`: detach.
+    Detach,
+    /// `a`: show the approvals waiting.
+    Approvals,
+}
+
+/// The prefix key as the kitty keyboard protocol reports it.
+const PREFIX_KITTY: &[u8] = b"\x1b[92;5u";
+
+/// Splits input into bytes for the session and a command given with the
+/// prefix key.
 #[derive(Debug, Default)]
 pub struct DetachFilter {
     pending: bool,
 }
 
 impl DetachFilter {
-    /// Returns the bytes to send and whether the user asked to detach.
-    pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, bool) {
+    /// Returns the bytes to send and the command, if one was given; input
+    /// after a command is dropped.
+    pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, Option<Command>) {
         let mut out = Vec::with_capacity(input.len());
-        for &b in input {
+        let mut i = 0;
+        while i < input.len() {
+            let b = input[i];
+            let kitty = input[i..].starts_with(PREFIX_KITTY);
             if self.pending {
                 self.pending = false;
                 match b {
-                    b'd' => return (out, true),
-                    DETACH_PREFIX => out.push(DETACH_PREFIX),
-                    other => out.extend([DETACH_PREFIX, other]),
+                    b'd' => return (out, Some(Command::Detach)),
+                    b'a' => return (out, Some(Command::Approvals)),
+                    _ if kitty || b == DETACH_PREFIX => {
+                        out.push(DETACH_PREFIX);
+                        i += if kitty { PREFIX_KITTY.len() } else { 1 };
+                        continue;
+                    }
+                    _ => out.push(DETACH_PREFIX),
                 }
-            } else if b == DETACH_PREFIX {
+            } else if kitty || b == DETACH_PREFIX {
                 self.pending = true;
-            } else {
-                out.push(b);
+                i += if kitty { PREFIX_KITTY.len() } else { 1 };
+                continue;
             }
+            out.push(b);
+            i += 1;
         }
-        (out, false)
+        (out, None)
     }
 }
 
@@ -201,8 +227,19 @@ impl DetachFilter {
 enum Event {
     /// The user pressed the detach key.
     Detach,
+    /// The user asked for the approvals.
+    Approvals,
+    /// Keys for the overlay.
+    Keys(Vec<u8>),
     Resize,
     Signal(i32),
+}
+
+/// The status line and approvals of an attachment with a terminal.
+pub struct Ui {
+    pub status: tokio::sync::watch::Receiver<compositor::Status>,
+    /// Decisions made in the overlay go here.
+    pub decisions: mpsc::Sender<compositor::Decision>,
 }
 
 /// Frames the writer task sends; stdin and its end go through their own
@@ -218,9 +255,16 @@ pub type SignalSink = Box<dyn Fn(i32) -> Pin<Box<dyn Future<Output = io::Result<
 /// Reads standard input on a plain thread: a read blocked on the terminal
 /// must not keep the runtime from shutting down when the session ends. The
 /// detach key is recognised here.
-fn spawn_stdin(interactive: bool, data: mpsc::Sender<Data>, events: mpsc::Sender<Event>) {
+/// Keys go to the overlay while it is open.
+fn spawn_stdin(
+    interactive: bool,
+    overlay: Arc<std::sync::atomic::AtomicBool>,
+    data: mpsc::Sender<Data>,
+    events: mpsc::Sender<Event>,
+) {
     std::thread::spawn(move || {
         use std::io::Read;
+        use std::sync::atomic::Ordering;
         let mut filter = DetachFilter::default();
         let mut stdin = io::stdin().lock();
         let mut buf = vec![0u8; 16 * 1024];
@@ -232,14 +276,25 @@ fn spawn_stdin(interactive: bool, data: mpsc::Sender<Data>, events: mpsc::Sender
                 }
                 Ok(n) => n,
             };
-            let (bytes, detach) =
-                if interactive { filter.feed(&buf[..n]) } else { (buf[..n].to_vec(), false) };
-            if !bytes.is_empty() && data.blocking_send(Data::Stdin(bytes)).is_err() {
-                return;
+            let (bytes, command) =
+                if interactive { filter.feed(&buf[..n]) } else { (buf[..n].to_vec(), None) };
+            if !bytes.is_empty() {
+                let sent = if overlay.load(Ordering::Acquire) {
+                    events.blocking_send(Event::Keys(bytes)).is_ok()
+                } else {
+                    data.blocking_send(Data::Stdin(bytes)).is_ok()
+                };
+                if !sent {
+                    return;
+                }
             }
-            if detach {
-                let _ = events.blocking_send(Event::Detach);
-                return;
+            match command {
+                Some(Command::Detach) => {
+                    let _ = events.blocking_send(Event::Detach);
+                    return;
+                }
+                Some(Command::Approvals) if events.blocking_send(Event::Approvals).is_err() => return,
+                _ => {}
             }
         }
     });
@@ -281,8 +336,9 @@ async fn hello<S: Stream>(
     s: &mut S,
     want_replay: bool,
     resume_from: Option<u64>,
+    reserved: u16,
 ) -> io::Result<session::Welcome> {
-    let (rows, cols) = size().unwrap_or((0, 0));
+    let (rows, cols) = size().map(|(r, c)| (r - reserved, c)).unwrap_or((0, 0));
     let hello = ClientFrame::Hello(session::Hello {
         versions: SUPPORTED.to_vec(),
         rows,
@@ -299,8 +355,8 @@ async fn hello<S: Stream>(
 }
 
 /// Forces full-screen programs to redraw by briefly changing the size.
-async fn nudge<S: Stream>(s: &mut S) -> io::Result<()> {
-    if let Some((rows, cols)) = size()
+async fn nudge<S: Stream>(s: &mut S, reserved: u16) -> io::Result<()> {
+    if let Some((rows, cols)) = size().map(|(r, c)| (r - reserved, c))
         && rows > 1
     {
         frame::send(s, &ClientFrame::Resize(session::Resize { rows: rows - 1, cols })).await?;
@@ -330,6 +386,60 @@ pub fn local_tty() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
+/// Whether an attachment with a status line uses this terminal: it has
+/// room for the line.
+fn composes() -> bool {
+    local_tty() && size().is_some_and(|(rows, cols)| compositor::Compositor::fits(rows, cols))
+}
+
+/// The terminal size a session attached here gets: the terminal's, less
+/// the status line.
+pub fn session_size() -> Option<(u16, u16)> {
+    let (rows, cols) = size()?;
+    Some(if composes() { (rows - 1, cols) } else { (rows, cols) })
+}
+
+/// Asks the terminal where its cursor is (1-based row and column). Input
+/// typed meanwhile is returned for the session.
+fn cursor_position() -> (Option<(u16, u16)>, Vec<u8>) {
+    use std::os::fd::AsRawFd;
+    let mut o = io::stdout().lock();
+    if o.write_all(b"\x1b[6n").and_then(|()| o.flush()).is_err() {
+        return (None, Vec::new());
+    }
+    let fd = io::stdin().as_raw_fd();
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    let mut got = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid pollfd.
+        if unsafe { libc::poll(&mut pfd, 1, left.as_millis() as i32) } <= 0 {
+            break;
+        }
+        let mut buf = [0u8; 256];
+        // SAFETY: reads into a buffer of its length.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n as usize]);
+        if let Some((pos, range)) = cursor_report(&got) {
+            got.drain(range);
+            return (Some(pos), got);
+        }
+    }
+    (None, got)
+}
+
+/// Finds a cursor position report, `ESC [ row ; col R`, in `input`.
+fn cursor_report(input: &[u8]) -> Option<((u16, u16), std::ops::Range<usize>)> {
+    let start = input.windows(2).position(|w| w == b"\x1b[")?;
+    let rest = &input[start + 2..];
+    let end = rest.iter().position(|b| *b == b'R')?;
+    let (row, col) = std::str::from_utf8(&rest[..end]).ok()?.split_once(';')?;
+    Some(((row.parse().ok()?, col.parse().ok()?), start..start + 2 + end + 1))
+}
+
 /// Attaches to a session until it exits or detaches.
 ///
 /// With a local terminal (see [`local_tty`]) and a session that has one, the
@@ -346,19 +456,41 @@ pub async fn attach(
     want_replay: bool,
     redraw: bool,
     signals: SignalSink,
+    ui: Option<Ui>,
 ) -> io::Result<Outcome> {
+    let composing = ui.is_some() && composes();
+    let reserved = u16::from(composing);
     let mut conn = connect().await?;
-    let welcome = hello(&mut conn, want_replay, None).await?;
+    let welcome = hello(&mut conn, want_replay, None, reserved).await?;
     let interactive = welcome.tty && local_tty();
+    let ui = ui.filter(|_| interactive && composing);
+    let reserved = u16::from(ui.is_some());
+    if reserved == 0 && composing {
+        // No status line after all: the session gets every row.
+        let (rows, cols) = size().unwrap_or((24, 80));
+        frame::send(&mut conn, &ClientFrame::Resize(session::Resize { rows, cols })).await?;
+    }
 
     let raw = if interactive { RawMode::enable()? } else { None };
     let (data_tx, data_rx) = mpsc::channel::<Data>(64);
     let (events_tx, events_rx) = mpsc::channel::<Event>(64);
-    spawn_stdin(interactive, data_tx, events_tx.clone());
+    let mut comp = None;
+    if ui.is_some() {
+        let (rows, cols) = size().unwrap_or((24, 80));
+        let mut c = compositor::Compositor::new(rows, cols);
+        let (cursor, typed) = cursor_position();
+        write_out(&c.start(cursor), false)?;
+        if !typed.is_empty() {
+            let _ = data_tx.send(Data::Stdin(typed)).await;
+        }
+        comp = Some(c);
+    }
+    let overlay = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    spawn_stdin(interactive, overlay.clone(), data_tx, events_tx.clone());
     spawn_signals(interactive, &events_tx);
 
     if redraw && interactive {
-        nudge(&mut conn).await?;
+        nudge(&mut conn, reserved).await?;
     }
     let mut state = Attached {
         interactive,
@@ -371,11 +503,20 @@ pub async fn attach(
         modes: Modes::default(),
         data: Arc::new(tokio::sync::Mutex::new(data_rx)),
         events: events_rx,
+        comp,
+        ui,
+        overlay,
+        reserved,
     };
     let result = state.run(conn, connect, signals).await;
     if interactive {
+        let restore = state.modes.restore_sequence();
+        let out = match &mut state.comp {
+            Some(c) => c.finish(&restore),
+            None => restore,
+        };
         let mut o = io::stdout().lock();
-        let _ = o.write_all(&state.modes.restore_sequence());
+        let _ = o.write_all(&out);
         let _ = o.flush();
     }
     drop(raw);
@@ -397,6 +538,13 @@ struct Attached {
     modes: Modes,
     data: Arc<tokio::sync::Mutex<mpsc::Receiver<Data>>>,
     events: mpsc::Receiver<Event>,
+    /// The status line and overlays, with a terminal.
+    comp: Option<compositor::Compositor>,
+    ui: Option<Ui>,
+    /// Whether keys go to the overlay.
+    overlay: Arc<std::sync::atomic::AtomicBool>,
+    /// Rows the session does not get.
+    reserved: u16,
 }
 
 impl Attached {
@@ -458,10 +606,43 @@ impl Attached {
                         return Pumped::Done(Err(e));
                     }
                 }
+                changed = status_changed(&mut self.ui) => {
+                    if let (Some(status), Some(c)) = (changed, &mut self.comp) {
+                        let out = c.set_status(status);
+                        if let Err(e) = self.screen(&out) {
+                            return Pumped::Done(Err(e));
+                        }
+                    }
+                }
                 e = self.events.recv() => match e {
                     Some(Event::Detach) => return Pumped::Done(Ok(Outcome::Detached)),
+                    Some(Event::Approvals) => {
+                        if let Some(c) = &mut self.comp {
+                            let out = c.open_approvals();
+                            if let Err(e) = self.screen(&out) {
+                                return Pumped::Done(Err(e));
+                            }
+                        }
+                    }
+                    Some(Event::Keys(keys)) => {
+                        let Some(c) = &mut self.comp else { continue };
+                        let (out, decision) = c.key(&keys);
+                        if let (Some(d), Some(ui)) = (decision, &self.ui) {
+                            let _ = ui.decisions.try_send(d);
+                        }
+                        if let Err(e) = self.screen(&out) {
+                            return Pumped::Done(Err(e));
+                        }
+                    }
                     Some(Event::Resize) => {
                         if let Some((rows, cols)) = size() {
+                            if let Some(c) = &mut self.comp {
+                                let out = c.resize(rows, cols);
+                                if let Err(e) = self.screen(&out) {
+                                    return Pumped::Done(Err(e));
+                                }
+                            }
+                            let rows = rows - self.reserved;
                             let _ = ctl.try_send(ClientFrame::Resize(session::Resize { rows, cols }));
                         }
                     }
@@ -478,10 +659,26 @@ impl Attached {
 
     fn output(&mut self, bytes: &[u8], stderr: bool) -> io::Result<()> {
         self.offset += bytes.len() as u64;
-        if !stderr {
-            self.modes.feed(bytes);
+        if stderr {
+            return write_out(bytes, true);
         }
-        write_out(bytes, stderr)
+        self.modes.feed(bytes);
+        match &mut self.comp {
+            Some(c) => {
+                let out = c.output(bytes);
+                write_out(&out, false)
+            }
+            None => write_out(bytes, false),
+        }
+    }
+
+    /// Writes what the compositor drew, and notes whether the overlay is
+    /// open.
+    fn screen(&mut self, out: &[u8]) -> io::Result<()> {
+        if let Some(c) = &self.comp {
+            self.overlay.store(c.overlay_open(), std::sync::atomic::Ordering::Release);
+        }
+        write_out(out, false)
     }
 
     fn exited(&self, status: ExitStatus) -> io::Result<Outcome> {
@@ -510,7 +707,7 @@ impl Attached {
                 },
             }
             let Ok(mut c) = connect().await else { continue };
-            let Ok(w) = hello(&mut c, false, Some(self.offset)).await else { continue };
+            let Ok(w) = hello(&mut c, false, Some(self.offset), self.reserved).await else { continue };
             // Input is not resent: without a terminal, any input that did not
             // arrive makes the command's result unreliable.
             let sent = self.input + self.sent.bytes.load(std::sync::atomic::Ordering::Acquire);
@@ -521,17 +718,28 @@ impl Attached {
             self.offset = w.offset;
             self.lost += w.lost;
             if w.lost > 0 && self.interactive {
-                let _ = write_out(
-                    format!("\r\n[toby: {} bytes of output were lost]\r\n", w.lost).as_bytes(),
-                    true,
-                );
+                let note = format!("\r\n[toby: {} bytes of output were lost]\r\n", w.lost);
+                let _ = match &mut self.comp {
+                    Some(comp) => write_out(&comp.output(note.as_bytes()), false),
+                    None => write_out(note.as_bytes(), true),
+                };
             }
             if self.interactive {
-                let _ = nudge(&mut c).await;
+                let _ = nudge(&mut c, self.reserved).await;
             }
             return Ok(c);
         }
     }
+}
+
+/// The next status, when the attachment has a status line; never
+/// resolves otherwise, or once the status is no longer updated.
+async fn status_changed(ui: &mut Option<Ui>) -> Option<compositor::Status> {
+    let Some(ui) = ui else { return std::future::pending().await };
+    if ui.status.changed().await.is_err() {
+        return std::future::pending().await;
+    }
+    Some(ui.status.borrow_and_update().clone())
 }
 
 enum Pumped {
@@ -630,13 +838,26 @@ mod tests {
     #[test]
     fn detach_key() {
         let mut f = DetachFilter::default();
-        assert_eq!(f.feed(b"ab"), (b"ab".to_vec(), false));
-        assert_eq!(f.feed(&[DETACH_PREFIX]), (vec![], false));
-        assert_eq!(f.feed(b"d"), (vec![], true));
+        assert_eq!(f.feed(b"ab"), (b"ab".to_vec(), None));
+        assert_eq!(f.feed(&[DETACH_PREFIX]), (vec![], None));
+        assert_eq!(f.feed(b"d"), (vec![], Some(Command::Detach)));
 
         let mut f = DetachFilter::default();
-        assert_eq!(f.feed(&[b'x', DETACH_PREFIX, b'y']), (vec![b'x', DETACH_PREFIX, b'y'], false));
-        assert_eq!(f.feed(&[DETACH_PREFIX, DETACH_PREFIX]), (vec![DETACH_PREFIX], false));
-        assert_eq!(f.feed(&[b'q', DETACH_PREFIX, b'd', b'z']), (vec![b'q'], true));
+        assert_eq!(f.feed(&[b'x', DETACH_PREFIX, b'y']), (vec![b'x', DETACH_PREFIX, b'y'], None));
+        assert_eq!(f.feed(&[DETACH_PREFIX, DETACH_PREFIX]), (vec![DETACH_PREFIX], None));
+        assert_eq!(f.feed(&[b'q', DETACH_PREFIX, b'd', b'z']), (vec![b'q'], Some(Command::Detach)));
+        assert_eq!(f.feed(&[DETACH_PREFIX, b'a']), (vec![], Some(Command::Approvals)));
+
+        // The kitty keyboard protocol's Ctrl-\.
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"x\x1b[92;5ud"), (b"x".to_vec(), Some(Command::Detach)));
+    }
+
+    #[test]
+    fn cursor_reports_are_found_among_typed_keys() {
+        let (pos, range) = cursor_report(b"ab\x1b[12;40Rc").unwrap();
+        assert_eq!(pos, (12, 40));
+        assert_eq!(range, 2..10);
+        assert!(cursor_report(b"\x1b[12;40").is_none());
     }
 }

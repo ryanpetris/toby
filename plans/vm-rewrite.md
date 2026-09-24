@@ -1134,17 +1134,21 @@ emulation.
 Later (milestone 9, part of this implementation): the CLI becomes a small
 compositor:
 
-- Parses the session output with a terminal emulator library
-  (`alacritty_terminal` or `wezterm-term`; choose by support for mouse,
-  bracketed paste, alternate screen, kitty keyboard protocol, OSC 52,
-  OSC 8 hyperlinks, synchronized output, true color).
-- Renders session grid + status bar (tmux-like: machine, MCP status,
-  forwards, pending approvals) + floating windows (herdr-style) to the real
-  terminal with diffed updates.
+- Passes the session output to the real terminal unchanged except for
+  scroll regions and absolute rows, which stay within the session's rows,
+  so the terminal's own scrollback, mouse, bracketed paste, alternate
+  screen, keyboard protocols, OSC 52/8, synchronized output and colors
+  work as they do without Toby. A copy feeds an emulator of the session's
+  screen (`vt100`).
+- The last row is a status bar (home and root, forwards, pending
+  approvals) below a scroll region the session cannot widen; floating
+  windows (approval overlays) are drawn over the session and repainted
+  from the emulator when they close or before output scrolls under them.
 - Session PTY size = terminal size minus the status bar.
 - **Overlay approvals are the default** approval UI; CLI approvals
   (`toby approvals`) and web approvals remain available.
-- Events come from `GET /v1/events` (WebSocket).
+- Status and approvals come from polling `tobyd` (every 2 s) until
+  `GET /v1/events` exists (milestone 10).
 
 ---
 
@@ -1706,9 +1710,8 @@ capabilities.
   nothing waits for them any more.
 - Decided by: overlay (default, milestone 9), `toby approvals [<id>]`,
   web UI. First decision wins; events notify all clients.
-- Before milestone 9: the attached CLI prints a one-line notice above the
-  session output on a separate line after clearing (best effort) and the
-  user answers with `toby approvals`.
+- An attached terminal shows the overlay; `y`, `n`, `Esc` (later) and
+  `Ctrl-\ a` (show again).
 
 ---
 

@@ -160,8 +160,9 @@ when the project is on another file system than Toby's state directory,
 which makes each fetch and push of a large project on another file system
 slower.
 
-Actions that need approval wait until you decide. A notice appears in the
-attached session; answer with:
+Actions that need approval wait until you decide. The approval opens over
+the attached session (see [Sessions](sessions.md)); you can also answer
+from any terminal:
 
 ```sh
 toby approvals                               # pending first

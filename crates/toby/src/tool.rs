@@ -94,6 +94,7 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
                 s.session_socket.into(),
                 s.control_socket.into(),
                 &s.session.id,
+                &machine,
                 true,
                 true,
             )
@@ -140,21 +141,19 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
         cwd: None,
         identity: toby_proto::types::Identity::User,
         tty: tty.then(|| {
-            let (rows, cols) = toby_term::size().unwrap_or((24, 80));
+            let (rows, cols) = toby_term::session_size().unwrap_or((24, 80));
             toby_proto::types::TtySize { rows, cols }
         }),
     };
     let created: toby_api::SessionCreated = api.post_again("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
-    let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
-    let result = attach_terminal(
+    attach_terminal(
         created.session_socket.into(),
         created.control_socket.into(),
         &created.id,
+        &created.machine,
         true,
         false,
     )
-    .await;
-    notices.abort();
-    result
+    .await
 }

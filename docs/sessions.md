@@ -26,10 +26,20 @@ toby shell [--as-root] [--machine ID]
 - `--machine` selects a running machine by ID. Without it, Toby uses the only
   running machine.
 
+## The status line
+
+In a terminal, the last row shows the session's home and root, its
+machine's forwards and the approvals waiting; the session gets the rows
+above it. Its output still goes to your terminal as it is, so scrollback,
+colors, mouse and paste work as usual. An approval the machine asks for
+opens over the session: `y` approves, `n` denies and `Esc` leaves it for
+later.
+
 ## Detaching and reattaching
 
-Press `Ctrl-\` and then `d` to detach; the session keeps running. Press
-`Ctrl-\` twice to send a single `Ctrl-\` to the session.
+Press `Ctrl-\` and then `d` to detach; the session keeps running.
+`Ctrl-\` and then `a` shows the approvals waiting. Press `Ctrl-\` twice to
+send a single `Ctrl-\` to the session.
 
 ```sh
 toby sessions ls          # sessions in every running machine
