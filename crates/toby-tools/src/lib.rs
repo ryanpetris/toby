@@ -22,15 +22,24 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct Tool {
     pub name: String,
+    /// Other names `toby <name>` finds the tool by, such as its command.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Tools prepared first, whose `PATH` and environment the tool also
+    /// gets.
+    #[serde(default)]
+    pub depends: Vec<String>,
     /// Commands the root must provide (`command -v`).
     #[serde(default)]
     pub requires: Vec<String>,
     /// Succeeds when the tool is installed.
     pub check: Vec<String>,
-    /// Runs as the user when `check` fails.
-    pub install: Script,
+    /// Runs as the user when `check` fails; without it, the image has to
+    /// provide the tool.
+    pub install: Option<Script>,
     /// Runs as the user on an upgrade request; default: `install`.
     pub update: Option<Script>,
+    /// The command line (templates).
     pub launch: Vec<String>,
     /// Arguments that skip the tool's permission prompts (`--yolo`).
     #[serde(default)]
@@ -84,6 +93,8 @@ pub enum Format {
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     Merge,
+    /// Like `merge`, and lists get the template's items they lack.
+    Extend,
     Replace,
 }
 
@@ -135,8 +146,31 @@ const BUILTIN: &[&str] = &[
     include_str!("../tools/opencode.toml"),
 ];
 
+/// Names of tools and their aliases: lowercase letters, digits, `-` and `_`.
+pub fn valid_name(n: &str) -> bool {
+    let b = n.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b[0].is_ascii_alphanumeric()
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
+}
+
 fn parse(text: &str, origin: &str) -> io::Result<Manifest> {
-    toml::from_str(text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{origin}: {e}")))
+    let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidData, format!("{origin}: {msg}"));
+    let m: Manifest = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
+    for n in std::iter::once(&m.tool.name).chain(&m.tool.aliases).chain(&m.tool.depends) {
+        if !valid_name(n) {
+            return Err(invalid(format!(
+                "invalid tool name {n:?}: use lowercase letters, digits, '-' and '_'"
+            )));
+        }
+    }
+    Ok(m)
+}
+
+/// The tool `name` names: its own name, or one of its aliases.
+pub fn find<'a>(tools: &'a BTreeMap<String, Manifest>, name: &str) -> Option<&'a Manifest> {
+    tools.get(name).or_else(|| tools.values().find(|m| m.tool.aliases.iter().any(|a| a == name)))
 }
 
 /// The built-in manifests.
@@ -181,12 +215,26 @@ pub struct Context {
     pub command: String,
     pub args: Vec<String>,
     pub env: std::collections::BTreeMap<String, String>,
+    /// The instructions files of the configuration, joined.
+    pub instructions: String,
+    /// Guest paths and whether the tool may use them (`allow`, `deny`).
+    pub permissions: std::collections::BTreeMap<String, String>,
+    /// The allowed ones without wildcards, sorted.
+    pub allowed: Vec<String>,
+    /// Where the session's projects are in the machine.
+    pub projects: Vec<String>,
+    /// The tool runs without its permission prompts.
+    pub yolo: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelsContext {
     pub url: String,
     pub token: String,
+    /// The provider's name in the configuration.
+    pub provider: String,
+    /// Models the provider lists, if it could be asked.
+    pub list: Vec<String>,
 }
 
 /// Renders a template; undefined values are errors.
@@ -196,13 +244,20 @@ pub fn render(template: &str, ctx: &Context) -> Result<String, String> {
     env.render_str(template, ctx).map_err(|e| e.to_string())
 }
 
-/// Deep-merges `patch` into `base`: objects merge key by key, anything else
-/// is replaced.
-fn merge_value(base: &mut serde_json::Value, patch: serde_json::Value) {
+/// Deep-merges `patch` into `base`: objects merge key by key, lists get
+/// the missing items when `extend`, anything else is replaced.
+fn merge_value(base: &mut serde_json::Value, patch: serde_json::Value, extend: bool) {
     match (base, patch) {
         (serde_json::Value::Object(b), serde_json::Value::Object(p)) => {
             for (k, v) in p {
-                merge_value(b.entry(k).or_insert(serde_json::Value::Null), v);
+                merge_value(b.entry(k).or_insert(serde_json::Value::Null), v, extend);
+            }
+        }
+        (serde_json::Value::Array(b), serde_json::Value::Array(p)) if extend => {
+            for v in p {
+                if !b.contains(&v) {
+                    b.push(v);
+                }
             }
         }
         (b, p) => *b = p,
@@ -211,11 +266,24 @@ fn merge_value(base: &mut serde_json::Value, patch: serde_json::Value) {
 
 /// Merges `patch` into `base` key by key, keeping the base's comments,
 /// order and formatting.
-fn merge_toml_tables(base: &mut dyn toml_edit::TableLike, patch: &dyn toml_edit::TableLike) {
+fn merge_toml_tables(base: &mut dyn toml_edit::TableLike, patch: &dyn toml_edit::TableLike, extend: bool) {
     for (key, item) in patch.iter() {
         let merged = match (base.get_mut(key), item) {
             (Some(b), p) if b.is_table_like() && p.is_table_like() => {
-                merge_toml_tables(b.as_table_like_mut().expect("table"), p.as_table_like().expect("table"));
+                merge_toml_tables(
+                    b.as_table_like_mut().expect("table"),
+                    p.as_table_like().expect("table"),
+                    extend,
+                );
+                true
+            }
+            (Some(b), p) if extend && b.as_array().is_some() && p.as_array().is_some() => {
+                let list = b.as_array_mut().expect("array");
+                for v in p.as_array().expect("array") {
+                    if !list.iter().any(|x| x.to_string().trim() == v.to_string().trim()) {
+                        list.push(v.clone());
+                    }
+                }
                 true
             }
             _ => false,
@@ -234,10 +302,10 @@ pub fn patch(existing: Option<&str>, content: &str, format: Format, mode: Mode) 
         let patch: toml_edit::DocumentMut =
             content.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
         return match (mode, existing.filter(|e| !e.trim().is_empty())) {
-            (Mode::Merge, Some(e)) => {
+            (Mode::Merge | Mode::Extend, Some(e)) => {
                 let mut base: toml_edit::DocumentMut =
                     e.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
-                merge_toml_tables(base.as_table_mut(), patch.as_table());
+                merge_toml_tables(base.as_table_mut(), patch.as_table(), mode == Mode::Extend);
                 Ok(base.to_string())
             }
             _ => Ok(patch.to_string()),
@@ -252,9 +320,9 @@ pub fn patch(existing: Option<&str>, content: &str, format: Format, mode: Mode) 
     };
     let patch = parse(content)?;
     let value = match (mode, existing.filter(|e| !e.trim().is_empty())) {
-        (Mode::Merge, Some(e)) if format != Format::Text => {
+        (Mode::Merge | Mode::Extend, Some(e)) if format != Format::Text => {
             let mut base = parse(e)?;
-            merge_value(&mut base, patch);
+            merge_value(&mut base, patch, mode == Mode::Extend);
             base
         }
         _ => patch,
@@ -308,7 +376,12 @@ mod tests {
     #[test]
     fn templates_render_strictly() {
         let ctx = Context {
-            models: Some(ModelsContext { url: "http://127.0.0.1:41100/anthropic".into(), token: "t".into() }),
+            models: Some(ModelsContext {
+                url: "http://127.0.0.1:41100/anthropic".into(),
+                token: "t".into(),
+                provider: "anthropic".into(),
+                list: vec!["m1".into()],
+            }),
             ..Default::default()
         };
         assert_eq!(render("{{ models.url }}/v1", &ctx).unwrap(), "http://127.0.0.1:41100/anthropic/v1");

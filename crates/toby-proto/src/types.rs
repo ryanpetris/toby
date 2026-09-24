@@ -78,6 +78,9 @@ pub struct SpawnSpec {
     /// produced before someone reads it.
     #[serde(default)]
     pub start_on_attach: bool,
+    /// The tool the session runs (plan §16.1).
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 /// How a session's process ended.
@@ -103,6 +106,9 @@ impl ExitStatus {
 pub struct SessionInfo {
     pub id: String,
     pub argv0: String,
+    /// The tool the session runs.
+    #[serde(default)]
+    pub tool: Option<String>,
     pub attached: bool,
     /// Unix time in seconds.
     pub started: u64,

@@ -105,6 +105,7 @@ pub async fn run_with_input(
         tty: None,
         keep_after_exit: true,
         start_on_attach: true,
+        tool: None,
     };
     let id = Control::connect(runtime).await?.spawn(spec).await?;
 

@@ -262,6 +262,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
         info: SessionInfo {
             id: spec.session_id.clone(),
             argv0: spec.argv[0].clone(),
+            tool: spec.tool.clone(),
             attached: false,
             started,
             exit: None,

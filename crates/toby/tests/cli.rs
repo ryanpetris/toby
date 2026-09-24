@@ -1,31 +1,23 @@
-//! Every subcommand is wired and reports that it is not implemented yet.
+//! Commands that run without a daemon.
 
 use std::path::Path;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_toby");
 
-const INVOCATIONS: &[&[&str]] = &[
-    &["run", "-f", "launch.toml"],
-    &["config", "get", "daemon.backend"],
-    &["config", "set", "daemon.backend", "direct"],
-];
-
-fn assert_stub(mut cmd: Command, label: &str) {
-    let out = cmd.output().expect("run toby");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-
-    assert_eq!(out.status.code(), Some(1), "{label}: {stderr}");
-    assert!(stderr.contains("is not implemented yet"), "{label}: {stderr}");
-}
-
 #[test]
-fn every_subcommand_runs() {
-    for args in INVOCATIONS {
-        let mut cmd = Command::new(BIN);
-        cmd.args(*args);
-        assert_stub(cmd, &args.join(" "));
-    }
+fn config_get_and_set() {
+    let home = tempdir();
+    let toby = |args: &[&str]| Command::new(BIN).args(args).env("HOME", &home).output().unwrap();
+    let out = toby(&["config", "get", "daemon.backend"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not set"), "{out:?}");
+    assert!(toby(&["config", "set", "daemon.backend", "direct"]).status.success());
+    let out = toby(&["config", "get", "daemon.backend"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "direct\n");
+    let out = toby(&["config", "set", "daemon.backend", "nonsense"]);
+    assert_eq!(out.status.code(), Some(1));
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[test]
@@ -68,7 +60,9 @@ fn internal_and_guest_commands_are_hidden() {
 }
 
 fn tempdir() -> std::path::PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("multicall-{}", std::process::id()));
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cli-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

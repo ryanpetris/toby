@@ -1,6 +1,8 @@
 //! Configuration and manifest parsing, path resolution and secret substitution.
 
+pub mod edit;
 pub mod global;
+pub mod launch;
 pub mod machine;
 pub mod paths;
 pub mod subst;

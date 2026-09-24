@@ -915,7 +915,7 @@ to exactly one pre-configured target. Header parsing is fuzzed.
 | Request | Result |
 | --- | --- |
 | `Hello` | relay version, boot id (the version itself is negotiated by the `Control` header) |
-| `Spawn{spec: {session_id, argv, env, cwd, identity, tty: {rows, cols} or none, keep_after_exit}, version}` | runs `systemd-run --scope --collect --unit=toby-s-<id> -- /run/toby/fs/versions/<version>/toby guest session --id <id>` (`toby-machine` passes the target of `versions/current`, so the session keeps that exact version); returns once the session socket exists |
+| `Spawn{spec: {session_id, argv, env, cwd, identity, tty: {rows, cols} or none, keep_after_exit, start_on_attach, tool}, version}` | runs `systemd-run --scope --collect --unit=toby-s-<id> -- /run/toby/fs/versions/<version>/toby guest session --id <id>` (`toby-machine` passes the target of `versions/current`, so the session keeps that exact version); returns once the session socket exists |
 | `Listen{listener_id, bind, mode}` | bind `tcp:127.0.0.1:<port>` or `unix:<path>` in the guest |
 | `Unlisten{listener_id}` | close listener |
 | `Sessions` | list live sessions and exit records |
@@ -1258,18 +1258,18 @@ root = "work"                    # default root
 image = { dockerfile = ".toby/Dockerfile", context = "." }
 forwards = [{ direction = "host-to-guest", host = 3000, guest = 3000 }]
 mcp = ["github"]                 # enables configured servers by name; cannot define credentials
+workdir = "/toby/workspace/app"
 
 [projects.app]                   # optional extra projects attached with this one
 path = "."
 primary = true
 [projects.library]
 path = "../library"
-
-workdir = "/toby/workspace/app"
 ```
 
-Precedence: CLI flags > project config > global config > built-in
-defaults. Project config may not use substitutions or reference host paths
+Precedence: CLI flags > launch file > project config > global config >
+built-in defaults. A project config cannot name tools, parameters or
+settings; a launch file can. Project config may not use substitutions or reference host paths
 outside `projects_dir` unless `allow_external_projects` is set. Project
 config is loaded only when `settings.autoload_project_config = true`
 (default false), because a cloned repository could otherwise

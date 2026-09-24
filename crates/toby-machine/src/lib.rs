@@ -156,6 +156,7 @@ impl Machine {
             tty: None,
             keep_after_exit: true,
             start_on_attach: true,
+            tool: None,
         };
         let id = spec.session_id.clone();
         let req =
@@ -816,6 +817,14 @@ impl Machine {
                             .filter(|s| !s.id.is_empty() && s.id.bytes().all(|b| b.is_ascii_alphanumeric()))
                             .map(|mut s| {
                                 s.argv0 = printable(s.argv0.as_bytes());
+                                s.tool = s.tool.filter(|t| {
+                                    t.len() <= 64
+                                        && t.bytes().all(|b| {
+                                            b.is_ascii_lowercase()
+                                                || b.is_ascii_digit()
+                                                || matches!(b, b'-' | b'_')
+                                        })
+                                });
                                 s.version = s.version.filter(|v| version_name(v));
                                 s
                             })

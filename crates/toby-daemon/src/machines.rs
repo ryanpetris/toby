@@ -111,6 +111,8 @@ pub struct Machines {
     yolo_file: Mutex<()>,
     /// Serializes checking and adding forwards across machines.
     forwards_lock: tokio::sync::Mutex<()>,
+    /// Model lists of providers, and when they were fetched.
+    pub models_cache: Mutex<HashMap<String, (Instant, Vec<String>)>>,
 
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -200,6 +202,7 @@ impl Machines {
             creating: Mutex::default(),
             yolo_file: Mutex::default(),
             forwards_lock: Default::default(),
+            models_cache: Default::default(),
 
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
@@ -370,7 +373,26 @@ impl Machines {
         req: toby_api::EnsureMachine,
         services: Option<&str>,
     ) -> Result<MachineSpec> {
-        let toby_api::EnsureMachine { home, root, ephemeral, cpus, memory } = req;
+        let toby_api::EnsureMachine { home, root, ephemeral, mut cpus, mut memory } = req;
+        if services.is_none() {
+            let config = self.current_config();
+            cpus = cpus.or(config.defaults.cpus);
+            memory = memory.or_else(|| config.defaults.memory.clone());
+        }
+        if cpus.is_some_and(|c| !(1..=256).contains(&c)) {
+            return Err(Error::new(
+                ErrorKind::BadRequest,
+                "machine.invalid-cpus",
+                "cpus must be between 1 and 256",
+            ));
+        }
+        if memory.as_deref().is_some_and(|m| machine::parse_size(m).is_none()) {
+            return Err(Error::new(
+                ErrorKind::BadRequest,
+                "machine.invalid-memory",
+                "memory must be a size such as 8G",
+            ));
+        }
         let home = home.unwrap_or_else(|| self.config.defaults.home().to_string());
         let home_rec = self.store.home(&home).map_err(|_| {
             Error::new(
@@ -439,6 +461,7 @@ impl Machines {
                 idle_timeout: None,
                 services: None,
                 tools: Vec::new(),
+                mcp: Vec::new(),
             },
         };
         let id = template.id.clone();
@@ -1162,9 +1185,14 @@ impl Machines {
         let yolo = req.yolo;
 
         let mut workspace = None;
+        let mut projects = Vec::new();
         for a in req.attachments {
             let info = self.add_attachment(&spec.id, a, Some(&session_id)).await?;
-            workspace.get_or_insert(info.at);
+            workspace.get_or_insert(info.at.clone());
+            projects.push(info.at);
+        }
+        for f in req.forwards {
+            self.add_forward(&spec.id, f, Some(&session_id)).await?;
         }
         let cwd = req.cwd.or(workspace.clone());
         let (argv, env) = match &manifest {
@@ -1193,8 +1221,23 @@ impl Machines {
                         });
                     }
                 }
-                let ws = workspace.as_deref().unwrap_or("");
-                let (argv, mut env) = crate::tools::launch(self, &spec, m, ws, &req.argv, req.yolo)?;
+                let session = crate::tools::Session {
+                    workspace: workspace.clone().unwrap_or_default(),
+                    projects: projects.clone(),
+                    yolo,
+                    mcp: Vec::new(),
+                    extra: req.tools.clone(),
+                };
+                let mut notes = Vec::new();
+                let (argv, mut env) = crate::tools::launch(self, &spec, m, &session, &req.argv, &mut notes)?;
+                for note in notes {
+                    let (id, message) = note
+                        .strip_prefix("warning[")
+                        .and_then(|n| n.split_once("]: "))
+                        .map(|(i, m)| (i.to_string(), m.to_string()))
+                        .unwrap_or(("tool".into(), note.clone()));
+                    warnings.push(Warning { id, message });
+                }
                 // The client's own settings (its terminal type) unless the
                 // tool sets them.
                 for (k, v) in req.env {
@@ -1215,6 +1258,7 @@ impl Machines {
             tty: req.tty.map(|t| TtySize { rows: t.rows, cols: t.cols }),
             keep_after_exit: true,
             start_on_attach: true,
+            tool: manifest.as_ref().map(|m| m.tool.name.clone()),
         };
         let mut c = Control::connect(&self.runtime(&spec.id)).await?;
         let id = c.spawn(session).await?;
@@ -1228,6 +1272,32 @@ impl Machines {
             toby_config::machine::write_atomic(&path, ids.as_bytes())?;
         }
         Ok(id)
+    }
+
+    /// Lets the machine reach configured MCP servers a launch names.
+    pub fn enable_mcp(&self, id: &str, names: &[String]) -> Result<()> {
+        let config = self.current_config();
+        for name in names {
+            if name == "toby" || !config.mcp.contains_key(name) {
+                return Err(Error::new(
+                    ErrorKind::BadRequest,
+                    "mcp.unknown",
+                    format!("there is no configured MCP server {name:?}"),
+                ));
+            }
+        }
+        if names.iter().all(|n| self.record(id).is_ok_and(|s| s.mcp.contains(n))) {
+            return Ok(());
+        }
+        self.update_desired(id, |s| {
+            for n in names {
+                if !s.mcp.contains(n) {
+                    s.mcp.push(n.clone());
+                }
+            }
+            Ok(())
+        })
+        .map(drop)
     }
 
     /// Whether a tool in the machine runs without its permission prompts:

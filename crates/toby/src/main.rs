@@ -8,6 +8,7 @@ mod client;
 mod forwards;
 mod images;
 mod internal;
+mod launch;
 mod mounts;
 mod table;
 mod tool;
@@ -47,77 +48,76 @@ fn identity(as_root: bool) -> Identity {
 const SHELL: &[&str] = &["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -l"];
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let name = match cli.command {
-        Command::Run { .. } => "run",
+    match cli.command {
+        Command::Run(a) => runtime()?.block_on(tool::run_file(a)),
         Command::Exec(a) => {
             let argv = a
                 .command
                 .into_iter()
                 .map(|s| s.into_string().map_err(|s| anyhow::anyhow!("argument is not UTF-8: {s:?}")))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            return runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), a.cwd));
+            runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), a.cwd))
         }
         Command::Shell(a) => {
             let argv = SHELL.iter().map(|s| s.to_string()).collect();
-            return runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), None));
+            runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), None))
         }
-        Command::Sessions(SessionsCommand::Ls) => return runtime()?.block_on(client::list()),
-        Command::Sessions(SessionsCommand::Kill { id }) => return runtime()?.block_on(client::kill(&id)),
-        Command::Attach { session } => return runtime()?.block_on(client::attach(session)),
-        Command::Machine(cmd) => return runtime()?.block_on(admin::machine(cmd)),
-        Command::Mount(a) => return runtime()?.block_on(mounts::mount(a)),
-        Command::Unmount { target, machine } => return runtime()?.block_on(mounts::unmount(target, machine)),
-        Command::Forward(cmd) => return runtime()?.block_on(forwards::forward(cmd)),
-        Command::Image(cmd) => return runtime()?.block_on(images::image(cmd)),
-        Command::Root(cmd) => return runtime()?.block_on(images::root(cmd)),
-        Command::Home(cmd) => return runtime()?.block_on(images::home(cmd)),
-        Command::Builder(cmd) => return runtime()?.block_on(images::builder_cmd(cmd)),
-        Command::Mcp(cmd) => return runtime()?.block_on(approvals::mcp(cmd)),
-        Command::Approvals(args) => return runtime()?.block_on(approvals::approvals(args)),
-        Command::Daemon(cmd) => return runtime()?.block_on(admin::daemon(cmd)),
-        Command::Linger { state } => return runtime()?.block_on(admin::linger(state)),
-        Command::Config(_) => "config",
-        Command::Doctor { gc: false } => return runtime()?.block_on(admin::doctor()),
-        Command::Doctor { gc: true } => return runtime()?.block_on(admin::collect_versions()),
-        Command::Web => return runtime()?.block_on(admin::web()),
+        Command::Sessions(SessionsCommand::Ls) => runtime()?.block_on(client::list()),
+        Command::Sessions(SessionsCommand::Kill { id }) => runtime()?.block_on(client::kill(&id)),
+        Command::Attach { session } => runtime()?.block_on(client::attach(session)),
+        Command::Machine(cmd) => runtime()?.block_on(admin::machine(cmd)),
+        Command::Mount(a) => runtime()?.block_on(mounts::mount(a)),
+        Command::Unmount { target, machine } => runtime()?.block_on(mounts::unmount(target, machine)),
+        Command::Forward(cmd) => runtime()?.block_on(forwards::forward(cmd)),
+        Command::Image(cmd) => runtime()?.block_on(images::image(cmd)),
+        Command::Root(cmd) => runtime()?.block_on(images::root(cmd)),
+        Command::Home(cmd) => runtime()?.block_on(images::home(cmd)),
+        Command::Builder(cmd) => runtime()?.block_on(images::builder_cmd(cmd)),
+        Command::Mcp(cmd) => runtime()?.block_on(approvals::mcp(cmd)),
+        Command::Approvals(args) => runtime()?.block_on(approvals::approvals(args)),
+        Command::Daemon(cmd) => runtime()?.block_on(admin::daemon(cmd)),
+        Command::Linger { state } => runtime()?.block_on(admin::linger(state)),
+        Command::Config(cmd) => admin::config(cmd),
+        Command::Doctor { gc: false } => runtime()?.block_on(admin::doctor()),
+        Command::Doctor { gc: true } => runtime()?.block_on(admin::collect_versions()),
+        Command::Web => runtime()?.block_on(admin::web()),
         Command::Internal(cmd) => match cmd {
-            InternalCommand::Daemon => return internal::daemon().map(|()| ExitCode::SUCCESS),
-            InternalCommand::Proxy => return internal::proxy().map(|()| ExitCode::SUCCESS),
+            InternalCommand::Daemon => internal::daemon().map(|()| ExitCode::SUCCESS),
+            InternalCommand::Proxy => internal::proxy().map(|()| ExitCode::SUCCESS),
             InternalCommand::Machine { machine, supervise: false, .. } => {
-                return internal::machine(&machine).map(|()| ExitCode::SUCCESS);
+                internal::machine(&machine).map(|()| ExitCode::SUCCESS)
             }
             InternalCommand::Machine { machine, supervise: true, log_dir } => {
-                return internal::supervise(&machine, log_dir.as_deref()).map(|()| ExitCode::SUCCESS);
+                internal::supervise(&machine, log_dir.as_deref()).map(|()| ExitCode::SUCCESS)
             }
-            InternalCommand::Fs { machine } => return internal::fs(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::Fs { machine } => internal::fs(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::Vm { machine, stop: false } => {
-                return internal::vm(&machine).map(|()| ExitCode::SUCCESS);
+                internal::vm(&machine).map(|()| ExitCode::SUCCESS)
             }
             InternalCommand::Vm { machine, stop: true } => {
-                return internal::vm_stop(&machine).map(|()| ExitCode::SUCCESS);
+                internal::vm_stop(&machine).map(|()| ExitCode::SUCCESS)
             }
-            InternalCommand::Net { machine } => return internal::net(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::Net { machine } => internal::net(&machine).map(|()| ExitCode::SUCCESS),
         },
         Command::Guest(cmd) => match cmd {
             GuestCommand::Relay => {
                 runtime()?.block_on(toby_guest::relay::run(toby_guest::paths::GuestPaths::from_env()))?;
-                return Ok(ExitCode::SUCCESS);
+                Ok(ExitCode::SUCCESS)
             }
             GuestCommand::Session { id } => {
                 runtime()?
                     .block_on(toby_guest::session::run(toby_guest::paths::GuestPaths::from_env(), &id))?;
-                return Ok(ExitCode::SUCCESS);
+                Ok(ExitCode::SUCCESS)
             }
             GuestCommand::Connect { target } => {
                 let socket = std::path::Path::new(toby_guest::connect::SANDBOX_SOCKET);
                 runtime()?.block_on(toby_guest::connect::run(socket, &target))?;
-                return Ok(ExitCode::SUCCESS);
+                Ok(ExitCode::SUCCESS)
             }
-            GuestCommand::Helper(cmd) => return helper(cmd).map(|()| ExitCode::SUCCESS),
+            GuestCommand::Helper(cmd) => helper(cmd).map(|()| ExitCode::SUCCESS),
         },
-        Command::Tool(argv) => return runtime()?.block_on(tool::run(argv)),
-    };
-    anyhow::bail!("`toby {name}` is not implemented yet")
+        Command::Tool(argv) => runtime()?.block_on(tool::run(argv)),
+    }
 }
 
 fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
@@ -153,7 +153,11 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
                 "toml" => toby_tools::Format::Toml,
                 _ => toby_tools::Format::Text,
             };
-            let mode = if mode == "merge" { toby_tools::Mode::Merge } else { toby_tools::Mode::Replace };
+            let mode = match mode.as_str() {
+                "merge" => toby_tools::Mode::Merge,
+                "extend" => toby_tools::Mode::Extend,
+                _ => toby_tools::Mode::Replace,
+            };
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
             helper::patch::patch_file(&helper::patch::expand_home(&path, &home), &content, format, mode)?;
         }

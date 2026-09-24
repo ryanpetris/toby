@@ -15,11 +15,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a tool from a launch file
-    Run {
-        /// Launch file
-        #[arg(short = 'f', long = "file")]
-        file: PathBuf,
-    },
+    Run(RunArgs),
     /// Run a command in a machine
     Exec(ExecArgs),
     /// Open a shell in a machine
@@ -486,7 +482,7 @@ pub enum HelperCommand {
         #[arg(long, value_parser = ["json", "toml", "text"])]
         format: String,
         /// The content is read from stdin.
-        #[arg(long, value_parser = ["merge", "replace"])]
+        #[arg(long, value_parser = ["merge", "extend", "replace"])]
         mode: String,
     },
     /// Unmount an attached host directory
@@ -504,9 +500,30 @@ pub enum HelperCommand {
 pub struct ToolArgs {
     #[command(flatten)]
     pub machine: MachineSelector,
-    /// Project path (repeatable)
+    /// Project path (repeatable); relative paths start in settings.projects_dir
     #[arg(long)]
     pub project: Vec<PathBuf>,
+    #[command(flatten)]
+    pub launch: LaunchArgs,
+    /// Arguments passed to the tool
+    #[arg(last = true)]
+    pub args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Launch file
+    #[arg(short = 'f', long = "file")]
+    pub file: PathBuf,
+    #[command(flatten)]
+    pub launch: LaunchArgs,
+    /// Arguments passed to the tool
+    #[arg(last = true)]
+    pub args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+pub struct LaunchArgs {
     /// Add a throwaway layer over the root
     #[arg(long)]
     pub ephemeral: bool,
@@ -525,9 +542,6 @@ pub struct ToolArgs {
     /// Run the tool's installer
     #[arg(long)]
     pub upgrade: bool,
-    /// Arguments passed to the tool
-    #[arg(last = true)]
-    pub args: Vec<OsString>,
 }
 
 /// Maps an `argv[0]` basename to the subcommand words it stands for.

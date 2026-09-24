@@ -419,3 +419,35 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
     }
     Ok(if r.failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
+
+/// `toby config get` and `toby config set`, on the global configuration file.
+pub fn config(cmd: crate::cli::ConfigCommand) -> anyhow::Result<ExitCode> {
+    use crate::cli::ConfigCommand;
+    let path = toby_config::paths::home_dir()?.join(".config/toby/config.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => bail!("{}: {e}", path.display()),
+    };
+    match cmd {
+        ConfigCommand::Get { key } => {
+            match toby_config::edit::get(&text, &key).map_err(anyhow::Error::msg)? {
+                Some(v) => println!("{v}"),
+                None => bail!("{key} is not set"),
+            }
+        }
+        ConfigCommand::Set { key, value } => {
+            let out = toby_config::edit::set(&text, &key, &value)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            // A symlinked file (kept with other dotfiles) is written where it
+            // points, keeping its permissions.
+            let target = std::fs::canonicalize(&path).unwrap_or(path);
+            let mode = std::fs::metadata(&target).ok().map(|m| m.permissions());
+            toby_config::machine::write_atomic(&target, out.as_bytes())?;
+            if let Some(mode) = mode {
+                std::fs::set_permissions(&target, mode)?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

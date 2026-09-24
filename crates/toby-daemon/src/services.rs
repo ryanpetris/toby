@@ -125,6 +125,7 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
         tty: None,
         keep_after_exit: false,
         start_on_attach: false,
+        tool: None,
     };
     let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
     c.spawn(spec).await.map_err(|e| format!("starting {name}: {e}"))?;

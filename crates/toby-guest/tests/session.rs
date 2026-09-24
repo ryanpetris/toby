@@ -44,6 +44,7 @@ fn spec(id: &str, argv: &[&str], tty: bool, keep: bool) -> SpawnSpec {
         tty: tty.then_some(TtySize { rows: 24, cols: 80 }),
         keep_after_exit: keep,
         start_on_attach: false,
+        tool: None,
     }
 }
 

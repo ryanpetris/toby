@@ -171,12 +171,6 @@ pub(crate) async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo
 
 #[utoipa::path(post, path = "/v1/machines/ensure", tag = "machines", request_body = api::EnsureMachine, responses((status = 200, body = api::Ensured), (status = "4XX", body = api::ApiError)))]
 async fn ensure(State(d): Shared, Json(req): Json<api::EnsureMachine>) -> ApiResult<api::Ensured> {
-    if req.cpus.is_some_and(|c| !(1..=256).contains(&c)) {
-        return Err(bad("machine.invalid-cpus", "cpus must be between 1 and 256"));
-    }
-    if req.memory.as_deref().is_some_and(|m| toby_config::machine::parse_size(m).is_none()) {
-        return Err(bad("machine.invalid-memory", "memory must be a size such as 8G"));
-    }
     let spec = d.machines.ensure(req).await?;
     let warnings = d.machines.warnings().await;
     Ok(Json(api::Ensured { machine: d.machines.info(&spec).await, warnings }))
@@ -223,13 +217,28 @@ async fn prepare_tool(
 ) -> ApiResult<api::BuildStarted> {
     let spec = d.machines.record(&id)?;
     let manifest = d.machines.manifest(&name)?;
+    for p in &req.projects {
+        if !p.starts_with('/') || p.chars().any(|c| c.is_control() || c == '"' || c == '\\') {
+            return Err(bad("tool.invalid-project", format!("{p:?} is not a path")));
+        }
+    }
+    d.machines.enable_mcp(&spec.id, &req.mcp)?;
     let machines = d.machines.clone();
     let b = d.builds.start(d.builder.paths.state.join("builds"), "tool", move |out| {
         Box::pin(async move {
             // One tool operation at a time per machine (plan §16.1).
             let lock = machines.tool_lock(&spec.id);
             let _lock = lock.lock().await;
-            crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, out).await.map(|()| None)
+            let session = crate::tools::Session {
+                workspace: req.projects.first().cloned().unwrap_or_default(),
+                projects: req.projects,
+                yolo: req.yolo,
+                mcp: req.mcp,
+                extra: Vec::new(),
+            };
+            crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, &session, out)
+                .await
+                .map(|()| None)
         })
     })?;
     Ok(started(b))

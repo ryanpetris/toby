@@ -153,10 +153,16 @@ pub struct CreateSession {
     /// Launch the tool without its permission prompts.
     #[serde(default)]
     pub yolo: bool,
+    /// Other prepared tools whose `PATH` and environment the tool gets.
+    #[serde(default)]
+    pub tools: Vec<String>,
     /// Directories attached for as long as sessions use them; the first is
     /// the working directory unless `cwd` is given.
     #[serde(default)]
     pub attachments: Vec<AddAttachment>,
+    /// Forwards kept while the session runs.
+    #[serde(default)]
+    pub forwards: Vec<AddForward>,
     pub argv: Vec<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
@@ -192,6 +198,16 @@ pub struct MachineSession {
 pub struct PrepareTool {
     #[serde(default)]
     pub upgrade: bool,
+    /// The launch skips the tool's permission prompts.
+    #[serde(default)]
+    pub yolo: bool,
+    /// Where the launch's projects are in the machine; the first is the
+    /// primary one.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// Configured MCP servers the tool gets besides `[tools.<name>].mcp`.
+    #[serde(default)]
+    pub mcp: Vec<String>,
 }
 
 /// `POST /v1/sessions/{id}/kill`.
@@ -385,7 +401,9 @@ mod tests {
             request_id: None,
             tool: None,
             yolo: false,
+            tools: Vec::new(),
             attachments: Vec::new(),
+            forwards: Vec::new(),
             argv: vec!["bash".into()],
             env: Vec::new(),
             cwd: None,

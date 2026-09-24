@@ -31,6 +31,10 @@ pub struct GlobalConfig {
     pub mcp: std::collections::BTreeMap<String, McpServer>,
     #[serde(default)]
     pub permissions: Permissions,
+    /// Instruction files (host paths, `*` allowed in the file name) written
+    /// into each tool's instructions (plan §14.6).
+    #[serde(default)]
+    pub instructions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -130,6 +134,25 @@ pub struct Permissions {
     /// Host actions such as `git.push`, by name.
     #[serde(default, deserialize_with = "actions")]
     pub actions: std::collections::BTreeMap<String, ActionPolicy>,
+    /// Paths in the machine tools may use or not (`~` is the home there).
+    #[serde(default)]
+    pub paths: std::collections::BTreeMap<String, PathPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PathPolicy {
+    Allow,
+    Deny,
+}
+
+impl PathPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PathPolicy::Allow => "allow",
+            PathPolicy::Deny => "deny",
+        }
+    }
 }
 
 fn actions<'de, D: serde::Deserializer<'de>>(
@@ -242,6 +265,15 @@ pub struct Settings {
     pub yolo: bool,
     /// Show a status line in attached terminals (default true).
     pub status_line: Option<bool>,
+    /// Where projects are (default `~/Projects`); relative project paths
+    /// start here.
+    pub projects_dir: Option<String>,
+    /// Allow `--project` paths outside `projects_dir`.
+    #[serde(default)]
+    pub allow_external_projects: bool,
+    /// Read a project's `.toby/config.toml`.
+    #[serde(default)]
+    pub autoload_project_config: bool,
 }
 
 impl Settings {
@@ -259,6 +291,11 @@ impl Settings {
 pub struct Defaults {
     /// Home used when none is given (default `default`).
     pub home: Option<String>,
+    /// Resources of tool machines, instead of the computed defaults.
+    pub cpus: Option<u32>,
+    pub memory: Option<String>,
+    /// The image a root is created from (default: the default image).
+    pub image: Option<crate::launch::ImageConfig>,
 }
 
 impl Defaults {
@@ -325,12 +362,13 @@ impl Programs {
 impl GlobalConfig {
     /// Whether a machine may reach MCP server `name`: Toby's own server
     /// (`toby`) from any machine but a services machine, a configured one
-    /// when a tool started in the machine lists it.
+    /// when a tool started in the machine or a launch in it lists it.
     pub fn mcp_reachable(&self, spec: &crate::machine::MachineSpec, name: &str) -> bool {
         if spec.services.is_some() {
             return false;
         }
         name == "toby"
+            || spec.mcp.iter().any(|m| m == name)
             || spec.tools.iter().any(|t| self.tools.get(t).is_some_and(|t| t.mcp.iter().any(|m| m == name)))
     }
 

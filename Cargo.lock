@@ -1883,6 +1883,7 @@ dependencies = [
  "toby-vfs",
  "tokio",
  "tokio-tungstenite",
+ "toml",
 ]
 
 [[package]]
@@ -1903,6 +1904,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "toml_edit",
  "ulid",
 ]
 

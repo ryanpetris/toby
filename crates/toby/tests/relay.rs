@@ -86,6 +86,7 @@ fn spec(id: &str, argv: &[&str]) -> SpawnSpec {
         tty: None,
         keep_after_exit: true,
         start_on_attach: false,
+        tool: None,
     }
 }
 

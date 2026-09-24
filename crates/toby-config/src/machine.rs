@@ -47,6 +47,9 @@ pub struct MachineSpec {
     /// it may reach.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// Configured MCP servers a launch in the machine enabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

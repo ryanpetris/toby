@@ -13,17 +13,82 @@ toby opencode -- --help          # arguments after -- go to the tool
 what is missing: the home (for your user), the root named `default` and,
 before that, the default image. It installs the tool in the home if its
 check fails, then starts it with the project attached at
-`/toby/workspace/<name>` as its working directory. Projects stay attached
-while a session of the tool uses them.
+`/toby/workspace/<name>`, in the directory you ran it from. Projects stay
+attached while a session of the tool uses them.
 
 | Option | Effect |
 | --- | --- |
-| `--project PATH` | attach PATH instead of the current directory (repeatable; the first is the working directory) |
+| `--project PATH` | attach PATH instead of the current project (repeatable; the first is the working directory) |
 | `--install` | install the tool if needed (with `--upgrade`, update it), then exit |
 | `--upgrade` | run the tool's updater before starting it |
-| `--attach` | reattach a running session of the tool instead of starting one (`--new`, the default, starts one) |
+| `--attach` | reattach a running session of the tool instead of starting one |
+| `--new` | start a session without asking about a detached one |
 | `--yolo` | start the tool without its permission prompts (also `settings.yolo = true`) |
 | `--ephemeral` | run the machine on a throwaway layer over the root |
+
+If a session of the tool is running detached in that machine, `toby
+<tool>` asks whether to attach to it.
+
+### Projects
+
+Projects live in `settings.projects_dir` (default `~/Projects`). The
+current project is the nearest directory with `.git` or `.toby` above the
+current directory, or else the directory in `projects_dir` it is in. A
+relative `--project` starts in `projects_dir` unless it starts with `./` or
+`../`. Projects outside `projects_dir` need
+`settings.allow_external_projects = true`.
+
+### Launch files
+
+A launch file sets up one launch; `toby run -f review.toml` starts it
+(with the same options as `toby <tool>`, and arguments after `--`).
+
+```toml
+tool = "claude"
+tools = ["github_cli"]            # also prepared, and on the tool's PATH
+params = ["--model", "opus"]
+home = "work"
+root = "work"
+image = { dockerfile = "Dockerfile", context = "." }   # for a root that does not exist yet
+workdir = "src"                   # in the primary project, or an absolute path
+forwards = [{ host = 3000 }]      # host 127.0.0.1:3000 to the same port in the machine
+mcp = ["github"]                  # configured MCP servers the tool gets
+cpus = 4
+memory = "8G"
+
+[projects.app]                    # path defaults to <projects_dir>/app
+primary = true
+[projects.library]
+path = "../library"               # relative to the launch file; may be anywhere
+
+[settings]
+yolo = true
+```
+
+`image` is `"default"`, an image ID, or `{ mkosi = DIR }`, `{ dockerfile =
+FILE, context = DIR }`, `{ registry = REF }` or `{ archive = FILE }`;
+`[defaults] image` sets it for every new root, and `[defaults] cpus` and
+`memory` the size of every machine.
+
+### Project configuration
+
+A project can carry `.toby/config.toml` with the same keys except `tool`,
+`tools`, `params` and `[settings]`; its project paths start in the project
+and must stay in `projects_dir`. Toby reads it only with
+`settings.autoload_project_config = true`, because a cloned repository
+could otherwise enable your MCP servers or open forwards. Options win over
+a launch file, which wins over the project configuration.
+
+### Configuration
+
+`~/.config/toby/config.toml` holds the settings on this page. `toby config
+get KEY` prints one and `toby config set KEY VALUE` changes one, keeping
+the rest of the file as it is:
+
+```sh
+toby config set settings.projects_dir "~/src"
+toby config set tools.claude.params '["--model", "opus"]'
+```
 
 Tools are installed in the home, so every root of that home finds them.
 Updating a tool does not affect sessions that are already running.
