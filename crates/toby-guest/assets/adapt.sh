@@ -63,7 +63,7 @@ if [ -r "$tree/etc/os-release" ] || [ -r "$tree/usr/lib/os-release" ]; then
     os_release="$tree/etc/os-release"
     [ -r "$os_release" ] || os_release="$tree/usr/lib/os-release"
     # Read, never sourced: the file comes from the image.
-    ids=$(sed -n 's/^\(ID\|ID_LIKE\)=//p' "$os_release" | tr -d "\"'" | tr -c 'a-z0-9._\n-' ' ')
+    ids=$(sed -n 's/^\(ID\|ID_LIKE\)=//p' "$os_release" | tr -d "\"'" | tr -c 'a-z0-9._-' ' ')
     for id in $ids; do
         case $id in
             debian | ubuntu) family=apt ;;

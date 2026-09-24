@@ -775,10 +775,11 @@ did the move.)
 5. Attachment reference counting lives in `tobyd`: session-scoped
    attachments are removed when the last session using them ends; pinned
    attachments stay until `toby unmount` or machine stop.
-6. Mount points Toby created for removed attachments (empty directories
-   owned by root) are left with mode 0555 so writes fail instead of landing
-   in the root or home. A directory that existed before keeps its owner and
-   mode. The helper finds mounts by the decoded mountinfo fields of the
+6. Mount points Toby created for removed attachments (marked with the
+   `trusted.toby.mount-point` extended attribute when created) are left
+   empty with mode 0555, so the user's writes fail instead of landing in the
+   root or home (root can still write there). A directory that existed
+   before keeps its owner and mode. The helper finds mounts by the decoded mountinfo fields of the
    canonical mount point and changes the directory through a descriptor
    opened without following links.
 7. A reboot of the guest (a new FUSE session) or a start of `toby-fs` never

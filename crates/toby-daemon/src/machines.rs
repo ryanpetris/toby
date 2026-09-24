@@ -581,6 +581,16 @@ impl Machines {
     /// Removes an attachment by ID or host path; refused while it is in use.
     pub async fn remove_attachment(&self, id: &str, target: &str) -> Result<()> {
         self.record(id)?;
+        // Between starting and ready the guest may still hold the mount, and
+        // nothing could confirm the detach.
+        let state = self.observe(id).await.state;
+        if state != "ready" && state != "stopped" {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "machine.busy",
+                format!("machine {id} is {state}; try again when it is ready"),
+            ));
+        }
         let host = std::fs::canonicalize(target).ok();
         let lock = self.machine_lock(id);
         let _lock = lock.lock().await;

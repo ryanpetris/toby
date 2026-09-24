@@ -120,8 +120,12 @@ pub fn home_mount(device: &Path, at: &Path, uid: u32, gid: u32, skel: &Path) -> 
 /// Bind-mounts an attachment from the file share at `at`, without setuid
 /// or device files, read-only if requested.
 pub fn attach(src: &Path, at: &Path, read_only: bool) -> io::Result<()> {
+    let created = !at.exists();
     std::fs::create_dir_all(at)?;
     let at = std::fs::canonicalize(at)?;
+    if created {
+        mark_mount_point(&at);
+    }
     if let Some(root) = mount_at(&at) {
         // Already attached (a helper run again after a restart), unless
         // something else is mounted there.
@@ -170,8 +174,21 @@ pub fn detach(src: &Path, at: &Path) -> io::Result<()> {
     lock_down(&at)
 }
 
-/// Makes an empty, root-owned, non-sticky directory unwritable, without
-/// following a link put in its place.
+/// Extended attribute marking a directory Toby created as a mount point.
+const MOUNT_POINT_XATTR: &std::ffi::CStr = c"trusted.toby.mount-point";
+
+/// Marks a directory Toby created for an attachment, so detaching may lock
+/// it down later. File systems without extended attributes get no mark.
+fn mark_mount_point(dir: &Path) {
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else { return };
+    // SAFETY: both strings are valid and NUL-terminated; the value is one byte.
+    unsafe {
+        libc::lsetxattr(path.as_ptr(), MOUNT_POINT_XATTR.as_ptr(), b"1".as_ptr().cast(), 1, 0);
+    }
+}
+
+/// Makes an empty mount point Toby created unwritable for the user, without
+/// following a link put in its place. Other directories are left alone.
 fn lock_down(dir: &Path) -> io::Result<()> {
     use nix::fcntl::{OFlag, open};
     use nix::sys::stat::Mode;
@@ -184,7 +201,17 @@ fn lock_down(dir: &Path) -> io::Result<()> {
         Err(_) => return Ok(()),
     };
     let st = nix::sys::stat::fstat(&fd)?;
-    if st.st_uid != 0 || st.st_mode & 0o1000 != 0 {
+    let mut mark = [0u8; 1];
+    // SAFETY: the descriptor is open and the buffer is one byte long.
+    let marked = unsafe {
+        libc::fgetxattr(
+            std::os::fd::AsRawFd::as_raw_fd(&fd),
+            MOUNT_POINT_XATTR.as_ptr(),
+            mark.as_mut_ptr().cast(),
+            mark.len(),
+        )
+    } == 1;
+    if !marked || st.st_uid != 0 {
         return Ok(());
     }
     let empty = std::fs::read_dir(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&fd)))?

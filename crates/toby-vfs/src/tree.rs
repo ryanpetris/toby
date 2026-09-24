@@ -64,9 +64,12 @@ fn options() -> VfsOptions {
     VfsOptions { no_open: false, no_opendir: false, ..VfsOptions::default() }
 }
 
-/// Builds the file system for `table`. A mount whose source can no longer
-/// be opened (a deleted or renamed attachment) is dropped from the table
-/// rather than failing the whole session.
+/// Where attachments are mounted; everything else is the runtime tree.
+const ATTACHMENTS: &str = "/projects/";
+
+/// Builds the file system for `table`. An attachment whose source can no
+/// longer be opened (deleted or renamed) is dropped from the table rather
+/// than failing the whole session; the runtime tree is required.
 fn build(table: &mut Table) -> io::Result<Vfs> {
     let mut vfs = Vfs::new(options());
     vfs.set_remove_pseudo_root();
@@ -76,6 +79,7 @@ fn build(table: &mut Table) -> io::Result<Vfs> {
             Ok(fs) => {
                 vfs.mount(fs, path).map_err(vfs_error)?;
             }
+            Err(e) if !path.starts_with(ATTACHMENTS) => return Err(e),
             Err(e) => {
                 eprintln!("dropping {path}: {e}");
                 gone.push(path.clone());
