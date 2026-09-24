@@ -274,6 +274,8 @@ impl DetachFilter {
             };
             let bytes = &input[i..i + len];
             i += len;
+            // Caps Lock and Num Lock are not modifiers here.
+            let mods = (mods.saturating_sub(1) & !(64 | 128)) + 1;
             let prefix = (len == 1 && bytes[0] == DETACH_PREFIX) || (len > 1 && code == 92 && mods == 5);
             match self.pending.take() {
                 None if prefix && event == 1 => self.pending = Some(bytes.to_vec()),
@@ -974,6 +976,8 @@ mod tests {
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5:3u\x1b[57442;5:3u"), (vec![], None));
         assert_eq!(f.feed(b"\x1b[97;1:1u"), (vec![], Some(Command::Approvals)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"\x1b[92;197u\x1b[100;129u"), (vec![], Some(Command::Detach)), "with Num and Caps Lock");
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;"), (vec![], None), "the rest comes with the next read");
         assert_eq!(f.feed(b"5ud"), (vec![], Some(Command::Detach)));
