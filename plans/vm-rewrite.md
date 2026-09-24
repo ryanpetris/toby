@@ -1269,9 +1269,9 @@ path = "../library"
 
 Precedence: CLI flags > launch file > project config > global config >
 built-in defaults. A project config's image paths (Dockerfile, context,
-mkosi directory, archive) must stay in the project itself unless
-`allow_external_projects` is set, since the build context is shared with
-a build that reaches the network. A project config cannot name tools, parameters or
+mkosi directory, archive) must stay in the project itself (a launch file
+can name others), since the build context is shared with a build that
+reaches the network. A project config cannot name tools, parameters or
 settings; a launch file can. Project config may not use substitutions or reference host paths
 outside `projects_dir` unless `allow_external_projects` is set. Project
 config is loaded only when `settings.autoload_project_config = true`

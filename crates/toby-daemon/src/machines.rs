@@ -1324,6 +1324,23 @@ impl Machines {
         Ok(())
     }
 
+    /// Whether the machine may reach MCP server `name` now: as the
+    /// configuration allows, with a granting session still running.
+    pub async fn mcp_allowed(&self, spec: &MachineSpec, name: &str) -> bool {
+        let config = self.current_config();
+        let mut without_grants = spec.clone();
+        without_grants.mcp_grants.clear();
+        if config.mcp_reachable(&without_grants, name) {
+            return true;
+        }
+        let Some(grant) = spec.mcp_grants.iter().find(|g| g.name == name) else { return false };
+        if !config.mcp_reachable(spec, name) {
+            return false;
+        }
+        let live = self.sessions_of(&spec.id).await.unwrap_or_default();
+        live.iter().any(|s| s.exit.is_none() && grant.sessions.contains(&s.id))
+    }
+
     /// Lets the machine reach configured MCP servers a launch names, while
     /// `session` runs.
     fn grant_mcp(&self, id: &str, names: &[String], session: &str) -> Result<()> {
@@ -1390,14 +1407,13 @@ impl Machines {
         // Read before the session list: a session that finishes starting in
         // between is then in one of the two.
         let creating: Vec<String> = self.creating.lock().unwrap().iter().cloned().collect();
-        let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { return };
-        let Ok(sessions) = c.sessions().await else { return };
+        let Some(sessions) = self.sessions_of(&spec.id).await else { return };
         let mut live: Vec<String> = sessions.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect();
         live.extend(creating);
         let lock = self.machine_lock(&spec.id);
         let _lock = lock.lock().await;
         live.extend(self.creating.lock().unwrap().iter().cloned());
-        let _ = self.update_desired(&spec.id, |spec| {
+        let release = |spec: &mut MachineSpec| {
             for a in &mut spec.attach {
                 a.sessions.retain(|s| live.contains(s));
             }
@@ -1411,6 +1427,17 @@ impl Machines {
                 g.sessions.retain(|s| live.contains(s));
             }
             spec.mcp_grants.retain(|g| !g.sessions.is_empty());
+        };
+        // Written only when something changes: every write makes the machine
+        // reconcile.
+        let Ok(mut changed) = self.record(&spec.id) else { return };
+        let before = changed.clone();
+        release(&mut changed);
+        if changed == before {
+            return;
+        }
+        let _ = self.update_desired(&spec.id, |spec| {
+            release(spec);
             Ok(())
         });
     }
@@ -1492,11 +1519,15 @@ impl Machines {
     pub async fn grants_loop(self: std::sync::Arc<Self>) {
         loop {
             tokio::time::sleep(GRANTS_CHECK).await;
-            for spec in self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()) {
-                if self.observe(&spec.id).await.state == "ready" {
-                    self.release_session_items(&spec).await;
+            // At once, so one machine that does not answer delays no other.
+            let granted: Vec<_> = self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()).collect();
+            let machines: &Machines = &self;
+            futures_util::future::join_all(granted.iter().map(|spec| async move {
+                if machines.observe(&spec.id).await.state == "ready" {
+                    machines.release_session_items(spec).await;
                 }
-            }
+            }))
+            .await;
         }
     }
 

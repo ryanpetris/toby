@@ -144,10 +144,7 @@ fn dir_name(p: &Path) -> anyhow::Result<String> {
 /// Checks that the host paths a project's image names stay in the project
 /// (plan §14.3): the build context is shared with the build, which can
 /// reach the network, so not even other projects belong in it.
-fn check_project_image(image: &ImageConfig, base: &Path, home: &Path, external: bool) -> anyhow::Result<()> {
-    if external {
-        return Ok(());
-    }
+fn check_project_image(image: &ImageConfig, base: &Path, home: &Path) -> anyhow::Result<()> {
     let paths: Vec<&str> = match image {
         ImageConfig::Named(_) | ImageConfig::Registry { .. } => Vec::new(),
         ImageConfig::Mkosi { mkosi } => vec![mkosi],
@@ -163,7 +160,7 @@ fn check_project_image(image: &ImageConfig, base: &Path, home: &Path, external: 
         let project = std::fs::canonicalize(base).with_context(|| base.display().to_string())?;
         if !host.starts_with(&project) {
             bail!(
-                "the project's image uses {}, outside the project {}; set settings.allow_external_projects to use it",
+                "the project's image uses {}, outside the project {}; name it in a launch file instead",
                 host.display(),
                 project.display()
             );
@@ -197,7 +194,7 @@ pub fn project_image(
     if file.exists() {
         if config.settings.autoload_project_config {
             if let Some(image) = Launch::load_project(&file)?.image {
-                check_project_image(&image, &project, home, config.settings.allow_external_projects)?;
+                check_project_image(&image, &project, home)?;
                 return Ok((Some((image, project)), warnings));
             }
         } else {
@@ -302,7 +299,7 @@ pub fn plan(
     if launch.image.is_none()
         && let Some(image) = &project.image
     {
-        check_project_image(image, &primary, home, external)?;
+        check_project_image(image, &primary, home)?;
     }
     plan.image = launch
         .image

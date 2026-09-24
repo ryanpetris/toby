@@ -283,7 +283,7 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
         return refused(format!("unknown target {target:?}"));
     };
     let config = d.machines.current_config();
-    if !config.mcp_reachable(spec, name) {
+    if !d.machines.mcp_allowed(spec, name).await {
         return refused(format!("no tool of this machine uses the MCP server {name}"));
     }
     if name == "toby" {

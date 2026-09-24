@@ -78,7 +78,8 @@ and must stay in `projects_dir`. Toby reads it only with
 `settings.autoload_project_config = true`, because a cloned repository
 could otherwise enable your MCP servers or open forwards; its image's
 files (Dockerfile, build context, mkosi directory, archive) must be in the
-project itself, since the build can reach the network. Options win over a launch file, which
+project itself, since the build can reach the network; a launch file can
+name others. Options win over a launch file, which
 wins over the project configuration, which wins over
 `~/.config/toby/config.toml` (so a launch file's `yolo = false` turns off
 a global `settings.yolo`).
