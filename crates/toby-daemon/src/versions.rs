@@ -1,32 +1,68 @@
 //! Installed Toby versions (plan §3.3): `<versions>/<version>/toby` with
 //! `current` pointing at one of them. A version stays while anything runs
-//! from it: host processes (a machine's file share keeps the version the
-//! machine started with, which is also its relay's), and sessions in
-//! machines (they run the version they were started with).
+//! from it or may still start from it: host processes, a machine's relay,
+//! and sessions in machines (by the version they were started with and by
+//! the binary they run). Newly installed versions and `current` stay too.
+//!
+//! When tobyd starts, the models proxy and each machine's host process
+//! still running an older version are restarted on `current` (plan §3.2).
 
 use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use crate::control::Control;
 use crate::machines::Machines;
 
-/// Versions host processes of this user run from, by their executables.
-fn host_versions(versions: &Path) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// A version directory younger than this may still be being installed.
+const MIN_AGE: Duration = Duration::from_secs(3600);
+
+/// Serializes collections.
+static COLLECTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A host process running from an installed version.
+struct HostProcess {
+    pid: i32,
+    version: String,
+    /// Its arguments after the program name.
+    args: Vec<String>,
+}
+
+/// This user's processes running from `versions`, by their executables.
+fn host_processes(versions: &Path) -> Vec<HostProcess> {
+    let mut out = Vec::new();
     let canonical = std::fs::canonicalize(versions).unwrap_or_else(|_| versions.to_path_buf());
     let Ok(procs) = std::fs::read_dir("/proc") else { return out };
     for p in procs.flatten() {
+        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
         let Ok(exe) = std::fs::read_link(p.path().join("exe")) else { continue };
         // A binary replaced on disk shows as "<path> (deleted)".
         let exe = exe.to_string_lossy().trim_end_matches(" (deleted)").to_string();
-        if let Ok(rest) = Path::new(&exe).strip_prefix(&canonical)
-            && let Some(v) = rest.components().next()
-        {
-            out.insert(v.as_os_str().to_string_lossy().into_owned());
+        let Some(version) = Path::new(&exe)
+            .strip_prefix(&canonical)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .map(|v| v.as_os_str().to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let mut cmdline = std::fs::read(p.path().join("cmdline")).unwrap_or_default();
+        // Each argument ends with a NUL.
+        if cmdline.last() == Some(&0) {
+            cmdline.pop();
         }
+        let args =
+            cmdline.split(|b| *b == 0).skip(1).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        out.push(HostProcess { pid, version, args });
     }
     out
+}
+
+/// The version `current` points at, read now.
+fn current(versions: &Path) -> Option<String> {
+    let target = std::fs::read_link(versions.join("current")).ok()?;
+    Some(target.file_name()?.to_string_lossy().into_owned())
 }
 
 /// The installed versions, not counting `current`.
@@ -42,49 +78,117 @@ fn installed(versions: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// Versions still needed.
-pub async fn in_use(machines: &Machines) -> BTreeSet<String> {
+/// Whether an installed version may go: nothing uses it, it is not
+/// `current`, and it is a complete install that is not new.
+fn removable(dir: &Path, version: &str, used: &BTreeSet<String>, current: &str, now: SystemTime) -> bool {
+    let old = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age >= MIN_AGE));
+    !used.contains(version) && version != current && dir.join("toby").is_file() && old
+}
+
+/// The version a session binary path in the guest names.
+fn guest_binary_version(path: &str) -> Option<String> {
+    let v = path.strip_prefix("/run/toby/fs/versions/")?.split('/').next()?;
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// Versions still needed; an error when a running machine does not answer,
+/// since its sessions could not be seen.
+pub async fn in_use(machines: &Machines) -> Result<BTreeSet<String>, String> {
     let versions = machines.config.programs.versions();
-    let mut used = host_versions(&versions);
-    used.insert(crate::builder::runtime_version(&versions));
+    let mut used: BTreeSet<String> = host_processes(&versions).into_iter().map(|p| p.version).collect();
     for spec in machines.records() {
         let observed = machines.observe(&spec.id).await;
         if observed.state == "stopped" {
             continue;
         }
-        if let Some(v) = observed.status.and_then(|s| s.relay_version) {
-            used.insert(v);
-        }
-        if let Ok(mut c) = Control::connect(&machines.runtime(&spec.id)).await {
-            for s in c.sessions().await.unwrap_or_default() {
-                used.extend(s.version);
-            }
+        let unanswered = || format!("machine {} did not answer", spec.id);
+        let status = observed.status.ok_or_else(unanswered)?;
+        used.extend(status.relay_version);
+        let mut c = Control::connect(&machines.runtime(&spec.id)).await.map_err(|_| unanswered())?;
+        for s in c.sessions().await.map_err(|_| unanswered())? {
+            used.extend(s.version);
+            used.extend(guest_binary_version(&s.argv0));
         }
     }
-    used
+    Ok(used)
 }
 
-/// Removes installed versions nothing uses. Returns the removed versions
-/// and the ones that could not be removed, with the reason.
-pub async fn collect(machines: &Machines) -> io::Result<(Vec<String>, Vec<(String, String)>)> {
+/// What a collection did.
+pub struct Collected {
+    pub removed: Vec<String>,
+    pub used: BTreeSet<String>,
+    /// Versions that could not be removed, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Removes installed versions nothing uses.
+pub async fn collect(machines: &Machines) -> io::Result<Collected> {
+    let _one = COLLECTING.lock().await;
     let versions = machines.config.programs.versions();
-    let used = in_use(machines).await;
+    if current(&versions).is_none() {
+        return Err(io::Error::other(format!(
+            "{} is not set; nothing was removed",
+            versions.join("current").display()
+        )));
+    }
+    if nix::unistd::access(&versions, nix::unistd::AccessFlags::W_OK).is_err() {
+        return Err(io::Error::other(format!(
+            "{} is not writable (installed by a package); nothing was removed",
+            versions.display()
+        )));
+    }
+    let used = in_use(machines).await.map_err(|e| io::Error::other(format!("{e}; nothing was removed")))?;
     let (mut removed, mut failed) = (Vec::new(), Vec::new());
     for v in installed(&versions)? {
-        if used.contains(&v) {
+        // Read again for each: an upgrade may switch it meanwhile.
+        let Some(current) = current(&versions) else { break };
+        let dir = versions.join(&v);
+        if !removable(&dir, &v, &used, &current, SystemTime::now()) {
             continue;
         }
-        match std::fs::remove_dir_all(versions.join(&v)) {
+        match std::fs::remove_dir_all(&dir) {
             Ok(()) => removed.push(v),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => failed.push((v, e.to_string())),
         }
     }
-    Ok((removed, failed))
+    Ok(Collected { removed, used, failed })
+}
+
+/// Restarts the models proxy and machines' host processes that run an
+/// older version than `current`, so they pick up an upgrade.
+pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::paths::Paths) {
+    let versions = machines.config.programs.versions();
+    let Some(current) = current(&versions) else { return };
+    for p in host_processes(&versions).into_iter().filter(|p| p.version != current) {
+        let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
+        let result = match args.as_slice() {
+            ["internal", "proxy", ..] => machines.supervisor.restart_proxy(paths, p.pid).await,
+            ["internal", "machine", "--machine", id] => {
+                machines.supervisor.restart_machine_process(id, p.pid).await
+            }
+            _ => continue,
+        };
+        match result {
+            Ok(()) => eprintln!("restarted {} (version {}) on version {current}", args[1], p.version),
+            Err(e) => eprintln!("restarting {} (version {}): {e}", args[1], p.version),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn install(versions: &Path, v: &str, age: Duration) {
+        let dir = versions.join(v);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("toby"), "").unwrap();
+        let t = SystemTime::now() - age;
+        std::fs::File::open(&dir).unwrap().set_modified(t).unwrap();
+    }
 
     #[test]
     fn installed_versions_skip_current() {
@@ -94,6 +198,33 @@ mod tests {
         }
         std::os::unix::fs::symlink("0.18.0", dir.path().join("current")).unwrap();
         assert_eq!(installed(dir.path()).unwrap(), ["0.17.0", "0.18.0"]);
+        assert_eq!(current(dir.path()).as_deref(), Some("0.18.0"));
+    }
+
+    #[test]
+    fn only_old_unused_complete_versions_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path();
+        let day = Duration::from_secs(86400);
+        install(v, "0.16.0", day);
+        install(v, "0.17.0", day);
+        install(v, "0.18.0", day);
+        install(v, "0.19.0", Duration::ZERO);
+        std::fs::create_dir(v.join("partial")).unwrap();
+        let used: BTreeSet<String> = ["0.17.0".to_string()].into();
+        let now = SystemTime::now();
+        let go = |name: &str| removable(&v.join(name), name, &used, "0.18.0", now);
+        assert!(go("0.16.0"));
+        assert!(!go("0.17.0"), "in use");
+        assert!(!go("0.18.0"), "current");
+        assert!(!go("0.19.0"), "just installed");
+        assert!(!go("partial"), "no binary");
+    }
+
+    #[test]
+    fn session_binaries_name_their_version() {
+        assert_eq!(guest_binary_version("/run/toby/fs/versions/0.18.0/toby").as_deref(), Some("0.18.0"));
+        assert_eq!(guest_binary_version("/usr/bin/claude"), None);
     }
 
     #[test]
@@ -101,6 +232,9 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let dir = exe.parent().unwrap().parent().unwrap();
         let name = exe.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
-        assert!(host_versions(dir).contains(&name));
+        let me = host_processes(dir).into_iter().find(|p| p.pid == std::process::id() as i32).unwrap();
+        assert_eq!(me.version, name);
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        assert_eq!(me.args, args);
     }
 }

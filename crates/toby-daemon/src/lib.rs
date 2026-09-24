@@ -87,13 +87,12 @@ pub async fn run(
     tokio::spawn(machines.clone().idle_loop(idle));
     tokio::spawn(machines.clone().session_loop());
     {
-        // Old versions nothing runs any more go (plan §3.3); a versions
-        // directory the user cannot write (a package's) is left alone.
+        // Old versions nothing runs any more go (plan §3.3).
         let machines = machines.clone();
         tokio::spawn(async move {
             loop {
-                let _ = versions::collect(&machines).await;
                 tokio::time::sleep(VERSION_GC_INTERVAL).await;
+                let _ = versions::collect(&machines).await;
             }
         });
     }
@@ -122,6 +121,11 @@ pub async fn run(
     approvals.expire_all();
     let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default(), approvals });
     tokio::spawn(services::serve(daemon.clone(), capability));
+    {
+        // Host processes still on an older version pick up this one.
+        let (machines, paths) = (daemon.machines.clone(), paths.clone());
+        tokio::spawn(async move { versions::upgrade_control_tier(&machines, &paths).await });
+    }
     on_ready();
 
     let stopping = Arc::new(tokio::sync::Notify::new());

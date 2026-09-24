@@ -506,7 +506,8 @@ impl Machine {
             s.state = State::Ready;
             s.error = error;
             s.proto = Some(types::V1);
-            s.relay_version = Some(info.version);
+            // From the guest: kept only if it is a plausible version name.
+            s.relay_version = version_name(&info.version).then_some(info.version);
             s.helpers_boot_id = Some(info.boot_id.clone());
             s.boot_id = Some(info.boot_id);
         });
@@ -815,11 +816,7 @@ impl Machine {
                             .filter(|s| !s.id.is_empty() && s.id.bytes().all(|b| b.is_ascii_alphanumeric()))
                             .map(|mut s| {
                                 s.argv0 = printable(s.argv0.as_bytes());
-                                s.version = s.version.filter(|v| {
-                                    !v.is_empty()
-                                        && v.bytes()
-                                            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
-                                });
+                                s.version = s.version.filter(|v| version_name(v));
                                 s
                             })
                             .collect();
@@ -919,6 +916,15 @@ impl FsControl {
             other => Err(io::Error::other(format!("unexpected response {other:?}"))),
         }
     }
+}
+
+/// Whether a version from the guest is a plausible version name, safe to
+/// print and to use as a path component.
+fn version_name(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 64
+        && !v.starts_with('.')
+        && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
 }
 
 /// Guest text made safe to show on a terminal: control characters other

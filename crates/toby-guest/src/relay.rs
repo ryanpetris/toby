@@ -152,7 +152,7 @@ impl Relay {
             Request::Forget(f) => self.forget(&f.session_id).map(|()| Response::Done(relay::Done {})),
             Request::Ping(_) => Ok(Response::Done(relay::Done {})),
             Request::Hello(_) => Ok(Response::RelayInfo(relay::RelayInfo {
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: version_of(&self.paths, &self.exe),
                 boot_id: boot_id(),
             })),
         };
@@ -197,7 +197,7 @@ impl Relay {
             }
             Err(e) => return Err(e),
         }
-        let version = s.version.clone().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        let version = s.version.clone().unwrap_or_else(|| version_of(&self.paths, &self.exe));
         std::fs::write(dir.join(session_files::VERSION), &version)?;
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
@@ -455,10 +455,21 @@ fn boot_id() -> String {
         .unwrap_or_default()
 }
 
+/// The version a binary is: its directory in the runtime tree's versions,
+/// or this build's version outside it.
+pub fn version_of(paths: &GuestPaths, exe: &std::path::Path) -> String {
+    exe.strip_prefix(paths.fs().join("versions"))
+        .ok()
+        .and_then(|rest| rest.components().next())
+        .map(|v| v.as_os_str().to_string_lossy().into_owned())
+        .filter(|v| valid_version(v))
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
 /// Announces the relay to `toby-machine`, retrying until it answers.
-pub async fn announce(connector: Connector) {
+pub async fn announce(connector: Connector, version: String) {
     let hello = GuestHeader::RelayHello(RelayHello {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version,
         proto_versions: types::SUPPORTED.to_vec(),
         boot_id: boot_id(),
     });
@@ -482,9 +493,10 @@ pub async fn run(paths: GuestPaths) -> io::Result<()> {
     let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, PORT))?;
     let connector = vsock_connector();
     let exe = std::env::current_exe()?;
+    let version = version_of(&paths, &exe);
     let relay = Relay::new(paths, exe, Launcher::SystemdScope, connector.clone());
 
-    tokio::spawn(announce(connector));
+    tokio::spawn(announce(connector, version));
 
     loop {
         let (conn, peer) = listener.accept().await?;
@@ -536,5 +548,19 @@ fn prune_markers(dir: &std::path::Path) {
         if old {
             let _ = std::fs::remove_file(e.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_relay_reports_its_version_directory() {
+        let paths = GuestPaths::at("/run/toby");
+        let exe = std::path::Path::new("/run/toby/fs/versions/0.18.0-rc1/toby");
+        assert_eq!(version_of(&paths, exe), "0.18.0-rc1");
+        let other = std::path::Path::new("/usr/bin/toby");
+        assert_eq!(version_of(&paths, other), env!("CARGO_PKG_VERSION"));
     }
 }

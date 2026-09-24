@@ -149,9 +149,9 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
         DaemonCommand::Start => {
             Api::connect().await?;
         }
-        DaemonCommand::Stop => stop_daemon(backend, running, &sock).await?,
+        DaemonCommand::Stop => stop_daemon(backend, running).await?,
         DaemonCommand::Restart => {
-            stop_daemon(backend, running, &sock).await?;
+            stop_daemon(backend, running).await?;
             Api::connect().await?;
         }
         DaemonCommand::Logs { follow } => {
@@ -179,7 +179,7 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn stop_daemon(backend: Backend, running: bool, sock: &Path) -> anyhow::Result<()> {
+async fn stop_daemon(backend: Backend, running: bool) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     let wait = || async {
         if tokio::time::Instant::now() > deadline {
@@ -190,14 +190,22 @@ async fn stop_daemon(backend: Backend, running: bool, sock: &Path) -> anyhow::Re
     };
     match backend {
         Backend::SystemdUser => {
+            // The socket stays and starts a new daemon on the next request,
+            // perhaps at once, so wait until this one's process is gone.
+            let old = match running {
+                true => {
+                    Api::connect().await?.get::<toby_api::DaemonInfo>("/v1/daemon").await.ok().map(|i| i.pid)
+                }
+                false => None,
+            };
             let systemd = toby_svc::systemd::SystemdUser::connect().await?;
             systemd.stop("tobyd.service").await?;
-            // The socket stays and starts a new daemon on the next request,
-            // so wait until this one is gone.
-            while !matches!(
-                systemd.state("tobyd.service").await?.as_str(),
-                "inactive" | "failed" | "not-found"
-            ) {
+            loop {
+                let gone = old.is_some_and(|pid| !Path::new(&format!("/proc/{pid}")).exists());
+                let state = systemd.state("tobyd.service").await?;
+                if gone || matches!(state.as_str(), "inactive" | "failed" | "not-found") {
+                    break;
+                }
                 wait().await?;
             }
         }
@@ -211,7 +219,8 @@ async fn stop_daemon(backend: Backend, running: bool, sock: &Path) -> anyhow::Re
                 nix::unistd::Pid::from_raw(info.pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
             )?;
-            while tokio::net::UnixStream::connect(sock).await.is_ok() {
+            // Another client may start a new daemon at once.
+            while Path::new(&format!("/proc/{}", info.pid)).exists() {
                 wait().await?;
             }
         }

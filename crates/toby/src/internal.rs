@@ -339,7 +339,7 @@ pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
     )
     .map_err(|_| anyhow::anyhow!("machine {machine} is already running"))?;
     let exe = std::env::current_exe()?;
-    let config = machine_config(&host)?;
+    let versions = host.config.programs.versions();
     // Held (shared) until the machine has stopped, so nothing removes its
     // state while it runs, even if the process that started it is gone.
     let state_dir = host.paths.machine_state_dir(machine);
@@ -401,7 +401,45 @@ pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
         let mut net = part("net")?;
         let mut vm = part("vm")?;
 
-        let server = tokio::spawn(toby_machine::Machine::new(config, || {}).run());
+        // The machine's host process runs as a child, started again when it
+        // exits: tobyd ends it after an upgrade, and it comes back on the
+        // current version while the VM keeps running.
+        let server = {
+            let (machine, dir) = (machine.to_string(), log_dir.map(Path::to_path_buf));
+            let (exe, runtime_dir) = (exe.clone(), runtime.dir.clone());
+            tokio::spawn(async move {
+                loop {
+                    let current = versions.join("current").join("toby");
+                    let bin = if current.is_file() { current } else { exe.clone() };
+                    let log = |stream: &str| -> std::io::Result<std::process::Stdio> {
+                        let f = match &dir {
+                            Some(d) => toby_svc::direct::open_log(
+                                &d.join(format!("toby-machine@{machine}.{stream}.log")),
+                            )?,
+                            None => std::fs::File::create(runtime_dir.join(format!("machine.{stream}.log")))?,
+                        };
+                        Ok(f.into())
+                    };
+                    let mut c = Command::new(&bin);
+                    c.args(["internal", "machine", "--machine", &machine]).stdin(std::process::Stdio::null());
+                    if let (Ok(out), Ok(err)) = (log("out"), log("err")) {
+                        c.stdout(out).stderr(err);
+                    }
+                    c.kill_on_drop(true);
+                    // SAFETY: prctl is async-signal-safe.
+                    unsafe {
+                        c.pre_exec(|| {
+                            nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
+                                .map_err(std::io::Error::from)
+                        });
+                    }
+                    if let Ok(mut child) = c.spawn() {
+                        let _ = child.wait().await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            })
+        };
         let api = cloud_hypervisor::Api::new(runtime.ch_api());
         let mut term = signal(SignalKind::terminate())?;
         let mut int = signal(SignalKind::interrupt())?;

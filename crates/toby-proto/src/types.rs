@@ -112,3 +112,16 @@ pub struct SessionInfo {
     #[serde(default)]
     pub version: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiation_picks_the_newest_shared_version() {
+        assert_eq!(negotiate(&[V1]), Some(V1));
+        assert_eq!(negotiate(&[V1, V1 + 1]), Some(V1));
+        assert_eq!(negotiate(&[V1 + 1]), None);
+        assert_eq!(negotiate(&[]), None);
+    }
+}

@@ -412,7 +412,8 @@ async fn sessions_keep_their_version_across_an_upgrade() {
     let line = first_line(&mut old).await;
     assert!(line.contains("/versions/1.0.0/toby guest session"), "{line}");
 
-    // After the upgrade (`current` moved), new sessions get the new version.
+    // A host process restarted on the new version spawns with it; the
+    // session already running keeps its own.
     assert!(matches!(call(&mut c, spawn("new", "1.1.0")).await, Response::Spawned(_)));
     let mut new = attach(&env, "new").await;
     let line = first_line(&mut new).await;

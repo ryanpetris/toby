@@ -135,19 +135,20 @@ GUEST (image's systemd = PID 1)
   `tobyd` is invisible to running tools.
 - **No long-lived smart process in the guest.** Every guest-side operation
   that needs logic (user setup, mounts, file patching, networking, port
-  listing) runs as a short-lived `toby-helper` started from the current
-  runtime version. Upgrading guest logic is instant.
+  listing) runs as a short-lived `toby-helper` started from the runtime
+  version of the host process that runs it (`toby-machine`'s, or `tobyd`'s
+  current version). Upgrading guest logic takes a restart of those.
 
 ### 3.2 Live upgrade behavior
 
 | Component | How it is upgraded | Effect on running tools |
 | --- | --- | --- |
 | `tobyd` | restart (socket-activated); new process reads state files and reconnects to every `toby-machine` control socket | none; in-flight API calls retried by CLI |
-| `toby-proxy` | restart (socket-activated) | in-flight model/MCP HTTP requests fail once; clients retry |
+| `toby-proxy` | restarted by `tobyd` when it starts on a newer version (socket-activated) | in-flight model/MCP HTTP requests fail once; clients retry |
 | `toby-helper` | new version directory served in the runtime tree; next invocation uses it | none |
 | `toby` CLI | replace binary | reattach sessions |
-| `toby-relay` | restart the guest unit (`systemctl restart toby-relay` via helper) | open forward/session bridges drop; sessions keep running; CLI auto-reattaches; `tobyd` re-registers listeners |
-| `toby-machine` | restart unit | open forwards and session bridges drop; VM unaffected; reconciler restores listeners from desired state |
+| `toby-relay` | pinned to the version the machine booted with; the next boot uses the new version | none |
+| `toby-machine` | restarted by `tobyd` when it starts on a newer version (the unit, or the supervisor's child in the direct back end) | open forwards and session bridges drop; VM unaffected; reconciler restores listeners from desired state |
 | `toby-session` | new sessions use the new binary; old sessions keep the old one | none |
 | `toby-fs`, `toby-net`, cloud-hypervisor | new version applies at next machine start (restart when idle) | none until restart |
 
@@ -198,11 +199,14 @@ Rules:
   records which version it runs. Old version directories are removed only
   when no running machine or process uses them (`toby doctor --gc`, and
   automatically by `tobyd` every hour): a version is in use while a host
-  process runs from it (every machine's `toby-fs` keeps the version the
-  machine started with, which is also its relay's), while a machine's relay
-  reports it, and while a session reports it (the relay records the version
-  it started each session with; `SessionInfo.version`). A versions
-  directory the user cannot write is left to the package manager.
+  process runs from it, while a machine's relay reports it (the relay
+  reports the version directory it runs from), and while a session reports
+  it or runs a binary from it (the relay records the version it started
+  each session with; `SessionInfo.version`). `current`, versions installed
+  within the last hour and incomplete directories stay, and nothing is
+  removed while a running machine does not answer. A versions directory
+  the user cannot write is left alone; packages must keep old versions
+  until nothing uses them (milestone 11).
 - Stable-tier behavior is preserved by *not restarting* stable processes on
   upgrade, not by keeping their code in separate binaries. The stable
   subcommands must still depend on as little as possible and their
@@ -1852,6 +1856,7 @@ toby daemon status | start | stop | restart | logs [-f]
 toby linger on | off
 toby config get|set <key> [value]
 toby doctor                    # KVM, bundled cloud-hypervisor + firmware, passt, back end, linger, paths, substitutions
+toby doctor --gc               # remove installed versions nothing uses
 toby web                       # open the web UI with a one-time token
 ```
 

@@ -58,22 +58,25 @@ toby daemon status
 toby daemon restart
 toby daemon logs [-f]
 toby doctor                       # checks KVM, bundled programs, the back end and the daemon
+toby doctor --gc                  # removes installed versions nothing uses
 ```
 
 ## Upgrades
 
-Toby installs each version in its own directory next to the older ones.
-Upgrading while machines run is safe: the daemon, the models proxy and
-each machine's host process restart on the new version, and running
-sessions keep running (an attached terminal may reconnect). A machine
-keeps the version it started with for its own processes; sessions started
-after the upgrade use the new version. The next start of a machine uses
-the new version throughout.
+Toby installs each version in its own directory next to the older ones
+and points `current` at the new one. Upgrading while machines run is
+safe: restart the daemon (`toby daemon restart`), and it restarts the
+models proxy and each machine's host process on the new version. Machines
+keep running and so do their sessions; an attached terminal reconnects.
+Sessions started afterwards use the new version. A machine's file share,
+network, VMM and guest relay keep the version the machine started with
+until it restarts.
 
 `toby sessions ls` shows each session's version. Versions nothing runs any
 more are removed by the daemon every hour, or at once with
-`toby doctor --gc` (for versions installed by a package, run it as root or
-let the package remove them).
+`toby doctor --gc`; `current` and versions installed within the last hour
+stay. Toby does not remove versions from a directory you cannot write,
+such as one a package installed.
 
 ## Back ends
 

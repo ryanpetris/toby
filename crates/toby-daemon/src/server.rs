@@ -467,9 +467,12 @@ async fn create_home(State(d): Shared, Json(req): Json<api::CreateHome>) -> ApiR
 }
 
 async fn collect_versions(State(d): Shared) -> ApiResult<api::VersionsCollected> {
-    let kept = crate::versions::in_use(&d.machines).await.into_iter().collect();
-    let (removed, failed) = crate::versions::collect(&d.machines).await?;
-    Ok(Json(api::VersionsCollected { removed, kept, failed }))
+    let c = crate::versions::collect(&d.machines).await?;
+    Ok(Json(api::VersionsCollected {
+        removed: c.removed,
+        kept: c.used.into_iter().collect(),
+        failed: c.failed,
+    }))
 }
 
 async fn approvals(State(d): Shared) -> ApiResult<Vec<api::ApprovalInfo>> {

@@ -83,6 +83,27 @@ impl Supervisor {
         }
     }
 
+    /// Restarts the models proxy (process `pid`) on the current version.
+    pub async fn restart_proxy(&self, paths: &Paths, pid: i32) -> io::Result<()> {
+        match self {
+            Supervisor::Systemd(s) => s.restart("toby-proxy.service").await,
+            Supervisor::Direct { .. } => {
+                terminate(pid).await?;
+                self.ensure_proxy(paths).await
+            }
+        }
+    }
+
+    /// Restarts a machine's host process (process `pid`) on the current
+    /// version; the VM keeps running.
+    pub async fn restart_machine_process(&self, id: &str, pid: i32) -> io::Result<()> {
+        match self {
+            Supervisor::Systemd(s) => s.restart(&format!("toby-machine@{id}.service")).await,
+            // The machine's supervisor starts it again.
+            Supervisor::Direct { .. } => terminate(pid).await,
+        }
+    }
+
     /// Stops the machine's processes without waiting for the guest; used
     /// when a graceful power-off did not work.
     pub async fn kill(&self, id: &str, runtime: &toby_config::paths::MachineRuntime) -> io::Result<()> {
@@ -105,6 +126,18 @@ impl Supervisor {
             Supervisor::Direct { .. } => supervisor_pid(id, runtime).is_some(),
         }
     }
+}
+
+/// Sends SIGTERM to `pid` and waits up to five seconds for it to exit.
+async fn terminate(pid: i32) -> io::Result<()> {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM)?;
+    for _ in 0..50 {
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(io::Error::new(io::ErrorKind::TimedOut, format!("process {pid} did not exit")))
 }
 
 /// The pid of the machine's supervisor, if the pid file names a live
