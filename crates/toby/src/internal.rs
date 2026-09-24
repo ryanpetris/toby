@@ -33,7 +33,8 @@ pub fn load_config() -> anyhow::Result<(GlobalConfig, Paths)> {
     let home = toby_config::paths::home_dir()?;
     let config = GlobalConfig::load(&home.join(".config/toby/config.toml"))?;
     let paths = Paths::resolve(&config)?;
-    toby_config::paths::ensure_private_dir(&paths.runtime)?;
+    toby_config::paths::ensure_private_dir(&paths.runtime)
+        .with_context(|| format!("preparing the runtime directory {}", paths.runtime.display()))?;
     Ok((config, paths))
 }
 

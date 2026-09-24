@@ -308,9 +308,15 @@ pub async fn collect_versions() -> anyhow::Result<ExitCode> {
 
 /// `toby doctor`: checks the host setup (plan §20).
 pub async fn doctor() -> anyhow::Result<ExitCode> {
-    let (config, paths) = load_config()?;
+    let home = toby_config::paths::home_dir()?;
+    let config = toby_config::global::GlobalConfig::load(&home.join(".config/toby/config.toml"))?;
+    let paths = toby_config::paths::Paths::resolve(&config)?;
     let mut r = Report { failed: false };
     let programs = &config.programs;
+    match toby_config::paths::ensure_private_dir(&paths.runtime) {
+        Ok(()) => r.ok(&format!("runtime directory: {}", paths.runtime.display())),
+        Err(e) => r.fail(&format!("runtime directory {}: {e}", paths.runtime.display())),
+    }
 
     let kvm =
         nix::unistd::access("/dev/kvm", nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK);
@@ -348,7 +354,12 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
             let out = std::process::Command::new(&p).arg("--version").output();
             let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
             match toby_config::global::check_passt_version(&text) {
-                Ok(v) => r.ok(&format!("passt {v}: {}", p.display())),
+                Ok(Some(v)) => r.ok(&format!("passt {v}: {}", p.display())),
+                Ok(None) => r.ok(&format!(
+                    "passt: {} (needs {} or newer; its version was not shown)",
+                    p.display(),
+                    toby_config::global::MIN_PASST
+                )),
                 Err(e) => r.fail(&format!("{e} ({})", p.display())),
             }
         }

@@ -368,21 +368,27 @@ pub const BUNDLED_CLOUD_HYPERVISOR: &str = "/usr/lib/toby/cloud-hypervisor";
 /// (plan §4).
 pub const MIN_PASST: &str = "2025_01_21";
 
-/// Checks a passt's `--version` output (`passt 2025_01_21.4f2c8e7`)
-/// against [`MIN_PASST`]; release names are dates, so they sort as text.
-pub fn check_passt_version(output: &str) -> Result<String, String> {
-    let version = output
-        .lines()
-        .find_map(|l| l.strip_prefix("passt "))
-        .map(str::trim)
-        .ok_or("passt does not say its version")?;
-    let date = version.split('.').next().unwrap_or_default();
-    let dated = date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'_');
-    if dated && date < MIN_PASST {
-        return Err(format!("passt {version} is older than {MIN_PASST}; install a newer passt"));
+/// Checks a passt's `--version` output against [`MIN_PASST`]. Upstream
+/// names releases by date (`passt 2025_01_21.4f2c8e7`), Debian as
+/// `0.0~git20250121.4f2c8e7-1`. Some builds print nothing unless the output
+/// is a terminal; a version not given is not refused.
+pub fn check_passt_version(output: &str) -> Result<Option<String>, String> {
+    let Some(version) = output.lines().find_map(|l| l.strip_prefix("passt ")).map(str::trim) else {
+        return Ok(None);
+    };
+    let digits: String = match version.split_once("~git") {
+        Some((_, rest)) => rest.chars().take(8).collect(),
+        None => version.chars().take(10).filter(|c| *c != '_').collect(),
+    };
+    if digits.len() == 8 && digits.bytes().all(|b| b.is_ascii_digit()) {
+        let date = format!("{}_{}_{}", &digits[..4], &digits[4..6], &digits[6..]);
+        if date.as_str() < MIN_PASST {
+            return Err(format!("passt {version} is older than {MIN_PASST}; install a newer passt"));
+        }
     }
-    Ok(version.to_string())
+    Ok(Some(version.to_string()))
 }
+
 pub const BUNDLED_VERSIONS: &str = "/usr/lib/toby/versions";
 pub const BUNDLED_SHARE: &str = "/usr/share/toby";
 
@@ -449,17 +455,14 @@ mod tests {
 
     #[test]
     fn passt_versions() {
-        assert_eq!(
-            check_passt_version("passt 2026_07_28.f8df3f1\nCopyright Red Hat\n").unwrap(),
-            "2026_07_28.f8df3f1"
-        );
-        assert!(
-            check_passt_version("note\npasst 2024_11_27.c0fbc7e\n")
-                .unwrap_err()
-                .contains("older than 2025_01_21")
-        );
+        let v = check_passt_version("passt 2026_07_28.f8df3f1\nCopyright Red Hat\n").unwrap();
+        assert_eq!(v.as_deref(), Some("2026_07_28.f8df3f1"));
+        let old = check_passt_version("note\npasst 2024_11_27.c0fbc7e\n").unwrap_err();
+        assert!(old.contains("older than 2025_01_21"), "{old}");
         assert!(check_passt_version("passt 2025_01_21.4f2c8e7").is_ok());
-        assert!(check_passt_version("something else").is_err());
+        assert!(check_passt_version("passt 0.0~git20250503.587980c-2+deb13u1").is_ok());
+        assert!(check_passt_version("passt 0.0~git20241127.c0fbc7e-1").is_err());
+        assert_eq!(check_passt_version("").unwrap(), None);
     }
 
     #[test]

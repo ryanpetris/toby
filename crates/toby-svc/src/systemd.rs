@@ -15,6 +15,7 @@ trait Manager {
     fn try_restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
     fn load_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
     fn reset_failed_unit(&self, name: &str) -> zbus::Result<()>;
+    fn reload(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(interface = "org.freedesktop.systemd1.Unit", default_service = "org.freedesktop.systemd1")]
@@ -74,6 +75,11 @@ impl SystemdUser {
 
     pub async fn stop(&self, unit: &str) -> io::Result<()> {
         self.manager().await?.stop_unit(unit, "replace").await.map(drop).map_err(err)
+    }
+
+    /// Reads unit files again (`systemctl --user daemon-reload`).
+    pub async fn reload(&self) -> io::Result<()> {
+        self.manager().await?.reload().await.map_err(err)
     }
 
     pub async fn reset_failed(&self, unit: &str) -> io::Result<()> {

@@ -67,8 +67,13 @@ impl Api {
                 let systemd = toby_svc::systemd::SystemdUser::connect().await.map_err(|e| {
                     anyhow::anyhow!("{e}; to run Toby without it, set daemon.backend = \"direct\"")
                 })?;
+                // Units installed after the user instance started are read
+                // on a reload.
                 if systemd.state("tobyd.socket").await? == "not-found" {
-                    bail!("tobyd.socket is not installed for your systemd user instance");
+                    systemd.reload().await.context("reloading the systemd user instance")?;
+                    if systemd.state("tobyd.socket").await? == "not-found" {
+                        bail!("tobyd.socket is not installed for your systemd user instance");
+                    }
                 }
                 systemd.start("tobyd.socket").await.context("starting tobyd.socket")?;
             }
