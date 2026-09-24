@@ -107,6 +107,8 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
+    /// Serializes changes to the machines' `yolo-sessions` files.
+    yolo_file: Mutex<()>,
 
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -194,6 +196,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
+            yolo_file: Mutex::default(),
 
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
@@ -441,16 +444,18 @@ impl Machines {
             self.wait_stopped(&id, Instant::now()).await;
         }
         let running = self.running(&id).await;
-        // A services machine runs only its server: an ordinary machine of
-        // the same home and root is not taken over while it runs.
-        if running
-            && let Some(server) = services
+        // A services machine runs only its server: the home and root of an
+        // ordinary machine are not taken over.
+        if let Some(server) = services
             && template.services.as_deref() != Some(server)
+            && (running || template.generation > 0)
         {
             return Err(Error::new(
                 ErrorKind::Conflict,
                 "machine.pair-in-use",
-                format!("machine {id} uses home and root {}; stop it with: toby machine stop {id}", home),
+                format!(
+                    "home and root {home} belong to machine {id}, which does not run MCP server {server}"
+                ),
             ));
         }
         if running {
@@ -568,7 +573,7 @@ impl Machines {
             }
             Stopped::Yes => {}
         }
-        self.forget(id);
+        self.forget(id, asked).await;
         Ok(())
     }
 
@@ -624,9 +629,14 @@ impl Machines {
         Stopped::TimedOut
     }
 
-    fn forget(&self, id: &str) {
-        self.started.lock().unwrap().remove(id);
-        self.activity.lock().unwrap().remove(id);
+    /// Drops what is remembered of a run stopped after `asked`, unless the
+    /// machine was started again since (under the start lock).
+    async fn forget(&self, id: &str, asked: Instant) {
+        let _lock = self.lock.lock().await;
+        if !self.restarted(id, asked) {
+            self.started.lock().unwrap().remove(id);
+            self.activity.lock().unwrap().remove(id);
+        }
     }
 
     /// A running machine by ID, or the machine for a home and root.
@@ -1206,6 +1216,7 @@ impl Machines {
         if manifest.is_some() && yolo {
             // Kept in the machine's state, so a restarted daemon knows it.
             let path = self.paths.machine_state_dir(&spec.id).join("yolo-sessions");
+            let _file = self.yolo_file.lock().unwrap();
             let mut ids = std::fs::read_to_string(&path).unwrap_or_default();
             ids.push_str(&format!("{id}\n"));
             toby_config::machine::write_atomic(&path, ids.as_bytes())?;
@@ -1235,12 +1246,16 @@ impl Machines {
                 .collect(),
             Err(_) => return false,
         };
-        let kept: Vec<&str> = ids.lines().filter(|id| live.iter().any(|l| l == id)).collect();
-        if kept.len() != ids.lines().count() {
-            let text: String = kept.iter().map(|id| format!("{id}\n")).collect();
-            let _ = toby_config::machine::write_atomic(&path, text.as_bytes());
+        let yolo = ids.lines().any(|id| live.iter().any(|l| l == id));
+        // Ended sessions are dropped; IDs added meanwhile stay.
+        let _file = self.yolo_file.lock().unwrap();
+        let now = std::fs::read_to_string(&path).unwrap_or_default();
+        let ended = |id: &str| ids.lines().any(|i| i == id) && !live.iter().any(|l| l == id);
+        let kept: String = now.lines().filter(|id| !ended(id)).map(|id| format!("{id}\n")).collect();
+        if kept != now {
+            let _ = toby_config::machine::write_atomic(&path, kept.as_bytes());
         }
-        !kept.is_empty()
+        yolo
     }
 
     /// Removes attachments and forwards whose sessions have all ended.
@@ -1421,7 +1436,7 @@ impl Machines {
                         }
                         Stopped::Yes => {}
                     }
-                    self.forget(&spec.id);
+                    self.forget(&spec.id, asked).await;
                 }
             }
         }
