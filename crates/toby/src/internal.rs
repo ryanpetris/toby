@@ -209,6 +209,61 @@ pub fn daemon() -> anyhow::Result<()> {
     })
 }
 
+/// `toby internal proxy`: the models proxy, on the socket systemd passed or
+/// on its own socket in the runtime directory.
+pub fn proxy() -> anyhow::Result<()> {
+    let (_, paths) = load_config()?;
+    let home = toby_config::paths::home_dir()?;
+    let listeners = toby_svc::activation::take_listen_fds();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(async move {
+        let (listener, own) = match listeners.into_iter().next() {
+            Some(fd) => {
+                let l = std::os::unix::net::UnixListener::from(fd);
+                l.set_nonblocking(true)?;
+                (tokio::net::UnixListener::from_std(l)?, None)
+            }
+            None => {
+                let sock = paths.proxy_sock();
+                if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+                    bail!("the models proxy is already running");
+                }
+                let _ = std::fs::remove_file(&sock);
+                let l = tokio::net::UnixListener::bind(&sock)?;
+                std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+                (l, Some(sock))
+            }
+        };
+        let proxy = std::sync::Arc::new(toby_proxy::Proxy::new(
+            home.join(".config/toby/config.toml"),
+            paths.clone(),
+            home,
+        )?);
+        toby_svc::notify::ready();
+        let result = tokio::select! {
+            r = proxy.serve(listener) => r,
+            _ = shutdown_signal() => Ok(()),
+        };
+        if let Some(sock) = own {
+            let _ = std::fs::remove_file(sock);
+        }
+        result?;
+        anyhow::Ok(())
+    })
+}
+
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+    else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+}
+
 /// `toby internal machine`: the machine's host process.
 pub fn machine(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;

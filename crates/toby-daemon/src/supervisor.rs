@@ -59,6 +59,30 @@ impl Supervisor {
         }
     }
 
+    /// Makes sure the models proxy answers: its socket unit, or a detached
+    /// process in the direct back end.
+    pub async fn ensure_proxy(&self, paths: &Paths) -> io::Result<()> {
+        match self {
+            Supervisor::Systemd(s) => {
+                if s.state("toby-proxy.socket").await? == "not-found" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "toby-proxy.socket is not installed",
+                    ));
+                }
+                s.start("toby-proxy.socket").await
+            }
+            Supervisor::Direct { exe, logs } => {
+                if tokio::net::UnixStream::connect(paths.proxy_sock()).await.is_ok() {
+                    return Ok(());
+                }
+                let mut cmd = std::process::Command::new(exe);
+                cmd.args(["internal", "proxy"]);
+                toby_svc::direct::spawn_detached(cmd, &logs.join("toby-proxy.log")).map(drop)
+            }
+        }
+    }
+
     /// Stops the machine's processes without waiting for the guest; used
     /// when a graceful power-off did not work.
     pub async fn kill(&self, id: &str, runtime: &toby_config::paths::MachineRuntime) -> io::Result<()> {

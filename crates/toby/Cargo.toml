@@ -29,6 +29,7 @@ toby-engine.workspace = true
 toby-fs.workspace = true
 toby-guest.workspace = true
 toby-machine.workspace = true
+toby-proxy.workspace = true
 toby-proto.workspace = true
 toby-store.workspace = true
 toby-svc.workspace = true

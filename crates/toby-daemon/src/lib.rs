@@ -30,6 +30,9 @@ pub async fn run(
     let idle = config.daemon.idle_timeout()?;
     let backend = config.daemon.backend;
     let sup = supervisor::Supervisor::new(backend, &paths, exe.clone()).await?;
+    if let Err(e) = sup.ensure_proxy(&paths).await {
+        eprintln!("the models proxy is not available: {e}");
+    }
     let machines = Arc::new(machines::Machines::new(config.clone(), paths.clone(), sup));
     let builder = Arc::new(builder::Builder::new(config, paths.clone(), exe));
     if let Some(timeout) = idle {

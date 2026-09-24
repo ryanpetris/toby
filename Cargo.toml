@@ -20,7 +20,8 @@ fuse-backend-rs = { version = "0.14.0", default-features = false, features = ["v
 http-body = "1.1.0"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["http1", "client", "server"] }
-hyper-util = { version = "0.1.20", features = ["tokio", "server", "http1"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "ring", "webpki-roots", "tls12"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server", "http1", "client-legacy"] }
 imago = "0.2.5"
 libc = "0.2"
 mimalloc = "0.1.52"

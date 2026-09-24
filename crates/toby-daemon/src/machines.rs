@@ -376,6 +376,7 @@ impl Machines {
             spec.attach.retain(|a| a.persist);
             spec.forward.retain(|f| f.persist);
             spec.capabilities.models_listen = Some(MODELS_LISTEN.into());
+            toby_proxy::ensure_token(&self.paths, &id)?;
             spec.capabilities.sandbox_socket = Some(SANDBOX_SOCKET.into());
             spec.ephemeral = ephemeral;
             spec.generation += 1;

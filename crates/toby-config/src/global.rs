@@ -20,6 +20,29 @@ pub struct GlobalConfig {
     pub settings: Settings,
     #[serde(default)]
     pub defaults: Defaults,
+    /// Model providers, by name (plan §16.2).
+    #[serde(default)]
+    pub models: std::collections::BTreeMap<String, ModelProvider>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Anthropic,
+    Openai,
+}
+
+/// A model provider the models proxy forwards to. Header values may use
+/// substitutions (`{file:…}`, `{env:…}`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelProvider {
+    pub protocol: Protocol,
+    /// Display name.
+    pub name: Option<String>,
+    pub url: String,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -203,6 +226,17 @@ mod tests {
         assert!(s.suppressed("daemon.linger-disabled"));
         assert!(!s.suppressed("other"));
         assert!(Settings { suppress_warnings: vec!["*".into()] }.suppressed("other"));
+    }
+
+    #[test]
+    fn model_providers() {
+        let cfg: GlobalConfig = toml::from_str(
+            "[models.anthropic]\nprotocol = \"anthropic\"\nurl = \"https://api.anthropic.com\"\nheaders = { \"x-api-key\" = \"{file:keys/a}\" }\n",
+        )
+        .unwrap();
+        let p = &cfg.models["anthropic"];
+        assert_eq!(p.protocol, Protocol::Anthropic);
+        assert_eq!(p.headers["x-api-key"], "{file:keys/a}");
     }
 
     #[test]

@@ -79,7 +79,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Web => "web",
         Command::Internal(cmd) => match cmd {
             InternalCommand::Daemon => return internal::daemon().map(|()| ExitCode::SUCCESS),
-            InternalCommand::Proxy => "internal proxy",
+            InternalCommand::Proxy => return internal::proxy().map(|()| ExitCode::SUCCESS),
             InternalCommand::Machine { machine, supervise: false, .. } => {
                 return internal::machine(&machine).map(|()| ExitCode::SUCCESS);
             }

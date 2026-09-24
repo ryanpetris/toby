@@ -1,0 +1,10 @@
+[Unit]
+Description=Toby models proxy socket
+
+[Socket]
+ListenStream=%t/toby/proxy.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

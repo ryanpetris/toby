@@ -1,0 +1,9 @@
+[Unit]
+Description=Toby models proxy
+Requires=toby-proxy.socket
+After=toby-proxy.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/toby/versions/current/toby internal proxy
+Restart=on-failure

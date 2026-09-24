@@ -15,7 +15,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["config", "get", "daemon.backend"],
     &["config", "set", "daemon.backend", "direct"],
     &["web"],
-    &["internal", "proxy"],
     &["guest", "connect", "mcp/toby"],
     &["claude", "--home", "work", "--yolo", "--", "--continue"],
 ];
