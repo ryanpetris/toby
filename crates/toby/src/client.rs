@@ -190,7 +190,7 @@ pub async fn attach(session: Option<String>) -> anyhow::Result<ExitCode> {
         for s in c.sessions().await.unwrap_or_default() {
             let wanted = match &session {
                 Some(id) => &s.id == id,
-                None => !s.attached && s.exit.is_none(),
+                None => !s.attached,
             };
             if wanted {
                 candidates.push((machine.clone(), runtime.clone(), s));
@@ -200,7 +200,7 @@ pub async fn attach(session: Option<String>) -> anyhow::Result<ExitCode> {
     match candidates.len() {
         0 => match session {
             Some(id) => bail!("no session {id}"),
-            None => bail!("no detached session is running"),
+            None => bail!("no detached session"),
         },
         1 => {
             let (_, runtime, s) = candidates.remove(0);

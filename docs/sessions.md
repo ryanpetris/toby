@@ -33,7 +33,7 @@ Press `Ctrl-\` and then `d` to detach; the session keeps running. Press
 
 ```sh
 toby sessions ls          # sessions in every running machine
-toby attach [SESSION]     # reattach; without an ID, the only detached session
+toby attach [SESSION]     # reattach; without an ID, the only detached session (running or exited)
 toby sessions kill ID     # hang up and terminate the session; kill it after 3 seconds
 ```
 
