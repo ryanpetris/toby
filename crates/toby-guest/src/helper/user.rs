@@ -106,7 +106,11 @@ pub fn user_setup(u: &UserSetup, root: &Path, user_file: &Path) -> io::Result<Us
 
     let sudoers = etc.join("sudoers.d");
     let dropin = sudoers.join("toby");
-    if u.sudo && sudoers.is_dir() {
+    if u.sudo {
+        if !sudoers.is_dir() {
+            std::fs::create_dir_all(&sudoers)?;
+            std::fs::set_permissions(&sudoers, std::fs::Permissions::from_mode(0o750))?;
+        }
         std::fs::write(&dropin, format!("{} ALL=(ALL) NOPASSWD: ALL\n", u.name))?;
         std::fs::set_permissions(&dropin, std::fs::Permissions::from_mode(0o440))?;
     } else if !u.sudo {

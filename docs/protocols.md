@@ -160,3 +160,20 @@ request is `Hello`; requests are answered in order.
 
 Response types: 64 `Welcome`, 65 `Spawned`, 66 `SessionList`, 67
 `MachineStatus`, 68 `Done`, 69 `Failed { error }`.
+
+## File sharing control
+
+`toby internal fs` answers on the machine's `fs-control.sock`. The first
+request is `Hello`; requests are answered in order. Attachments appear in
+the file share at `/projects/<id>`; IDs are 1 to 64 letters, digits, `-`
+or `_`.
+
+| Type | Request | Response |
+| --- | --- | --- |
+| 1 | `Hello { versions }` | `Welcome { version }` |
+| 2 | `Add { id, host_path, read_only }` | `Done`; adding the same attachment again succeeds, the same ID with another path or mode fails |
+| 3 | `Remove { id }` | `Done`, also when the ID is not served |
+| 4 | `List {}` | `Attachments { attachments: [{ id, host_path, read_only }] }` |
+
+Response types: 64 `Welcome`, 65 `Done`, 66 `Failed { error }`, 67
+`Attachments`.

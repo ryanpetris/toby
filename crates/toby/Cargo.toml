@@ -14,10 +14,15 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+http-body-util.workspace = true
+hyper-util.workspace = true
+hyper.workspace = true
 libc.workspace = true
 mimalloc.workspace = true
 nix.workspace = true
-tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toby-api.workspace = true
 toby-config.workspace = true
 toby-daemon.workspace = true
 toby-engine.workspace = true
@@ -29,6 +34,7 @@ toby-store.workspace = true
 toby-svc.workspace = true
 toby-term.workspace = true
 toby-vfs.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

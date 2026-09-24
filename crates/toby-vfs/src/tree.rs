@@ -64,11 +64,26 @@ fn options() -> VfsOptions {
     VfsOptions { no_open: false, no_opendir: false, ..VfsOptions::default() }
 }
 
-fn build(table: &Table) -> io::Result<Vfs> {
+/// Builds the file system for `table`. A mount whose source can no longer
+/// be opened (a deleted or renamed attachment) is dropped from the table
+/// rather than failing the whole session.
+fn build(table: &mut Table) -> io::Result<Vfs> {
     let mut vfs = Vfs::new(options());
     vfs.set_remove_pseudo_root();
-    for (path, spec) in table {
-        vfs.mount(backend(spec)?, path).map_err(vfs_error)?;
+    let mut gone = Vec::new();
+    for (path, spec) in table.iter() {
+        match backend(spec) {
+            Ok(fs) => {
+                vfs.mount(fs, path).map_err(vfs_error)?;
+            }
+            Err(e) => {
+                eprintln!("dropping {path}: {e}");
+                gone.push(path.clone());
+            }
+        }
+    }
+    for path in gone {
+        table.remove(&path);
     }
     Ok(vfs)
 }
@@ -87,12 +102,12 @@ fn check_path(path: &str) -> io::Result<()> {
 impl Tree {
     pub fn new(squash: Squash) -> io::Result<Tree> {
         let table: Arc<Mutex<Table>> = Arc::default();
-        let vfs = build(&Table::new())?;
+        let vfs = build(&mut Table::new())?;
 
         let for_rebuild = table.clone();
         let rebuild = Box::new(move |slot: &RwLock<Arc<Vfs>>| {
-            let table = for_rebuild.lock().unwrap();
-            let vfs = build(&table)?;
+            let mut table = for_rebuild.lock().unwrap();
+            let vfs = build(&mut table)?;
             *slot.write().unwrap() = Arc::new(vfs);
             Ok(())
         });

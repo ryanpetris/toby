@@ -7,18 +7,24 @@ other right away.
 ```sh
 toby mount ~/src/project                  # at /toby/workspace/project
 toby mount ~/data --at /srv/data --ro     # somewhere else, read-only
-toby unmount ~/src/project                # by host path, or by attachment ID
+toby unmount ~/src/project                # by host path, machine path or ID
 ```
 
 `toby mount` prints where the directory appears in the machine. Mounting
 works while sessions are running; they see the new directory immediately.
-With several machines running, choose one with `--machine`.
+It uses the machine of your default home and root, started if needed;
+choose another with `--home` and `--root`, or `--machine`.
 
-`toby unmount` is refused while something in the machine still uses the
-directory (a shell whose working directory is inside it, an open file).
-The mount point stays behind as an empty directory nobody can write to, so
-programs that still expect the directory fail instead of writing into the
-machine's root.
+`toby unmount` takes the host path, the path in the machine or the
+attachment ID. It is refused while something in the machine still uses the
+directory (a shell whose working directory is inside it, an open file). A
+mount point Toby created stays behind as an empty directory only root can
+write to, so programs that still expect the directory fail instead of
+writing into the machine's root or home; a directory that existed before
+the mount keeps its owner and permissions.
+
+Mounts end when the machine stops. `toby mount --persist` records the
+mount so it is made again every time the machine starts.
 
 ## Ownership and permissions
 

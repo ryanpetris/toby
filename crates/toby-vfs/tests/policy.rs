@@ -271,3 +271,38 @@ fn crafted_names_and_inodes_are_refused() {
     assert!(!f.rw.join("stolen").exists());
     assert!(!f.ro.join("moved").exists());
 }
+
+#[test]
+fn a_new_session_drops_attachments_whose_source_is_gone() {
+    let f = fixture();
+    let gone = f._dir.path().join("gone");
+    std::fs::create_dir(&gone).unwrap();
+    f.tree.mount("/projects/gone", MountSpec { source: gone.clone(), read_only: false }).unwrap();
+    std::fs::remove_dir(&gone).unwrap();
+    let fs = f.tree.filesystem();
+    // A guest reboot: the runtime tree comes back without the lost mount.
+    fs.destroy();
+    fs.init(FsOptions::all()).unwrap();
+    walk(&*fs, &["versions", "file"]);
+    walk(&*fs, &["projects", "p"]);
+    assert!(f.tree.mounts().iter().all(|(p, _)| p != "/projects/gone"));
+}
+
+#[test]
+fn renames_and_links_between_writable_mounts_are_refused() {
+    let f = fixture();
+    let other = f._dir.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::create_dir(f.rw.join("sub")).unwrap();
+    std::fs::write(f.rw.join("file"), "x").unwrap();
+    f.tree.mount("/projects/q", MountSpec { source: other.clone(), read_only: false }).unwrap();
+    let fs = f.tree.filesystem();
+    let c = ctx(&*fs);
+    let p = walk(&*fs, &["projects", "p"]);
+    let q = walk(&*fs, &["projects", "q"]);
+    let file = walk(&*fs, &["projects", "p", "file"]);
+    assert!(fs.rename(&c, p.inode.into(), &name("sub"), q.inode.into(), &name("moved"), 0).is_err());
+    assert!(fs.link(&c, file.inode.into(), q.inode.into(), &name("linked")).is_err());
+    assert!(f.rw.join("sub").is_dir());
+    assert!(!other.join("moved").exists() && !other.join("linked").exists());
+}

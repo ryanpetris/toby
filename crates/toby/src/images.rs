@@ -1,169 +1,80 @@
 //! `toby image`, `toby root`, `toby home` and `toby builder` commands.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use toby_daemon::builder::{Builder, console_and_log};
-use toby_store::records::{ImageRecord, ImageSource};
+use toby_api::Source;
 
+use crate::api::{Api, segment};
 use crate::cli::{BuilderCommand, HomeCommand, ImageCommand, RootCommand};
-use crate::internal::load_config;
+use crate::table::{age, print};
 
-fn builder() -> anyhow::Result<Builder> {
-    let (config, paths) = load_config()?;
-    Ok(Builder::new(config, paths, std::env::current_exe()?))
+fn absolute(p: &Path) -> anyhow::Result<String> {
+    let p = std::fs::canonicalize(p).with_context(|| format!("{} does not exist", p.display()))?;
+    p.to_str().map(str::to_string).context("the path is not UTF-8")
 }
 
-/// A build log in the state directory, named after the time and kind.
-fn build_log(b: &Builder, kind: &str) -> anyhow::Result<(std::fs::File, PathBuf)> {
-    let dir = b.paths.state.join("builds");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}-{kind}.log", toby_store::records::now()));
-    Ok((std::fs::File::create(&path)?, path))
-}
-
-fn absolute(p: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::canonicalize(p).with_context(|| format!("{} does not exist", p.display()))
-}
-
-async fn build(b: &Builder, source: ImageSource, kind: &str) -> anyhow::Result<ImageRecord> {
-    let (log, path) = build_log(b, kind)?;
-    let mut out = console_and_log(log);
-    let rec = b.build(source, &mut out).await.with_context(|| format!("build log: {}", path.display()))?;
-    println!("Built image {}", rec.id);
-    Ok(rec)
-}
-
-/// Prints rows under a header with columns sized to their contents.
-fn table<const N: usize>(header: [&str; N], rows: Vec<[String; N]>) {
-    let mut widths = header.map(str::len);
-    for row in &rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.len());
-        }
+async fn build(api: &Api, source: Source) -> anyhow::Result<()> {
+    let started: toby_api::BuildStarted = api.post("/v1/builds", &toby_api::StartBuild { source }).await?;
+    let status = api.follow_build(&started.id).await?;
+    if let Some(image) = status.image {
+        println!("Built image {image}");
     }
-    let line = |cells: [&str; N]| {
-        let mut out = String::new();
-        for (i, (cell, w)) in cells.iter().zip(widths).enumerate() {
-            if i + 1 == N {
-                out.push_str(cell);
-            } else {
-                out.push_str(&format!("{cell:<w$}  "));
-            }
-        }
-        println!("{}", out.trim_end());
-    };
-    line(header);
-    for row in &rows {
-        line(row.each_ref().map(String::as_str));
-    }
-}
-
-fn age(created: u64) -> String {
-    let secs = toby_store::records::now().saturating_sub(created);
-    match secs {
-        s if s < 3600 => format!("{} minutes ago", s / 60),
-        s if s < 86400 => format!("{} hours ago", s / 3600),
-        s => format!("{} days ago", s / 86400),
-    }
+    Ok(())
 }
 
 pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
-    let b = builder()?;
+    let api = Api::connect().await?;
     match cmd {
-        ImageCommand::Prepare { all, default, mcp, project, rebuild, pull } => {
+        ImageCommand::Prepare { all, default: _, mcp, project, rebuild, pull } => {
             if mcp.is_some() || project.is_some() || pull {
                 bail!("preparing MCP and project images is not implemented yet");
             }
-            let (log, path) = build_log(&b, "default")?;
-            let mut out = console_and_log(log);
-            let rec = b
-                .prepare_default(rebuild, &mut out)
-                .await
-                .with_context(|| format!("build log: {}", path.display()))?;
-            println!("Default image {}", rec.id);
-            // Without flags, "everything the configuration needs" is the
-            // default image until MCP and project images exist.
-            let _ = default;
-            if all {
-                // Every root's source, rebuilt when it is behind.
-                let mut sources: Vec<ImageSource> = Vec::new();
-                for root in b.store.roots()? {
-                    let img = b.store.image(&root.image)?;
-                    if img.source != ImageSource::Default && !sources.contains(&img.source) {
-                        sources.push(img.source);
-                    }
-                }
-                let mut failed = 0;
-                for source in sources {
-                    let result = match b.current_image(&source) {
-                        Ok(Some(_)) if !rebuild => continue,
-                        Ok(_) => build(&b, source.clone(), "root").await.map(|_| ()),
-                        Err(e) => Err(e.into()),
-                    };
-                    if let Err(e) = result {
-                        eprintln!("toby: {}: {e:#}", source.describe());
-                        failed += 1;
-                    }
-                }
-                if failed > 0 {
-                    bail!("{failed} of the roots' images could not be built");
-                }
+            let started: toby_api::BuildStarted =
+                api.post("/v1/images/prepare", &toby_api::Prepare { all, rebuild }).await?;
+            let status = api.follow_build(&started.id).await?;
+            if let Some(image) = status.image {
+                println!("Default image {image}");
             }
         }
         ImageCommand::Build { dockerfile, context, mkosi } => {
             let source = match mkosi {
-                Some(dir) => ImageSource::Mkosi { path: absolute(&dir)? },
+                Some(dir) => Source::Mkosi { path: absolute(&dir)? },
                 None => {
                     let context = absolute(&context.unwrap_or_else(|| PathBuf::from(".")))?;
                     let path = match dockerfile {
                         Some(f) => absolute(&f)?,
-                        None => context.join("Dockerfile"),
+                        None => format!("{context}/Dockerfile"),
                     };
-                    ImageSource::Dockerfile { path, context }
+                    Source::Dockerfile { path, context }
                 }
             };
-            build(&b, source, "image").await?;
+            build(&api, source).await?;
         }
-        ImageCommand::Pull { reference } => {
-            build(&b, ImageSource::Registry { reference }, "pull").await?;
-        }
+        ImageCommand::Pull { reference } => build(&api, Source::Registry { reference }).await?,
         ImageCommand::Import { archive } => {
-            build(&b, ImageSource::Archive { path: absolute(&archive)? }, "import").await?;
+            build(&api, Source::Archive { path: absolute(&archive)? }).await?
         }
         ImageCommand::Ls => {
-            let default = b.default_image()?.map(|i| i.id);
-            let used: BTreeMap<String, Vec<String>> =
-                b.store.roots()?.into_iter().fold(BTreeMap::new(), |mut m, r| {
-                    m.entry(r.image).or_default().push(r.name);
-                    m
-                });
-            let mut rows = Vec::new();
-            for img in b.store.images()? {
-                let mut source = img.source.describe();
-                if Some(&img.id) == default.as_ref() {
-                    source.push_str(" (current)");
-                }
-                let roots = used.get(&img.id).map(|r| r.join(",")).unwrap_or_default();
-                rows.push([img.id, age(img.created), source, img.kernel_version, roots]);
-            }
-            table(["IMAGE", "CREATED", "SOURCE", "KERNEL", "ROOTS"], rows);
+            let images: Vec<toby_api::ImageInfo> = api.get("/v1/images").await?;
+            let rows = images
+                .into_iter()
+                .map(|i| {
+                    let source = if i.current_default { format!("{} (current)", i.source) } else { i.source };
+                    [i.id, age(i.created), source, i.kernel, i.roots.join(",")]
+                })
+                .collect();
+            print(["IMAGE", "CREATED", "SOURCE", "KERNEL", "ROOTS"], rows);
         }
-        ImageCommand::Rm { id } => b.store.remove_image(&id)?,
+        ImageCommand::Rm { id } => api.delete(&format!("/v1/images/{}", segment(&id))).await?,
         ImageCommand::Prune => {
-            // Keep the newest image of every source and anything a root uses.
-            let mut newest: BTreeMap<String, String> = BTreeMap::new();
-            for img in b.store.images()? {
-                newest.insert(format!("{:?}{}", img.source, img.arch), img.id);
-            }
-            let keep: Vec<String> = newest.into_values().collect();
-            for id in b.store.prune_images(u64::MAX, &keep)? {
+            let pruned: toby_api::Pruned = api.post("/v1/images/prune", &()).await?;
+            for id in pruned.images {
                 println!("Removed image {id}");
             }
-            for cache in b.prune_caches()? {
-                println!("Removed build cache {}", cache.display());
+            for cache in pruned.caches {
+                println!("Removed build cache {cache}");
             }
         }
     }
@@ -171,113 +82,88 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
 }
 
 pub async fn root(cmd: RootCommand) -> anyhow::Result<ExitCode> {
-    let b = builder()?;
-    let resolve = |image: &str| -> anyhow::Result<String> {
-        if image == "default" {
-            return Ok(b.default_image()?.context("there is no current default image")?.id);
-        }
-        Ok(b.store.image(image)?.id)
-    };
+    let api = Api::connect().await?;
     match cmd {
         RootCommand::Ls => {
-            let mut rows = Vec::new();
-            for r in b.store.roots()? {
-                let newer =
-                    b.store.image(&r.image).ok().and_then(|img| b.store.newer_image(&img).ok().flatten());
-                let newer = newer.map(|n| n.id).unwrap_or_default();
-                rows.push([r.name, r.image, age(r.created), newer]);
-            }
-            table(["ROOT", "IMAGE", "CREATED", "NEWER IMAGE"], rows);
+            let roots: Vec<toby_api::RootInfo> = api.get("/v1/roots").await?;
+            let rows = roots
+                .into_iter()
+                .map(|r| [r.name, r.image, age(r.created), r.newer_image.unwrap_or_default()])
+                .collect();
+            print(["ROOT", "IMAGE", "CREATED", "NEWER IMAGE"], rows);
         }
         RootCommand::Create { name, image } => {
-            b.store.create_root(&name, &resolve(&image)?).await?;
+            let () = api.post("/v1/roots", &toby_api::CreateRoot { name, image }).await?;
         }
-        RootCommand::Reset { name } => {
-            b.store.reset_root(&name).await?;
-        }
+        RootCommand::Reset { name } => api.post(&format!("/v1/roots/{}/reset", segment(&name)), &()).await?,
         RootCommand::Rebase { name, image } => {
-            let target = match image {
-                Some(i) => resolve(&i)?,
-                None => {
-                    let current = b.store.image(&b.store.root(&name)?.image)?;
-                    b.store
-                        .newer_image(&current)?
-                        .context("the root already uses the newest image of its source")?
-                        .id
-                }
-            };
-            b.store.rebase_root(&name, &target).await?;
+            api.post(&format!("/v1/roots/{}/rebase", segment(&name)), &toby_api::Rebase { image }).await?
         }
-        RootCommand::Rm { name } => b.store.remove_root(&name)?,
+        RootCommand::Rm { name } => api.delete(&format!("/v1/roots/{}", segment(&name))).await?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub async fn home(cmd: HomeCommand) -> anyhow::Result<ExitCode> {
-    let b = builder()?;
+    let api = Api::connect().await?;
     match cmd {
         HomeCommand::Ls => {
-            let mut rows = Vec::new();
-            for h in b.store.homes()? {
-                let user =
-                    if h.formatted { h.username.clone() } else { format!("{} (unformatted)", h.username) };
-                rows.push([h.name, user, h.uid.to_string(), age(h.created)]);
-            }
-            table(["HOME", "USER", "UID", "CREATED"], rows);
+            let homes: Vec<toby_api::HomeInfo> = api.get("/v1/homes").await?;
+            let rows = homes
+                .into_iter()
+                .map(|h| {
+                    let user = if h.formatted { h.username } else { format!("{} (unformatted)", h.username) };
+                    [h.name, user, h.uid.to_string(), age(h.created)]
+                })
+                .collect();
+            print(["HOME", "USER", "UID", "CREATED"], rows);
         }
         HomeCommand::Create { name, user, uid } => {
-            let user = match user {
+            let username = match user {
                 Some(u) => u,
                 None => nix::unistd::User::from_uid(nix::unistd::getuid())?
                     .map(|u| u.name)
                     .context("cannot determine your user name; pass --user")?,
             };
-            if !toby_guest::helper::user::valid_name(&user) {
-                bail!("{user:?} cannot be used as a guest user name; pass --user");
-            }
             let uid = uid.unwrap_or_else(|| nix::unistd::getuid().as_raw());
-            if uid == 0 {
-                bail!("the home user cannot be root; pass --uid");
-            }
-            b.store.create_home(&name, &user, uid, toby_store::store::HOME_SIZE).await?;
-            let (log, path) = build_log(&b, "home")?;
-            let mut out = console_and_log(log);
-            if let Err(e) = b.format_home(&name, &mut out).await {
-                let _ = b.store.remove_home(&name);
-                return Err(e).with_context(|| format!("build log: {}", path.display()));
-            }
+            let started: toby_api::BuildStarted =
+                api.post("/v1/homes", &toby_api::CreateHome { name, username, uid }).await?;
+            api.follow_build(&started.id).await?;
         }
-        HomeCommand::Rm { name } => b.store.remove_home(&name)?,
+        HomeCommand::Rm { name } => api.delete(&format!("/v1/homes/{}", segment(&name))).await?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub async fn builder_cmd(cmd: BuilderCommand) -> anyhow::Result<ExitCode> {
-    let b = builder()?;
+    let (config, paths) = crate::internal::load_config()?;
+    let local = toby_daemon::builder::Builder::new(config, paths, PathBuf::new());
     match cmd {
-        BuilderCommand::Bootstrap { base, clean } => {
-            if clean {
-                let image = b.bootstrap_image();
-                if image.exists() {
-                    std::fs::remove_file(&image)?;
-                }
-                return Ok(ExitCode::SUCCESS);
+        BuilderCommand::Bootstrap { base: _, clean: true } => {
+            let image = local.bootstrap_image();
+            if image.exists() {
+                // A running bootstrap holds it.
+                let _unused = toby_store::store::lock_disk(&image)?;
+                std::fs::remove_file(&image)?;
             }
-            let (log, path) = build_log(&b, "bootstrap")?;
-            let mut out = console_and_log(log);
+        }
+        BuilderCommand::Bootstrap { base, clean: false } => {
+            let api = Api::connect().await?;
             let base = base.map(|p| absolute(&p)).transpose()?;
-            let rec = b
-                .bootstrap(base.as_deref(), &mut out)
-                .await
-                .with_context(|| format!("build log: {}", path.display()))?;
-            println!("Default image {}", rec.id);
+            let started: toby_api::BuildStarted =
+                api.post("/v1/bootstrap", &toby_api::Bootstrap { base }).await?;
+            if let Some(image) = api.follow_build(&started.id).await?.image {
+                println!("Default image {image}");
+            }
         }
         BuilderCommand::Status => {
-            match b.default_image()? {
+            let api = Api::connect().await?;
+            let images: Vec<toby_api::ImageInfo> = api.get("/v1/images").await?;
+            match images.iter().find(|i| i.current_default) {
                 Some(img) => println!("default image: {} ({})", img.id, age(img.created)),
                 None => println!("default image: none current"),
             }
-            let boot = b.bootstrap_image();
+            let boot = local.bootstrap_image();
             println!(
                 "bootstrap image: {}",
                 if boot.exists() { boot.display().to_string() } else { "not downloaded".into() }

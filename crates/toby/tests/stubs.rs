@@ -7,10 +7,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_toby");
 
 const INVOCATIONS: &[&[&str]] = &[
     &["run", "-f", "launch.toml"],
-    &["machine", "ls"],
-    &["machine", "stop", "--all"],
-    &["machine", "logs", "m1", "-f"],
-    &["mount", "/tmp", "--at", "/x", "--ro", "--persist"],
     &["forward", "add", "3000", "--to-host"],
     &["forward", "rm", "f1"],
     &["forward", "ls"],
@@ -19,14 +15,9 @@ const INVOCATIONS: &[&[&str]] = &[
     &["mcp", "restart", "github"],
     &["approvals"],
     &["approvals", "a1", "approve"],
-    &["daemon", "status"],
-    &["daemon", "logs", "-f"],
-    &["linger", "on"],
     &["config", "get", "daemon.backend"],
     &["config", "set", "daemon.backend", "direct"],
-    &["doctor"],
     &["web"],
-    &["internal", "daemon"],
     &["internal", "proxy"],
     &["guest", "connect", "mcp/toby"],
     &["claude", "--home", "work", "--yolo", "--", "--continue"],
@@ -52,13 +43,18 @@ fn every_subcommand_runs() {
 #[test]
 fn multicall_names_dispatch() {
     let dir = tempdir();
-    for (name, args) in [("toby-connect", &["mcp/toby"][..]), ("tobyd", &[][..])] {
-        let link = dir.join(name);
-        std::os::unix::fs::symlink(BIN, &link).unwrap();
-        let mut cmd = Command::new(&link);
-        cmd.args(args);
-        assert_stub(cmd, name);
-    }
+    let link = dir.join("toby-connect");
+    std::os::unix::fs::symlink(BIN, &link).unwrap();
+    let mut cmd = Command::new(&link);
+    cmd.arg("mcp/toby");
+    assert_stub(cmd, "toby-connect");
+
+    // tobyd is the daemon; its help shows the dispatch without starting it.
+    let link = dir.join("tobyd");
+    std::os::unix::fs::symlink(BIN, &link).unwrap();
+    let out = Command::new(&link).arg("--help").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("daemon"), "{out:?}");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

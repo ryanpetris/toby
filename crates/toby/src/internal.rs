@@ -92,12 +92,8 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
             tree.mount(at, ro(source.clone())).with_context(|| format!("serving {}", source.display()))?;
         }
     }
-    for a in &host.spec.attach {
-        let spec = toby_vfs::MountSpec { source: PathBuf::from(&a.host), read_only: a.read_only };
-        tree.mount(&toby_fs::control::attachment_path(&a.id)?, spec)
-            .with_context(|| format!("attaching {}", a.host))?;
-    }
-
+    // Attachments are added by the machine's reconciler, which reports each
+    // one that fails on its own.
     toby_fs::control::spawn(&host.runtime.fs_control_sock(), tree.clone())?;
     toby_fs::serve(&host.runtime.fs_sock(), tree.filesystem(), toby_svc::notify::ready)?;
     Ok(())
@@ -177,6 +173,40 @@ fn machine_config(host: &Host) -> anyhow::Result<toby_machine::Config> {
     })
 }
 
+/// `toby internal daemon`: tobyd, on the socket systemd passed or on its
+/// own socket in the runtime directory.
+pub fn daemon() -> anyhow::Result<()> {
+    let (config, paths) = load_config()?;
+    let listeners = toby_svc::activation::take_listen_fds();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(async move {
+        // The socket systemd passed, or one of our own that we remove again.
+        let (listener, own) = match listeners.into_iter().next() {
+            Some(fd) => {
+                let l = std::os::unix::net::UnixListener::from(fd);
+                l.set_nonblocking(true)?;
+                (tokio::net::UnixListener::from_std(l)?, None)
+            }
+            None => {
+                let sock = paths.runtime.join(toby_api::SOCKET);
+                if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+                    bail!("tobyd is already running");
+                }
+                let _ = std::fs::remove_file(&sock);
+                let l = tokio::net::UnixListener::bind(&sock)?;
+                std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+                (l, Some(sock))
+            }
+        };
+        let result = toby_daemon::run(config, paths, listener, toby_svc::notify::ready).await;
+        if let Some(sock) = own {
+            let _ = std::fs::remove_file(sock);
+        }
+        result?;
+        anyhow::Ok(())
+    })
+}
+
 /// `toby internal machine`: the machine's host process.
 pub fn machine(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;
@@ -190,7 +220,7 @@ pub fn machine(machine: &str) -> anyhow::Result<()> {
 /// supervises its file share, network and VMM (the direct back end, plan
 /// §12.3). A file share or network exit stops the VM; a VM exit stops the
 /// rest; SIGTERM or SIGINT powers the guest off first.
-pub fn supervise(machine: &str) -> anyhow::Result<()> {
+pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
     use tokio::process::Command;
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -209,7 +239,14 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
 
     rt.block_on(async move {
         let log = |name: &str| -> anyhow::Result<std::process::Stdio> {
-            let f = std::fs::File::create(runtime.dir.join(format!("{name}.log")))?;
+            let f = match log_dir {
+                // Named like the units of the systemd back end.
+                Some(dir) => {
+                    let (part, stream) = name.split_once('.').unwrap_or((name, "out"));
+                    toby_svc::direct::open_log(&dir.join(format!("toby-{part}@{machine}.{stream}.log")))?
+                }
+                None => std::fs::File::create(runtime.dir.join(format!("{name}.log")))?,
+            };
             Ok(f.into())
         };
         let part = |name: &str| -> anyhow::Result<tokio::process::Child> {
@@ -232,6 +269,7 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
 
         // State from an earlier run must not look current.
         let _ = std::fs::remove_file(runtime.status());
+        std::fs::write(runtime.dir.join("supervisor.pid"), std::process::id().to_string())?;
         let _ = std::fs::remove_file(runtime.fs_sock());
         let mut fs = part("fs")?;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -277,6 +315,7 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
         let _ = std::fs::remove_file(host.paths.layer_disk(machine));
     }
     for f in [
+        host.runtime.dir.join("supervisor.pid"),
         host.runtime.control_sock(),
         host.runtime.session_sock(),
         host.runtime.fs_sock(),

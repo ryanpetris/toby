@@ -547,7 +547,8 @@ id = "a1"
 host = "/home/user/src/toby"
 at = "/toby/workspace/toby"
 read_only = false
-pinned = false            # manual `toby attach` sets true
+pinned = false            # `toby mount` sets true: kept without sessions until unmounted or the machine stops
+persist = false           # `toby mount --persist`: recreated whenever the machine starts
 
 [[forward]]
 id = "f1"
@@ -755,8 +756,9 @@ did the move.)
 
 ### 10.4 Attach flow
 
-1. `tobyd` adds `[[attach]]` to desired state (until M5, `toby mount`
-   edits `machine.toml` itself under a lock).
+1. `tobyd` adds `[[attach]]` to desired state (`POST
+   /v1/machines/{id}/attachments`, under a lock on `machine.toml`). A
+   machine that is not running accepts only persistent attachments.
 2. `toby-machine` sees the change (inotify on the state directory) and
    reconciles: it calls `toby-fs` `Add`, then runs `toby-helper attach
    --src /run/toby/fs/projects/<id> --at <target> [--ro]` as root (bind
@@ -773,9 +775,15 @@ did the move.)
 5. Attachment reference counting lives in `tobyd`: session-scoped
    attachments are removed when the last session using them ends; pinned
    attachments stay until `toby unmount` or machine stop.
-6. Mount points in `$HOME` or the root that correspond to removed
-   attachments are left as empty directories owned by root with mode 0555
-   so writes fail instead of landing in the root.
+6. Mount points Toby created for removed attachments (empty directories
+   owned by root) are left with mode 0555 so writes fail instead of landing
+   in the root or home. A directory that existed before keeps its owner and
+   mode. The helper finds mounts by the decoded mountinfo fields of the
+   canonical mount point and changes the directory through a descriptor
+   opened without following links.
+7. A reboot of the guest (a new FUSE session) or a start of `toby-fs` never
+   fails because an attached host directory has disappeared: that
+   attachment is dropped and reported as failed by the reconciler.
 
 ### 10.5 Implementation notes
 

@@ -29,6 +29,8 @@ const MAX_PENDING_GUEST: usize = 32;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Longest time a boot helper may run.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
+/// Helper output kept for error messages.
+const HELPER_OUTPUT: usize = 4096;
 /// How long the guest gets to power off after the power button.
 const POWER_OFF_GRACE: Duration = Duration::from_secs(30);
 
@@ -83,12 +85,14 @@ impl Machine {
                     at: a.at.clone(),
                     read_only: a.read_only,
                     pinned: false,
+                    persist: false,
                 };
                 (a.id.clone(), attach)
             })
             .collect();
         let status = MachineStatus {
-            observed_generation: config.generation,
+            // Nothing of the current desired state is applied yet.
+            observed_generation: previous.observed_generation,
             helpers_boot_id: previous.helpers_boot_id,
             attach: previous.attach,
             ..Default::default()
@@ -144,15 +148,19 @@ impl Machine {
             resume_from: None,
         });
         frame::send(&mut s, &hello).await?;
+        // The guest controls the output: keep only the start of it.
         let mut output = Vec::new();
+        let mut keep = |bytes: Vec<u8>| {
+            let room = HELPER_OUTPUT.saturating_sub(output.len());
+            output.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        };
         loop {
             match frame::recv::<session::ServerFrame, _>(&mut s).await? {
-                session::ServerFrame::Stdout(o) => output.extend(o.bytes),
-                session::ServerFrame::Stderr(e) => output.extend(e.bytes),
-                session::ServerFrame::Replay(r) => output.extend(r.bytes),
+                session::ServerFrame::Stdout(o) => keep(o.bytes),
+                session::ServerFrame::Stderr(e) => keep(e.bytes),
+                session::ServerFrame::Replay(r) => keep(r.bytes),
                 session::ServerFrame::Exit(e) => {
-                    output.truncate(64 * 1024);
-                    return Ok((e.status, String::from_utf8_lossy(&output).into_owned()));
+                    return Ok((e.status, printable(&output)));
                 }
                 session::ServerFrame::Refused(r) => return Err(io::Error::other(r.error)),
                 _ => {}
@@ -210,29 +218,22 @@ impl Machine {
     }
 
     async fn detach(&self, fs: &mut FsControl, a: &Attach) -> Result<(), String> {
-        self.helper(&self.helper_argv(&["detach", "--at", &a.at])).await?;
+        let src = format!("/run/toby/fs/projects/{}", a.id);
+        self.helper(&self.helper_argv(&["detach", "--src", &src, "--at", &a.at])).await?;
         fs.call(fs::Request::Remove(fs::Remove { id: a.id.clone() }))
             .await
             .map_err(|e| format!("removing {}: {e}", a.host))
     }
 
     /// Brings the guest's attachments in line with the desired state (plan
-    /// §10.4). Callers hold `booting`.
-    async fn reconcile(&self) {
-        let spec = match MachineSpec::load(&self.config.desired) {
-            Ok(s) => s,
-            Err(e) => {
-                self.update_status(|s| s.error = Some(format!("reading the desired state: {e}")));
-                return;
-            }
-        };
-        let mut fs = match FsControl::connect(&self.config.runtime.fs_control_sock()).await {
-            Ok(f) => f,
-            Err(e) => {
-                self.update_status(|s| s.error = Some(format!("file sharing is not available: {e}")));
-                return;
-            }
-        };
+    /// §10.4). Callers hold `booting`. Fails only if nothing could be
+    /// reconciled; single attachments report their own errors.
+    async fn reconcile(&self) -> Result<(), String> {
+        let spec =
+            MachineSpec::load(&self.config.desired).map_err(|e| format!("reading the desired state: {e}"))?;
+        let mut fs = FsControl::connect(&self.config.runtime.fs_control_sock())
+            .await
+            .map_err(|e| format!("file sharing is not available: {e}"))?;
         let desired: BTreeMap<String, Attach> =
             spec.attach.iter().map(|a| (a.id.clone(), a.clone())).collect();
         let same = |a: &Attach, b: &Attach| a.host == b.host && a.at == b.at && a.read_only == b.read_only;
@@ -274,6 +275,16 @@ impl Machine {
             state,
             error: errors.get(&a.id).cloned(),
         };
+        // Anything still served that is neither desired nor mounted (left by
+        // an earlier boot or a failed cleanup) is no longer shared.
+        if let Ok(served) = fs.list().await {
+            for a in served {
+                if !desired.contains_key(&a.id) && !mounted.contains_key(&a.id) {
+                    let _ = fs.call(fs::Request::Remove(fs::Remove { id: a.id })).await;
+                }
+            }
+        }
+
         let mut entries: Vec<AttachStatus> = mounted.values().map(|a| entry(a, AttachState::Ready)).collect();
         entries.extend(
             desired.values().filter(|a| !mounted.contains_key(&a.id)).map(|a| entry(a, AttachState::Failed)),
@@ -282,8 +293,8 @@ impl Machine {
         self.update_status(|s| {
             s.attach = entries;
             s.observed_generation = spec.generation;
-            s.error = None;
         });
+        Ok(())
     }
 
     /// Marks the machine ready once the relay answers and the boot helpers
@@ -321,12 +332,13 @@ impl Machine {
             // A new boot has none of the previous boot's mounts.
             self.mounted.lock().unwrap().clear();
         }
+        let mut error = None;
         if !done || !ready {
-            self.reconcile().await;
+            error = self.reconcile().await.err();
         }
         self.update_status(|s| {
             s.state = State::Ready;
-            s.error = None;
+            s.error = error;
             s.proto = Some(types::V1);
             s.relay_version = Some(info.version);
             s.helpers_boot_id = Some(info.boot_id.clone());
@@ -411,7 +423,8 @@ impl Machine {
                 if changed {
                     let _booting = self.booting.lock().await;
                     if self.status.lock().unwrap().state == State::Ready {
-                        self.reconcile().await;
+                        let error = self.reconcile().await.err();
+                        self.update_status(|s| s.error = error);
                     }
                 }
             }
@@ -599,6 +612,15 @@ impl FsControl {
         }
     }
 
+    async fn list(&mut self) -> io::Result<Vec<fs::Attachment>> {
+        frame::send(&mut self.stream, &fs::Request::List(fs::List {})).await?;
+        match frame::recv(&mut self.stream).await? {
+            fs::Response::Attachments(l) => Ok(l.attachments),
+            fs::Response::Failed(f) => Err(io::Error::other(f.error)),
+            other => Err(io::Error::other(format!("unexpected response {other:?}"))),
+        }
+    }
+
     async fn call(&mut self, req: fs::Request) -> io::Result<()> {
         frame::send(&mut self.stream, &req).await?;
         match frame::recv(&mut self.stream).await? {
@@ -606,5 +628,24 @@ impl FsControl {
             fs::Response::Failed(f) => Err(io::Error::other(f.error)),
             other => Err(io::Error::other(format!("unexpected response {other:?}"))),
         }
+    }
+}
+
+/// Guest text made safe to show on a terminal: control characters other
+/// than newlines and tabs are replaced.
+fn printable(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .map(|c| if c.is_control() && c != '\n' && c != '\t' { '\u{fffd}' } else { c })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_text_loses_control_characters() {
+        assert_eq!(printable(b"ok\n\tline\x1b]52;c;x\x07"), "ok\n\tline\u{fffd}]52;c;x\u{fffd}");
     }
 }

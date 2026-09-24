@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use nix::fcntl::{Flock, FlockArg};
 use toby_config::global::GlobalConfig;
-use toby_config::machine::{
-    self, Attach, Boot, Disk, MachineSpec, MachineStatus, Resources, RootSpec, State,
-};
+use toby_config::machine::{self, Attach, Boot, Disk, MachineSpec, MachineStatus, RootSpec, State};
 use toby_config::paths::{MachineRuntime, Paths};
 use toby_proto::machine::{Request, Response};
 use toby_proto::session::{ClientFrame, ServerFrame};
@@ -55,22 +53,6 @@ fn debian_arch() -> &'static str {
 
 fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
-}
-
-/// Resources for builder machines: half the host's CPUs (2 to 8) and half
-/// its memory, at most 8 GiB (plan §14.5).
-pub fn builder_resources() -> Resources {
-    let cpus = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(2);
-    let mem = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|m| {
-            m.lines()
-                .find(|l| l.starts_with("MemTotal:"))
-                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
-        })
-        .map(|kib| (kib * 1024 / 2).min(8 << 30))
-        .unwrap_or(4 << 30);
-    Resources { cpus: (cpus / 2).clamp(2, 8), memory: format!("{}M", mem >> 20) }
 }
 
 /// A job's command line in the guest.
@@ -352,7 +334,7 @@ impl Builder {
             home: None,
             root,
             ephemeral: false,
-            resources: builder_resources(),
+            resources: crate::machines::default_resources(),
             boot: Boot { image: boot },
             disk: disks,
             attach,
@@ -484,6 +466,7 @@ impl Builder {
             at: "/build/boot".into(),
             read_only: false,
             pinned: false,
+            persist: false,
         }];
         if let Some(ctx) = &job.context {
             attach.push(Attach {
@@ -492,6 +475,7 @@ impl Builder {
                 at: "/build/context".into(),
                 read_only: true,
                 pinned: false,
+                persist: false,
             });
         }
 
@@ -594,6 +578,39 @@ impl Builder {
             return Ok(img);
         }
         self.build(ImageSource::Default, out).await
+    }
+
+    /// `toby image prepare` (plan §15.6): the default image, and with `all`
+    /// the source of every root whose image is out of date. Returns the
+    /// default image.
+    pub async fn prepare(&self, all: bool, rebuild: bool, out: Output<'_>) -> io::Result<ImageRecord> {
+        let default = self.prepare_default(rebuild, &mut *out).await?;
+        if !all {
+            return Ok(default);
+        }
+        let mut sources: Vec<ImageSource> = Vec::new();
+        for root in self.store.roots()? {
+            let img = self.store.image(&root.image)?;
+            if img.source != ImageSource::Default && !sources.contains(&img.source) {
+                sources.push(img.source);
+            }
+        }
+        let mut failed = 0;
+        for source in sources {
+            let result = match self.current_image(&source) {
+                Ok(Some(_)) if !rebuild => continue,
+                Ok(_) => self.build(source.clone(), &mut *out).await.map(drop),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = result {
+                out(format!("toby: {}: {e}\n", source.describe()).as_bytes(), true);
+                failed += 1;
+            }
+        }
+        if failed > 0 {
+            return Err(err(format!("{failed} of the roots' images could not be built")));
+        }
+        Ok(default)
     }
 
     /// Formats a new home's disk with ext4 in a builder machine.
@@ -701,7 +718,20 @@ async fn wait_ready(runtime: &MachineRuntime, supervisor: &mut tokio::process::C
     loop {
         if let Ok(st) = MachineStatus::load(&runtime.status()) {
             match st.state {
-                State::Ready => return Ok(()),
+                // A build needs its boot directory and context mounted.
+                State::Ready => {
+                    if let Some(e) = &st.error {
+                        return Err(err(format!("the builder machine failed: {e}")));
+                    }
+                    if let Some(a) = st.attach.iter().find(|a| a.state != machine::AttachState::Ready) {
+                        return Err(err(format!(
+                            "the builder machine could not mount {}: {}",
+                            a.at,
+                            a.error.as_deref().unwrap_or("unknown error")
+                        )));
+                    }
+                    return Ok(());
+                }
                 State::Failed => {
                     return Err(err(format!("the builder machine failed: {}", st.error.unwrap_or_default())));
                 }
@@ -797,12 +827,5 @@ mod tests {
         assert_eq!(cfg.workdir, "/w");
         assert_eq!(cfg.labels.get("dev.toby.adapted").map(String::as_str), Some("manual"));
         assert_eq!(parse_image_config("{}"), ImageConfig::default());
-    }
-
-    #[test]
-    fn builder_resources_are_bounded() {
-        let r = builder_resources();
-        assert!((2..=8).contains(&r.cpus));
-        assert!(toby_config::machine::parse_size(&r.memory).unwrap() <= 8 << 30);
     }
 }

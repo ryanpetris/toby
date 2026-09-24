@@ -84,8 +84,12 @@ pub struct Attach {
     pub at: String,
     #[serde(default)]
     pub read_only: bool,
+    /// Kept until removed or the machine stops, even without sessions.
     #[serde(default)]
     pub pinned: bool,
+    /// Recreated every time the machine starts.
+    #[serde(default)]
+    pub persist: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

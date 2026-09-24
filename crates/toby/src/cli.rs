@@ -368,6 +368,9 @@ pub enum InternalCommand {
         /// Supervise the machine's processes (direct back end)
         #[arg(long)]
         supervise: bool,
+        /// Where the supervised processes log (default: the runtime directory)
+        #[arg(long, requires = "supervise")]
+        log_dir: Option<PathBuf>,
     },
     /// Per-machine virtio-fs back end
     Fs {
@@ -463,6 +466,8 @@ pub enum HelperCommand {
     },
     /// Unmount an attached host directory
     Detach {
+        #[arg(long)]
+        src: PathBuf,
         #[arg(long)]
         at: PathBuf,
     },

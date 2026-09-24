@@ -12,6 +12,21 @@ use imago::{FormatCreateBuilder, Storage, StorageCreateOptions};
 /// the qcow2 image `backing` (stored as an absolute path with an explicit
 /// backing format). Fails if `path` exists.
 pub async fn create(path: &Path, size: u64, backing: Option<&Path>) -> io::Result<()> {
+    // imago's futures are not `Send`; run them on a thread of their own so
+    // callers stay usable from multi-threaded tasks.
+    let (path, backing) = (path.to_path_buf(), backing.map(Path::to_path_buf));
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(create_here(
+            &path,
+            size,
+            backing.as_deref(),
+        ))
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+async fn create_here(path: &Path, size: u64, backing: Option<&Path>) -> io::Result<()> {
     if path.exists() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", path.display())));
     }

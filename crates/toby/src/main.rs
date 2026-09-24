@@ -1,10 +1,13 @@
 //! The single Toby binary: the CLI and every host and guest component.
 
+mod admin;
+mod api;
 mod cli;
 mod client;
 mod images;
 mod internal;
 mod mounts;
+mod table;
 
 use std::process::ExitCode;
 
@@ -58,7 +61,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Sessions(SessionsCommand::Ls) => return runtime()?.block_on(client::list()),
         Command::Sessions(SessionsCommand::Kill { id }) => return runtime()?.block_on(client::kill(&id)),
         Command::Attach { session } => return runtime()?.block_on(client::attach(session)),
-        Command::Machine(_) => "machine",
+        Command::Machine(cmd) => return runtime()?.block_on(admin::machine(cmd)),
         Command::Mount(a) => return runtime()?.block_on(mounts::mount(a)),
         Command::Unmount { target, machine } => return runtime()?.block_on(mounts::unmount(target, machine)),
         Command::Forward(_) => "forward",
@@ -68,19 +71,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Builder(cmd) => return runtime()?.block_on(images::builder_cmd(cmd)),
         Command::Mcp(_) => "mcp",
         Command::Approvals(_) => "approvals",
-        Command::Daemon(_) => "daemon",
-        Command::Linger { .. } => "linger",
+        Command::Daemon(cmd) => return runtime()?.block_on(admin::daemon(cmd)),
+        Command::Linger { state } => return runtime()?.block_on(admin::linger(state)),
         Command::Config(_) => "config",
-        Command::Doctor => "doctor",
+        Command::Doctor => return runtime()?.block_on(admin::doctor()),
         Command::Web => "web",
         Command::Internal(cmd) => match cmd {
-            InternalCommand::Daemon => "internal daemon",
+            InternalCommand::Daemon => return internal::daemon().map(|()| ExitCode::SUCCESS),
             InternalCommand::Proxy => "internal proxy",
-            InternalCommand::Machine { machine, supervise: false } => {
+            InternalCommand::Machine { machine, supervise: false, .. } => {
                 return internal::machine(&machine).map(|()| ExitCode::SUCCESS);
             }
-            InternalCommand::Machine { machine, supervise: true } => {
-                return internal::supervise(&machine).map(|()| ExitCode::SUCCESS);
+            InternalCommand::Machine { machine, supervise: true, log_dir } => {
+                return internal::supervise(&machine, log_dir.as_deref()).map(|()| ExitCode::SUCCESS);
             }
             InternalCommand::Fs { machine } => return internal::fs(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::Vm { machine } => return internal::vm(&machine).map(|()| ExitCode::SUCCESS),
@@ -126,7 +129,7 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
         }
         HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
         HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
-        HelperCommand::Detach { at } => helper::detach(&at)?,
+        HelperCommand::Detach { src, at } => helper::detach(&src, &at)?,
         HelperCommand::Build { id, kind, args } => {
             let args: Vec<String> = [id, kind].into_iter().chain(args).collect();
             helper::build::exec_script(&paths.root().join("build"), "build.sh", &args)?;

@@ -16,6 +16,10 @@ pub struct GlobalConfig {
     pub programs: Programs,
     #[serde(default)]
     pub network: Network,
+    #[serde(default)]
+    pub settings: Settings,
+    #[serde(default)]
+    pub defaults: Defaults,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -31,6 +35,69 @@ pub enum Backend {
 pub struct Daemon {
     #[serde(default)]
     pub backend: Backend,
+    /// How long a machine without sessions keeps running, e.g. `"15m"`;
+    /// `"0"` keeps machines running.
+    pub idle_timeout: Option<String>,
+}
+
+impl Daemon {
+    pub fn idle_timeout(&self) -> io::Result<Option<std::time::Duration>> {
+        match &self.idle_timeout {
+            None => Ok(Some(std::time::Duration::from_secs(15 * 60))),
+            Some(s) => match parse_duration(s) {
+                Some(d) if d.is_zero() => Ok(None),
+                Some(d) => Ok(Some(d)),
+                None => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("daemon.idle_timeout: {s:?} is not a duration such as \"15m\""),
+                )),
+            },
+        }
+    }
+}
+
+/// Parses durations such as `30s`, `15m`, `2h` or `0`.
+pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    if s == "0" {
+        return Some(std::time::Duration::ZERO);
+    }
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit())?);
+    let n: u64 = num.parse().ok()?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n.checked_mul(60)?,
+        "h" => n.checked_mul(3600)?,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_secs(secs))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    /// Warning IDs not to print, or `"*"` for all.
+    #[serde(default)]
+    pub suppress_warnings: Vec<String>,
+}
+
+impl Settings {
+    pub fn suppressed(&self, id: &str) -> bool {
+        self.suppress_warnings.iter().any(|w| w == "*" || w == id)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Defaults {
+    /// Home used when none is given (default `default`).
+    pub home: Option<String>,
+}
+
+impl Defaults {
+    pub fn home(&self) -> &str {
+        self.home.as_deref().unwrap_or("default")
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -113,6 +180,29 @@ mod tests {
         assert_eq!(cfg.daemon.backend, Backend::Direct);
         assert_eq!(cfg.programs.passt, Some("/opt/passt".into()));
         assert_eq!(cfg.network.dns_host, Some("192.0.2.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn durations() {
+        use std::time::Duration;
+        assert_eq!(parse_duration("15m"), Some(Duration::from_secs(900)));
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("0"), Some(Duration::ZERO));
+        for bad in ["", "m", "15", "1.5h", "-1m", "15min"] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
+        }
+        let d: Daemon = toml::from_str("idle_timeout = \"0\"").unwrap();
+        assert_eq!(d.idle_timeout().unwrap(), None);
+        assert_eq!(Daemon::default().idle_timeout().unwrap(), Some(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn warnings_can_be_suppressed() {
+        let s = Settings { suppress_warnings: vec!["daemon.linger-disabled".into()] };
+        assert!(s.suppressed("daemon.linger-disabled"));
+        assert!(!s.suppressed("other"));
+        assert!(Settings { suppress_warnings: vec!["*".into()] }.suppressed("other"));
     }
 
     #[test]
