@@ -223,6 +223,7 @@ impl Relay {
             .stderr(std::process::Stdio::piped());
         let mut child = cmd.spawn().inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&marker);
         })?;
 
         // The session's own errors go to the relay's log and, if it fails to
@@ -252,7 +253,13 @@ impl Relay {
                 break;
             }
             if let Ok(Some(status)) = child.try_wait() {
+                // A session exits successfully only after running its
+                // command: a short one can finish before its socket is seen.
+                if status.success() {
+                    return Ok(id);
+                }
                 let _ = std::fs::remove_dir_all(&dir);
+                let _ = std::fs::remove_file(&marker);
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let text = String::from_utf8_lossy(&errors.lock().unwrap()).trim().to_string();
                 let detail = if text.is_empty() { status.to_string() } else { text };
@@ -268,6 +275,7 @@ impl Relay {
                         .await;
                 }
                 let _ = std::fs::remove_dir_all(&dir);
+                let _ = std::fs::remove_file(&marker);
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

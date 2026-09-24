@@ -309,3 +309,13 @@ async fn a_repeated_spawn_does_not_rerun_a_finished_command() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x\n");
 }
+
+#[tokio::test]
+async fn a_failed_spawn_can_be_retried() {
+    let env = env();
+    let mut c = control(&env).await;
+    let spawn = relay::Spawn { spec: spec("retry", &["/no/such/command"]), version: None };
+    for _ in 0..2 {
+        assert!(matches!(call(&mut c, Request::Spawn(spawn.clone())).await, Response::Failed(_)));
+    }
+}
