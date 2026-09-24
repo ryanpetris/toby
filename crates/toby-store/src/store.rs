@@ -229,14 +229,33 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             r => Some(r?),
         };
-        // The old disk stays until its replacement exists.
+        // The old disk stays until its replacement and the record that
+        // names the new image are both in place.
         let new = disk.with_extension("qcow2.new");
+        let old = disk.with_extension("qcow2.old");
         let _ = std::fs::remove_file(&new);
         self.write_root_disk(&new, image).await?;
-        std::fs::rename(&new, &disk)?;
+        let had_disk = _in_use.is_some();
+        if had_disk {
+            std::fs::rename(&disk, &old)?;
+        }
+        if let Err(e) = std::fs::rename(&new, &disk) {
+            if had_disk {
+                let _ = std::fs::rename(&old, &disk);
+            }
+            return Err(e);
+        }
         rec.image = image.into();
         rec.created = now();
-        records::store(&self.root_record_path(name), &rec)?;
+        if let Err(e) = records::store(&self.root_record_path(name), &rec) {
+            if had_disk {
+                let _ = std::fs::rename(&old, &disk);
+            }
+            return Err(e);
+        }
+        if had_disk {
+            std::fs::remove_file(&old)?;
+        }
         Ok(rec)
     }
 
@@ -405,6 +424,27 @@ mod tests {
         let before = std::fs::read(&disk).unwrap();
         std::fs::remove_file(s.paths.image_dir("img2").join("disk.qcow2")).unwrap();
         assert!(s.rebase_root("work", "img2").await.is_err());
+        assert_eq!(std::fs::read(&disk).unwrap(), before);
+        assert_eq!(s.root("work").unwrap().image, "img1");
+    }
+
+    #[tokio::test]
+    async fn a_rebase_whose_record_cannot_be_written_keeps_the_root() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
+        let (_d, s) = store();
+        image(&s, "img1", 1).await;
+        image(&s, "img2", 2).await;
+        s.create_root("work", "img1").await.unwrap();
+        let disk = s.paths.root_disk("work");
+        let before = std::fs::read(&disk).unwrap();
+        let roots = s.root_record_path("work").parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&roots, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = s.rebase_root("work", "img2").await;
+        std::fs::set_permissions(&roots, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
         assert_eq!(std::fs::read(&disk).unwrap(), before);
         assert_eq!(s.root("work").unwrap().image, "img1");
     }

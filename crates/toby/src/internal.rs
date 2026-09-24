@@ -197,6 +197,13 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;
     let exe = std::env::current_exe()?;
     let config = machine_config(&host)?;
+    // Held (shared) until the machine has stopped, so nothing removes its
+    // state while it runs, even if the process that started it is gone.
+    let _state = nix::fcntl::Flock::lock(
+        std::fs::File::open(host.paths.machine_state_dir(machine))?,
+        nix::fcntl::FlockArg::LockSharedNonblock,
+    )
+    .map_err(|(_, e)| e)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let runtime = host.runtime.clone();
 
@@ -464,8 +471,8 @@ pub fn create_layer(host: &Host) -> anyhow::Result<()> {
 }
 
 /// `toby internal vm`: replaces itself with Cloud Hypervisor for the machine.
-/// Locks the disks the machine boots from: its root and home exclusively,
-/// an image or cloud image it layers over shared (plan §6.2).
+/// Locks the machine's disks: its root, home and writable extra disks
+/// exclusively, an image or cloud image it layers over shared (plan §6.2).
 fn disk_locks(host: &Host) -> anyhow::Result<Vec<toby_store::store::DiskLock>> {
     use toby_store::store::{lock_disk, lock_disk_shared};
     let busy = |what: String| {
@@ -492,6 +499,11 @@ fn disk_locks(host: &Host) -> anyhow::Result<Vec<toby_store::store::DiskLock>> {
     }
     if let Some(home) = &host.spec.home {
         locks.push(lock_disk(&host.paths.home_disk(home)).map_err(busy(format!("home {home}")))?);
+    }
+    // Builder disks: the cache and the output (or a home being formatted).
+    for d in &host.spec.disk {
+        let lock = if d.read_only { lock_disk_shared(&d.path) } else { lock_disk(&d.path) };
+        locks.push(lock.map_err(busy(d.path.display().to_string()))?);
     }
     Ok(locks)
 }

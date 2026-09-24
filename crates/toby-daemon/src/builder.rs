@@ -183,7 +183,13 @@ impl Builder {
                 if !name.starts_with(prefix) || !name.ends_with(suffix) || !old {
                     continue;
                 }
-                if let Ok(_held) = lock_dir(&e.path()) {
+                // An unfinished image's output disk stays locked while its
+                // builder machine runs, even if the build process is gone.
+                let disk = e.path().join("disk.qcow2");
+                let disk_free = !disk.exists() || toby_store::store::lock_disk(&disk).is_ok();
+                if let Ok(_held) = lock_dir(&e.path(), true)
+                    && disk_free
+                {
                     let _ = std::fs::remove_dir_all(e.path());
                     if name.starts_with("builder-") {
                         let _ = std::fs::remove_dir_all(self.paths.machine_runtime(&name).dir);
@@ -272,7 +278,7 @@ impl Builder {
         let state = self.paths.machine_state_dir(&id);
         std::fs::create_dir_all(&state)?;
         // Held for the build, so a sweep by another build leaves it alone.
-        let _held = lock_dir(&state)?;
+        let _held = lock_dir(&state, false)?;
         spec.store(&self.paths.machine_desired(&id))?;
         let runtime = self.paths.machine_runtime(&id);
         std::fs::create_dir_all(&runtime.dir)?;
@@ -392,7 +398,7 @@ impl Builder {
                 std::fs::create_dir_all(&self.paths.state)?;
                 let dir = tempfile::Builder::new().prefix("import-").tempdir_in(&self.paths.state)?;
                 let file = dir.path().join("image.tar");
-                let held = lock_dir(dir.path())?;
+                let held = lock_dir(dir.path(), false)?;
                 if std::fs::hard_link(path, &file).is_err() {
                     std::fs::copy(path, &file)?;
                 }
@@ -422,7 +428,7 @@ impl Builder {
         let work = final_dir.with_extension("tmp");
         let boot_dir = work.join("boot");
         std::fs::create_dir_all(&boot_dir)?;
-        let _held = lock_dir(&work)?;
+        let _held = lock_dir(&work, false)?;
         let result = self.build_in(&work, root, boot, &source, &job, &id, before, out).await;
         let (kernel_version, config) = match result {
             Ok(r) => r,
@@ -520,6 +526,19 @@ impl Builder {
             return Ok(target);
         }
         std::fs::create_dir_all(self.builder_dir())?;
+        // One download at a time; a second caller finds the image in place.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.builder_dir().join("bootstrap.lock"))?;
+        let _lock = tokio::task::spawn_blocking(move || Flock::lock(file, FlockArg::LockExclusive))
+            .await
+            .map_err(io::Error::other)?
+            .map_err(|(_, e)| io::Error::from(e))?;
+        if target.exists() {
+            return Ok(target);
+        }
         let name = format!("debian-13-genericcloud-{}.qcow2", debian_arch());
         out(format!("==> Downloading {name}\n").as_bytes(), false);
         let fetch = target.clone();
@@ -579,8 +598,8 @@ impl Builder {
         let mut home = self.store.home(name)?;
         let base = self.builder_image(&mut *out).await?;
         self.sweep();
+        // The builder machine locks the home disk like any machine would.
         let disk = self.paths.home_disk(name);
-        let _in_use = toby_store::store::lock_disk(&disk)?;
         let spec = self.builder_spec(
             RootSpec::Image { image: base.id.clone() },
             Some(base.id),
@@ -610,10 +629,12 @@ fn cache_key(source: &ImageSource) -> String {
     }
 }
 
-/// Takes an exclusive lock on a directory without waiting.
-fn lock_dir(path: &Path) -> io::Result<Flock<File>> {
+/// Locks a directory without waiting: shared by the processes working in it
+/// (the build and the builder machine's supervisor), exclusive to remove it.
+fn lock_dir(path: &Path, exclusive: bool) -> io::Result<Flock<File>> {
     let f = File::open(path)?;
-    Flock::lock(f, FlockArg::LockExclusiveNonblock).map_err(|(_, e)| io::Error::from(e))
+    let arg = if exclusive { FlockArg::LockExclusiveNonblock } else { FlockArg::LockSharedNonblock };
+    Flock::lock(f, arg).map_err(|(_, e)| io::Error::from(e))
 }
 
 /// Opens a file the build left behind: a regular file, never followed
