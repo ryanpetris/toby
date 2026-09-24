@@ -13,8 +13,8 @@ pub async fn approvals(args: ApprovalsArgs) -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;
     match (args.id, args.decision) {
         (Some(id), Some(decision)) => {
-            // What is decided is shown first: a notice in a session's output
-            // could have been printed by the guest.
+            // What is decided is shown first: the ID may come from text the
+            // guest printed.
             let list: Vec<toby_api::ApprovalInfo> = api.get("/v1/approvals").await?;
             let Some(a) = list.into_iter().find(|a| a.id == id) else { bail!("no approval {id}") };
             let verb = match decision {

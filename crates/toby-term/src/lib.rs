@@ -23,6 +23,9 @@ pub const DETACH_PREFIX: u8 = 0x1c;
 /// How long a lost connection is retried before giving up.
 const REATTACH_FOR: Duration = Duration::from_secs(30);
 
+/// Whether a status line takes the terminal's last row.
+static COMPOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Restores cooked mode when dropped.
 pub struct RawMode(());
 
@@ -36,6 +39,11 @@ impl RawMode {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = crossterm::terminal::disable_raw_mode();
+            if COMPOSING.load(std::sync::atomic::Ordering::Acquire) {
+                // The whole terminal scrolls again, without the status line.
+                let _ = io::stdout().write_all(b"\x1b[r\x1b[999;1H\x1b[0m\x1b[2K");
+                let _ = io::stdout().flush();
+            }
             default_hook(info);
         }));
         Ok(Some(RawMode(())))
@@ -180,44 +188,80 @@ pub enum Command {
     Approvals,
 }
 
-/// The prefix key as the kitty keyboard protocol reports it.
-const PREFIX_KITTY: &[u8] = b"\x1b[92;5u";
+/// A key in the kitty keyboard protocol, `CSI code[:…] [; mods[:event]] u`:
+/// its length, code, modifiers and event (1 press, 2 repeat, 3 release).
+fn kitty_key(input: &[u8]) -> Option<(usize, u32, u32, u32)> {
+    let rest = input.strip_prefix(b"\x1b[")?;
+    let end = rest.iter().position(|b| !(b.is_ascii_digit() || matches!(b, b';' | b':')))?;
+    if rest[end] != b'u' {
+        return None;
+    }
+    let text = std::str::from_utf8(&rest[..end]).ok()?;
+    let mut parts = text.split(';');
+    let code = parts.next()?.split(':').next()?.parse().ok()?;
+    let (mods, event) = match parts.next() {
+        Some(m) => {
+            let mut m = m.split(':');
+            let mods = m.next().filter(|s| !s.is_empty()).map(str::parse).transpose().ok()?.unwrap_or(1);
+            let event = m.next().map(str::parse).transpose().ok()?.unwrap_or(1);
+            (mods, event)
+        }
+        None => (1, 1),
+    };
+    Some((end + 3, code, mods, event))
+}
+
+/// Keys that are modifiers alone in the kitty keyboard protocol.
+const KITTY_MODIFIERS: std::ops::RangeInclusive<u32> = 57441..=57452;
 
 /// Splits input into bytes for the session and a command given with the
 /// prefix key.
 #[derive(Debug, Default)]
 pub struct DetachFilter {
-    pending: bool,
+    /// The prefix key was pressed, as these bytes.
+    pending: Option<Vec<u8>>,
 }
 
 impl DetachFilter {
     /// Returns the bytes to send and the command, if one was given; input
-    /// after a command is dropped.
+    /// after a command is dropped. The prefix key also works as the kitty
+    /// keyboard protocol reports it, and its release and repeats are not
+    /// keys of their own.
     pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, Option<Command>) {
         let mut out = Vec::with_capacity(input.len());
         let mut i = 0;
         while i < input.len() {
-            let b = input[i];
-            let kitty = input[i..].starts_with(PREFIX_KITTY);
-            if self.pending {
-                self.pending = false;
-                match b {
-                    b'd' => return (out, Some(Command::Detach)),
-                    b'a' => return (out, Some(Command::Approvals)),
-                    _ if kitty || b == DETACH_PREFIX => {
-                        out.push(DETACH_PREFIX);
-                        i += if kitty { PREFIX_KITTY.len() } else { 1 };
-                        continue;
-                    }
-                    _ => out.push(DETACH_PREFIX),
+            let (len, code, mods, event) = match kitty_key(&input[i..]) {
+                Some(k) => k,
+                None => {
+                    let b = input[i];
+                    (1, u32::from(b), if b == DETACH_PREFIX { 5 } else { 1 }, 1)
                 }
-            } else if kitty || b == DETACH_PREFIX {
-                self.pending = true;
-                i += if kitty { PREFIX_KITTY.len() } else { 1 };
-                continue;
+            };
+            let bytes = &input[i..i + len];
+            i += len;
+            let prefix = (len == 1 && bytes[0] == DETACH_PREFIX) || (len > 1 && code == 92 && mods == 5);
+            match self.pending.take() {
+                None if prefix && event == 1 => self.pending = Some(bytes.to_vec()),
+                None => out.extend_from_slice(bytes),
+                Some(p) => {
+                    let plain = mods == 1 && event == 1;
+                    if event != 1 || KITTY_MODIFIERS.contains(&code) {
+                        // A release or repeat, or a modifier alone: still waiting.
+                        self.pending = Some(p);
+                    } else if plain && code == u32::from(b'd') {
+                        return (out, Some(Command::Detach));
+                    } else if plain && code == u32::from(b'a') {
+                        return (out, Some(Command::Approvals));
+                    } else if prefix {
+                        // The prefix twice sends it once.
+                        out.extend_from_slice(&p);
+                    } else {
+                        out.extend_from_slice(&p);
+                        out.extend_from_slice(bytes);
+                    }
+                }
             }
-            out.push(b);
-            i += 1;
         }
         (out, None)
     }
@@ -393,10 +437,10 @@ fn composes() -> bool {
 }
 
 /// The terminal size a session attached here gets: the terminal's, less
-/// the status line.
-pub fn session_size() -> Option<(u16, u16)> {
+/// the status line if there is one.
+pub fn session_size(status_line: bool) -> Option<(u16, u16)> {
     let (rows, cols) = size()?;
-    Some(if composes() { (rows - 1, cols) } else { (rows, cols) })
+    Some(if status_line && composes() { (rows - 1, cols) } else { (rows, cols) })
 }
 
 /// Asks the terminal where its cursor is (1-based row and column). Input
@@ -408,7 +452,7 @@ fn cursor_position() -> (Option<(u16, u16)>, Vec<u8>) {
         return (None, Vec::new());
     }
     let fd = io::stdin().as_raw_fd();
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
     let mut got = Vec::new();
     while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -433,11 +477,15 @@ fn cursor_position() -> (Option<(u16, u16)>, Vec<u8>) {
 
 /// Finds a cursor position report, `ESC [ row ; col R`, in `input`.
 fn cursor_report(input: &[u8]) -> Option<((u16, u16), std::ops::Range<usize>)> {
-    let start = input.windows(2).position(|w| w == b"\x1b[")?;
-    let rest = &input[start + 2..];
-    let end = rest.iter().position(|b| *b == b'R')?;
-    let (row, col) = std::str::from_utf8(&rest[..end]).ok()?.split_once(';')?;
-    Some(((row.parse().ok()?, col.parse().ok()?), start..start + 2 + end + 1))
+    (0..input.len()).find_map(|start| {
+        let rest = input[start..].strip_prefix(b"\x1b[")?;
+        let end = rest.iter().position(|b| !(b.is_ascii_digit() || *b == b';'))?;
+        if rest[end] != b'R' {
+            return None;
+        }
+        let (row, col) = std::str::from_utf8(&rest[..end]).ok()?.split_once(';')?;
+        Some(((row.parse().ok()?, col.parse().ok()?), start..start + 2 + end + 1))
+    })
 }
 
 /// Attaches to a session until it exits or detaches.
@@ -479,6 +527,7 @@ pub async fn attach(
         let (rows, cols) = size().unwrap_or((24, 80));
         let mut c = compositor::Compositor::new(rows, cols);
         let (cursor, typed) = cursor_position();
+        COMPOSING.store(true, std::sync::atomic::Ordering::Release);
         write_out(&c.start(cursor), false)?;
         if !typed.is_empty() {
             let _ = data_tx.send(Data::Stdin(typed)).await;
@@ -489,9 +538,6 @@ pub async fn attach(
     spawn_stdin(interactive, overlay.clone(), data_tx, events_tx.clone());
     spawn_signals(interactive, &events_tx);
 
-    if redraw && interactive {
-        nudge(&mut conn, reserved).await?;
-    }
     let mut state = Attached {
         interactive,
         tty: welcome.tty,
@@ -508,7 +554,13 @@ pub async fn attach(
         overlay,
         reserved,
     };
-    let result = state.run(conn, connect, signals).await;
+    let result = async {
+        if redraw && interactive {
+            nudge(&mut conn, reserved).await?;
+        }
+        state.run(conn, connect, signals).await
+    }
+    .await;
     if interactive {
         let restore = state.modes.restore_sequence();
         let out = match &mut state.comp {
@@ -518,6 +570,7 @@ pub async fn attach(
         let mut o = io::stdout().lock();
         let _ = o.write_all(&out);
         let _ = o.flush();
+        COMPOSING.store(false, std::sync::atomic::Ordering::Release);
     }
     drop(raw);
     result
@@ -626,21 +679,23 @@ impl Attached {
                     }
                     Some(Event::Keys(keys)) => {
                         let Some(c) = &mut self.comp else { continue };
-                        let (out, decision) = c.key(&keys);
+                        let (out, decision, input) = c.key(&keys);
                         if let (Some(d), Some(ui)) = (decision, &self.ui) {
-                            let _ = ui.decisions.try_send(d);
+                            let _ = ui.decisions.send(d).await;
                         }
                         if let Err(e) = self.screen(&out) {
                             return Pumped::Done(Err(e));
                         }
+                        // Replies to the session's queries, and keys typed
+                        // after the overlay closed, are the session's.
+                        if !input.is_empty() {
+                            let _ = ctl.send(ClientFrame::Stdin(session::Stdin { bytes: input })).await;
+                        }
                     }
                     Some(Event::Resize) => {
                         if let Some((rows, cols)) = size() {
-                            if let Some(c) = &mut self.comp {
-                                let out = c.resize(rows, cols);
-                                if let Err(e) = self.screen(&out) {
-                                    return Pumped::Done(Err(e));
-                                }
+                            if let Err(e) = self.resized(rows, cols) {
+                                return Pumped::Done(Err(e));
                             }
                             let rows = rows - self.reserved;
                             let _ = ctl.try_send(ClientFrame::Resize(session::Resize { rows, cols }));
@@ -670,6 +725,22 @@ impl Attached {
             }
             None => write_out(bytes, false),
         }
+    }
+
+    /// The terminal is `rows`×`cols` now. Too small for the status line,
+    /// the session gets all of it for the rest of the attachment.
+    fn resized(&mut self, rows: u16, cols: u16) -> io::Result<()> {
+        let Some(c) = &mut self.comp else { return Ok(()) };
+        if compositor::Compositor::fits(rows, cols) {
+            let out = c.resize(rows, cols);
+            return self.screen(&out);
+        }
+        let out = c.finish(b"");
+        self.comp = None;
+        self.reserved = 0;
+        COMPOSING.store(false, std::sync::atomic::Ordering::Release);
+        self.overlay.store(false, std::sync::atomic::Ordering::Release);
+        write_out(&out, false)
     }
 
     /// Writes what the compositor drew, and notes whether the overlay is
@@ -725,6 +796,10 @@ impl Attached {
                 };
             }
             if self.interactive {
+                // A size change meanwhile went nowhere.
+                if let Some((rows, cols)) = size() {
+                    self.resized(rows, cols)?;
+                }
                 let _ = nudge(&mut c, self.reserved).await;
             }
             return Ok(c);
@@ -848,9 +923,21 @@ mod tests {
         assert_eq!(f.feed(&[b'q', DETACH_PREFIX, b'd', b'z']), (vec![b'q'], Some(Command::Detach)));
         assert_eq!(f.feed(&[DETACH_PREFIX, b'a']), (vec![], Some(Command::Approvals)));
 
-        // The kitty keyboard protocol's Ctrl-\.
+        // The kitty keyboard protocol's Ctrl-\: its release and a modifier
+        // alone come before the key, which may be encoded too.
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"x\x1b[92;5ud"), (b"x".to_vec(), Some(Command::Detach)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5:3u\x1b[57442;5:3u"), (vec![], None));
+        assert_eq!(f.feed(b"\x1b[97;1:1u"), (vec![], Some(Command::Approvals)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5u"), (b"\x1b[92;5u".to_vec(), None));
+        assert_eq!(f.feed(b"\x1b[92;5u\x1b[120u"), (b"\x1b[92;5u\x1b[120u".to_vec(), None));
+        assert_eq!(
+            f.feed(b"\x1b[92;5:3u"),
+            (b"\x1b[92;5:3u".to_vec(), None),
+            "a release alone is the session's"
+        );
     }
 
     #[test]

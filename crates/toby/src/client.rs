@@ -67,18 +67,19 @@ pub async fn attach_terminal(
             Box::pin(async move { signal(&control, id, sig).await })
         })
     };
-    let (ui, feeder) = match toby_term::local_tty() {
+    let api = Api::connect().await?;
+    let (ui, feeder) = match toby_term::local_tty() && api.config.settings.status_line() {
         true => {
-            let (ui, task) =
-                crate::approvals::ui(std::sync::Arc::new(Api::connect().await?), machine.to_string());
+            let (ui, task) = crate::approvals::ui(std::sync::Arc::new(api), machine.to_string());
             (Some(ui), Some(task))
         }
         false => (None, None),
     };
     let outcome =
         toby_term::attach(connector(session_sock, session_id.to_string()), replay, redraw, signals, ui).await;
+    // Decisions made just before the end still reach tobyd.
     if let Some(task) = feeder {
-        task.abort();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), task).await;
     }
     Ok(match outcome? {
         Outcome::Exited(status) => exit_code(status),
@@ -121,7 +122,7 @@ pub async fn run_session(
         cwd,
         identity,
         tty: tty.then(|| {
-            let (rows, cols) = toby_term::session_size().unwrap_or((24, 80));
+            let (rows, cols) = toby_term::session_size(api.config.settings.status_line()).unwrap_or((24, 80));
             TtySize { rows, cols }
         }),
     };

@@ -240,9 +240,15 @@ pub struct Settings {
     /// Launch tools without their permission prompts.
     #[serde(default)]
     pub yolo: bool,
+    /// Show a status line in attached terminals (default true).
+    pub status_line: Option<bool>,
 }
 
 impl Settings {
+    pub fn status_line(&self) -> bool {
+        self.status_line.unwrap_or(true)
+    }
+
     pub fn suppressed(&self, id: &str) -> bool {
         self.suppress_warnings.iter().any(|w| w == "*" || w == id)
     }

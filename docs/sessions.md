@@ -30,10 +30,14 @@ toby shell [--as-root] [--machine ID]
 
 In a terminal, the last row shows the session's home and root, its
 machine's forwards and the approvals waiting; the session gets the rows
-above it. Its output still goes to your terminal as it is, so scrollback,
-colors, mouse and paste work as usual. An approval the machine asks for
-opens over the session: `y` approves, `n` denies and `Esc` leaves it for
-later.
+above it. Its output still goes to your terminal as it is, so colors,
+mouse and paste work as usual, and so does scrollback in terminals that
+keep lines scrolled off the top of a scroll region. An approval the
+machine asks for opens over the session: `y` approves, `n` denies and
+`Esc` leaves it for later.
+
+`settings.status_line = false` turns the status line off; approvals are
+then answered with `toby approvals` or in the web UI.
 
 ## Detaching and reattaching
 

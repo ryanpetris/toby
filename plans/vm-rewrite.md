@@ -1116,8 +1116,9 @@ relay, which bridges to the session socket → end-to-end session protocol.
 - Closing the terminal or losing the connection detaches; the session keeps
   running.
 - `toby sessions ls`, `toby attach [<session>]`, `toby sessions kill <id>`.
-- Detach key: a configurable prefix (default `Ctrl-\` then `d`), active only
-  while attached through the CLI.
+- Detach key: `Ctrl-\` then `d` (`Ctrl-\` then `a` shows the approvals),
+  also as the kitty keyboard protocol reports them, active only while
+  attached through the CLI.
 - Reattach: CLI sends `Hello{want_replay=true}`, prints the replay, then
   sends `Resize` with a transient size change to force full-screen tools to
   redraw.
@@ -1125,30 +1126,36 @@ relay, which bridges to the session socket → end-to-end session protocol.
   exists: prompt to attach or start new; `--attach` / `--new` skip the
   prompt.
 
-### 13.5 Terminal handling now vs later
+### 13.5 Terminal handling
 
-Now (milestones 2–8): the CLI puts the terminal in raw mode, forwards
-bytes, SIGWINCH → `Resize`, and restores the terminal on exit or panic. No
-emulation.
+The CLI puts the terminal in raw mode, forwards input, SIGWINCH → `Resize`,
+and restores the terminal on exit, error or panic. With a terminal (and
+`settings.status_line`, on by default) it is a small compositor
+(milestone 9):
 
-Later (milestone 9, part of this implementation): the CLI becomes a small
-compositor:
-
-- Passes the session output to the real terminal unchanged except for
+- The session output reaches the real terminal unchanged except for
   scroll regions and absolute rows, which stay within the session's rows,
   so the terminal's own scrollback, mouse, bracketed paste, alternate
   screen, keyboard protocols, OSC 52/8, synchronized output and colors
-  work as they do without Toby. A copy feeds an emulator of the session's
-  screen (`vt100`).
+  work as they do without Toby.
+- Two emulators (`alacritty_terminal`) follow along: the session's screen,
+  which says what is under an overlay, and a mirror of the real terminal
+  fed with everything written to it, which says where its cursor is and
+  with which attributes, character sets, origin and insert modes, so these
+  are put back after drawing. Drawing waits until the output is between
+  sequences, strings and UTF-8 characters.
 - The last row is a status bar (home and root, forwards, pending
   approvals) below a scroll region the session cannot widen; floating
   windows (approval overlays) are drawn over the session and repainted
-  from the emulator when they close or before output scrolls under them.
+  from the session's screen when they close or before output scrolls
+  under them. A terminal too small for them gives the session every row.
 - Session PTY size = terminal size minus the status bar.
 - **Overlay approvals are the default** approval UI; CLI approvals
-  (`toby approvals`) and web approvals remain available.
-- Status and approvals come from polling `tobyd` (every 2 s) until
-  `GET /v1/events` exists (milestone 10).
+  (`toby approvals`) and web approvals remain available. The overlay takes
+  one unmodified key press (`y`, `n`, `Esc`), ignores keys for half a
+  second after it opens by itself, and passes the terminal's replies and
+  pastes on to the session.
+- Status and approvals follow `GET /v1/events`.
 
 ---
 

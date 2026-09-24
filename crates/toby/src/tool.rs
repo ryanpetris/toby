@@ -141,7 +141,7 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
         cwd: None,
         identity: toby_proto::types::Identity::User,
         tty: tty.then(|| {
-            let (rows, cols) = toby_term::session_size().unwrap_or((24, 80));
+            let (rows, cols) = toby_term::session_size(api.config.settings.status_line()).unwrap_or((24, 80));
             toby_proto::types::TtySize { rows, cols }
         }),
     };
