@@ -53,12 +53,20 @@ mountpoint -q /var/lib/containers || mount --bind /cache/containers /var/lib/con
 # Cloud Hypervisor boots an arm64 kernel only as an uncompressed Image;
 # distributions ship it gzip-compressed or as an EFI zboot image, whose
 # header names the payload's offset, size and compression.
+checked_size() {
+    if [ "$(wc -c < "$1")" -ge "$max" ]; then
+        echo "The unpacked kernel is larger than Toby takes" >&2
+        exit 1
+    fi
+}
+
 unpack_arm64_kernel() {
     f=$1
     # As much as tobyd takes from a build.
     max=536870912
     if [ "$(od -An -tx1 -N2 "$f" | tr -d ' \n')" = 1f8b ]; then
         gzip -dc "$f" | head -c "$max" > "$f.image"
+        checked_size "$f.image"
         mv "$f.image" "$f"
     elif [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = zimg ]; then
         off=$(od -An -tu4 -j8 -N4 "$f" | tr -d ' ')
@@ -73,6 +81,7 @@ unpack_arm64_kernel() {
             *) echo "The kernel is compressed with $comp, which Toby cannot unpack" >&2; exit 1 ;;
         esac
         tail -c +$((off + 1)) "$f" | head -c "$size" | "$@" | head -c "$max" > "$f.image"
+        checked_size "$f.image"
         mv "$f.image" "$f"
     fi
 }

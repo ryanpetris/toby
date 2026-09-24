@@ -141,16 +141,10 @@ fn dir_name(p: &Path) -> anyhow::Result<String> {
         .context("a project needs a UTF-8 directory name")
 }
 
-/// Checks that the host paths a project's image names stay in
-/// `projects_dir` (plan §14.3): its build context is shared with the
-/// build.
-fn check_project_image(
-    image: &ImageConfig,
-    base: &Path,
-    home: &Path,
-    projects_dir: &Path,
-    external: bool,
-) -> anyhow::Result<()> {
+/// Checks that the host paths a project's image names stay in the project
+/// (plan §14.3): the build context is shared with the build, which can
+/// reach the network, so not even other projects belong in it.
+fn check_project_image(image: &ImageConfig, base: &Path, home: &Path, external: bool) -> anyhow::Result<()> {
     if external {
         return Ok(());
     }
@@ -166,11 +160,12 @@ fn check_project_image(
         // Resolved as the build resolves it.
         let path = base.join(expand(home, p));
         let host = std::fs::canonicalize(&path).with_context(|| path.display().to_string())?;
-        if !host.starts_with(projects_dir) {
+        let project = std::fs::canonicalize(base).with_context(|| base.display().to_string())?;
+        if !host.starts_with(&project) {
             bail!(
-                "the project's image uses {}, outside {}; set settings.allow_external_projects to use it",
+                "the project's image uses {}, outside the project {}; set settings.allow_external_projects to use it",
                 host.display(),
-                projects_dir.display()
+                project.display()
             );
         }
     }
@@ -188,22 +183,21 @@ pub fn project_image(
     path: Option<&Path>,
 ) -> anyhow::Result<(Option<Image>, Vec<toby_api::Warning>)> {
     let projects_dir = projects_dir(config, home);
+    let defaults = || config.defaults.image.clone().map(|i| (i, config_dir.to_path_buf()));
     let project = match path {
         Some(p) => resolve(&flag_path(p, cwd, &projects_dir), &projects_dir, true)?,
-        None => resolve(&current_project(cwd, &projects_dir)?, &projects_dir, true)?,
+        // Outside a project, the configuration's image.
+        None => match current_project(cwd, &projects_dir).and_then(|p| resolve(&p, &projects_dir, true)) {
+            Ok(p) => p,
+            Err(_) => return Ok((defaults(), Vec::new())),
+        },
     };
     let file = project.join(".toby/config.toml");
     let mut warnings = Vec::new();
     if file.exists() {
         if config.settings.autoload_project_config {
             if let Some(image) = Launch::load_project(&file)?.image {
-                check_project_image(
-                    &image,
-                    &project,
-                    home,
-                    &projects_dir,
-                    config.settings.allow_external_projects,
-                )?;
+                check_project_image(&image, &project, home, config.settings.allow_external_projects)?;
                 return Ok((Some((image, project)), warnings));
             }
         } else {
@@ -308,7 +302,7 @@ pub fn plan(
     if launch.image.is_none()
         && let Some(image) = &project.image
     {
-        check_project_image(image, &primary, home, &projects_dir, external)?;
+        check_project_image(image, &primary, home, external)?;
     }
     plan.image = launch
         .image

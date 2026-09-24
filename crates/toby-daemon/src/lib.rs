@@ -89,6 +89,7 @@ pub async fn run(
     let builder = Arc::new(builder::Builder::new(config, paths.clone(), exe));
     tokio::spawn(machines.clone().idle_loop(idle));
     tokio::spawn(machines.clone().session_loop());
+    tokio::spawn(machines.clone().grants_loop());
     {
         // Old versions nothing runs any more go (plan §3.3).
         let machines = machines.clone();

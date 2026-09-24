@@ -38,7 +38,7 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                     api.paths.global_config().parent().map(Path::to_path_buf).unwrap_or_default();
                 let home = toby_config::paths::home_dir()?;
                 let cwd = std::env::current_dir()?;
-                let path = project.clone().flatten();
+                let path = project.flatten();
                 let found =
                     crate::launch::project_image(&api.config, &config_dir, &home, &cwd, path.as_deref());
                 match found {
@@ -52,16 +52,6 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                             Some(Ok(s)) => sources.push(s),
                             Some(Err(id)) => println!("The project uses image {id}"),
                             None => {}
-                        }
-                    }
-                    // Outside a project, only an explicit --project fails.
-                    Err(_) if project.is_none() => {
-                        let config_dir =
-                            api.paths.global_config().parent().map(Path::to_path_buf).unwrap_or_default();
-                        if let Some(image) = &api.config.defaults.image
-                            && let Some(Ok(s)) = crate::tool::api_source(image, &config_dir)?
-                        {
-                            sources.push(s);
                         }
                     }
                     Err(e) => return Err(e),

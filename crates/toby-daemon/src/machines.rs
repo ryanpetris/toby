@@ -27,6 +27,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// A guest helper may take up to two minutes (plan §9.6).
 const APPLY_TIMEOUT: Duration = Duration::from_secs(150);
 const IDLE_CHECK: Duration = Duration::from_secs(30);
+/// How soon an ended session's MCP grants are taken back.
+const GRANTS_CHECK: Duration = Duration::from_secs(2);
 /// How long a requested start counts as running before its processes show:
 /// as long as a start may take (`wait_ready` clears it sooner).
 const START_GRACE: Duration = START_TIMEOUT;
@@ -1485,6 +1487,19 @@ impl Machines {
 
     /// Releases what ended sessions held and removes stale records, whether
     /// or not machines stop when idle.
+    /// Takes back MCP servers granted to sessions that have ended, soon
+    /// after they end: until then the machine can still reach them.
+    pub async fn grants_loop(self: std::sync::Arc<Self>) {
+        loop {
+            tokio::time::sleep(GRANTS_CHECK).await;
+            for spec in self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()) {
+                if self.observe(&spec.id).await.state == "ready" {
+                    self.release_session_items(&spec).await;
+                }
+            }
+        }
+    }
+
     pub async fn session_loop(self: std::sync::Arc<Self>) {
         loop {
             tokio::time::sleep(IDLE_CHECK).await;
