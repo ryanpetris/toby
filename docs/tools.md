@@ -103,3 +103,64 @@ params = ["--model", "opus"]                 # extra arguments of every launch
 `~/.config/toby/`, `~` allowed) and `{env:NAME}` an environment variable
 of the daemon; both are read when used. In the machine, the provider is at
 `http://127.0.0.1:41100/<provider>`.
+
+## MCP servers
+
+```toml
+[mcp.github]                                 # a local server with a secret
+kind = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "{file:keys/github}" }
+
+[mcp.docs]                                   # a remote server
+kind = "http"
+url = "https://example.com/mcp"
+headers = { Authorization = "Bearer {env:DOCS_TOKEN}" }
+
+[tools.claude]
+mcp = ["github", "docs"]
+```
+
+Toby writes the servers a tool's `mcp` list names, and its own server
+`toby`, into the tool's configuration when it prepares the tool.
+
+- A `stdio` server whose command or environment uses `{file:}` or `{env:}`
+  runs isolated: in a small machine of its own (`toby mcp ls` shows it),
+  started when a tool connects and stopped after five idle minutes. Its
+  secrets exist only in that server's environment; the tool's machine
+  never has them. `placement = "machine"` runs a server without secrets
+  in the tool's machine instead.
+- An `http` server is called through Toby's proxy, which adds its headers;
+  the credentials stay on the host.
+
+```sh
+toby mcp ls
+toby mcp logs github [-f]
+toby mcp restart github
+```
+
+## Toby's MCP server and approvals
+
+Toby's own MCP server lets a tool act on the host: `git_status`,
+`git_fetch`, `git_commit`, `git_push`, `git_rebase` and `git_tag` run with
+your git configuration and credentials in the host directory of the
+mounted project that holds the path; `forward_request` asks for a port
+forward and `session_info` describes the machine.
+
+Actions that need approval wait until you decide. A notice appears in the
+attached session; answer with:
+
+```sh
+toby approvals                               # pending first
+toby approvals ID approve                    # or deny
+```
+
+`[permissions.actions]` sets the policy per action: `allow`, `deny`,
+`ask`, or `always-ask`. Without configuration, status and fetch are
+allowed, push always asks, and the others ask.
+
+```toml
+[permissions.actions]
+"git.commit" = "allow"
+"git.push" = "always-ask"
+```

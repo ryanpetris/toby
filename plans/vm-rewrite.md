@@ -1640,16 +1640,21 @@ Templating: `minijinja`. Context: `models.url`, `models.token`, `mcp[]`,
 | built-in `toby` | `toby-connect mcp/toby` | `tobyd` | host |
 
 Isolated flow: `toby-connect` connects stdin/stdout to
-`/run/toby/sandbox.sock` with a request `{mcp: name}` → `toby-machine`
-→ `tobyd` capability endpoint → `tobyd` ensures **that MCP server's own
-services machine** is running (one services machine per isolated MCP
+`/run/toby/sandbox.sock` with a request `Connect{target: "mcp/<name>"}` →
+`toby-machine` → `tobyd` capability endpoint (answers `Serve`, `Splice{machine,
+target}` or `Refused`; protocol in `docs/protocols.md`) → `tobyd` ensures
+**that MCP server's own services machine** is running (one services machine per isolated MCP
 server; image from `[mcp.<name>].image` or the default image; its own
 persistent root and a small persistent home per MCP server so installs and
 caches survive restarts) → spawns the MCP command in a fresh session there
-with its credentials in the process environment → `tobyd` returns an
-endpoint and the two `toby-machine`s splice the streams (tool machine ↔
-services machine) without `tobyd` in the data path. Services machines
-idle-stop after 5 minutes without connections.
+with its credentials in the process environment, under
+`toby-helper serve-stdio --socket /tmp/toby-mcp-<id>.sock -- <command>`
+(one connection, which becomes the command's stdin and stdout) → `tobyd`
+answers `Splice` with that socket and the tool machine's `toby-machine`
+dials it through the services machine's relay, so the streams are spliced
+without `tobyd` in the data path. Services machines (home and root
+`mcp-<name>`, from the default image) idle-stop after 5 minutes without
+sessions.
 
 Local HTTP MCP servers (current `type: local, transport: http`) run the
 same way in their services machine; `toby-proxy` routes
