@@ -71,6 +71,14 @@ impl From<io::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// How waiting for a stop ended.
+enum Stopped {
+    Yes,
+    /// Started again after the stop was asked for.
+    Restarted,
+    TimedOut,
+}
+
 /// What the machine's processes report.
 #[derive(Debug, Clone)]
 pub struct Observed {
@@ -167,6 +175,13 @@ impl Machines {
             stopping: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
+    }
+
+    /// The configuration as it is on disk now, for settings that apply
+    /// without restarting the daemon (tools, model providers); the one the
+    /// daemon started with if the file cannot be read.
+    pub fn current_config(&self) -> GlobalConfig {
+        GlobalConfig::load(&self.paths.global_config()).unwrap_or_else(|_| self.config.clone())
     }
 
     fn machine_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
@@ -480,8 +495,10 @@ impl Machines {
     pub async fn stop(&self, id: &str) -> Result<()> {
         self.record(id)?;
         let asked = self.request_stop(id, "stop").await;
-        if !self.wait_stopped(id, asked).await {
-            self.supervisor.kill(id, &self.runtime(id)).await?;
+        match self.wait_stopped(id, asked).await {
+            Stopped::Restarted => return Ok(()),
+            Stopped::TimedOut => self.supervisor.kill(id, &self.runtime(id)).await?,
+            Stopped::Yes => {}
         }
         self.forget(id);
         Ok(())
@@ -499,19 +516,21 @@ impl Machines {
     }
 
     /// Waits until the machine's processes are gone, or it was started
-    /// again after the stop `asked` (then there is nothing left to stop);
-    /// false on timeout.
-    async fn wait_stopped(&self, id: &str, asked: Instant) -> bool {
+    /// again after the stop `asked` (then there is nothing left to stop).
+    async fn wait_stopped(&self, id: &str, asked: Instant) -> Stopped {
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
         while tokio::time::Instant::now() < deadline {
             let restarted = self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
                 || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked);
-            if restarted || self.observe(id).await.state == "stopped" {
-                return true;
+            if restarted {
+                return Stopped::Restarted;
+            }
+            if self.observe(id).await.state == "stopped" {
+                return Stopped::Yes;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        false
+        Stopped::TimedOut
     }
 
     fn forget(&self, id: &str) {
@@ -597,7 +616,14 @@ impl Machines {
         }
     }
 
-    pub async fn add_attachment(&self, id: &str, req: toby_api::AddAttachment) -> Result<AttachmentInfo> {
+    /// Adds an attachment; for a session, one already at the same place
+    /// with the same directory is shared instead.
+    pub async fn add_attachment(
+        &self,
+        id: &str,
+        req: toby_api::AddAttachment,
+        session: Option<&str>,
+    ) -> Result<AttachmentInfo> {
         self.record(id)?;
         let host = std::fs::canonicalize(&req.host).map_err(|_| {
             Error::new(ErrorKind::NotFound, "attach.missing", format!("{} does not exist", req.host))
@@ -624,8 +650,9 @@ impl Machines {
             host: host.clone(),
             at: at.clone(),
             read_only: req.read_only,
-            pinned: req.pinned || req.persist,
-            persist: req.persist,
+            pinned: session.is_none() && (req.pinned || req.persist),
+            persist: session.is_none() && req.persist,
+            sessions: session.map(|s| vec![s.to_string()]).unwrap_or_default(),
         };
         let lock = self.machine_lock(id);
         let _lock = lock.lock().await;
@@ -637,8 +664,19 @@ impl Machines {
                 format!("machine {id} is not running; --persist mounts it whenever it starts"),
             ));
         }
+        let mut shared = None;
         let generation = self.update_desired(id, |spec| {
-            if let Some(a) = spec.attach.iter().find(|a| a.at == at) {
+            if let Some(a) = spec.attach.iter_mut().find(|a| a.at == at) {
+                if let Some(s) = session
+                    && a.host == host
+                    && a.read_only == attach.read_only
+                {
+                    if !a.sessions.iter().any(|x| x == s) {
+                        a.sessions.push(s.to_string());
+                    }
+                    shared = Some(a.clone());
+                    return Ok(());
+                }
                 return Err(Error::new(
                     ErrorKind::Conflict,
                     "attach.target-in-use",
@@ -648,6 +686,11 @@ impl Machines {
             spec.attach.push(attach.clone());
             Ok(())
         })?;
+        if let Some(a) = shared {
+            let status = MachineStatus::load(&self.runtime(id).status()).ok();
+            let entry = status.as_ref().and_then(|s| s.attach.iter().find(|x| x.id == a.id));
+            return Ok(attachment_info(&a, entry, running));
+        }
         if !running {
             return Ok(attachment_info(&attach, None, false));
         }
@@ -757,7 +800,14 @@ impl Machines {
 
     // Forwards
 
-    pub async fn add_forward(&self, id: &str, req: toby_api::AddForward) -> Result<ForwardInfo> {
+    /// Adds a forward; for a session, the same forward in this machine is
+    /// shared instead.
+    pub async fn add_forward(
+        &self,
+        id: &str,
+        req: toby_api::AddForward,
+        session: Option<&str>,
+    ) -> Result<ForwardInfo> {
         self.record(id)?;
         let direction = match req.direction.as_str() {
             "host-to-guest" => Direction::HostToGuest,
@@ -784,9 +834,31 @@ impl Machines {
             direction,
             host: req.host.clone(),
             guest: req.guest.clone(),
-            pinned: req.pinned || req.persist,
-            persist: req.persist,
+            pinned: session.is_none() && (req.pinned || req.persist),
+            persist: session.is_none() && req.persist,
+            sessions: session.map(|s| vec![s.to_string()]).unwrap_or_default(),
         };
+        if let Some(s) = session {
+            let lock = self.machine_lock(id);
+            let _lock = lock.lock().await;
+            let mut shared = None;
+            self.update_desired(id, |spec| {
+                if let Some(f) = spec
+                    .forward
+                    .iter_mut()
+                    .find(|f| f.direction == direction && f.host == req.host && f.guest == req.guest)
+                {
+                    if !f.sessions.iter().any(|x| x == s) {
+                        f.sessions.push(s.to_string());
+                    }
+                    shared = Some(f.clone());
+                }
+                Ok(())
+            })?;
+            if let Some(f) = shared {
+                return Ok(forward_info(&f, None, true));
+            }
+        }
         // A host address can be listened on once, across machines.
         if direction == Direction::HostToGuest {
             for other in self.records() {
@@ -869,16 +941,67 @@ impl Machines {
 
     // Sessions
 
-    pub async fn create_session(&self, req: toby_api::CreateSession) -> Result<(MachineSpec, String)> {
-        if req.argv.is_empty() {
+    /// The tool manifests: built-in ones and the user's (plan §16.1).
+    pub fn manifests(&self) -> io::Result<std::collections::BTreeMap<String, toby_tools::Manifest>> {
+        let dir = self.paths.global_config().parent().map(|d| d.join("tools")).unwrap_or_default();
+        toby_tools::load(&dir)
+    }
+
+    pub fn manifest(&self, name: &str) -> Result<toby_tools::Manifest> {
+        self.manifests()?.remove(name).ok_or_else(|| {
+            Error::new(ErrorKind::NotFound, "tool.unknown", format!("there is no tool {name}"))
+        })
+    }
+
+    /// Starts a session: a command, or a tool with its environment. The
+    /// session's attachments (projects) and a tool's login forwards last as
+    /// long as sessions use them.
+    pub async fn create_session(
+        &self,
+        req: toby_api::CreateSession,
+    ) -> Result<(MachineSpec, String, Vec<Warning>)> {
+        if req.argv.is_empty() && req.tool.is_none() {
             return Err(Error::new(ErrorKind::BadRequest, "session.no-command", "no command given"));
         }
+        let manifest = req.tool.as_deref().map(|t| self.manifest(t)).transpose()?;
         let spec = self.select(&req.target).await?;
+        let session_id = toby_config::new_id();
+        let mut warnings = Vec::new();
+
+        let mut workspace = None;
+        for a in req.attachments {
+            let info = self.add_attachment(&spec.id, a, Some(&session_id)).await?;
+            workspace.get_or_insert(info.at);
+        }
+        let cwd = req.cwd.or(workspace.clone());
+        let (argv, env) = match &manifest {
+            Some(m) => {
+                for f in &m.tool.forwards {
+                    let addr = format!("127.0.0.1:{}", f.port);
+                    let fwd = toby_api::AddForward {
+                        direction: f.direction.clone(),
+                        host: addr.clone(),
+                        guest: addr,
+                        pinned: false,
+                        persist: false,
+                    };
+                    if let Err(e) = self.add_forward(&spec.id, fwd, Some(&session_id)).await {
+                        warnings.push(Warning {
+                            id: "tool.login-forward".into(),
+                            message: format!("{}'s login may not complete: {}", m.tool.name, e.message),
+                        });
+                    }
+                }
+                let ws = workspace.as_deref().unwrap_or("");
+                crate::tools::launch(self, &spec, m, ws, &req.argv, req.yolo)?
+            }
+            None => (req.argv, req.env),
+        };
         let session = SpawnSpec {
-            session_id: toby_config::new_id(),
-            argv: req.argv,
-            env: req.env,
-            cwd: req.cwd,
+            session_id,
+            argv,
+            env,
+            cwd,
             identity: if spec.home.is_none() { Identity::Root } else { req.identity },
             tty: req.tty.map(|t| TtySize { rows: t.rows, cols: t.cols }),
             keep_after_exit: true,
@@ -887,7 +1010,33 @@ impl Machines {
         let mut c = Control::connect(&self.runtime(&spec.id)).await?;
         let id = c.spawn(session).await?;
         self.activity.lock().unwrap().insert(spec.id.clone(), Instant::now());
-        Ok((spec, id))
+        Ok((spec, id, warnings))
+    }
+
+    /// Removes attachments and forwards whose sessions have all ended.
+    async fn release_session_items(&self, spec: &MachineSpec) {
+        let has_owned = spec.attach.iter().any(|a| !a.sessions.is_empty())
+            || spec.forward.iter().any(|f| !f.sessions.is_empty());
+        if !has_owned {
+            return;
+        }
+        let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { return };
+        let Ok(sessions) = c.sessions().await else { return };
+        let live: Vec<String> = sessions.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect();
+        let lock = self.machine_lock(&spec.id);
+        let _lock = lock.lock().await;
+        let _ = self.update_desired(&spec.id, |spec| {
+            for a in &mut spec.attach {
+                a.sessions.retain(|s| live.contains(s));
+            }
+            for f in &mut spec.forward {
+                f.sessions.retain(|s| live.contains(s));
+            }
+            // Items that had sessions and have none left go, unless pinned.
+            spec.attach.retain(|a| a.pinned || !a.sessions.is_empty() || a.persist);
+            spec.forward.retain(|f| f.pinned || !f.sessions.is_empty() || f.persist);
+            Ok(())
+        });
     }
 
     /// Sessions of every running machine, with the machine's ID.
@@ -956,6 +1105,7 @@ impl Machines {
                 if self.observe(&spec.id).await.state != "ready" {
                     continue;
                 }
+                self.release_session_items(&spec).await;
                 let busy = match Control::connect(&self.runtime(&spec.id)).await {
                     Ok(mut c) => {
                         c.sessions().await.map(|l| l.iter().any(|s| s.exit.is_none())).unwrap_or(true)
@@ -986,8 +1136,12 @@ impl Machines {
                     }
                 };
                 if let Some(asked) = decided {
-                    if !self.wait_stopped(&spec.id, asked).await {
-                        let _ = self.supervisor.kill(&spec.id, &self.runtime(&spec.id)).await;
+                    match self.wait_stopped(&spec.id, asked).await {
+                        Stopped::Restarted => continue,
+                        Stopped::TimedOut => {
+                            let _ = self.supervisor.kill(&spec.id, &self.runtime(&spec.id)).await;
+                        }
+                        Stopped::Yes => {}
                     }
                     self.forget(&spec.id);
                 }

@@ -142,6 +142,16 @@ pub struct MachineSelector {
 pub struct CreateSession {
     #[serde(flatten)]
     pub target: MachineSelector,
+    /// A tool to launch (plan §16.1); `argv` then holds extra arguments.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// Launch the tool without its permission prompts.
+    #[serde(default)]
+    pub yolo: bool,
+    /// Directories attached for as long as sessions use them; the first is
+    /// the working directory unless `cwd` is given.
+    #[serde(default)]
+    pub attachments: Vec<AddAttachment>,
     pub argv: Vec<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
@@ -169,6 +179,14 @@ pub struct MachineSession {
     pub control_socket: String,
     #[serde(flatten)]
     pub session: SessionInfo,
+}
+
+/// `POST /v1/machines/{id}/tools/{name}/prepare`: check, install or update
+/// a tool and write its files; returns a build ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareTool {
+    #[serde(default)]
+    pub upgrade: bool,
 }
 
 /// `POST /v1/sessions/{id}/kill`.
@@ -292,6 +310,9 @@ mod tests {
     fn sessions_flatten_their_target() {
         let req = CreateSession {
             target: MachineSelector { home: Some("work".into()), ..Default::default() },
+            tool: None,
+            yolo: false,
+            attachments: Vec::new(),
             argv: vec!["bash".into()],
             env: Vec::new(),
             cwd: None,

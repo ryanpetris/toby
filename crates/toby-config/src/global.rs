@@ -23,6 +23,23 @@ pub struct GlobalConfig {
     /// Model providers, by name (plan §16.2).
     #[serde(default)]
     pub models: std::collections::BTreeMap<String, ModelProvider>,
+    /// Per-tool settings, by tool name (plan §14.1).
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, ToolSettings>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSettings {
+    /// The model provider the tool uses through the models proxy; without
+    /// one the tool uses its own login.
+    pub models: Option<String>,
+    /// MCP servers the tool gets.
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    /// Extra arguments of every launch.
+    #[serde(default)]
+    pub params: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -102,6 +119,9 @@ pub struct Settings {
     /// Warning IDs not to print, or `"*"` for all.
     #[serde(default)]
     pub suppress_warnings: Vec<String>,
+    /// Launch tools without their permission prompts.
+    #[serde(default)]
+    pub yolo: bool,
 }
 
 impl Settings {
@@ -222,10 +242,10 @@ mod tests {
 
     #[test]
     fn warnings_can_be_suppressed() {
-        let s = Settings { suppress_warnings: vec!["daemon.linger-disabled".into()] };
+        let s = Settings { suppress_warnings: vec!["daemon.linger-disabled".into()], ..Default::default() };
         assert!(s.suppressed("daemon.linger-disabled"));
         assert!(!s.suppressed("other"));
-        assert!(Settings { suppress_warnings: vec!["*".into()] }.suppressed("other"));
+        assert!(Settings { suppress_warnings: vec!["*".into()], ..Default::default() }.suppressed("other"));
     }
 
     #[test]

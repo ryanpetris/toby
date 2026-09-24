@@ -90,6 +90,10 @@ pub struct Attach {
     /// Recreated every time the machine starts.
     #[serde(default)]
     pub persist: bool,
+    /// Sessions that use the attachment; it is removed when the last one
+    /// ends (unless pinned).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +118,10 @@ pub struct Forward {
     /// Recreated every time the machine starts.
     #[serde(default)]
     pub persist: bool,
+    /// Sessions that use the forward; it is removed when the last one ends
+    /// (unless pinned).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

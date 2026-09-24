@@ -9,12 +9,13 @@ mod images;
 mod internal;
 mod mounts;
 mod table;
+mod tool;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, GuestCommand, HelperCommand, InternalCommand, SessionsCommand, ToolArgs};
+use cli::{Cli, Command, GuestCommand, HelperCommand, InternalCommand, SessionsCommand};
 use toby_proto::types::Identity;
 
 #[global_allocator]
@@ -108,10 +109,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             GuestCommand::Connect { .. } => "guest connect",
             GuestCommand::Helper(cmd) => return helper(cmd).map(|()| ExitCode::SUCCESS),
         },
-        Command::Tool(argv) => {
-            ToolArgs::try_parse_from(&argv[1..]).unwrap_or_else(|e| e.exit());
-            "<tool>"
-        }
+        Command::Tool(argv) => return runtime()?.block_on(tool::run(argv)),
     };
     anyhow::bail!("`toby {name}` is not implemented yet")
 }

@@ -32,6 +32,9 @@ pub struct Tool {
     /// Runs as the user on an upgrade request; default: `install`.
     pub update: Option<Script>,
     pub launch: Vec<String>,
+    /// Arguments that skip the tool's permission prompts (`--yolo`).
+    #[serde(default)]
+    pub yolo: Vec<String>,
     /// Directories added to `PATH` for the tool (`~/.local/bin` always is).
     #[serde(default)]
     pub path: Vec<String>,

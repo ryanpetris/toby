@@ -91,6 +91,7 @@ impl Machine {
                     read_only: a.read_only,
                     pinned: false,
                     persist: false,
+                    sessions: Vec::new(),
                 };
                 (a.id.clone(), attach)
             })

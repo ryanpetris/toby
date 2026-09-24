@@ -6,7 +6,9 @@ use std::time::Duration;
 use toby_config::paths::MachineRuntime;
 use toby_proto::frame;
 use toby_proto::machine::{self, Request, Response};
-use toby_proto::types::{SUPPORTED, SessionInfo, SpawnSpec};
+use toby_proto::session::{self, ClientFrame, ServerFrame};
+use toby_proto::stream::{HostHeader, Reply, SessionAttach};
+use toby_proto::types::{ExitStatus, Identity, SUPPORTED, SessionInfo, SpawnSpec};
 use tokio::net::UnixStream;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -70,5 +72,49 @@ impl Control {
     /// Asks the machine to power off.
     pub async fn stop(&mut self) -> io::Result<()> {
         self.call(Request::Stop(machine::Stop {})).await.map(drop)
+    }
+}
+
+/// Runs a command in the machine to completion, streaming its output to
+/// `out` (with whether it is stderr), and returns its exit status.
+pub async fn run(
+    runtime: &MachineRuntime,
+    argv: Vec<String>,
+    identity: Identity,
+    env: Vec<(String, String)>,
+    out: &mut (dyn FnMut(&[u8], bool) + Send),
+) -> io::Result<ExitStatus> {
+    let spec = SpawnSpec {
+        session_id: toby_config::new_id(),
+        argv,
+        env,
+        cwd: None,
+        identity,
+        tty: None,
+        keep_after_exit: true,
+        start_on_attach: true,
+    };
+    let id = Control::connect(runtime).await?.spawn(spec).await?;
+
+    let mut s = UnixStream::connect(runtime.session_sock()).await?;
+    frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: id })).await?;
+    frame::recv::<Reply, _>(&mut s).await?.into_result().map_err(io::Error::other)?;
+    let hello = ClientFrame::Hello(session::Hello {
+        versions: SUPPORTED.to_vec(),
+        rows: 0,
+        cols: 0,
+        want_replay: true,
+        resume_from: None,
+    });
+    frame::send(&mut s, &hello).await?;
+    loop {
+        match frame::recv::<ServerFrame, _>(&mut s).await? {
+            ServerFrame::Stdout(o) => out(&o.bytes, false),
+            ServerFrame::Stderr(e) => out(&e.bytes, true),
+            ServerFrame::Replay(r) => out(&r.bytes, r.stderr),
+            ServerFrame::Exit(e) => return Ok(e.status),
+            ServerFrame::Refused(r) => return Err(io::Error::other(r.error)),
+            _ => {}
+        }
     }
 }

@@ -24,6 +24,7 @@ toby-proto.workspace = true
 toby-proxy.workspace = true
 toby-store.workspace = true
 toby-svc.workspace = true
+toby-tools.workspace = true
 tokio.workspace = true
 tower.workspace = true
 ureq.workspace = true

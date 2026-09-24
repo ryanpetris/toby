@@ -13,10 +13,8 @@ use toby_config::global::GlobalConfig;
 use toby_config::machine::{self, Attach, Boot, Disk, MachineSpec, MachineStatus, RootSpec, State};
 use toby_config::paths::{MachineRuntime, Paths};
 use toby_proto::machine::{Request, Response};
-use toby_proto::session::{ClientFrame, ServerFrame};
-use toby_proto::stream::{HostHeader, Reply, SessionAttach};
-use toby_proto::types::{ExitStatus, Identity, SUPPORTED, SpawnSpec};
-use toby_proto::{frame, machine as mp, session};
+use toby_proto::types::{ExitStatus, Identity, SUPPORTED};
+use toby_proto::{frame, machine as mp};
 use toby_store::records::{ImageConfig, ImageRecord, ImageSource, now};
 use toby_store::{Store, hash, qcow2};
 use tokio::net::UnixStream;
@@ -55,6 +53,14 @@ fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// The version new guest processes run: the target of `<versions>/current`.
+pub fn runtime_version(versions: &Path) -> String {
+    std::fs::read_link(versions.join("current"))
+        .ok()
+        .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
 /// A job's command line in the guest.
 fn helper(version: &str, args: &[&str]) -> Vec<String> {
     let toby = format!("/run/toby/fs/versions/{version}/toby");
@@ -68,11 +74,7 @@ impl Builder {
     }
 
     fn runtime_version(&self) -> String {
-        let versions = self.config.programs.versions();
-        std::fs::read_link(versions.join("current"))
-            .ok()
-            .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+        runtime_version(&self.config.programs.versions())
     }
 
     fn builder_dir(&self) -> PathBuf {
@@ -287,7 +289,9 @@ impl Builder {
         let result = async {
             wait_ready(&runtime, &mut supervisor).await?;
             for argv in jobs {
-                let status = run_job(&runtime, argv, &mut *out).await?;
+                // Root, with the adaptation version the scripts record.
+                let env = vec![("TOBY_ADAPTATION_VERSION".into(), ADAPTATION_VERSION.to_string())];
+                let status = crate::control::run(&runtime, argv, Identity::Root, env, &mut *out).await?;
                 if status != ExitStatus::Code(0) {
                     return Err(err(format!("the build job failed (exit status {})", status.code())));
                 }
@@ -467,6 +471,7 @@ impl Builder {
             read_only: false,
             pinned: false,
             persist: false,
+            sessions: Vec::new(),
         }];
         if let Some(ctx) = &job.context {
             attach.push(Attach {
@@ -476,6 +481,7 @@ impl Builder {
                 read_only: true,
                 pinned: false,
                 persist: false,
+                sessions: Vec::new(),
             });
         }
 
@@ -751,53 +757,6 @@ async fn wait_ready(runtime: &MachineRuntime, supervisor: &mut tokio::process::C
 async fn control_call(s: &mut UnixStream, req: Request) -> io::Result<Response> {
     frame::send(s, &req).await?;
     Ok(frame::recv(s).await?)
-}
-
-/// Runs one command in the builder as root and streams its output.
-async fn run_job(runtime: &MachineRuntime, argv: Vec<String>, out: Output<'_>) -> io::Result<ExitStatus> {
-    let mut c = UnixStream::connect(runtime.control_sock()).await?;
-    match control_call(&mut c, Request::Hello(mp::Hello { versions: SUPPORTED.to_vec() })).await? {
-        Response::Welcome(_) => {}
-        other => return Err(err(format!("unexpected response {other:?}"))),
-    }
-    let spec = SpawnSpec {
-        session_id: toby_config::new_id(),
-        argv,
-        env: vec![("TOBY_ADAPTATION_VERSION".into(), ADAPTATION_VERSION.to_string())],
-        cwd: Some("/".into()),
-        identity: Identity::Root,
-        tty: None,
-        keep_after_exit: true,
-        start_on_attach: true,
-    };
-    let id = spec.session_id.clone();
-    match control_call(&mut c, Request::Spawn(mp::Spawn { spec })).await? {
-        Response::Spawned(_) => {}
-        Response::Failed(f) => return Err(err(f.error)),
-        other => return Err(err(format!("unexpected response {other:?}"))),
-    }
-
-    let mut s = UnixStream::connect(runtime.session_sock()).await?;
-    frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: id })).await?;
-    frame::recv::<Reply, _>(&mut s).await?.into_result().map_err(err)?;
-    let hello = ClientFrame::Hello(session::Hello {
-        versions: SUPPORTED.to_vec(),
-        rows: 0,
-        cols: 0,
-        want_replay: true,
-        resume_from: None,
-    });
-    frame::send(&mut s, &hello).await?;
-    loop {
-        match frame::recv::<ServerFrame, _>(&mut s).await? {
-            ServerFrame::Stdout(o) => out(&o.bytes, false),
-            ServerFrame::Stderr(e) => out(&e.bytes, true),
-            ServerFrame::Replay(r) => out(&r.bytes, r.stderr),
-            ServerFrame::Exit(e) => return Ok(e.status),
-            ServerFrame::Refused(r) => return Err(err(r.error)),
-            _ => {}
-        }
-    }
 }
 
 /// An output sink that writes to the terminal and a log file.

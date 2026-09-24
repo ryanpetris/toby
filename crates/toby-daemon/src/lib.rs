@@ -7,6 +7,7 @@ pub mod download;
 pub mod machines;
 pub mod server;
 pub mod supervisor;
+pub mod tools;
 
 use std::io;
 use std::sync::Arc;

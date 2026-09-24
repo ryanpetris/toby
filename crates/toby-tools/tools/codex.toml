@@ -5,6 +5,7 @@ check = ["codex", "--version"]
 install = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex" }
 update = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex@latest" }
 launch = ["codex"]
+yolo = ["--dangerously-bypass-approvals-and-sandbox"]
 
 [tool.models]
 protocol = "openai"

@@ -5,6 +5,7 @@ check = ["claude", "--version"]
 install = { script = "curl -fsSL https://claude.ai/install.sh | bash" }
 update = { script = "claude update" }
 launch = ["claude"]
+yolo = ["--dangerously-skip-permissions"]
 
 [tool.models]
 protocol = "anthropic"
@@ -15,8 +16,3 @@ path = "~/.claude.json"
 format = "json"
 pointer = "/mcpServers"
 entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
-
-[[tool.forwards]]
-when = "login"
-direction = "host-to-guest"
-port = 54545

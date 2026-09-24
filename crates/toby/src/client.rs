@@ -47,7 +47,7 @@ fn exit_code(status: ExitStatus) -> ExitCode {
     ExitCode::from(status.code().clamp(0, 255) as u8)
 }
 
-async fn attach_terminal(
+pub async fn attach_terminal(
     session_sock: PathBuf,
     control_sock: PathBuf,
     session_id: &str,
@@ -98,6 +98,9 @@ pub async fn run_session(
     }
     let req = toby_api::CreateSession {
         target: selector(sel),
+        tool: None,
+        yolo: false,
+        attachments: Vec::new(),
         argv,
         env,
         cwd,

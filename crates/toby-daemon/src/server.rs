@@ -56,6 +56,7 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/machines/{id}/attachments/{aid}", delete(remove_attachment))
         .route("/v1/machines/{id}/forwards", post(add_forward))
         .route("/v1/machines/{id}/forwards/{fid}", delete(remove_forward))
+        .route("/v1/machines/{id}/tools/{name}/prepare", post(prepare_tool))
         .route("/v1/sessions", get(sessions).post(create_session))
         .route("/v1/sessions/{id}/kill", post(kill_session))
         .route("/v1/images", get(images))
@@ -125,7 +126,7 @@ async fn add_attachment(
     Path(id): Path<String>,
     Json(req): Json<api::AddAttachment>,
 ) -> ApiResult<api::AttachmentInfo> {
-    d.machines.add_attachment(&id, req).await.map(Json)
+    d.machines.add_attachment(&id, req, None).await.map(Json)
 }
 
 async fn remove_attachment(State(d): Shared, Path((id, aid)): Path<(String, String)>) -> ApiResult<()> {
@@ -137,11 +138,27 @@ async fn add_forward(
     Path(id): Path<String>,
     Json(req): Json<api::AddForward>,
 ) -> ApiResult<api::ForwardInfo> {
-    d.machines.add_forward(&id, req).await.map(Json)
+    d.machines.add_forward(&id, req, None).await.map(Json)
 }
 
 async fn remove_forward(State(d): Shared, Path((id, fid)): Path<(String, String)>) -> ApiResult<()> {
     d.machines.remove_forward(&id, &fid).await.map(Json)
+}
+
+async fn prepare_tool(
+    State(d): Shared,
+    Path((id, name)): Path<(String, String)>,
+    Json(req): Json<api::PrepareTool>,
+) -> ApiResult<api::BuildStarted> {
+    let spec = d.machines.record(&id)?;
+    let manifest = d.machines.manifest(&name)?;
+    let machines = d.machines.clone();
+    let b = d.builds.start(d.builder.paths.state.join("builds"), "tool", move |out| {
+        Box::pin(async move {
+            crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, out).await.map(|()| None)
+        })
+    })?;
+    Ok(started(b))
 }
 
 // Sessions
@@ -150,9 +167,9 @@ async fn create_session(
     State(d): Shared,
     Json(req): Json<api::CreateSession>,
 ) -> ApiResult<api::SessionCreated> {
-    let (spec, id) = d.machines.create_session(req).await?;
+    let (spec, id, mut warnings) = d.machines.create_session(req).await?;
     let runtime = d.machines.runtime(&spec.id);
-    let warnings = d.machines.warnings().await;
+    warnings.extend(d.machines.warnings().await);
     Ok(Json(api::SessionCreated {
         id,
         machine: spec.id,
