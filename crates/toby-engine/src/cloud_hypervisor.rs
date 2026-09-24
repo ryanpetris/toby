@@ -32,6 +32,9 @@ pub fn args(spec: &VmSpec) -> io::Result<Vec<OsString>> {
             push("--initramfs", utf8(initramfs)?.into());
             push("--cmdline", cmdline.clone());
         }
+        // On aarch64 the UEFI firmware (CLOUDHV_EFI.fd) is loaded as the
+        // kernel.
+        BootSpec::Firmware { path } if cfg!(target_arch = "aarch64") => push("--kernel", utf8(path)?.into()),
         BootSpec::Firmware { path } => push("--firmware", utf8(path)?.into()),
     }
 

@@ -1841,9 +1841,12 @@ side is always Linux and identical on every host.
 aarch64: the `toby` binary built for `aarch64-unknown-linux-musl`;
 bootstrap uses Debian arm64 genericcloud; boot adaptation installs the
 distro's arm64 kernel; the bundled firmware on aarch64 is edk2
-`CLOUDHV_EFI.fd` from the same release as the x86_64 `CLOUDHV.fd`
-(**VERIFY** in M11 that it boots the arm64 cloud image and whether Cloud
-Hypervisor loads it with `--firmware` or `--kernel` on aarch64).
+`CLOUDHV_EFI.fd` from the same release as the x86_64 `CLOUDHV.fd`,
+which Cloud Hypervisor loads with `--kernel` on aarch64. Cloud Hypervisor
+boots arm64 kernels only as an uncompressed `Image`, so image builds unpack
+gzip and EFI zboot kernels (Debian's cloud kernel is already an `Image`).
+M11 status: the binary builds for `aarch64-unknown-linux-musl` and runs
+under qemu-user; booting on aarch64 hardware has not been tried.
 
 ---
 

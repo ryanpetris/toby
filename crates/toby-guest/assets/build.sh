@@ -50,6 +50,30 @@ mkdir -p /cache/containers /cache/mkosi/packages /cache/mkosi/cache /cache/mkosi
     /var/lib/containers
 mountpoint -q /var/lib/containers || mount --bind /cache/containers /var/lib/containers
 
+# Cloud Hypervisor boots an arm64 kernel only as an uncompressed Image;
+# distributions ship it gzip-compressed or as an EFI zboot image, whose
+# header names the payload's offset, size and compression.
+unpack_arm64_kernel() {
+    f=$1
+    if [ "$(od -An -tx1 -N2 "$f" | tr -d ' \n')" = 1f8b ]; then
+        gzip -dc "$f" > "$f.image"
+        mv "$f.image" "$f"
+    elif [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = zimg ]; then
+        off=$(od -An -tu4 -j8 -N4 "$f" | tr -d ' ')
+        size=$(od -An -tu4 -j12 -N4 "$f" | tr -d ' ')
+        comp=$(dd if="$f" bs=1 skip=24 count=8 2>/dev/null | tr -d '\0')
+        case $comp in
+            gzip) set -- gzip -dc ;;
+            zstd*) set -- zstd -dc ;;
+            xz) set -- xz -dc ;;
+            lzma) set -- xz --format=lzma -dc ;;
+            *) echo "The kernel is compressed with $comp, which Toby cannot unpack" >&2; exit 1 ;;
+        esac
+        tail -c +$((off + 1)) "$f" | head -c "$size" | "$@" > "$f.image"
+        mv "$f.image" "$f"
+    fi
+}
+
 container=
 tree=
 cleanup() {
@@ -140,6 +164,9 @@ for k in "$tree/usr/lib/modules/$kver/vmlinuz" "$tree/boot/vmlinuz-$kver" "$tree
 done
 [ -n "$kernel" ] || { echo "No kernel image for $kver" >&2; exit 1; }
 cp -L "$kernel" "$boot/vmlinuz"
+if [ "$(uname -m)" = aarch64 ]; then
+    unpack_arm64_kernel "$boot/vmlinuz"
+fi
 cp "$tree/boot/toby-initramfs.img" "$boot/initramfs.img"
 echo "$kver" > "$boot/kernel-version"
 fstrim /out || true
