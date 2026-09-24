@@ -1391,6 +1391,9 @@ impl Machines {
         let this = self.clone();
         let spec = spec.clone();
         tokio::spawn(async move {
+            // Read before the session lists: a server whose start ends in
+            // between is then in one of the two.
+            let starting = this.connecting.lock().unwrap().clone();
             let mut names: Vec<String> = spec.mcp_revoked.iter().map(|r| r.name.clone()).collect();
             names
                 .extend(spec.mcp_grants.iter().filter(|g| !g.connections.is_empty()).map(|g| g.name.clone()));
@@ -1422,10 +1425,17 @@ impl Machines {
             }
             // Only what was seen gone is forgotten; a kill is confirmed by
             // the next sweep.
-            // A server still starting is not gone.
-            let starting = this.connecting.lock().unwrap().clone();
+            // Gone: examined here (recorded before this sweep), not starting
+            // when it began, and not running when its machine was asked.
+            let examined: std::collections::HashSet<String> = spec
+                .mcp_revoked
+                .iter()
+                .map(|r| r.session.clone())
+                .chain(spec.mcp_grants.iter().flat_map(|g| g.connections.iter().cloned()))
+                .collect();
             let gone = |name: &str, session: &str| {
-                !starting.contains(session)
+                examined.contains(session)
+                    && !starting.contains(session)
                     && running
                         .get(name)
                         .is_some_and(|l| l.as_ref().is_some_and(|l| !l.iter().any(|s| s == session)))
