@@ -216,10 +216,15 @@ pub enum ImageCommand {
     },
     /// Build an image from a Dockerfile
     Build {
-        #[arg(long)]
+        /// Dockerfile (default: Dockerfile in the context)
+        #[arg(long, conflicts_with = "mkosi")]
         dockerfile: Option<PathBuf>,
-        #[arg(long)]
+        /// Build context (default: the current directory)
+        #[arg(long, conflicts_with = "mkosi")]
         context: Option<PathBuf>,
+        /// mkosi configuration directory
+        #[arg(long)]
+        mkosi: Option<PathBuf>,
     },
     /// Build an image from a registry reference
     Pull { reference: String },
@@ -260,7 +265,15 @@ pub enum HomeCommand {
     /// List homes
     Ls,
     /// Create a home
-    Create { name: String },
+    Create {
+        name: String,
+        /// Guest user name (default: yours)
+        #[arg(long)]
+        user: Option<String>,
+        /// Guest user ID (default: yours)
+        #[arg(long)]
+        uid: Option<u32>,
+    },
     /// Remove a home
     Rm { name: String },
 }
@@ -431,6 +444,12 @@ pub enum HelperCommand {
         #[arg(long)]
         target: PathBuf,
     },
+    /// Build an image (builder machines)
+    Build { id: String, kind: String, args: Vec<String> },
+    /// Install build tools into the bootstrap builder
+    Provision,
+    /// Format a new home disk
+    FormatHome,
     /// Bind-mount an attached host directory
     Attach {
         #[arg(long)]

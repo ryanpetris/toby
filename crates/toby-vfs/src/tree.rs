@@ -31,14 +31,17 @@ fn vfs_error(e: fuse_backend_rs::api::vfs::VfsError) -> io::Error {
 }
 
 fn backend(spec: &MountSpec) -> io::Result<BackFileSystem> {
-    if !spec.source.is_dir() {
+    // The passthrough opens its root without following symlinks; mount
+    // sources come from host configuration, so resolve them first.
+    let source = std::fs::canonicalize(&spec.source)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", spec.source.display())))?;
+    if !source.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("{} is not a directory", spec.source.display()),
+            format!("{} is not a directory", source.display()),
         ));
     }
-    let root_dir = spec
-        .source
+    let root_dir = source
         .to_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path is not UTF-8"))?
         .to_string();

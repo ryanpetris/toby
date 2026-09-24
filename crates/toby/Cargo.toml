@@ -19,6 +19,7 @@ mimalloc.workspace = true
 nix.workspace = true
 tokio.workspace = true
 toby-config.workspace = true
+toby-daemon.workspace = true
 toby-engine.workspace = true
 toby-fs.workspace = true
 toby-guest.workspace = true

@@ -1,5 +1,6 @@
 //! Images, roots, homes, boot files, locks and garbage collection.
 
+pub mod hash;
 pub mod qcow2;
 pub mod records;
 pub mod store;

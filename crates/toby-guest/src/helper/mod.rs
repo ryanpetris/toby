@@ -1,6 +1,7 @@
 //! `toby guest helper …`: short-lived guest operations run as root by
 //! `toby internal machine` (plan §9.6).
 
+pub mod build;
 pub mod home;
 pub mod net;
 pub mod user;

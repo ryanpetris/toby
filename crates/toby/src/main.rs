@@ -2,6 +2,7 @@
 
 mod cli;
 mod client;
+mod images;
 mod internal;
 
 use std::process::ExitCode;
@@ -60,10 +61,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Mount(_) => "mount",
         Command::Unmount { .. } => "unmount",
         Command::Forward(_) => "forward",
-        Command::Image(_) => "image",
-        Command::Root(_) => "root",
-        Command::Home(_) => "home",
-        Command::Builder(_) => "builder",
+        Command::Image(cmd) => return runtime()?.block_on(images::image(cmd)),
+        Command::Root(cmd) => return runtime()?.block_on(images::root(cmd)),
+        Command::Home(cmd) => return runtime()?.block_on(images::home(cmd)),
+        Command::Builder(cmd) => return runtime()?.block_on(images::builder_cmd(cmd)),
         Command::Mcp(_) => "mcp",
         Command::Approvals(_) => "approvals",
         Command::Daemon(_) => "daemon",
@@ -124,6 +125,16 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
         }
         HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
         HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
+        HelperCommand::Build { id, kind, args } => {
+            let args: Vec<String> = [id, kind].into_iter().chain(args).collect();
+            helper::build::exec_script(&paths.root().join("build"), "build.sh", &args)?;
+        }
+        HelperCommand::Provision => {
+            helper::build::exec_script(&paths.root().join("build"), "provision.sh", &[])?
+        }
+        HelperCommand::FormatHome => {
+            helper::build::exec_script(&paths.root().join("build"), "format-home.sh", &[])?
+        }
     }
     Ok(())
 }

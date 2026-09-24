@@ -84,7 +84,9 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
         .with_context(|| format!("serving {}", versions.display()))?;
     if !matches!(host.spec.root, RootSpec::Named(_)) {
         let share = host.config.programs.share();
-        for (at, dir) in [("/mkosi", "mkosi"), ("/images", "images"), ("/dracut", "dracut")] {
+        for (at, dir) in
+            [("/mkosi", "mkosi"), ("/images/default", "images/default"), ("/dracut/99toby", "dracut/99toby")]
+        {
             let source = share.join(dir);
             tree.mount(at, ro(source.clone())).with_context(|| format!("serving {}", source.display()))?;
         }
