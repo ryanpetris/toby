@@ -127,13 +127,14 @@ Session frames:
 Output is numbered by offset: the count of output bytes since the session
 started. `Welcome.offset` is the offset of the first byte the client receives
 next. A client that reconnects sends `resume_from` with the offset it has
-reached and receives the buffered output from there; `Welcome.lost` counts
-bytes that were no longer buffered. Without `resume_from`, `want_replay`
-selects the whole buffer or nothing.
+reached and receives the buffered output from there (the session keeps the
+last 8 MiB for this); `Welcome.lost` counts bytes that were no longer buffered.
+Without `resume_from`, `want_replay` selects the last 1 MiB or nothing.
 
 A client of a session with a terminal that stops reading for 30 seconds is
 disconnected; for a session without a terminal, output waits for the client
-(other clients can still attach). Input is not resent after a reconnection; a
+(other clients can still attach), and a session that starts on attach also
+holds its output while no client is attached. Input is not resent after a reconnection; a
 client compares `input` and `input_closed` with what it sent to tell whether
 input was lost.
 

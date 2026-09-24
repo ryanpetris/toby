@@ -25,8 +25,16 @@ use tokio::sync::{mpsc, oneshot};
 use crate::paths::{GuestPaths, session_files};
 use crate::record::{self, SessionRecord, UserInfo};
 
-/// Output kept for replay.
+/// Output replayed to a client that attaches and asks for recent output.
 pub const REPLAY_BYTES: usize = 1024 * 1024;
+
+/// Output kept so a client that loses its connection can resume without a
+/// gap; larger than everything that can be in transit to a client (its queue
+/// plus socket buffers along the way).
+pub const RESUME_BYTES: usize = 8 * 1024 * 1024;
+
+/// Frames queued for a client (each at most 16 KiB of output).
+const CLIENT_QUEUE: usize = 16;
 
 /// How long an exit record is kept for a client to collect it.
 pub const KEEP_AFTER_EXIT: Duration = Duration::from_secs(3600);
@@ -167,9 +175,9 @@ impl Replay {
             _ => self.chunks.push_back((stderr, bytes.to_vec())),
         }
         self.len += bytes.len();
-        while self.len > REPLAY_BYTES {
+        while self.len > RESUME_BYTES {
             let Some((_, front)) = self.chunks.front_mut() else { break };
-            let excess = self.len - REPLAY_BYTES;
+            let excess = self.len - RESUME_BYTES;
             if front.len() <= excess {
                 self.len -= front.len();
                 self.start += front.len() as u64;
@@ -298,43 +306,64 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     let mut drain_deadline: Option<tokio::time::Instant> = None;
     let mut keep_deadline: Option<tokio::time::Instant> = None;
     let mut stall_deadline: Option<tokio::time::Instant> = None;
+    // Output of an exec-style command without a terminal waits for a client
+    // (including across reconnections) instead of filling the replay buffer.
+    let hold_for_client = !tty && spec.start_on_attach;
+    let mut exited_at: Option<tokio::time::Instant> = None;
+    // The exit has been queued for the attached client; resolves once written.
+    let mut exit_flush: Option<oneshot::Receiver<()>> = None;
 
     loop {
-        // Once the child has exited and its output is drained (or the drain
-        // timed out), deliver the exit.
         let now = tokio::time::Instant::now();
-        let drained = exit.is_some() && (output_done || drain_deadline.is_some_and(|d| now >= d));
-        if let (Some(status), true) = (exit, drained) {
-            if rec.info.exit.is_none() {
-                rec.info.exit = Some(status);
-                record::write(&dir.join(session_files::RECORD), &rec)?;
-                record::write(&dir.join(session_files::EXIT), &status)?;
-            }
-            if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
-                if deliver_exit(c, status).await {
-                    break;
-                }
-                drop_client(&mut client, dir, &mut rec);
-            }
-            if !spec.keep_after_exit {
-                break;
-            }
-            let deadline = *keep_deadline.get_or_insert_with(|| now + KEEP_AFTER_EXIT);
-            if now >= deadline {
-                break;
-            }
-        }
-
-        // Output is taken only while the attached client can accept it, so
-        // a slow client holds the command back without stalling the session.
-        // A terminal session's client that stays full is disconnected; it
-        // can reattach and resume.
-        let client_full = client.as_ref().is_some_and(|c| c.welcomed && c.tx.capacity() == 0);
+        let welcomed = client.as_ref().is_some_and(|c| c.welcomed);
+        let client_full = welcomed && client.as_ref().is_some_and(|c| c.tx.capacity() == 0);
+        let held = client_full
+            || (hold_for_client && !welcomed && exited_at.is_none_or(|t| now < t + KEEP_AFTER_EXIT));
         if !client_full {
             stall_deadline = None;
         } else if tty && stall_deadline.is_none() {
             stall_deadline = Some(now + CLIENT_STALL);
         }
+
+        // The drain period after the child exits (for processes that keep
+        // the terminal or pipes open) only runs while output flows.
+        if exit.is_some() && held && !output_done {
+            drain_deadline = Some(now + DRAIN_AFTER_EXIT);
+        }
+        let drained = exit.is_some() && (output_done || drain_deadline.is_some_and(|d| now >= d));
+        if let (Some(status), true, None) = (exit, drained, &exit_flush) {
+            if rec.info.exit.is_none() {
+                rec.info.exit = Some(status);
+                record::write(&dir.join(session_files::RECORD), &rec)?;
+                record::write(&dir.join(session_files::EXIT), &status)?;
+            }
+            match client.as_ref().filter(|c| c.welcomed) {
+                Some(c) if c.tx.capacity() >= 2 => {
+                    let (done_tx, done_rx) = oneshot::channel();
+                    let queued =
+                        c.tx.try_send(Outgoing::Frame(ServerFrame::Exit(session::Exit { status }))).is_ok()
+                            && c.tx.try_send(Outgoing::Flush(done_tx)).is_ok();
+                    if queued {
+                        exit_flush = Some(done_rx);
+                    } else {
+                        drop_client(&mut client, dir, &mut rec);
+                    }
+                }
+                // Wait for room in the client's queue (see the select below).
+                Some(_) => {}
+                None => {
+                    if !spec.keep_after_exit {
+                        break;
+                    }
+                    let deadline = *keep_deadline.get_or_insert_with(|| now + KEEP_AFTER_EXIT);
+                    if now >= deadline {
+                        break;
+                    }
+                }
+            }
+        }
+        let awaiting_room = client_full || (drained && exit_flush.is_none() && welcomed);
+
         let deadline = [
             if drained {
                 keep_deadline
@@ -355,6 +384,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                 match event {
                     Event::Exited(status) => {
                         exit = Some(status);
+                        exited_at = Some(tokio::time::Instant::now());
                         drain_deadline = Some(tokio::time::Instant::now() + DRAIN_AFTER_EXIT);
                     }
                     Event::Accepted(stream) => {
@@ -400,7 +430,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                                 c.welcomed = true;
                                 let (offset, lost) = match (hello.resume_from, hello.want_replay) {
                                     (Some(from), _) => replay.resume_point(from),
-                                    (None, true) => (replay.start, 0),
+                                    (None, true) => (replay.end().saturating_sub(REPLAY_BYTES as u64).max(replay.start), 0),
                                     (None, false) => (replay.end(), 0),
                                 };
                                 let welcome = session::Welcome {
@@ -476,7 +506,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                     },
                 }
             }
-            o = output.recv(), if !output_done && !client_full => match o {
+            o = output.recv(), if !output_done && !held => match o {
                 Some(Out::Data(bytes, stderr)) => {
                     replay.push(&bytes, stderr);
                     if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
@@ -492,6 +522,15 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                 }
                 Some(Out::End) | None => output_done = true,
             },
+            _ = room(&client), if awaiting_room => {}
+            r = flushed(&mut exit_flush), if exit_flush.is_some() => {
+                exit_flush = None;
+                if r {
+                    break;
+                }
+                // The client went away before receiving the exit.
+                drop_client(&mut client, dir, &mut rec);
+            }
             _ = sleep_until(deadline) => {
                 if stall_deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
                     stall_deadline = None;
@@ -528,16 +567,22 @@ async fn queue(c: &Client, frame: ServerFrame) -> bool {
     c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL).await.is_ok()
 }
 
-/// Sends the exit to a welcomed client and waits until it has been written.
-async fn deliver_exit(c: &Client, status: ExitStatus) -> bool {
-    if !queue(c, ServerFrame::Exit(session::Exit { status })).await {
-        return false;
+/// Resolves when the client's queue has room.
+async fn room(client: &Option<Client>) {
+    match client {
+        Some(c) => {
+            let _ = c.tx.reserve().await;
+        }
+        None => std::future::pending().await,
     }
-    let (done_tx, done_rx) = oneshot::channel();
-    if c.tx.send(Outgoing::Flush(done_tx)).await.is_err() {
-        return false;
+}
+
+/// Resolves with whether the queued exit was written to the client.
+async fn flushed(rx: &mut Option<oneshot::Receiver<()>>) -> bool {
+    match rx {
+        Some(rx) => rx.await.is_ok(),
+        None => std::future::pending().await,
     }
-    tokio::time::timeout(CLIENT_STALL, done_rx).await.is_ok_and(|r| r.is_ok())
 }
 
 fn start_client(
@@ -549,7 +594,7 @@ fn start_client(
     input: mpsc::Sender<Input>,
 ) -> Client {
     let (mut rd, mut wr) = stream.into_split();
-    let (tx, mut rx) = mpsc::channel::<Outgoing>(1024);
+    let (tx, mut rx) = mpsc::channel::<Outgoing>(CLIENT_QUEUE);
     let (detach_tx, mut detach_rx) = oneshot::channel::<String>();
 
     tokio::spawn(async move {
@@ -857,16 +902,16 @@ mod tests {
 
         let mut r = Replay::default();
         for _ in 0..3 {
-            r.push(&vec![b'x'; REPLAY_BYTES / 2 + 1], false);
+            r.push(&vec![b'x'; RESUME_BYTES / 2 + 1], false);
         }
-        assert_eq!(r.len, REPLAY_BYTES);
+        assert_eq!(r.len, RESUME_BYTES);
         let total: usize = r
             .frames_from(0)
             .iter()
             .map(|f| if let ServerFrame::Replay(p) = f { p.bytes.len() } else { 0 })
             .sum();
-        assert_eq!(total, REPLAY_BYTES);
-        assert_eq!(r.end(), 3 * (REPLAY_BYTES as u64 / 2 + 1));
+        assert_eq!(total, RESUME_BYTES);
+        assert_eq!(r.end(), 3 * (RESUME_BYTES as u64 / 2 + 1));
     }
 
     #[test]
@@ -883,7 +928,7 @@ mod tests {
 
         let mut r = Replay::default();
         for _ in 0..3 {
-            r.push(&vec![b'x'; REPLAY_BYTES / 2 + 1], false);
+            r.push(&vec![b'x'; RESUME_BYTES / 2 + 1], false);
         }
         let (at, lost) = r.resume_point(10);
         assert_eq!(at, r.start);

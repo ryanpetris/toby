@@ -325,3 +325,76 @@ async fn a_stalled_client_does_not_block_a_takeover() {
     }
     task.await.unwrap().unwrap();
 }
+
+async fn attach_resume(env: &Env, id: &str, from: u64) -> UnixStream {
+    let sock = env.paths.session_dir(id).join(session_files::SOCKET);
+    let mut s = UnixStream::connect(sock).await.unwrap();
+    let hello = ClientFrame::Hello(Hello {
+        versions: vec![1],
+        rows: 0,
+        cols: 0,
+        want_replay: false,
+        resume_from: Some(from),
+    });
+    frame::send(&mut s, &hello).await.unwrap();
+    s
+}
+
+/// Counts output bytes until the exit, returning the count and the status.
+async fn count_until_exit(s: &mut UnixStream, limit: Option<usize>) -> (usize, Option<ExitStatus>) {
+    let mut n = 0;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(30), frame::recv::<ServerFrame, _>(s))
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            ServerFrame::Stdout(o) => n += o.bytes.len(),
+            ServerFrame::Replay(r) => n += r.bytes.len(),
+            ServerFrame::Stderr(_) | ServerFrame::Welcome(_) => {}
+            ServerFrame::Exit(e) => return (n, Some(e.status)),
+            other => panic!("unexpected {other:?}"),
+        }
+        if limit.is_some_and(|l| n >= l) {
+            return (n, None);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_slow_reader_gets_all_output_after_the_exit() {
+    let env = env();
+    let total = 32 * 1024 * 1024;
+    let cmd = format!("head -c {total} /dev/zero");
+    let task = start(&env, spec_on_attach("slow", &["sh", "-c", &cmd])).await;
+    let mut s = attach(&env, "slow", false).await;
+    // Far more output than the client's queue holds, and the command has
+    // long exited before the client starts reading.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (n, status) = count_until_exit(&mut s, None).await;
+    assert_eq!(n, total);
+    assert_eq!(status, Some(ExitStatus::Code(0)));
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn output_waits_for_a_reconnecting_client() {
+    let env = env();
+    let total = 8 * 1024 * 1024;
+    let cmd = format!("head -c {total} /dev/zero");
+    let task = start(&env, spec_on_attach("rc", &["sh", "-c", &cmd])).await;
+    let mut first = attach(&env, "rc", false).await;
+    let (got, status) = count_until_exit(&mut first, Some(1024 * 1024)).await;
+    assert!(status.is_none());
+    drop(first);
+    // More than the replay buffer is produced while no client is attached.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut second = attach_resume(&env, "rc", got as u64).await;
+    let welcome = frame::recv::<ServerFrame, _>(&mut second).await.unwrap();
+    let ServerFrame::Welcome(w) = welcome else { panic!("{welcome:?}") };
+    assert_eq!((w.offset, w.lost), (got as u64, 0));
+    let (rest, status) = count_until_exit(&mut second, None).await;
+    assert_eq!(got + rest, total);
+    assert_eq!(status, Some(ExitStatus::Code(0)));
+    task.await.unwrap().unwrap();
+}
