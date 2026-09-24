@@ -780,6 +780,11 @@ impl Compositor {
         self.overlay.is_some()
     }
 
+    /// The approval the overlay is for.
+    pub fn shown(&self) -> Option<&str> {
+        self.shown.as_deref()
+    }
+
     /// The overlay has just reached the terminal: keys decide only after
     /// the arming time from now.
     pub fn shown_now(&mut self) {

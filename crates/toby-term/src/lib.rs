@@ -645,6 +645,7 @@ pub async fn attach(
         comp,
         ui,
         overlay,
+        drawn: None,
         reserved,
     };
     let result = async {
@@ -689,6 +690,8 @@ struct Attached {
     ui: Option<Ui>,
     /// Whether keys go to the overlay.
     overlay: Arc<std::sync::atomic::AtomicBool>,
+    /// The approval the overlay showed when last written.
+    drawn: Option<String>,
     /// Rows the session does not get.
     reserved: u16,
 }
@@ -845,11 +848,13 @@ impl Attached {
         // then on after the arming time.
         let result = write_out(out, false);
         if let Some(c) = &mut self.comp {
-            let takes = c.takes_input();
-            if takes && c.overlay_open() && !self.overlay.load(Ordering::Acquire) {
+            // Another approval, or the overlay opening, arms again.
+            let showing = c.overlay_open().then(|| c.shown().map(str::to_string)).flatten();
+            if showing.is_some() && showing != self.drawn {
                 c.shown_now();
             }
-            self.overlay.store(takes, Ordering::Release);
+            self.drawn = showing;
+            self.overlay.store(c.takes_input(), Ordering::Release);
         }
         result
     }
