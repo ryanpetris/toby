@@ -131,7 +131,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             GuestCommand::Connect { target } => {
                 let socket = std::path::Path::new(toby_guest::connect::SANDBOX_SOCKET);
-                runtime()?.block_on(toby_guest::connect::run(socket, &target))?;
+                let rt = runtime()?;
+                let result = rt.block_on(toby_guest::connect::run(socket, &target));
+                // Its standard input is read on a blocking thread, which the
+                // service closing does not end.
+                rt.shutdown_background();
+                result?;
                 Ok(ExitCode::SUCCESS)
             }
             GuestCommand::Helper(cmd) => helper(cmd).map(|()| ExitCode::SUCCESS),

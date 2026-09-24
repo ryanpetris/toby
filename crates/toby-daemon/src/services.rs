@@ -130,8 +130,9 @@ fn command(d: &Daemon, name: &str, server: &McpServer) -> Result<Command, String
     Ok((command, env))
 }
 
-/// Starts the server for one connection in its services machine.
-async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Splice, String> {
+/// Starts the server for one connection in its services machine; returns
+/// the splice and the server's session.
+async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<(Splice, String), String> {
     let (command, env) = command(d, name, server)?;
     let machine = ensure_machine(d, name, server).await?;
 
@@ -160,9 +161,10 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
         start_on_attach: false,
         tool: None,
     };
+    let session = spec.session_id.clone();
     let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
     c.spawn(spec).await.map_err(|e| format!("starting {name}: {e}"))?;
-    Ok(Splice { machine, target: Endpoint::Unix { path: socket } })
+    Ok((Splice { machine, target: Endpoint::Unix { path: socket } }, session))
 }
 
 /// An HTTP MCP server Toby runs, and when it was last asked for.
@@ -299,7 +301,12 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
         (McpKind::Http, _) => refused(format!("{name} is an HTTP server; tools use its URL")),
         (McpKind::Stdio, Placement::Machine) => refused(format!("{name} runs in the tool's machine")),
         (McpKind::Stdio, Placement::Isolated) => match start_isolated(d, name, server).await {
-            Ok(splice) => CapResponse::Splice(splice),
+            Ok((splice, session)) => {
+                if d.machines.granted_only(spec, name) {
+                    d.machines.granted_connection(&spec.id, name, &splice.machine, &session);
+                }
+                CapResponse::Splice(splice)
+            }
             // The reason can name host files: the host's log has it.
             Err(e) => {
                 eprintln!("mcp {name}: {e}");

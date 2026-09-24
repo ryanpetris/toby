@@ -109,6 +109,10 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
+    /// Connections to isolated MCP servers that a launch's grant allowed:
+    /// (machine, server, services machine, server session). They end with
+    /// the grant.
+    granted_connections: Mutex<Vec<(String, String, String, String)>>,
     /// Serializes changes to the machines' `yolo-sessions` files.
     yolo_file: Mutex<()>,
     /// Serializes checking and adding forwards across machines.
@@ -205,6 +209,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
+            granted_connections: Mutex::default(),
             yolo_file: Mutex::default(),
             forwards_lock: Default::default(),
             models_cache: Default::default(),
@@ -1324,6 +1329,70 @@ impl Machines {
         Ok(())
     }
 
+    /// Whether the machine reaches MCP server `name` only through a launch's
+    /// grant.
+    pub fn granted_only(&self, spec: &MachineSpec, name: &str) -> bool {
+        let mut without_grants = spec.clone();
+        without_grants.mcp_grants.clear();
+        !self.current_config().mcp_reachable(&without_grants, name)
+    }
+
+    /// Notes a connection a grant allowed, which ends with the grant.
+    pub fn granted_connection(&self, machine: &str, name: &str, services: &str, session: &str) {
+        self.granted_connections.lock().unwrap().push((
+            machine.into(),
+            name.into(),
+            services.into(),
+            session.into(),
+        ));
+    }
+
+    /// Takes back the grants of ended sessions, and ends the connections
+    /// they allowed. It needs neither the machine's lock nor it running:
+    /// a stopped machine has no sessions.
+    async fn release_grants(&self, spec: &MachineSpec) {
+        let creating: Vec<String> = self.creating.lock().unwrap().iter().cloned().collect();
+        let mut live = match self.observe(&spec.id).await.state {
+            "ready" => match self.sessions_of(&spec.id).await {
+                Some(list) => list.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect(),
+                None => return,
+            },
+            "stopped" => Vec::new(),
+            _ => return,
+        };
+        live.extend(creating);
+        live.extend(self.creating.lock().unwrap().iter().cloned());
+        let release = |spec: &mut MachineSpec| {
+            for g in &mut spec.mcp_grants {
+                g.sessions.retain(|s| live.contains(s));
+            }
+            spec.mcp_grants.retain(|g| !g.sessions.is_empty());
+        };
+        let mut released = spec.clone();
+        release(&mut released);
+        if released.mcp_grants == spec.mcp_grants {
+            return;
+        }
+        let mut kept = Vec::new();
+        let _ = self.update_desired(&spec.id, |s| {
+            release(s);
+            kept = s.mcp_grants.iter().map(|g| g.name.clone()).collect();
+            Ok(())
+        });
+        let ended: Vec<(String, String)> = {
+            let mut all = self.granted_connections.lock().unwrap();
+            let (gone, stay): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut *all).into_iter().partition(|c| c.0 == spec.id && !kept.contains(&c.1));
+            *all = stay;
+            gone.into_iter().map(|c| (c.2, c.3)).collect()
+        };
+        for (services, session) in ended {
+            if let Ok(mut c) = Control::connect(&self.runtime(&services)).await {
+                let _ = c.kill(&session, libc_signal::SIGKILL).await;
+            }
+        }
+    }
+
     /// Whether the machine may reach MCP server `name` now: as the
     /// configuration allows, with a granting session still running.
     pub async fn mcp_allowed(&self, spec: &MachineSpec, name: &str) -> bool {
@@ -1399,8 +1468,7 @@ impl Machines {
     /// Removes attachments and forwards whose sessions have all ended.
     async fn release_session_items(&self, spec: &MachineSpec) {
         let has_owned = spec.attach.iter().any(|a| !a.sessions.is_empty())
-            || spec.forward.iter().any(|f| !f.sessions.is_empty())
-            || !spec.mcp_grants.is_empty();
+            || spec.forward.iter().any(|f| !f.sessions.is_empty());
         if !has_owned {
             return;
         }
@@ -1423,10 +1491,6 @@ impl Machines {
             // Items that had sessions and have none left go, unless pinned.
             spec.attach.retain(|a| a.pinned || !a.sessions.is_empty() || a.persist);
             spec.forward.retain(|f| f.pinned || !f.sessions.is_empty() || f.persist);
-            for g in &mut spec.mcp_grants {
-                g.sessions.retain(|s| live.contains(s));
-            }
-            spec.mcp_grants.retain(|g| !g.sessions.is_empty());
         };
         // Written only when something changes: every write makes the machine
         // reconcile.
@@ -1522,12 +1586,7 @@ impl Machines {
             // At once, so one machine that does not answer delays no other.
             let granted: Vec<_> = self.records().into_iter().filter(|s| !s.mcp_grants.is_empty()).collect();
             let machines: &Machines = &self;
-            futures_util::future::join_all(granted.iter().map(|spec| async move {
-                if machines.observe(&spec.id).await.state == "ready" {
-                    machines.release_session_items(spec).await;
-                }
-            }))
-            .await;
+            futures_util::future::join_all(granted.iter().map(|spec| machines.release_grants(spec))).await;
         }
     }
 
