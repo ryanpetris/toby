@@ -1378,11 +1378,13 @@ image, so the first build needs a different starting point:
    builder mounts the cache disk at `/cache` (ext4, formatted on first use)
    and bind-mounts `/cache/containers` onto `/var/lib/containers`; mkosi's
    package cache, incremental cache, workspace, output directory and default
-   tools tree (which mkosi keeps in the output directory) live under
-   `/cache/mkosi`.
+   tools tree live under `/cache/mkosi`.
 2. Produce the root tree (as root, streamed to the build log):
-   - mkosi: `/run/toby/fs/mkosi/bin/mkosi
-     -C /build/context --format=directory --architecture=<arch>
+   - mkosi: the configuration is copied to `/cache/mkosi/conf` (mkosi
+     writes its default tools tree next to the configuration, which is
+     read-only in the builder; the copy keeps `mkosi.tools*` between builds),
+     then `/run/toby/fs/mkosi/bin/mkosi
+     -C /cache/mkosi/conf --format=directory --architecture=<arch>
      --output-directory=/cache/mkosi/out --output=<build-id>
      --workspace-directory=/cache/mkosi/work --incremental=yes
      --package-cache-directory=/cache/mkosi/packages
@@ -1390,8 +1392,8 @@ image, so the first build needs a different starting point:
      (`bin/mkosi` is a shell wrapper that finds Python itself; the tools tree
      provides the package manager for non-Debian targets). The tree is
      `/cache/mkosi/out/<build-id>`; it is removed after export, and any
-     output left in `/cache/mkosi/out` by an interrupted build (everything
-     except `mkosi.tools*`) is removed before a build starts, because mkosi
+     output left in `/cache/mkosi/out` by an interrupted build is removed
+     before a build starts, because mkosi
      skips a build whose output already exists. Everything stays on the
      cache disk, so nothing is copied across devices. Toby's overrides always
      win over the user's `mkosi.conf` for format, architecture, output and

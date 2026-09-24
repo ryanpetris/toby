@@ -36,6 +36,31 @@ async fn build(b: &Builder, source: ImageSource, kind: &str) -> anyhow::Result<I
     Ok(rec)
 }
 
+/// Prints rows under a header with columns sized to their contents.
+fn table<const N: usize>(header: [&str; N], rows: Vec<[String; N]>) {
+    let mut widths = header.map(str::len);
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.len());
+        }
+    }
+    let line = |cells: [&str; N]| {
+        let mut out = String::new();
+        for (i, (cell, w)) in cells.iter().zip(widths).enumerate() {
+            if i + 1 == N {
+                out.push_str(cell);
+            } else {
+                out.push_str(&format!("{cell:<w$}  "));
+            }
+        }
+        println!("{}", out.trim_end());
+    };
+    line(header);
+    for row in &rows {
+        line(row.each_ref().map(String::as_str));
+    }
+}
+
 fn age(created: u64) -> String {
     let secs = toby_store::records::now().saturating_sub(created);
     match secs {
@@ -100,21 +125,16 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                     m.entry(r.image).or_default().push(r.name);
                     m
                 });
-            println!("{:<26}  {:<14}  {:<30}  {:<16}  ROOTS", "IMAGE", "CREATED", "SOURCE", "KERNEL");
+            let mut rows = Vec::new();
             for img in b.store.images()? {
                 let mut source = img.source.describe();
                 if Some(&img.id) == default.as_ref() {
                     source.push_str(" (current)");
                 }
                 let roots = used.get(&img.id).map(|r| r.join(",")).unwrap_or_default();
-                println!(
-                    "{:<26}  {:<14}  {:<30}  {:<16}  {roots}",
-                    img.id,
-                    age(img.created),
-                    source,
-                    img.kernel_version
-                );
+                rows.push([img.id, age(img.created), source, img.kernel_version, roots]);
             }
+            table(["IMAGE", "CREATED", "SOURCE", "KERNEL", "ROOTS"], rows);
         }
         ImageCommand::Rm { id } => b.store.remove_image(&id)?,
         ImageCommand::Prune => {
@@ -142,13 +162,14 @@ pub async fn root(cmd: RootCommand) -> anyhow::Result<ExitCode> {
     };
     match cmd {
         RootCommand::Ls => {
-            println!("{:<20}  {:<26}  {:<14}  NEWER IMAGE", "ROOT", "IMAGE", "CREATED");
+            let mut rows = Vec::new();
             for r in b.store.roots()? {
                 let newer =
                     b.store.image(&r.image).ok().and_then(|img| b.store.newer_image(&img).ok().flatten());
                 let newer = newer.map(|n| n.id).unwrap_or_default();
-                println!("{:<20}  {:<26}  {:<14}  {newer}", r.name, r.image, age(r.created));
+                rows.push([r.name, r.image, age(r.created), newer]);
             }
+            table(["ROOT", "IMAGE", "CREATED", "NEWER IMAGE"], rows);
         }
         RootCommand::Create { name, image } => {
             b.store.create_root(&name, &resolve(&image)?).await?;
@@ -178,12 +199,13 @@ pub async fn home(cmd: HomeCommand) -> anyhow::Result<ExitCode> {
     let b = builder()?;
     match cmd {
         HomeCommand::Ls => {
-            println!("{:<20}  {:<16}  {:<8}  CREATED", "HOME", "USER", "UID");
+            let mut rows = Vec::new();
             for h in b.store.homes()? {
                 let user =
                     if h.formatted { h.username.clone() } else { format!("{} (unformatted)", h.username) };
-                println!("{:<20}  {:<16}  {:<8}  {}", h.name, user, h.uid, age(h.created));
+                rows.push([h.name, user, h.uid.to_string(), age(h.created)]);
             }
+            table(["HOME", "USER", "UID", "CREATED"], rows);
         }
         HomeCommand::Create { name, user, uid } => {
             let user = match user {

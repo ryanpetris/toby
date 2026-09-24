@@ -375,7 +375,15 @@ pub fn boot_helpers(host: &Host) -> anyhow::Result<Vec<Vec<String>>> {
 pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
     let version = current_runtime_version(&host.config.programs.versions());
     let mut oem_strings = Vec::new();
-    let boot = match (&host.spec.root, &host.spec.boot.image) {
+    // A root boots the kernel of the image it was created from unless the
+    // machine names another.
+    let image = match (&host.spec.root, &host.spec.boot.image) {
+        (_, Some(image)) => Some(image.clone()),
+        (RootSpec::Named(name), None) => Some(toby_store::Store::new(host.paths.clone()).root(name)?.image),
+        (RootSpec::Image { image }, None) => Some(image.clone()),
+        (RootSpec::CloudImage { .. }, None) => None,
+    };
+    let boot = match (&host.spec.root, &image) {
         (RootSpec::CloudImage { .. }, _) => {
             oem_strings = credential_units(&version);
             BootSpec::Firmware { path: host.config.programs.firmware() }
@@ -391,7 +399,7 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
                 ),
             }
         }
-        (_, None) => bail!("machine {} names no boot image", host.spec.id),
+        (_, None) => unreachable!("only cloud images boot without an image"),
     };
 
     let root = match (&host.spec.root, layer_base(host)?) {
