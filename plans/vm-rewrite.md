@@ -61,7 +61,7 @@ Bubblewrap and everything built for it (run overlays, descriptor-rooted
 publication, rootfs snapshots), host-side OCI unpacking (umoci), host
 `buildah`, Caddy, the Docker socket relay, per-run capability UUIDs,
 global tool volumes and tool-volume profiles, per-run root overlays, and
-the current agent protocol.
+its agent protocol.
 
 ---
 
@@ -1202,7 +1202,7 @@ Precedence: CLI flags > project config > global config > built-in
 defaults. Project config may not use substitutions or reference host paths
 outside `projects_dir` unless `allow_external_projects` is set. Project
 config is loaded only when `settings.autoload_project_config = true`
-(default false, carried over), because a cloned repository could otherwise
+(default false), because a cloned repository could otherwise
 enable configured MCP servers or forwards; when a project config exists but
 is not loaded, Toby emits `project.autoload-disabled`.
 
@@ -1818,7 +1818,7 @@ user-visible behavior; acceptance criteria demonstrated.
    Debian 13 genericcloud from an `imago`-created overlay; OEM-string
    credentials inject a unit that starts.
 2. Boot adaptation by hand on two trees (a Debian tree from mkosi
-   `Format=directory` and the project's Arch `.toby/Dockerfile` image): distro
+   `Format=directory` and an Arch Linux Dockerfile image): distro
    kernel + dracut initramfs with the `99toby` module boot the exported
    ext4 root directly; the hook's `/run/systemd/system` units start.
    mkosi runs as root inside a VM with its tools tree and caches on a
