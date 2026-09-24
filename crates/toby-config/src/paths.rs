@@ -62,10 +62,7 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     if !meta.file_type().is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!(
-                "{} must be a directory owned by you with mode 0700",
-                dir.display()
-            ),
+            format!("{} must be a directory owned by you with mode 0700", dir.display()),
         ));
     }
     Ok(())
@@ -99,13 +96,7 @@ impl Paths {
             .as_deref()
             .map(|p| expand(&home, p))
             .unwrap_or_else(|| home.join(".local/share/toby"));
-        Paths {
-            config: home.join(".config/toby"),
-            home,
-            state,
-            data,
-            runtime,
-        }
+        Paths { config: home.join(".config/toby"), home, state, data, runtime }
     }
 
     pub fn global_config(&self) -> PathBuf {
@@ -122,9 +113,7 @@ impl Paths {
     }
 
     pub fn machine_runtime(&self, id: &str) -> MachineRuntime {
-        MachineRuntime {
-            dir: self.runtime.join("machines").join(id),
-        }
+        MachineRuntime { dir: self.runtime.join("machines").join(id) }
     }
 
     pub fn machines_runtime(&self) -> PathBuf {
@@ -196,14 +185,8 @@ mod tests {
         let p = Paths::with("/h".into(), &GlobalConfig::default(), "/run/user/1/toby".into());
         assert_eq!(p.state, PathBuf::from("/h/.local/state/toby"));
         assert_eq!(p.data, PathBuf::from("/h/.local/share/toby"));
-        assert_eq!(
-            p.machine_desired("m"),
-            PathBuf::from("/h/.local/state/toby/machines/m/machine.toml")
-        );
-        assert_eq!(
-            p.root_disk("work"),
-            PathBuf::from("/h/.local/share/toby/roots/work.qcow2")
-        );
+        assert_eq!(p.machine_desired("m"), PathBuf::from("/h/.local/state/toby/machines/m/machine.toml"));
+        assert_eq!(p.root_disk("work"), PathBuf::from("/h/.local/share/toby/roots/work.qcow2"));
         assert_eq!(
             p.machine_runtime("m").vsock_listen(1024),
             PathBuf::from("/run/user/1/toby/machines/m/vsock.sock_1024")

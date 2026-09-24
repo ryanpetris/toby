@@ -47,14 +47,9 @@ pub fn copy_tree(src: &Path, dst: &Path, uid: u32, gid: u32) -> io::Result<()> {
 pub fn home_mount(device: &Path, at: &Path, uid: u32, gid: u32, skel: &Path) -> io::Result<()> {
     std::fs::create_dir_all(at)?;
     if !mounted_at(at) {
-        mount(
-            Some(device),
-            at,
-            Some("ext4"),
-            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-            None::<&str>,
-        )
-        .map_err(|e| io::Error::other(format!("mounting {} at {}: {e}", device.display(), at.display())))?;
+        mount(Some(device), at, Some("ext4"), MsFlags::MS_NOSUID | MsFlags::MS_NODEV, None::<&str>).map_err(
+            |e| io::Error::other(format!("mounting {} at {}: {e}", device.display(), at.display())),
+        )?;
     }
     if !at.join(MARKER).exists() {
         if skel.is_dir() {
@@ -128,10 +123,7 @@ mod tests {
         copy_tree(&skel, &home, uid, gid).unwrap();
         assert_eq!(std::fs::read_to_string(home.join(".bashrc")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(home.join(".config/app/rc")).unwrap(), "x");
-        assert_eq!(
-            std::fs::read_link(home.join(".link")).unwrap(),
-            Path::new(".bashrc")
-        );
+        assert_eq!(std::fs::read_link(home.join(".link")).unwrap(), Path::new(".bashrc"));
     }
 
     #[test]
@@ -142,9 +134,6 @@ mod tests {
         links(&bin, target).unwrap();
         links(&bin, target).unwrap();
         assert_eq!(std::fs::read_link(bin.join("toby")).unwrap(), target);
-        assert_eq!(
-            std::fs::read_link(bin.join("toby-connect")).unwrap(),
-            Path::new("toby")
-        );
+        assert_eq!(std::fs::read_link(bin.join("toby-connect")).unwrap(), Path::new("toby"));
     }
 }

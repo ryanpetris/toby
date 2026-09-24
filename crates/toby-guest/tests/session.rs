@@ -31,10 +31,7 @@ fn env() -> Env {
 }
 
 fn spec_on_attach(id: &str, argv: &[&str]) -> SpawnSpec {
-    SpawnSpec {
-        start_on_attach: true,
-        ..spec(id, argv, false, true)
-    }
+    SpawnSpec { start_on_attach: true, ..spec(id, argv, false, true) }
 }
 
 fn spec(id: &str, argv: &[&str], tty: bool, keep: bool) -> SpawnSpec {
@@ -55,10 +52,7 @@ async fn start(env: &Env, spec: SpawnSpec) -> tokio::task::JoinHandle<std::io::R
     let paths = env.paths.clone();
     let id = spec.session_id.clone();
     let task = tokio::spawn(async move { session::run(paths, &id).await });
-    let sock = env
-        .paths
-        .session_dir(&spec.session_id)
-        .join(session_files::SOCKET);
+    let sock = env.paths.session_dir(&spec.session_id).join(session_files::SOCKET);
     for _ in 0..200 {
         if sock.exists() {
             break;
@@ -76,16 +70,14 @@ async fn attach(env: &Env, id: &str, replay: bool) -> UnixStream {
         rows: 0,
         cols: 0,
         want_replay: replay,
+        resume_from: None,
     });
     frame::send(&mut s, &hello).await.unwrap();
     s
 }
 
 async fn next(s: &mut UnixStream) -> ServerFrame {
-    tokio::time::timeout(Duration::from_secs(10), frame::recv(s))
-        .await
-        .expect("frame in time")
-        .unwrap()
+    tokio::time::timeout(Duration::from_secs(10), frame::recv(s)).await.expect("frame in time").unwrap()
 }
 
 /// Reads frames until the exit, collecting stdout, stderr and replay bytes.
@@ -130,27 +122,11 @@ async fn pipes_carry_stdout_stderr_and_exit_code() {
     let env = env();
     let task = start(
         &env,
-        spec(
-            "p1",
-            &[
-                "sh",
-                "-c",
-                "read x; echo out; echo err >&2; echo $TOBY_TEST; exit 3",
-            ],
-            false,
-            true,
-        ),
+        spec("p1", &["sh", "-c", "read x; echo out; echo err >&2; echo $TOBY_TEST; exit 3"], false, true),
     )
     .await;
     let mut s = attach(&env, "p1", false).await;
-    frame::send(
-        &mut s,
-        &ClientFrame::Stdin(Stdin {
-            bytes: b"go\n".to_vec(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut s, &ClientFrame::Stdin(Stdin { bytes: b"go\n".to_vec() })).await.unwrap();
     let (out, err, status) = collect(&mut s).await;
     assert_eq!(out, "out\n1\n");
     assert_eq!(err, "err\n");
@@ -162,21 +138,10 @@ async fn pipes_carry_stdout_stderr_and_exit_code() {
 #[tokio::test]
 async fn tty_sessions_get_a_terminal_and_input() {
     let env = env();
-    let task = start(
-        &env,
-        spec("t1", &["sh", "-c", "stty size; read x; echo got:$x"], true, false),
-    )
-    .await;
+    let task = start(&env, spec("t1", &["sh", "-c", "stty size; read x; echo got:$x"], true, false)).await;
     let mut s = attach(&env, "t1", true).await;
     read_until(&mut s, "24 80").await;
-    frame::send(
-        &mut s,
-        &ClientFrame::Stdin(Stdin {
-            bytes: b"hi\n".to_vec(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut s, &ClientFrame::Stdin(Stdin { bytes: b"hi\n".to_vec() })).await.unwrap();
     let (out, _, status) = collect(&mut s).await;
     assert!(out.contains("got:hi"), "{out:?}");
     assert_eq!(status, ExitStatus::Code(0));
@@ -186,33 +151,13 @@ async fn tty_sessions_get_a_terminal_and_input() {
 #[tokio::test]
 async fn resize_reaches_the_terminal() {
     let env = env();
-    let _task = start(
-        &env,
-        spec("r1", &["sh", "-c", "read x; stty size; read y"], true, false),
-    )
-    .await;
+    let _task = start(&env, spec("r1", &["sh", "-c", "read x; stty size; read y"], true, false)).await;
     let mut s = attach(&env, "r1", false).await;
     assert!(matches!(next(&mut s).await, ServerFrame::Welcome(_)));
-    frame::send(&mut s, &ClientFrame::Resize(Resize { rows: 40, cols: 132 }))
-        .await
-        .unwrap();
-    frame::send(
-        &mut s,
-        &ClientFrame::Stdin(Stdin {
-            bytes: b"\n".to_vec(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut s, &ClientFrame::Resize(Resize { rows: 40, cols: 132 })).await.unwrap();
+    frame::send(&mut s, &ClientFrame::Stdin(Stdin { bytes: b"\n".to_vec() })).await.unwrap();
     read_until(&mut s, "40 132").await;
-    frame::send(
-        &mut s,
-        &ClientFrame::Stdin(Stdin {
-            bytes: b"\n".to_vec(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut s, &ClientFrame::Stdin(Stdin { bytes: b"\n".to_vec() })).await.unwrap();
 }
 
 #[tokio::test]
@@ -220,14 +165,7 @@ async fn newest_attach_wins_and_replays_output() {
     let env = env();
     let task = start(&env, spec("n1", &["cat"], true, false)).await;
     let mut a = attach(&env, "n1", false).await;
-    frame::send(
-        &mut a,
-        &ClientFrame::Stdin(Stdin {
-            bytes: b"first\n".to_vec(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut a, &ClientFrame::Stdin(Stdin { bytes: b"first\n".to_vec() })).await.unwrap();
     read_until(&mut a, "first").await;
 
     let mut b = attach(&env, "n1", true).await;
@@ -241,14 +179,7 @@ async fn newest_attach_wins_and_replays_output() {
         }
     }
 
-    frame::send(
-        &mut b,
-        &ClientFrame::Signal(Signal {
-            signal: libc::SIGTERM,
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut b, &ClientFrame::Signal(Signal { signal: libc::SIGTERM })).await.unwrap();
     let (_, _, status) = collect(&mut b).await;
     assert_eq!(status, ExitStatus::Signal(libc::SIGTERM));
     task.await.unwrap().unwrap();
@@ -289,6 +220,7 @@ async fn unsupported_version_is_refused() {
         rows: 0,
         cols: 0,
         want_replay: false,
+        resume_from: None,
     });
     frame::send(&mut s, &hello).await.unwrap();
     assert!(matches!(next(&mut s).await, ServerFrame::Refused(_)));
@@ -298,11 +230,8 @@ async fn unsupported_version_is_refused() {
 async fn start_on_attach_streams_everything() {
     let env = env();
     // More output than the replay buffer holds, written before anything else.
-    let task = start(
-        &env,
-        spec_on_attach("a1", &["sh", "-c", "head -c 3000000 /dev/zero; echo tail >&2"]),
-    )
-    .await;
+    let task =
+        start(&env, spec_on_attach("a1", &["sh", "-c", "head -c 3000000 /dev/zero; echo tail >&2"])).await;
     let mut s = attach(&env, "a1", true).await;
     let mut out = 0usize;
     let mut err = Vec::new();
@@ -338,11 +267,7 @@ async fn a_command_that_cannot_start_exits_127() {
 #[tokio::test]
 async fn replay_keeps_stderr_apart() {
     let env = env();
-    let task = start(
-        &env,
-        spec("e1", &["sh", "-c", "echo out; echo err >&2; exit 0"], false, true),
-    )
-    .await;
+    let task = start(&env, spec("e1", &["sh", "-c", "echo out; echo err >&2; exit 0"], false, true)).await;
     let exit_file = env.paths.session_dir("e1").join(session_files::EXIT);
     for _ in 0..500 {
         if exit_file.exists() {
@@ -371,9 +296,7 @@ async fn a_missing_command_fails_the_start() {
     let env = env();
     let spec = spec("f1", &["/no/such/command"], false, false);
     toby_guest::session::prepare(&env.paths, &spec).unwrap();
-    let err = toby_guest::session::run(env.paths.clone(), "f1")
-        .await
-        .unwrap_err();
+    let err = toby_guest::session::run(env.paths.clone(), "f1").await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert!(!env.paths.session_dir("f1").exists());
 }

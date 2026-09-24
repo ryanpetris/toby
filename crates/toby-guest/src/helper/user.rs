@@ -22,19 +22,13 @@ pub fn valid_name(n: &str) -> bool {
     !b.is_empty()
         && b.len() <= 32
         && (b[0].is_ascii_lowercase() || b[0] == b'_')
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
 }
 
 /// Picks the first shell that exists in the root.
 pub fn pick_shell(root: &Path, preferred: Option<&str>) -> String {
     let exists = |s: &str| root.join(s.trim_start_matches('/')).exists();
-    preferred
-        .into_iter()
-        .chain(["/bin/bash", "/bin/sh"])
-        .find(|s| exists(s))
-        .unwrap_or("/bin/sh")
-        .to_string()
+    preferred.into_iter().chain(["/bin/bash", "/bin/sh"]).find(|s| exists(s)).unwrap_or("/bin/sh").to_string()
 }
 
 /// Puts `line` for `name` first and drops other lines for the same name, so
@@ -65,10 +59,7 @@ pub fn group(content: &str, u: &UserSetup) -> String {
 
 /// Shadow entry with a locked password; access is through Toby and sudo.
 pub fn shadow(content: &str, u: &UserSetup) -> String {
-    match content
-        .lines()
-        .find(|l| l.split(':').next() == Some(u.name.as_str()))
-    {
+    match content.lines().find(|l| l.split(':').next() == Some(u.name.as_str())) {
         Some(existing) => upsert(content, &u.name, existing),
         None => upsert(content, &u.name, &format!("{}:!:19000:0:99999:7:::", u.name)),
     }
@@ -98,16 +89,10 @@ fn edit(path: &Path, f: impl FnOnce(&str) -> String) -> io::Result<()> {
 /// `user_file` for sessions.
 pub fn user_setup(u: &UserSetup, root: &Path, user_file: &Path) -> io::Result<UserInfo> {
     if !valid_name(&u.name) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid user name {:?}", u.name),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid user name {:?}", u.name)));
     }
     if u.uid == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "the home user cannot be root",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the home user cannot be root"));
     }
     let home = format!("/home/{}", u.name);
     let shell = pick_shell(root, u.shell.as_deref());
@@ -128,13 +113,7 @@ pub fn user_setup(u: &UserSetup, root: &Path, user_file: &Path) -> io::Result<Us
         let _ = std::fs::remove_file(&dropin);
     }
 
-    let info = UserInfo {
-        name: u.name.clone(),
-        uid: u.uid,
-        gid: u.uid,
-        home,
-        shell,
-    };
+    let info = UserInfo { name: u.name.clone(), uid: u.uid, gid: u.uid, home, shell };
     if let Some(p) = user_file.parent() {
         std::fs::create_dir_all(p)?;
     }
@@ -147,12 +126,7 @@ mod tests {
     use super::*;
 
     fn u() -> UserSetup {
-        UserSetup {
-            name: "dev".into(),
-            uid: 1000,
-            shell: Some("/usr/bin/zsh".into()),
-            sudo: true,
-        }
+        UserSetup { name: "dev".into(), uid: 1000, shell: Some("/usr/bin/zsh".into()), sudo: true }
     }
 
     const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/sh\ndev:x:1001:1001::/home/dev:/bin/sh\n";
@@ -163,10 +137,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "dev:x:1000:1000:Toby user:/home/dev:/bin/bash");
         assert!(lines.contains(&"ubuntu:x:1000:1000::/home/ubuntu:/bin/sh"));
-        assert_eq!(
-            out.matches("\ndev:").count() + usize::from(out.starts_with("dev:")),
-            1
-        );
+        assert_eq!(out.matches("\ndev:").count() + usize::from(out.starts_with("dev:")), 1);
         // Idempotent.
         assert_eq!(passwd(&out, &u(), "/home/dev", "/bin/bash"), out);
     }
@@ -202,11 +173,7 @@ mod tests {
 
         let info = user_setup(&u(), root, &root.join("run/toby/user")).unwrap();
         assert_eq!(info.shell, "/bin/bash");
-        assert!(
-            std::fs::read_to_string(root.join("etc/group"))
-                .unwrap()
-                .starts_with("dev:x:1000:\n")
-        );
+        assert!(std::fs::read_to_string(root.join("etc/group")).unwrap().starts_with("dev:x:1000:\n"));
         assert_eq!(
             std::fs::read_to_string(root.join("etc/sudoers.d/toby")).unwrap(),
             "dev ALL=(ALL) NOPASSWD: ALL\n"

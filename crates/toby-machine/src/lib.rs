@@ -26,6 +26,8 @@ const GUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 /// Guest connections allowed to be waiting for their header at once.
 const MAX_PENDING_GUEST: usize = 32;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+/// Longest time a boot helper may run.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the guest gets to power off after the power button.
 const POWER_OFF_GRACE: Duration = Duration::from_secs(30);
 
@@ -101,10 +103,8 @@ impl Machine {
             start_on_attach: true,
         };
         let id = spec.session_id.clone();
-        let req = relay::Request::Spawn(relay::Spawn {
-            spec,
-            version: Some(self.config.runtime_version.clone()),
-        });
+        let req =
+            relay::Request::Spawn(relay::Spawn { spec, version: Some(self.config.runtime_version.clone()) });
         match self.relay.call(&req).await? {
             relay::Response::Spawned(_) => {}
             relay::Response::Failed(f) => return Err(io::Error::other(f.error)),
@@ -119,6 +119,7 @@ impl Machine {
             rows: 0,
             cols: 0,
             want_replay: true,
+            resume_from: None,
         });
         frame::send(&mut s, &hello).await?;
         let mut output = Vec::new();
@@ -140,7 +141,10 @@ impl Machine {
     async fn run_boot_helpers(&self) -> Result<(), String> {
         for argv in &self.config.boot_helpers {
             let name = argv.get(3).cloned().unwrap_or_else(|| argv.join(" "));
-            match self.run_helper(argv).await {
+            let result = tokio::time::timeout(HELPER_TIMEOUT, self.run_helper(argv))
+                .await
+                .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "did not finish in time")));
+            match result {
                 Ok((types::ExitStatus::Code(0), _)) => {}
                 Ok((status, output)) => {
                     return Err(format!("{name} failed ({}): {}", status.code(), output.trim()));
@@ -264,21 +268,13 @@ impl Machine {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no header"))??;
         if !matches!(header, HostHeader::SessionAttach(_)) {
-            frame::send(
-                &mut client,
-                &Reply::refused("only session attachments are accepted here"),
-            )
-            .await?;
+            frame::send(&mut client, &Reply::refused("only session attachments are accepted here")).await?;
             return Ok(());
         }
         let (mut guest, reply) = match open_relay(&self.config.runtime.vsock(), &header).await {
             Ok(r) => r,
             Err(e) => {
-                frame::send(
-                    &mut client,
-                    &Reply::refused(format!("machine is not reachable: {e}")),
-                )
-                .await?;
+                frame::send(&mut client, &Reply::refused(format!("machine is not reachable: {e}"))).await?;
                 return Ok(());
             }
         };
@@ -329,29 +325,24 @@ impl Machine {
                     version: Some(self.config.runtime_version.clone()),
                 });
                 match self.relay.call(&r).await? {
-                    relay::Response::Spawned(s) => Response::Spawned(machine::Spawned {
-                        session_id: s.session_id,
-                    }),
+                    relay::Response::Spawned(s) => {
+                        Response::Spawned(machine::Spawned { session_id: s.session_id })
+                    }
                     relay::Response::Failed(f) => Response::failed(f.error),
                     other => Response::failed(format!("unexpected relay response {other:?}")),
                 }
             }
-            Request::Sessions(_) => match self
-                .relay
-                .call(&relay::Request::Sessions(relay::Sessions {}))
-                .await?
-            {
-                relay::Response::SessionList(l) => {
-                    Response::SessionList(machine::SessionList { sessions: l.sessions })
+            Request::Sessions(_) => {
+                match self.relay.call(&relay::Request::Sessions(relay::Sessions {})).await? {
+                    relay::Response::SessionList(l) => {
+                        Response::SessionList(machine::SessionList { sessions: l.sessions })
+                    }
+                    relay::Response::Failed(f) => Response::failed(f.error),
+                    other => Response::failed(format!("unexpected relay response {other:?}")),
                 }
-                relay::Response::Failed(f) => Response::failed(f.error),
-                other => Response::failed(format!("unexpected relay response {other:?}")),
-            },
+            }
             Request::Kill(k) => {
-                let r = relay::Request::Kill(relay::Kill {
-                    session_id: k.session_id,
-                    signal: k.signal,
-                });
+                let r = relay::Request::Kill(relay::Kill { session_id: k.session_id, signal: k.signal });
                 match self.relay.call(&r).await? {
                     relay::Response::Done(_) => Response::Done(machine::Done {}),
                     relay::Response::Failed(f) => Response::failed(f.error),

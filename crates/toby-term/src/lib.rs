@@ -6,9 +6,11 @@ use std::io::{self, IsTerminal, Write};
 use std::pin::Pin;
 use std::time::Duration;
 
+use std::sync::Arc;
 use toby_proto::session::{self, ClientFrame, ServerFrame};
 use toby_proto::types::{ExitStatus, SUPPORTED};
 use toby_proto::{MAX_CHUNK, frame};
+
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -77,11 +79,7 @@ impl Modes {
                     }
                 }
                 ParseState::Escape => {
-                    self.state = if b == b'[' {
-                        ParseState::Csi
-                    } else {
-                        ParseState::Ground
-                    };
+                    self.state = if b == b'[' { ParseState::Csi } else { ParseState::Ground };
                     self.params.clear();
                 }
                 ParseState::Csi => {
@@ -99,9 +97,7 @@ impl Modes {
     }
 
     fn numbers(rest: &[u8]) -> Vec<u16> {
-        rest.split(|&c| c == b';')
-            .filter_map(|n| std::str::from_utf8(n).ok()?.parse().ok())
-            .collect()
+        rest.split(|&c| c == b';').filter_map(|n| std::str::from_utf8(n).ok()?.parse().ok()).collect()
     }
 
     fn csi(&mut self, fin: u8) {
@@ -201,88 +197,104 @@ impl DetachFilter {
     }
 }
 
-enum Input {
-    Bytes(Vec<u8>),
-    Eof,
+/// Events for the attachment loop.
+enum Event {
+    /// The user pressed the detach key.
+    Detach,
     Resize,
     Signal(i32),
 }
 
+/// Frames the writer task sends; stdin and its end go through their own
+/// queue so window size changes never wait behind input.
+enum Data {
+    Stdin(Vec<u8>),
+    Close,
+}
+
+/// Delivers a signal to the session outside its stream.
+pub type SignalSink = Box<dyn Fn(i32) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send>> + Send + Sync>;
+
 /// Reads standard input on a plain thread: a read blocked on the terminal
-/// must not keep the runtime from shutting down when the session ends.
-fn spawn_input(local_tty: bool, forward_signals: bool) -> mpsc::Receiver<Input> {
-    let (tx, rx) = mpsc::channel(64);
-    let stdin_tx = tx.clone();
+/// must not keep the runtime from shutting down when the session ends. The
+/// detach key is recognised here.
+fn spawn_stdin(interactive: bool, data: mpsc::Sender<Data>, events: mpsc::Sender<Event>) {
     std::thread::spawn(move || {
         use std::io::Read;
+        let mut filter = DetachFilter::default();
         let mut stdin = io::stdin().lock();
         let mut buf = vec![0u8; 16 * 1024];
         loop {
-            match stdin.read(&mut buf) {
+            let n = match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => {
-                    let _ = stdin_tx.blocking_send(Input::Eof);
+                    let _ = data.blocking_send(Data::Close);
                     return;
                 }
-                Ok(n) => {
-                    if stdin_tx.blocking_send(Input::Bytes(buf[..n].to_vec())).is_err() {
-                        return;
-                    }
-                }
+                Ok(n) => n,
+            };
+            let (bytes, detach) =
+                if interactive { filter.feed(&buf[..n]) } else { (buf[..n].to_vec(), false) };
+            if !bytes.is_empty() && data.blocking_send(Data::Stdin(bytes)).is_err() {
+                return;
+            }
+            if detach {
+                let _ = events.blocking_send(Event::Detach);
+                return;
             }
         }
     });
-    if local_tty {
-        let tx = tx.clone();
+}
+
+fn spawn_signals(interactive: bool, events: &mpsc::Sender<Event>) {
+    use tokio::signal::unix::{SignalKind, signal};
+    if interactive {
+        let tx = events.clone();
         tokio::spawn(async move {
-            let Ok(mut winch) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            else {
-                return;
-            };
+            let Ok(mut winch) = signal(SignalKind::window_change()) else { return };
             while winch.recv().await.is_some() {
-                if tx.send(Input::Resize).await.is_err() {
+                if tx.send(Event::Resize).await.is_err() {
                     return;
                 }
             }
         });
-    }
-    if forward_signals {
-        use tokio::signal::unix::{SignalKind, signal};
+    } else {
         for (kind, number) in [
             (SignalKind::interrupt(), libc::SIGINT),
             (SignalKind::terminate(), libc::SIGTERM),
             (SignalKind::hangup(), libc::SIGHUP),
             (SignalKind::quit(), libc::SIGQUIT),
         ] {
-            let tx = tx.clone();
+            let tx = events.clone();
             tokio::spawn(async move {
                 let Ok(mut s) = signal(kind) else { return };
                 while s.recv().await.is_some() {
-                    if tx.send(Input::Signal(number)).await.is_err() {
+                    if tx.send(Event::Signal(number)).await.is_err() {
                         return;
                     }
                 }
             });
         }
     }
-    rx
 }
 
-async fn hello<S: Stream>(s: &mut S, want_replay: bool) -> io::Result<session::Welcome> {
+async fn hello<S: Stream>(
+    s: &mut S,
+    want_replay: bool,
+    resume_from: Option<u64>,
+) -> io::Result<session::Welcome> {
     let (rows, cols) = size().unwrap_or((0, 0));
     let hello = ClientFrame::Hello(session::Hello {
         versions: SUPPORTED.to_vec(),
         rows,
         cols,
         want_replay,
+        resume_from,
     });
     frame::send(s, &hello).await?;
     match frame::recv::<ServerFrame, _>(s).await? {
         ServerFrame::Welcome(w) => Ok(w),
         ServerFrame::Refused(r) => Err(io::Error::other(r.error)),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unexpected {other:?}"),
-        )),
+        other => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unexpected {other:?}"))),
     }
 }
 
@@ -323,125 +335,235 @@ pub fn local_tty() -> bool {
 /// With a local terminal (see [`local_tty`]) and a session that has one, the
 /// terminal is in raw mode for the attachment, the detach key works and size
 /// changes are forwarded. For a session without a terminal, interrupt,
-/// termination, hangup and quit signals received by this process are
-/// forwarded to the session. `redraw` asks a full-screen program to repaint
+/// termination, hangup and quit signals received by this process go to the
+/// session through `signals`. `redraw` asks a full-screen program to repaint
 /// after the replay (used when reattaching). A lost connection is
-/// re-established with `connect` for up to 30 seconds.
-pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Result<Outcome> {
+/// re-established with `connect` for up to 30 seconds, resuming the output
+/// where it stopped; if output was lost meanwhile, a session without a
+/// terminal ends the attachment with an error.
+pub async fn attach(
+    connect: Connect,
+    want_replay: bool,
+    redraw: bool,
+    signals: SignalSink,
+) -> io::Result<Outcome> {
     let mut conn = connect().await?;
-    let welcome = hello(&mut conn, want_replay).await?;
+    let welcome = hello(&mut conn, want_replay, None).await?;
     let interactive = welcome.tty && local_tty();
-    let mut input = spawn_input(interactive, !welcome.tty);
-    let mut filter = DetachFilter::default();
-    let mut modes = Modes::default();
 
     let raw = if interactive { RawMode::enable()? } else { None };
+    let (data_tx, data_rx) = mpsc::channel::<Data>(64);
+    let (events_tx, events_rx) = mpsc::channel::<Event>(64);
+    spawn_stdin(interactive, data_tx, events_tx.clone());
+    spawn_signals(interactive, &events_tx);
+
     if redraw && interactive {
         nudge(&mut conn).await?;
     }
-    let result = run_attached(conn, connect, interactive, &mut input, &mut filter, &mut modes).await;
+    let mut state = Attached {
+        interactive,
+        tty: welcome.tty,
+        offset: welcome.offset,
+        lost: welcome.lost,
+        modes: Modes::default(),
+        data: Arc::new(tokio::sync::Mutex::new(data_rx)),
+        events: events_rx,
+    };
+    let result = state.run(conn, connect, signals).await;
     if interactive {
         let mut o = io::stdout().lock();
-        let _ = o.write_all(&modes.restore_sequence());
+        let _ = o.write_all(&state.modes.restore_sequence());
         let _ = o.flush();
     }
     drop(raw);
     result
 }
 
-async fn run_attached(
-    mut conn: UnixStream,
-    connect: Connect,
+struct Attached {
     interactive: bool,
-    input: &mut mpsc::Receiver<Input>,
-    filter: &mut DetachFilter,
-    modes: &mut Modes,
-) -> io::Result<Outcome> {
-    let mut input_open = true;
-    loop {
-        let (mut rd, mut wr) = conn.into_split();
-        let (frames_tx, mut frames) = mpsc::channel::<io::Result<ServerFrame>>(64);
-        let reader = tokio::spawn(async move {
-            loop {
-                let f = frame::recv::<ServerFrame, _>(&mut rd)
-                    .await
-                    .map_err(io::Error::from);
-                let stop = f.is_err();
-                if frames_tx.send(f).await.is_err() || stop {
-                    return;
+    tty: bool,
+    /// Output offset of the next byte expected from the session.
+    offset: u64,
+    /// Output bytes that were lost across reconnections.
+    lost: u64,
+    modes: Modes,
+    data: Arc<tokio::sync::Mutex<mpsc::Receiver<Data>>>,
+    events: mpsc::Receiver<Event>,
+}
+
+impl Attached {
+    async fn run(
+        &mut self,
+        mut conn: UnixStream,
+        connect: Connect,
+        signals: SignalSink,
+    ) -> io::Result<Outcome> {
+        loop {
+            let (mut rd, wr) = conn.into_split();
+            let (ctl_tx, ctl_rx) = mpsc::channel::<ClientFrame>(16);
+            let writer = tokio::spawn(write_frames(wr, ctl_rx, self.data.clone()));
+            let (frames_tx, mut frames) = mpsc::channel::<io::Result<ServerFrame>>(64);
+            let reader = tokio::spawn(async move {
+                loop {
+                    let f = frame::recv::<ServerFrame, _>(&mut rd).await.map_err(io::Error::from);
+                    let stop = f.is_err();
+                    if frames_tx.send(f).await.is_err() || stop {
+                        return;
+                    }
+                }
+            });
+
+            let outcome = self.pump(&mut frames, &ctl_tx, &signals).await;
+            reader.abort();
+            writer.abort();
+            match outcome {
+                Pumped::Done(r) => return r,
+                Pumped::Lost(lost) => {
+                    // The connection broke (for example the host process
+                    // restarted): reattach and resume the output.
+                    conn = self.reconnect(&connect, lost).await?;
                 }
             }
-        });
+        }
+    }
 
-        let lost: io::Error = loop {
+    async fn pump(
+        &mut self,
+        frames: &mut mpsc::Receiver<io::Result<ServerFrame>>,
+        ctl: &mpsc::Sender<ClientFrame>,
+        signals: &SignalSink,
+    ) -> Pumped {
+        loop {
             tokio::select! {
                 f = frames.recv() => {
                     let written = match f {
-                        Some(Ok(ServerFrame::Stdout(o))) => { modes.feed(&o.bytes); write_out(&o.bytes, false) }
-                        Some(Ok(ServerFrame::Replay(r))) => { modes.feed(&r.bytes); write_out(&r.bytes, r.stderr) }
-                        Some(Ok(ServerFrame::Stderr(e))) => write_out(&e.bytes, true),
-                        Some(Ok(ServerFrame::Exit(e))) => { reader.abort(); return Ok(Outcome::Exited(e.status)); }
-                        Some(Ok(ServerFrame::Detached(d))) => { reader.abort(); return Ok(Outcome::Replaced(d.reason)); }
+                        Some(Ok(ServerFrame::Stdout(o))) => self.output(&o.bytes, false),
+                        Some(Ok(ServerFrame::Replay(r))) => self.output(&r.bytes, r.stderr),
+                        Some(Ok(ServerFrame::Stderr(e))) => self.output(&e.bytes, true),
+                        Some(Ok(ServerFrame::Exit(e))) => return Pumped::Done(self.exited(e.status)),
+                        Some(Ok(ServerFrame::Detached(d))) => return Pumped::Done(Ok(Outcome::Replaced(d.reason))),
                         Some(Ok(_)) => Ok(()),
-                        Some(Err(e)) => break e,
-                        None => break io::Error::new(io::ErrorKind::UnexpectedEof, "session connection closed"),
+                        Some(Err(e)) => return Pumped::Lost(e),
+                        None => return Pumped::Lost(io::Error::new(io::ErrorKind::UnexpectedEof, "session connection closed")),
                     };
                     if let Err(e) = written {
-                        reader.abort();
-                        return Err(e);
+                        return Pumped::Done(Err(e));
                     }
                 }
-                i = input.recv(), if input_open => {
-                    let result = match i {
-                        Some(Input::Bytes(b)) => {
-                            let (data, detach) = if interactive { filter.feed(&b) } else { (b, false) };
-                            let mut r = Ok(());
-                            for chunk in data.chunks(MAX_CHUNK) {
-                                r = frame::send(&mut wr, &ClientFrame::Stdin(session::Stdin { bytes: chunk.to_vec() })).await;
-                                if r.is_err() { break; }
-                            }
-                            if detach {
-                                reader.abort();
-                                return Ok(Outcome::Detached);
-                            }
-                            r
+                e = self.events.recv() => match e {
+                    Some(Event::Detach) => return Pumped::Done(Ok(Outcome::Detached)),
+                    Some(Event::Resize) => {
+                        if let Some((rows, cols)) = size() {
+                            let _ = ctl.try_send(ClientFrame::Resize(session::Resize { rows, cols }));
                         }
-                        Some(Input::Eof) => frame::send(&mut wr, &ClientFrame::CloseStdin(session::CloseStdin {})).await,
-                        Some(Input::Resize) => match size() {
-                            Some((rows, cols)) => frame::send(&mut wr, &ClientFrame::Resize(session::Resize { rows, cols })).await,
-                            None => Ok(()),
-                        },
-                        Some(Input::Signal(n)) => frame::send(&mut wr, &ClientFrame::Signal(session::Signal { signal: n })).await,
-                        None => {
-                            input_open = false;
-                            Ok(())
-                        }
-                    };
-                    if let Err(e) = result {
-                        break e.into();
                     }
-                }
+                    Some(Event::Signal(n)) => {
+                        if let Err(e) = signals(n).await {
+                            return Pumped::Done(Err(e));
+                        }
+                    }
+                    None => {}
+                },
             }
-        };
-        reader.abort();
+        }
+    }
 
-        // The connection broke (for example the host process restarted):
-        // reattach without replay and let full-screen programs redraw.
+    fn output(&mut self, bytes: &[u8], stderr: bool) -> io::Result<()> {
+        self.offset += bytes.len() as u64;
+        if !stderr {
+            self.modes.feed(bytes);
+        }
+        write_out(bytes, stderr)
+    }
+
+    fn exited(&self, status: ExitStatus) -> io::Result<Outcome> {
+        if self.lost > 0 && !self.tty {
+            return Err(io::Error::other(format!(
+                "{} bytes of the command's output were lost while reconnecting",
+                self.lost
+            )));
+        }
+        Ok(Outcome::Exited(status))
+    }
+
+    async fn reconnect(&mut self, connect: &Connect, lost: io::Error) -> io::Result<UnixStream> {
         let deadline = tokio::time::Instant::now() + REATTACH_FOR;
-        conn = loop {
+        loop {
             if tokio::time::Instant::now() >= deadline {
                 return Err(lost);
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let Ok(mut c) = connect().await else { continue };
-            if hello(&mut c, false).await.is_err() {
-                continue;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                e = self.events.recv() => match e {
+                    Some(Event::Detach) | Some(Event::Signal(_)) => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted while reconnecting"));
+                    }
+                    _ => continue,
+                },
             }
-            if interactive {
+            let Ok(mut c) = connect().await else { continue };
+            let Ok(w) = hello(&mut c, false, Some(self.offset)).await else { continue };
+            self.offset = w.offset;
+            self.lost += w.lost;
+            if w.lost > 0 && self.interactive {
+                let _ = write_out(
+                    format!("\r\n[toby: {} bytes of output were lost]\r\n", w.lost).as_bytes(),
+                    true,
+                );
+            }
+            if self.interactive {
                 let _ = nudge(&mut c).await;
             }
-            break c;
+            return Ok(c);
+        }
+    }
+}
+
+enum Pumped {
+    Done(io::Result<Outcome>),
+    Lost(io::Error),
+}
+
+/// Sends control frames ahead of queued input.
+async fn write_frames(
+    mut wr: tokio::net::unix::OwnedWriteHalf,
+    mut ctl: mpsc::Receiver<ClientFrame>,
+    data: Arc<tokio::sync::Mutex<mpsc::Receiver<Data>>>,
+) {
+    let mut data = data.lock().await;
+    let mut data_open = true;
+    loop {
+        let f = tokio::select! {
+            biased;
+            c = ctl.recv() => match c {
+                Some(f) => f,
+                None => return,
+            },
+            d = data.recv(), if data_open => match d {
+                Some(Data::Stdin(bytes)) => ClientFrame::Stdin(session::Stdin { bytes }),
+                Some(Data::Close) => ClientFrame::CloseStdin(session::CloseStdin {}),
+                None => {
+                    data_open = false;
+                    continue;
+                }
+            },
         };
+        if let ClientFrame::Stdin(session::Stdin { bytes }) = &f
+            && bytes.len() > MAX_CHUNK
+        {
+            for c in bytes.chunks(MAX_CHUNK) {
+                if frame::send(&mut wr, &ClientFrame::Stdin(session::Stdin { bytes: c.to_vec() }))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            continue;
+        }
+        if frame::send(&mut wr, &f).await.is_err() {
+            return;
+        }
     }
 }
 
@@ -466,18 +588,12 @@ mod tests {
     fn restores_only_modes_left_on() {
         let s = restore(&[b"\x1b[?1049h\x1b[?2004h\x1b[?25l", b"\x1b[?2004l"]);
         assert_eq!(s, "\x1b[?1049l\x1b[?25h\x1b[0m");
-        assert_eq!(
-            restore(&[b"\x1b[?1049h", b"\x1b[?1049l\x1b[?25l\x1b[?25h"]),
-            "\x1b[0m"
-        );
+        assert_eq!(restore(&[b"\x1b[?1049h", b"\x1b[?1049l\x1b[?25l\x1b[?25h"]), "\x1b[0m");
     }
 
     #[test]
     fn sequences_split_across_chunks() {
-        assert_eq!(
-            restore(&[b"\x1b", b"[?10", b"00;1006h"]),
-            "\x1b[?1006l\x1b[?1000l\x1b[0m"
-        );
+        assert_eq!(restore(&[b"\x1b", b"[?10", b"00;1006h"]), "\x1b[?1006l\x1b[?1000l\x1b[0m");
     }
 
     #[test]
@@ -493,14 +609,8 @@ mod tests {
         assert_eq!(f.feed(b"d"), (vec![], true));
 
         let mut f = DetachFilter::default();
-        assert_eq!(
-            f.feed(&[b'x', DETACH_PREFIX, b'y']),
-            (vec![b'x', DETACH_PREFIX, b'y'], false)
-        );
-        assert_eq!(
-            f.feed(&[DETACH_PREFIX, DETACH_PREFIX]),
-            (vec![DETACH_PREFIX], false)
-        );
+        assert_eq!(f.feed(&[b'x', DETACH_PREFIX, b'y']), (vec![b'x', DETACH_PREFIX, b'y'], false));
+        assert_eq!(f.feed(&[DETACH_PREFIX, DETACH_PREFIX]), (vec![DETACH_PREFIX], false));
         assert_eq!(f.feed(&[b'q', DETACH_PREFIX, b'd', b'z']), (vec![b'q'], true));
     }
 }

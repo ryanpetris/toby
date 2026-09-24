@@ -13,10 +13,7 @@ use imago::{FormatCreateBuilder, Storage, StorageCreateOptions};
 /// backing format). Fails if `path` exists.
 pub async fn create(path: &Path, size: u64, backing: Option<&Path>) -> io::Result<()> {
     if path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} exists", path.display()),
-        ));
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", path.display())));
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -43,11 +40,7 @@ mod tests {
     use super::*;
 
     fn qemu_img_info(path: &Path) -> Option<String> {
-        let out = std::process::Command::new("qemu-img")
-            .arg("info")
-            .arg(path)
-            .output()
-            .ok()?;
+        let out = std::process::Command::new("qemu-img").arg("info").arg(path).output().ok()?;
         Some(String::from_utf8_lossy(&out.stdout).into())
     }
 
@@ -64,16 +57,9 @@ mod tests {
 
         if let Some(info) = qemu_img_info(&over) {
             assert!(info.contains("virtual size: 64 GiB"), "{info}");
-            assert!(
-                info.contains(&format!("backing file: {}", base.display())),
-                "{info}"
-            );
+            assert!(info.contains(&format!("backing file: {}", base.display())), "{info}");
             assert!(info.contains("backing file format: qcow2"), "{info}");
-            let check = std::process::Command::new("qemu-img")
-                .arg("check")
-                .arg(&over)
-                .status()
-                .unwrap();
+            let check = std::process::Command::new("qemu-img").arg("check").arg(&over).status().unwrap();
             assert!(check.success());
         }
     }

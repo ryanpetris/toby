@@ -269,15 +269,10 @@ models_listen = "127.0.0.1:41100"
     fn root_forms() {
         for (text, root) in [
             ("root = \"work\"", RootSpec::Named("work".into())),
-            (
-                "root = { image = \"01J\" }",
-                RootSpec::Image { image: "01J".into() },
-            ),
+            ("root = { image = \"01J\" }", RootSpec::Image { image: "01J".into() }),
             (
                 "root = { cloud_image = \"/c.qcow2\" }",
-                RootSpec::CloudImage {
-                    cloud_image: "/c.qcow2".into(),
-                },
+                RootSpec::CloudImage { cloud_image: "/c.qcow2".into() },
             ),
         ] {
             let doc = format!(

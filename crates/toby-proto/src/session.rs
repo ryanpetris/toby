@@ -13,6 +13,11 @@ pub struct Hello {
     pub rows: u16,
     pub cols: u16,
     pub want_replay: bool,
+    /// Resume output at this offset (bytes of output since the session
+    /// started) instead of replaying the whole buffer; used when a client
+    /// reconnects.
+    #[serde(default)]
+    pub resume_from: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +66,13 @@ pub struct Welcome {
     pub state: State,
     /// Whether the session has a terminal.
     pub tty: bool,
+    /// Output offset of the first byte this client will receive.
+    #[serde(default)]
+    pub offset: u64,
+    /// Output bytes between the requested resume offset and `offset` that
+    /// are no longer buffered.
+    #[serde(default)]
+    pub lost: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

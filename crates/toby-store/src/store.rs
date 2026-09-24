@@ -35,10 +35,7 @@ pub fn lock_disk(path: &Path) -> io::Result<DiskLock> {
             io::Error::from(e)
         }
     })?;
-    Ok(DiskLock {
-        _lock: lock,
-        path: path.to_path_buf(),
-    })
+    Ok(DiskLock { _lock: lock, path: path.to_path_buf() })
 }
 
 /// Whether some process holds the lock on `path`.
@@ -156,10 +153,7 @@ impl Store {
     async fn write_root_disk(&self, name: &str, image: &str) -> io::Result<()> {
         let backing = self.paths.image_dir(image).join("disk.qcow2");
         if !backing.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("image {image} has no disk"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("image {image} has no disk")));
         }
         qcow2::create(&self.paths.root_disk(name), IMAGE_SIZE, Some(&backing)).await
     }
@@ -168,17 +162,10 @@ impl Store {
         check_name("root", name)?;
         self.image(image)?;
         if self.root_record_path(name).exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("root {name} exists"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("root {name} exists")));
         }
         self.write_root_disk(name, image).await?;
-        let rec = RootRecord {
-            name: name.into(),
-            image: image.into(),
-            created: now(),
-        };
+        let rec = RootRecord { name: name.into(), image: image.into(), created: now() };
         records::store(&self.root_record_path(name), &rec)?;
         Ok(rec)
     }
@@ -242,10 +229,7 @@ impl Store {
     ) -> io::Result<HomeRecord> {
         check_name("home", name)?;
         if self.home_record_path(name).exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("home {name} exists"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("home {name} exists")));
         }
         qcow2::create(&self.paths.home_disk(name), size, None).await?;
         let rec = HomeRecord {
@@ -280,16 +264,11 @@ impl Store {
 fn check_name_or_id(id: &str) -> io::Result<()> {
     if !id.is_empty()
         && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid image ID {id:?}"),
-        ))
+        Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid image ID {id:?}")))
     }
 }
 
@@ -312,11 +291,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::with(
-            dir.path().to_path_buf(),
-            &GlobalConfig::default(),
-            dir.path().join("run"),
-        );
+        let paths = Paths::with(dir.path().to_path_buf(), &GlobalConfig::default(), dir.path().join("run"));
         (dir, Store::new(paths))
     }
 
@@ -346,10 +321,7 @@ mod tests {
         s.create_root("work", "img1").await.unwrap();
         assert!(s.create_root("work", "img1").await.is_err());
         assert!(s.remove_image("img1").is_err());
-        assert_eq!(
-            s.newer_image(&s.image("img1").unwrap()).unwrap().unwrap().id,
-            "img2"
-        );
+        assert_eq!(s.newer_image(&s.image("img1").unwrap()).unwrap().unwrap().id, "img2");
 
         let disk = s.paths.root_disk("work");
         std::fs::write(disk.with_extension("marker"), "").unwrap();

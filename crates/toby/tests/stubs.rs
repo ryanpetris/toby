@@ -46,7 +46,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["web"],
     &["internal", "daemon"],
     &["internal", "proxy"],
-    &["internal", "machine", "--machine", "m1", "--supervise"],
     &["guest", "connect", "mcp/toby"],
     &["claude", "--home", "work", "--yolo", "--", "--continue"],
 ];
@@ -87,10 +86,7 @@ fn tool_help_and_errors_come_from_the_parser() {
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stdout).contains("Usage: toby <tool>"));
 
-    let out = Command::new(BIN)
-        .args(["claude", "--no-such-flag"])
-        .output()
-        .unwrap();
+    let out = Command::new(BIN).args(["claude", "--no-such-flag"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
 

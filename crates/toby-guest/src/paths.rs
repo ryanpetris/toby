@@ -10,9 +10,7 @@ pub struct GuestPaths {
 
 impl Default for GuestPaths {
     fn default() -> Self {
-        GuestPaths {
-            root: PathBuf::from("/run/toby"),
-        }
+        GuestPaths { root: PathBuf::from("/run/toby") }
     }
 }
 
@@ -61,9 +59,7 @@ pub mod session_files {
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Whether `v` is a plausible Toby version usable as a path component.
@@ -71,16 +67,13 @@ pub fn valid_version(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 64
         && !v.starts_with('.')
-        && v.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_'))
+        && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_'))
 }
 
 impl GuestPaths {
     /// Paths rooted at `$TOBY_GUEST_ROOT`, or `/run/toby`.
     pub fn from_env() -> Self {
-        std::env::var_os("TOBY_GUEST_ROOT")
-            .map(GuestPaths::at)
-            .unwrap_or_default()
+        std::env::var_os("TOBY_GUEST_ROOT").map(GuestPaths::at).unwrap_or_default()
     }
 }
 

@@ -41,13 +41,8 @@ fn other(e: impl std::fmt::Debug) -> io::Error {
 
 impl Backend {
     fn process(&self, vring: &mut VringState<Mem>) -> io::Result<()> {
-        let mem = self
-            .mem
-            .read()
-            .unwrap()
-            .as_ref()
-            .ok_or_else(|| io::Error::other("no guest memory"))?
-            .memory();
+        let mem =
+            self.mem.read().unwrap().as_ref().ok_or_else(|| io::Error::other("no guest memory"))?.memory();
         let chains: Vec<_> = vring.get_queue_mut().iter(mem.clone()).map_err(other)?.collect();
         let event_idx = *self.event_idx.read().unwrap();
 
@@ -55,10 +50,7 @@ impl Backend {
             let head = chain.head_index();
             let reader = Reader::from_descriptor_chain(&*mem, chain.clone()).map_err(other)?;
             let writer: Writer<()> = VirtioFsWriter::new(&*mem, chain).map(Into::into).map_err(other)?;
-            let len = self
-                .server
-                .handle_message(reader, writer, None, None)
-                .map_err(other)?;
+            let len = self.server.handle_message(reader, writer, None, None).map_err(other)?;
 
             vring.add_used(head, len as u32).map_err(other)?;
             if !event_idx || vring.needs_notification().unwrap_or(true) {
@@ -100,11 +92,7 @@ impl VhostUserBackend for Backend {
         let mut cfg = vec![0u8; TAG_LEN + 4];
         cfg[..TAG.len()].copy_from_slice(TAG.as_bytes());
         cfg[TAG_LEN..].copy_from_slice(&1u32.to_le_bytes());
-        let mut out: Vec<u8> = cfg
-            .into_iter()
-            .skip(offset as usize)
-            .take(size as usize)
-            .collect();
+        let mut out: Vec<u8> = cfg.into_iter().skip(offset as usize).take(size as usize).collect();
         out.resize(size as usize, 0);
         out
     }
@@ -128,9 +116,7 @@ impl VhostUserBackend for Backend {
         if evset != EventSet::IN {
             return Err(io::Error::other("unexpected event"));
         }
-        let vring = vrings
-            .get(device_event as usize)
-            .ok_or_else(|| io::Error::other("unknown queue"))?;
+        let vring = vrings.get(device_event as usize).ok_or_else(|| io::Error::other("unknown queue"))?;
         let mut state = vring.get_mut();
         if *self.event_idx.read().unwrap() {
             // With EVENT_IDX the queue must be drained until no new requests
@@ -169,17 +155,11 @@ pub fn serve(socket: &Path, fs: Arc<Guard<Vfs>>, ready: impl FnOnce()) -> io::Re
     let mut listener = Listener::new(socket, true).map_err(other)?;
     ready();
 
-    let backend = Arc::new(Backend {
-        server: Server::new(fs),
-        mem: RwLock::new(None),
-        event_idx: RwLock::new(false),
-    });
-    let mut daemon = VhostUserDaemon::new(
-        "toby-fs".into(),
-        backend,
-        GuestMemoryAtomic::new(GuestMemoryMmap::new()),
-    )
-    .map_err(other)?;
+    let backend =
+        Arc::new(Backend { server: Server::new(fs), mem: RwLock::new(None), event_idx: RwLock::new(false) });
+    let mut daemon =
+        VhostUserDaemon::new("toby-fs".into(), backend, GuestMemoryAtomic::new(GuestMemoryMmap::new()))
+            .map_err(other)?;
     daemon.start(&mut listener).map_err(other)?;
     match daemon.wait() {
         Ok(()) => Ok(()),

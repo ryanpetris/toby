@@ -41,10 +41,7 @@ pub async fn connect_port(vsock: &Path, port: u32) -> io::Result<UnixStream> {
         if !line.starts_with(b"OK ") {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
-                format!(
-                    "guest refused vsock port {port}: {}",
-                    String::from_utf8_lossy(&line)
-                ),
+                format!("guest refused vsock port {port}: {}", String::from_utf8_lossy(&line)),
             ));
         }
         Ok(s)
@@ -71,16 +68,11 @@ pub struct RelayControl {
 
 impl RelayControl {
     pub fn new(vsock: PathBuf) -> Self {
-        RelayControl {
-            vsock,
-            conn: Mutex::new(None),
-        }
+        RelayControl { vsock, conn: Mutex::new(None) }
     }
 
     async fn connect(&self) -> io::Result<UnixStream> {
-        let header = HostHeader::Control(Control {
-            proto_versions: types::SUPPORTED.to_vec(),
-        });
+        let header = HostHeader::Control(Control { proto_versions: types::SUPPORTED.to_vec() });
         let (s, reply) = open_relay(&self.vsock, &header).await?;
         reply.into_result().map_err(io::Error::other)?;
         Ok(s)

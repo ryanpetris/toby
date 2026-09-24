@@ -45,10 +45,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let argv = a
                 .command
                 .into_iter()
-                .map(|s| {
-                    s.into_string()
-                        .map_err(|s| anyhow::anyhow!("argument is not UTF-8: {s:?}"))
-                })
+                .map(|s| s.into_string().map_err(|s| anyhow::anyhow!("argument is not UTF-8: {s:?}")))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             return runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), a.cwd));
         }
@@ -77,11 +74,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Internal(cmd) => match cmd {
             InternalCommand::Daemon => "internal daemon",
             InternalCommand::Proxy => "internal proxy",
-            InternalCommand::Machine {
-                machine,
-                supervise: false,
-            } => return internal::machine(&machine).map(|()| ExitCode::SUCCESS),
-            InternalCommand::Machine { supervise: true, .. } => "internal machine --supervise",
+            InternalCommand::Machine { machine, supervise: false } => {
+                return internal::machine(&machine).map(|()| ExitCode::SUCCESS);
+            }
+            InternalCommand::Machine { machine, supervise: true } => {
+                return internal::supervise(&machine).map(|()| ExitCode::SUCCESS);
+            }
             InternalCommand::Fs { machine } => return internal::fs(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::Vm { machine } => return internal::vm(&machine).map(|()| ExitCode::SUCCESS),
             InternalCommand::Net { machine } => return internal::net(&machine).map(|()| ExitCode::SUCCESS),
@@ -92,10 +90,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
             GuestCommand::Session { id } => {
-                runtime()?.block_on(toby_guest::session::run(
-                    toby_guest::paths::GuestPaths::from_env(),
-                    &id,
-                ))?;
+                runtime()?
+                    .block_on(toby_guest::session::run(toby_guest::paths::GuestPaths::from_env(), &id))?;
                 return Ok(ExitCode::SUCCESS);
             }
             GuestCommand::Connect { .. } => "guest connect",
@@ -113,36 +109,14 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
     use toby_guest::helper;
     let paths = toby_guest::paths::GuestPaths::from_env();
     match cmd {
-        HelperCommand::NetUp {
-            addr,
-            gw,
-            dns,
-            hostname,
-        } => {
-            let (a, p) = addr
-                .split_once('/')
-                .ok_or_else(|| anyhow::anyhow!("--addr needs a prefix length"))?;
-            let opts = helper::NetUp {
-                addr: a.parse()?,
-                prefix: p.parse()?,
-                gateway: gw,
-                dns,
-                hostname,
-            };
+        HelperCommand::NetUp { addr, gw, dns, hostname } => {
+            let (a, p) =
+                addr.split_once('/').ok_or_else(|| anyhow::anyhow!("--addr needs a prefix length"))?;
+            let opts = helper::NetUp { addr: a.parse()?, prefix: p.parse()?, gateway: gw, dns, hostname };
             helper::net_up(&opts, paths.root())?;
         }
-        HelperCommand::UserSetup {
-            name,
-            uid,
-            shell,
-            sudo,
-        } => {
-            let u = helper::UserSetup {
-                name,
-                uid,
-                shell,
-                sudo,
-            };
+        HelperCommand::UserSetup { name, uid, shell, sudo } => {
+            let u = helper::UserSetup { name, uid, shell, sudo };
             helper::user_setup(&u, std::path::Path::new("/"), &paths.user_file())?;
         }
         HelperCommand::HomeMount { device, at, uid, gid } => {

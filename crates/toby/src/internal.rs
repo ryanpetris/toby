@@ -45,16 +45,8 @@ impl Host {
             bail!("{} describes machine {}", desired.display(), spec.id);
         }
         let runtime = paths.machine_runtime(machine);
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&runtime.dir)?;
-        Ok(Host {
-            config,
-            paths,
-            spec,
-            runtime,
-        })
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&runtime.dir)?;
+        Ok(Host { config, paths, spec, runtime })
     }
 }
 
@@ -72,31 +64,37 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;
     toby_fs::raise_fd_limit().context("raising the open file limit")?;
 
-    let uid = nix::unistd::getuid().as_raw();
-    let gid = nix::unistd::getgid().as_raw();
+    // Files owned by the host user appear owned by the home's user, or by
+    // root in machines without a home (builders).
+    let guest_uid = match &host.spec.home {
+        Some(name) => toby_store::Store::new(host.paths.clone()).home(name)?.uid,
+        None => 0,
+    };
     let squash = toby_vfs::Squash {
-        host_uid: uid,
-        host_gid: gid,
-        guest_uid: uid,
-        guest_gid: gid,
+        host_uid: nix::unistd::getuid().as_raw(),
+        host_gid: nix::unistd::getgid().as_raw(),
+        guest_uid,
+        guest_gid: guest_uid,
     };
     let tree = toby_vfs::Tree::new(squash)?;
+    let ro = |source: PathBuf| toby_vfs::MountSpec { source, read_only: true };
 
     let versions = host.config.programs.versions();
-    tree.mount(
-        "/versions",
-        toby_vfs::MountSpec {
-            source: versions.clone(),
-            read_only: true,
-        },
-    )
-    .with_context(|| format!("serving {}", versions.display()))?;
+    tree.mount("/versions", ro(versions.clone()))
+        .with_context(|| format!("serving {}", versions.display()))?;
+    if !matches!(host.spec.root, RootSpec::Named(_)) {
+        let share = host.config.programs.share();
+        for (at, dir) in [("/mkosi", "mkosi"), ("/images", "images"), ("/dracut", "dracut")] {
+            let source = share.join(dir);
+            tree.mount(at, ro(source.clone())).with_context(|| format!("serving {}", source.display()))?;
+        }
+    }
+    for a in &host.spec.attach {
+        let spec = toby_vfs::MountSpec { source: PathBuf::from(&a.host), read_only: a.read_only };
+        tree.mount(&format!("/projects/{}", a.id), spec).with_context(|| format!("attaching {}", a.host))?;
+    }
 
-    toby_fs::serve(
-        &host.runtime.fs_sock(),
-        tree.filesystem(),
-        toby_svc::notify::ready,
-    )?;
+    toby_fs::serve(&host.runtime.fs_sock(), tree.filesystem(), toby_svc::notify::ready)?;
     Ok(())
 }
 
@@ -104,18 +102,12 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
 pub fn first_ipv4_nameserver(resolv_conf: &str) -> Option<Ipv4Addr> {
     resolv_conf.lines().find_map(|line| {
         let mut words = line.split_whitespace();
-        (words.next() == Some("nameserver"))
-            .then(|| words.next()?.parse().ok())
-            .flatten()
+        (words.next() == Some("nameserver")).then(|| words.next()?.parse().ok()).flatten()
     })
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|d| Path::new(d).join(name))
-        .find(|p| p.is_file())
+    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(name)).find(|p| p.is_file())
 }
 
 /// `toby internal net`: replaces itself with passt for the machine.
@@ -140,13 +132,8 @@ pub fn net(machine: &str) -> anyhow::Result<()> {
 
     let prefix = GUEST_PREFIX.to_string();
     let dns_host = dns_host.to_string();
-    let mut args: Vec<OsString> = vec![
-        "--vhost-user".into(),
-        "-s".into(),
-        sock.into(),
-        "-f".into(),
-        "-q".into(),
-    ];
+    let mut args: Vec<OsString> =
+        vec!["--vhost-user".into(), "-s".into(), sock.into(), "-f".into(), "-q".into()];
     args.extend(
         [
             "-4",
@@ -174,18 +161,106 @@ pub fn net(machine: &str) -> anyhow::Result<()> {
         .with_context(|| format!("starting {}", passt.display()))
 }
 
-/// `toby internal machine`: the machine's host process.
-pub fn machine(machine: &str) -> anyhow::Result<()> {
-    let host = Host::load(machine)?;
-    let config = toby_machine::Config {
+fn machine_config(host: &Host) -> anyhow::Result<toby_machine::Config> {
+    Ok(toby_machine::Config {
         id: host.spec.id.clone(),
         generation: host.spec.generation,
         runtime: host.runtime.clone(),
         runtime_version: current_runtime_version(&host.config.programs.versions()),
-        boot_helpers: boot_helpers(&host)?,
-    };
+        boot_helpers: boot_helpers(host)?,
+    })
+}
+
+/// `toby internal machine`: the machine's host process.
+pub fn machine(machine: &str) -> anyhow::Result<()> {
+    let host = Host::load(machine)?;
+    let config = machine_config(&host)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(toby_machine::Machine::new(config, toby_svc::notify::ready).run())?;
+    Ok(())
+}
+
+/// `toby internal machine --supervise`: runs the machine's host process and
+/// supervises its file share, network and VMM (the direct back end, plan
+/// §12.3). A file share or network exit stops the VM; a VM exit stops the
+/// rest; SIGTERM or SIGINT powers the guest off first.
+pub fn supervise(machine: &str) -> anyhow::Result<()> {
+    use tokio::process::Command;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let host = Host::load(machine)?;
+    let exe = std::env::current_exe()?;
+    let config = machine_config(&host)?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let runtime = host.runtime.clone();
+
+    rt.block_on(async move {
+        let log = |name: &str| -> anyhow::Result<std::process::Stdio> {
+            let f = std::fs::File::create(runtime.dir.join(format!("{name}.log")))?;
+            Ok(f.into())
+        };
+        let part = |name: &str| -> anyhow::Result<tokio::process::Child> {
+            let mut c = Command::new(&exe);
+            c.args(["internal", name, "--machine", machine])
+                .stdin(std::process::Stdio::null())
+                .stdout(log(name)?)
+                .stderr(log(&format!("{name}.err"))?)
+                .kill_on_drop(true);
+            Ok(c.spawn()?)
+        };
+
+        // State from an earlier run must not look current.
+        let _ = std::fs::remove_file(runtime.status());
+        let _ = std::fs::remove_file(runtime.fs_sock());
+        let mut fs = part("fs")?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !runtime.fs_sock().exists() {
+            if let Ok(Some(status)) = fs.try_wait() {
+                bail!(
+                    "the file share exited during start ({status}); see {}",
+                    runtime.dir.join("fs.err.log").display()
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("the file share did not start");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut net = part("net")?;
+        let mut vm = part("vm")?;
+
+        let server = tokio::spawn(toby_machine::Machine::new(config, || {}).run());
+        let api = cloud_hypervisor::Api::new(runtime.ch_api());
+        let mut term = signal(SignalKind::terminate())?;
+        let mut int = signal(SignalKind::interrupt())?;
+
+        tokio::select! {
+            _ = vm.wait() => {}
+            _ = fs.wait() => { let _ = api.shutdown().await; let _ = api.shutdown_vmm().await; }
+            _ = net.wait() => { let _ = api.shutdown().await; let _ = api.shutdown_vmm().await; }
+            _ = term.recv() => toby_machine::power_off(api.clone()).await,
+            _ = int.recv() => toby_machine::power_off(api.clone()).await,
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(45), vm.wait()).await.is_err() {
+            let _ = vm.kill().await;
+        }
+        let _ = fs.kill().await;
+        let _ = net.kill().await;
+        server.abort();
+        anyhow::Ok(())
+    })?;
+
+    if host.spec.has_layer() {
+        let _ = std::fs::remove_file(host.paths.layer_disk(machine));
+    }
+    for f in [
+        host.runtime.control_sock(),
+        host.runtime.session_sock(),
+        host.runtime.fs_sock(),
+        host.runtime.net_sock(),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
     Ok(())
 }
 
@@ -214,21 +289,12 @@ fn base64(data: &[u8]) -> String {
 /// SMBIOS OEM strings that give a stock image Toby's guest units.
 pub fn credential_units(version: &str) -> Vec<String> {
     let cred = |name: &str, content: &str| {
-        format!(
-            "io.systemd.credential.binary:{name}={}",
-            base64(content.as_bytes())
-        )
+        format!("io.systemd.credential.binary:{name}={}", base64(content.as_bytes()))
     };
     vec![
         cred("systemd.extra-unit.run-toby-fs.mount", FS_MOUNT_UNIT),
-        cred(
-            "systemd.extra-unit.toby-relay.service",
-            &RELAY_UNIT.replace("@VERSION@", version),
-        ),
-        cred(
-            "systemd.unit-dropin.multi-user.target~toby",
-            "[Unit]\nWants=toby-relay.service\n",
-        ),
+        cred("systemd.extra-unit.toby-relay.service", &RELAY_UNIT.replace("@VERSION@", version)),
+        cred("systemd.unit-dropin.multi-user.target~toby", "[Unit]\nWants=toby-relay.service\n"),
     ]
 }
 
@@ -247,11 +313,7 @@ pub fn boot_helpers(host: &Host) -> anyhow::Result<Vec<Vec<String>>> {
     let version = current_runtime_version(&host.config.programs.versions());
     let toby = format!("/run/toby/fs/versions/{version}/toby");
     let helper = |args: &[&str]| -> Vec<String> {
-        [toby.as_str(), "guest", "helper"]
-            .iter()
-            .chain(args)
-            .map(|s| s.to_string())
-            .collect()
+        [toby.as_str(), "guest", "helper"].iter().chain(args).map(|s| s.to_string()).collect()
     };
     let store = toby_store::Store::new(host.paths.clone());
 
@@ -295,11 +357,7 @@ pub fn boot_helpers(host: &Host) -> anyhow::Result<Vec<Vec<String>>> {
             &uid,
         ]));
     }
-    out.push(helper(&[
-        "links",
-        "--target",
-        "/run/toby/fs/versions/current/toby",
-    ]));
+    out.push(helper(&["links", "--target", "/run/toby/fs/versions/current/toby"]));
     for a in &host.spec.attach {
         let src = format!("/run/toby/fs/projects/{}", a.id);
         let mut args = vec!["attach", "--src", &src, "--at", &a.at];
@@ -318,9 +376,7 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
     let boot = match (&host.spec.root, &host.spec.boot.image) {
         (RootSpec::CloudImage { .. }, _) => {
             oem_strings = credential_units(&version);
-            BootSpec::Firmware {
-                path: host.config.programs.firmware(),
-            }
+            BootSpec::Firmware { path: host.config.programs.firmware() }
         }
         (_, Some(image)) => {
             let dir = host.paths.image_dir(image);
@@ -341,12 +397,8 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
         (RootSpec::Named(name), None) => host.paths.root_disk(name),
         _ => unreachable!("only named roots have no layer"),
     };
-    let mut disks = vec![DiskSpec {
-        path: root,
-        serial: "root".into(),
-        read_only: false,
-        backing_allowed: true,
-    }];
+    let mut disks =
+        vec![DiskSpec { path: root, serial: "root".into(), read_only: false, backing_allowed: true }];
     if let Some(home) = &host.spec.home {
         disks.push(DiskSpec {
             path: host.paths.home_disk(home),
@@ -370,10 +422,7 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
         memory_bytes: host.spec.memory_bytes()?,
         boot,
         disks,
-        share: Some(FileShareSpec {
-            socket: host.runtime.fs_sock(),
-            tag: toby_fs::TAG.into(),
-        }),
+        share: Some(FileShareSpec { socket: host.runtime.fs_sock(), tag: toby_fs::TAG.into() }),
         net_socket: Some(host.runtime.net_sock()),
         vsock_socket: host.runtime.vsock(),
         console_log: host.runtime.console_log(),
@@ -393,12 +442,8 @@ pub fn create_layer(host: &Host) -> anyhow::Result<()> {
     let layer = host.paths.layer_disk(&host.spec.id);
     let _ = std::fs::remove_file(&layer);
     let rt = tokio::runtime::Builder::new_current_thread().build()?;
-    rt.block_on(toby_store::qcow2::create(
-        &layer,
-        toby_store::store::IMAGE_SIZE,
-        Some(&base),
-    ))
-    .with_context(|| format!("creating {}", layer.display()))?;
+    rt.block_on(toby_store::qcow2::create(&layer, toby_store::store::IMAGE_SIZE, Some(&base)))
+        .with_context(|| format!("creating {}", layer.display()))?;
     Ok(())
 }
 
@@ -409,9 +454,7 @@ pub fn vm(machine: &str) -> anyhow::Result<()> {
     let spec = vm_spec(&host)?;
     let mut files: Vec<&Path> = spec.disks.iter().map(|d| d.path.as_path()).collect();
     match &spec.boot {
-        BootSpec::Kernel {
-            kernel, initramfs, ..
-        } => files.extend([kernel.as_path(), initramfs.as_path()]),
+        BootSpec::Kernel { kernel, initramfs, .. } => files.extend([kernel.as_path(), initramfs.as_path()]),
         BootSpec::Firmware { path } => files.push(path),
     }
     for f in files {
@@ -436,10 +479,7 @@ mod tests {
     fn picks_the_first_ipv4_nameserver() {
         let conf = "# generated\nsearch example\nnameserver fe80::1%eth0\nnameserver 2001:db8::53\nnameserver 192.0.2.53\nnameserver 192.0.2.54\n";
         assert_eq!(first_ipv4_nameserver(conf), Some("192.0.2.53".parse().unwrap()));
-        assert_eq!(
-            first_ipv4_nameserver("nameserver 127.0.0.53\n"),
-            Some("127.0.0.53".parse().unwrap())
-        );
+        assert_eq!(first_ipv4_nameserver("nameserver 127.0.0.53\n"), Some("127.0.0.53".parse().unwrap()));
         assert_eq!(first_ipv4_nameserver("nameserver ::1\n"), None);
         assert_eq!(first_ipv4_nameserver(""), None);
     }

@@ -73,13 +73,7 @@ pub struct Relay {
 
 impl Relay {
     pub fn new(paths: GuestPaths, exe: PathBuf, launcher: Launcher, connector: Connector) -> Arc<Self> {
-        Arc::new(Relay {
-            paths,
-            exe,
-            launcher,
-            connector,
-            listeners: Mutex::new(HashMap::new()),
-        })
+        Arc::new(Relay { paths, exe, launcher, connector, listeners: Mutex::new(HashMap::new()) })
     }
 
     /// Serves one host-initiated connection.
@@ -141,10 +135,9 @@ impl Relay {
 
     async fn request(self: Arc<Self>, req: Request) -> Response {
         let result = match req {
-            Request::Spawn(s) => self
-                .spawn(s)
-                .await
-                .map(|id| Response::Spawned(relay::Spawned { session_id: id })),
+            Request::Spawn(s) => {
+                self.spawn(s).await.map(|id| Response::Spawned(relay::Spawned { session_id: id }))
+            }
             Request::Listen(l) => self.listen(l).await.map(|()| Response::Done(relay::Done {})),
             Request::Unlisten(u) => {
                 if let Some(h) = self.listeners.lock().unwrap().remove(&u.listener_id) {
@@ -152,15 +145,11 @@ impl Relay {
                 }
                 Ok(Response::Done(relay::Done {}))
             }
-            Request::Sessions(_) => Ok(Response::SessionList(relay::SessionList {
-                sessions: self.sessions(),
-            })),
-            Request::Kill(k) => self
-                .kill(&k.session_id, k.signal)
-                .map(|()| Response::Done(relay::Done {})),
-            Request::Forget(f) => self
-                .forget(&f.session_id)
-                .map(|()| Response::Done(relay::Done {})),
+            Request::Sessions(_) => {
+                Ok(Response::SessionList(relay::SessionList { sessions: self.sessions() }))
+            }
+            Request::Kill(k) => self.kill(&k.session_id, k.signal).map(|()| Response::Done(relay::Done {})),
+            Request::Forget(f) => self.forget(&f.session_id).map(|()| Response::Done(relay::Done {})),
             Request::Ping(_) => Ok(Response::Done(relay::Done {})),
             Request::Hello(_) => Ok(Response::RelayInfo(relay::RelayInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -179,10 +168,7 @@ impl Relay {
         let exe = match &s.version {
             Some(v) if valid_version(v) => self.paths.runtime_binary(v),
             Some(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid runtime version",
-                ));
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid runtime version"));
             }
             None => self.exe.clone(),
         };
@@ -193,10 +179,7 @@ impl Relay {
         if dir.exists() {
             let existing: SpawnSpec = record::read(&dir.join(session_files::SPEC))?;
             if existing != spec {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("session {id} exists"),
-                ));
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("session {id} exists")));
             }
             let deadline = tokio::time::Instant::now() + SPAWN_TIMEOUT;
             while !sock.exists() {
@@ -258,9 +241,7 @@ impl Relay {
             if let Ok(Some(status)) = child.try_wait() {
                 let _ = std::fs::remove_dir_all(&dir);
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                let text = String::from_utf8_lossy(&errors.lock().unwrap())
-                    .trim()
-                    .to_string();
+                let text = String::from_utf8_lossy(&errors.lock().unwrap()).trim().to_string();
                 let detail = if text.is_empty() { status.to_string() } else { text };
                 return Err(io::Error::other(format!("session could not start: {detail}")));
             }
@@ -284,9 +265,7 @@ impl Relay {
     fn alive(&self, rec: &SessionRecord) -> bool {
         let cmdline = std::fs::read(format!("/proc/{}/cmdline", rec.session_pid)).unwrap_or_default();
         let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
-        let ours = args
-            .windows(2)
-            .any(|w| w[0] == b"--id" && w[1] == rec.info.id.as_bytes());
+        let ours = args.windows(2).any(|w| w[0] == b"--id" && w[1] == rec.info.id.as_bytes());
         if !ours {
             let _ = std::fs::remove_dir_all(self.paths.session_dir(&rec.info.id));
         }

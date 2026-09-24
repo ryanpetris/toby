@@ -82,16 +82,8 @@ impl<F: FileSystem> Guard<F> {
 
     fn map_attr(&self, st: &mut stat64) {
         if let Some(s) = self.squash {
-            st.st_uid = if st.st_uid == s.host_uid {
-                s.guest_uid
-            } else {
-                OVERFLOW_ID
-            };
-            st.st_gid = if st.st_gid == s.host_gid {
-                s.guest_gid
-            } else {
-                OVERFLOW_ID
-            };
+            st.st_uid = if st.st_uid == s.host_uid { s.guest_uid } else { OVERFLOW_ID };
+            st.st_gid = if st.st_gid == s.host_gid { s.guest_gid } else { OVERFLOW_ID };
         }
     }
 
@@ -101,11 +93,7 @@ impl<F: FileSystem> Guard<F> {
     }
 
     fn writable(&self) -> io::Result<()> {
-        if self.read_only {
-            Err(err(libc::EROFS))
-        } else {
-            Ok(())
-        }
+        if self.read_only { Err(err(libc::EROFS)) } else { Ok(()) }
     }
 
     fn check_name(name: &CStr) -> io::Result<()> {
@@ -162,9 +150,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
 
     fn lookup(&self, ctx: &Context, parent: Self::Inode, name: &CStr) -> io::Result<Entry> {
         Self::check_name(name)?;
-        self.current()
-            .lookup(ctx, parent, name)
-            .map(|e| self.map_entry(e))
+        self.current().lookup(ctx, parent, name).map(|e| self.map_entry(e))
     }
 
     fn forget(&self, ctx: &Context, inode: Self::Inode, count: u64) {
@@ -231,9 +217,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
     fn symlink(&self, ctx: &Context, linkname: &CStr, parent: Self::Inode, name: &CStr) -> io::Result<Entry> {
         self.writable()?;
         Self::check_name(name)?;
-        self.current()
-            .symlink(ctx, linkname, parent, name)
-            .map(|e| self.map_entry(e))
+        self.current().symlink(ctx, linkname, parent, name).map(|e| self.map_entry(e))
     }
 
     fn mknod(
@@ -251,9 +235,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
             libc::S_IFREG | libc::S_IFSOCK => {}
             _ => return Err(err(libc::EPERM)),
         }
-        self.current()
-            .mknod(ctx, inode, name, mode & !SETID, rdev, umask)
-            .map(|e| self.map_entry(e))
+        self.current().mknod(ctx, inode, name, mode & !SETID, rdev, umask).map(|e| self.map_entry(e))
     }
 
     fn mkdir(
@@ -266,9 +248,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
     ) -> io::Result<Entry> {
         self.writable()?;
         Self::check_name(name)?;
-        self.current()
-            .mkdir(ctx, parent, name, mode & !SETID, umask)
-            .map(|e| self.map_entry(e))
+        self.current().mkdir(ctx, parent, name, mode & !SETID, umask).map(|e| self.map_entry(e))
     }
 
     fn unlink(&self, ctx: &Context, parent: Self::Inode, name: &CStr) -> io::Result<()> {
@@ -295,8 +275,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         self.writable()?;
         Self::check_name(oldname)?;
         Self::check_name(newname)?;
-        self.current()
-            .rename(ctx, olddir, oldname, newdir, newname, flags)
+        self.current().rename(ctx, olddir, oldname, newdir, newname, flags)
     }
 
     fn link(
@@ -308,9 +287,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
     ) -> io::Result<Entry> {
         self.writable()?;
         Self::check_name(newname)?;
-        self.current()
-            .link(ctx, inode, newparent, newname)
-            .map(|e| self.map_entry(e))
+        self.current().link(ctx, inode, newparent, newname).map(|e| self.map_entry(e))
     }
 
     fn open(
@@ -336,9 +313,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         self.writable()?;
         Self::check_name(name)?;
         args.mode &= !SETID;
-        self.current()
-            .create(ctx, parent, name, args)
-            .map(|(e, h, o, x)| (self.map_entry(e), h, o, x))
+        self.current().create(ctx, parent, name, args).map(|(e, h, o, x)| (self.map_entry(e), h, o, x))
     }
 
     fn read(
@@ -352,8 +327,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         lock_owner: Option<u64>,
         flags: u32,
     ) -> io::Result<usize> {
-        self.current()
-            .read(ctx, inode, handle, w, size, offset, lock_owner, flags)
+        self.current().read(ctx, inode, handle, w, size, offset, lock_owner, flags)
     }
 
     fn write(
@@ -427,8 +401,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         flock_release: bool,
         lock_owner: Option<u64>,
     ) -> io::Result<()> {
-        self.current()
-            .release(ctx, inode, flags, handle, flush, flock_release, lock_owner)
+        self.current().release(ctx, inode, flags, handle, flush, flock_release, lock_owner)
     }
 
     fn statfs(&self, ctx: &Context, inode: Self::Inode) -> io::Result<statvfs64> {
@@ -484,8 +457,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         offset: u64,
         add_entry: &mut dyn FnMut(DirEntry) -> io::Result<usize>,
     ) -> io::Result<()> {
-        self.current()
-            .readdir(ctx, inode, handle, size, offset, add_entry)
+        self.current().readdir(ctx, inode, handle, size, offset, add_entry)
     }
 
     fn readdirplus(
@@ -498,9 +470,7 @@ impl<F: FileSystem> FileSystem for Guard<F> {
         add_entry: &mut dyn FnMut(DirEntry, Entry) -> io::Result<usize>,
     ) -> io::Result<()> {
         self.current()
-            .readdirplus(ctx, inode, handle, size, offset, &mut |d, e| {
-                add_entry(d, self.map_entry(e))
-            })
+            .readdirplus(ctx, inode, handle, size, offset, &mut |d, e| add_entry(d, self.map_entry(e)))
     }
 
     fn fsyncdir(

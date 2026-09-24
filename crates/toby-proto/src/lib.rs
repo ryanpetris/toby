@@ -25,10 +25,7 @@ mod tests {
 
     #[tokio::test]
     async fn messages_roundtrip() {
-        roundtrip(HostHeader::SessionAttach(SessionAttach {
-            session_id: "s1".into(),
-        }))
-        .await;
+        roundtrip(HostHeader::SessionAttach(SessionAttach { session_id: "s1".into() })).await;
         roundtrip(Reply::version(1)).await;
         roundtrip(relay::Request::Spawn(relay::Spawn {
             spec: SpawnSpec {
@@ -44,14 +41,8 @@ mod tests {
             version: Some("0.17.0".into()),
         }))
         .await;
-        roundtrip(ServerFrame::Exit(session::Exit {
-            status: ExitStatus::Signal(9),
-        }))
-        .await;
-        roundtrip(ServerFrame::Stdout(Stdout {
-            bytes: vec![0, 1, 2, 255],
-        }))
-        .await;
+        roundtrip(ServerFrame::Exit(session::Exit { status: ExitStatus::Signal(9) })).await;
+        roundtrip(ServerFrame::Stdout(Stdout { bytes: vec![0, 1, 2, 255] })).await;
     }
 
     #[tokio::test]
@@ -86,31 +77,17 @@ mod tests {
             session_id: String,
             added_later: u32,
         }
-        let bytes = frame::encode(
-            2,
-            &Future {
-                session_id: "s".into(),
-                added_later: 7,
-            },
-        )
-        .unwrap();
-        let frame = Frame {
-            kind: bytes[4],
-            payload: bytes[5..].to_vec(),
-        };
+        let bytes = frame::encode(2, &Future { session_id: "s".into(), added_later: 7 }).unwrap();
+        let frame = Frame { kind: bytes[4], payload: bytes[5..].to_vec() };
         assert_eq!(
             HostHeader::decode(&frame).unwrap(),
-            HostHeader::SessionAttach(SessionAttach {
-                session_id: "s".into()
-            })
+            HostHeader::SessionAttach(SessionAttach { session_id: "s".into() })
         );
     }
 
     #[test]
     fn full_chunk_fits_in_a_frame() {
-        let msg = ServerFrame::Stdout(Stdout {
-            bytes: vec![0xff; MAX_CHUNK],
-        });
+        let msg = ServerFrame::Stdout(Stdout { bytes: vec![0xff; MAX_CHUNK] });
         assert!(msg.encode().unwrap().len() - 4 <= MAX_FRAME);
     }
 

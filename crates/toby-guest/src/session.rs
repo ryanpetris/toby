@@ -46,10 +46,7 @@ const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/s
 /// Creates a session directory and writes its spec. The relay calls this
 /// before starting `toby guest session`.
 pub fn prepare(paths: &GuestPaths, spec: &SpawnSpec) -> io::Result<PathBuf> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(paths.sessions())?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(paths.sessions())?;
     let dir = paths.session_dir(&spec.session_id);
     std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
     record::write(&dir.join(session_files::SPEC), spec)?;
@@ -73,24 +70,13 @@ fn resolve_account(paths: &GuestPaths, identity: Identity) -> io::Result<Account
             uid: 0,
             gid: 0,
             home: "/root".into(),
-            shell: if Path::new("/bin/bash").exists() {
-                "/bin/bash"
-            } else {
-                "/bin/sh"
-            }
-            .into(),
+            shell: if Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" }.into(),
         }),
         Identity::User => {
             let user: UserInfo = record::read(&paths.user_file()).map_err(|e| {
                 io::Error::new(e.kind(), format!("no user is configured in this machine: {e}"))
             })?;
-            Ok(Account {
-                name: user.name,
-                uid: user.uid,
-                gid: user.gid,
-                home: user.home,
-                shell: user.shell,
-            })
+            Ok(Account { name: user.name, uid: user.uid, gid: user.gid, home: user.home, shell: user.shell })
         }
     }
 }
@@ -139,6 +125,8 @@ enum Event {
 struct Client {
     generation: u64,
     welcomed: bool,
+    /// Whether the session has a terminal.
+    tty: bool,
     tx: mpsc::Sender<Outgoing>,
     /// Tells the writer to send `Detached` ahead of any queued output.
     detach: Option<oneshot::Sender<String>>,
@@ -150,11 +138,15 @@ enum Outgoing {
     Flush(oneshot::Sender<()>),
 }
 
-/// Recent output, keeping which stream each piece came from.
+/// Recent output, keeping which stream each piece came from. Output is
+/// numbered by offset (bytes since the session started) so a reconnecting
+/// client can resume where it stopped.
 #[derive(Default)]
 struct Replay {
     chunks: VecDeque<(bool, Vec<u8>)>,
     len: usize,
+    /// Offset of the first buffered byte.
+    start: u64,
 }
 
 impl Replay {
@@ -165,29 +157,47 @@ impl Replay {
         }
         self.len += bytes.len();
         while self.len > REPLAY_BYTES {
-            let Some((_, front)) = self.chunks.front_mut() else {
-                break;
-            };
+            let Some((_, front)) = self.chunks.front_mut() else { break };
             let excess = self.len - REPLAY_BYTES;
             if front.len() <= excess {
                 self.len -= front.len();
+                self.start += front.len() as u64;
                 self.chunks.pop_front();
             } else {
                 front.drain(..excess);
                 self.len -= excess;
+                self.start += excess as u64;
             }
         }
     }
 
-    fn frames(&self) -> impl Iterator<Item = ServerFrame> + '_ {
-        self.chunks.iter().flat_map(|(stderr, b)| {
-            b.chunks(MAX_CHUNK).map(|c| {
-                ServerFrame::Replay(session::Replay {
-                    bytes: c.to_vec(),
-                    stderr: *stderr,
-                })
-            })
-        })
+    /// Offset just past the last byte produced.
+    fn end(&self) -> u64 {
+        self.start + self.len as u64
+    }
+
+    /// Where replay starts for a client resuming at `from`, and how many
+    /// bytes before that are no longer buffered.
+    fn resume_point(&self, from: u64) -> (u64, u64) {
+        let at = from.clamp(self.start, self.end());
+        (at, at.saturating_sub(from))
+    }
+
+    /// Replay frames for the buffered output from offset `from` on.
+    fn frames_from(&self, from: u64) -> Vec<ServerFrame> {
+        let mut out = Vec::new();
+        let mut offset = self.start;
+        for (stderr, b) in &self.chunks {
+            let end = offset + b.len() as u64;
+            if end > from {
+                let skip = from.saturating_sub(offset) as usize;
+                for c in b[skip..].chunks(MAX_CHUNK) {
+                    out.push(ServerFrame::Replay(session::Replay { bytes: c.to_vec(), stderr: *stderr }));
+                }
+            }
+            offset = end;
+        }
+        out
     }
 }
 
@@ -218,12 +228,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     // by exiting before its socket exists.
     let mut child: Option<Child> = None;
     if !spec.start_on_attach {
-        child = Some(start_child(
-            &spec,
-            &account,
-            events_tx.clone(),
-            input_rx.take().expect("unused"),
-        )?);
+        child = Some(start_child(&spec, &account, events_tx.clone(), input_rx.take().expect("unused"))?);
     }
 
     let sock_path = dir.join(session_files::SOCKET);
@@ -231,10 +236,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     let listener = UnixListener::bind(&sock_path)?;
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
 
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let mut rec = SessionRecord {
         info: SessionInfo {
             id: spec.session_id.clone(),
@@ -274,6 +276,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     }
 
     let mut replay = Replay::default();
+    let current = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut client: Option<Client> = None;
     let mut generation = 0u64;
     let mut exit: Option<ExitStatus> = None;
@@ -354,9 +357,12 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                     let _ = d.send("attached elsewhere".into());
                 }
                 generation += 1;
+                current.store(generation, std::sync::atomic::Ordering::Release);
                 client = Some(start_client(
                     stream,
                     generation,
+                    tty,
+                    current.clone(),
                     events_tx.clone(),
                     input_tx.clone(),
                 ));
@@ -383,25 +389,22 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                             && hello.cols > 0
                             && let Some(ch) = &child
                         {
-                            resize(
-                                ch,
-                                TtySize {
-                                    rows: hello.rows,
-                                    cols: hello.cols,
-                                },
-                            );
+                            resize(ch, TtySize { rows: hello.rows, cols: hello.cols });
                         }
                         let state = match rec.info.exit {
                             Some(s) => State::Exited(s),
                             None => State::Running,
                         };
                         c.welcomed = true;
-                        let mut ok =
-                            queue(c, ServerFrame::Welcome(session::Welcome { version, state, tty })).await;
-                        if ok && hello.want_replay {
-                            for f in replay.frames() {
-                                ok = ok && queue(c, f).await;
-                            }
+                        let (offset, lost) = match (hello.resume_from, hello.want_replay) {
+                            (Some(from), _) => replay.resume_point(from),
+                            (None, true) => (replay.start, 0),
+                            (None, false) => (replay.end(), 0),
+                        };
+                        let welcome = session::Welcome { version, state, tty, offset, lost };
+                        let mut ok = queue(c, ServerFrame::Welcome(welcome)).await;
+                        for f in replay.frames_from(offset) {
+                            ok = ok && queue(c, f).await;
                         }
                         if !ok {
                             drop_client(&mut client, dir, &mut rec);
@@ -411,10 +414,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                             let mut spec = spec.clone();
                             if let (Some(size), true) = (spec.tty.as_mut(), hello.rows > 0 && hello.cols > 0)
                             {
-                                *size = TtySize {
-                                    rows: hello.rows,
-                                    cols: hello.cols,
-                                };
+                                *size = TtySize { rows: hello.rows, cols: hello.cols };
                             }
                             match start_child(&spec, &account, events_tx.clone(), rx) {
                                 Ok(ch) => {
@@ -426,13 +426,9 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                                     let msg = format!("toby: cannot start {}: {e}\r\n", spec.argv[0]);
                                     replay.push(msg.as_bytes(), !tty);
                                     let f = if tty {
-                                        ServerFrame::Stdout(session::Stdout {
-                                            bytes: msg.into_bytes(),
-                                        })
+                                        ServerFrame::Stdout(session::Stdout { bytes: msg.into_bytes() })
                                     } else {
-                                        ServerFrame::Stderr(session::Stderr {
-                                            bytes: msg.into_bytes(),
-                                        })
+                                        ServerFrame::Stderr(session::Stderr { bytes: msg.into_bytes() })
                                     };
                                     let _ = queue(c, f).await;
                                     exit = Some(ExitStatus::Code(CANNOT_START));
@@ -443,13 +439,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                     }
                     ClientFrame::Resize(r) => {
                         if let Some(ch) = &child {
-                            resize(
-                                ch,
-                                TtySize {
-                                    rows: r.rows,
-                                    cols: r.cols,
-                                },
-                            );
+                            resize(ch, TtySize { rows: r.rows, cols: r.cols });
                         }
                     }
                     ClientFrame::Signal(s) => {
@@ -491,10 +481,16 @@ fn set_attached(dir: &Path, rec: &mut SessionRecord, attached: bool) {
     }
 }
 
+/// Queues a frame for the client. A client of a session with a terminal
+/// that stops reading is dropped after a while (it can reattach and resume);
+/// for a session without one, output waits for the client, holding the
+/// command back, so none is lost.
 async fn queue(c: &Client, frame: ServerFrame) -> bool {
-    c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL)
-        .await
-        .is_ok()
+    if c.tty {
+        c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL).await.is_ok()
+    } else {
+        c.tx.send(Outgoing::Frame(frame)).await.is_ok()
+    }
 }
 
 /// Sends the exit to a welcomed client and waits until it has been written.
@@ -506,14 +502,14 @@ async fn deliver_exit(c: &Client, status: ExitStatus) -> bool {
     if c.tx.send(Outgoing::Flush(done_tx)).await.is_err() {
         return false;
     }
-    tokio::time::timeout(CLIENT_STALL, done_rx)
-        .await
-        .is_ok_and(|r| r.is_ok())
+    tokio::time::timeout(CLIENT_STALL, done_rx).await.is_ok_and(|r| r.is_ok())
 }
 
 fn start_client(
     stream: UnixStream,
     generation: u64,
+    tty: bool,
+    current: Arc<std::sync::atomic::AtomicU64>,
     events: mpsc::Sender<Event>,
     input: mpsc::Sender<Input>,
 ) -> Client {
@@ -563,13 +559,13 @@ fn start_client(
                     return;
                 }
             };
+            // Only the attached client's input reaches the command.
+            let attached = current.load(std::sync::atomic::Ordering::Acquire) == generation;
             match f {
-                ClientFrame::Stdin(d) if hello_seen => {
-                    if input.send(Input::Data(d.bytes)).await.is_err() {
-                        continue;
-                    }
+                ClientFrame::Stdin(d) if hello_seen && attached => {
+                    let _ = input.send(Input::Data(d.bytes)).await;
                 }
-                ClientFrame::CloseStdin(_) if hello_seen => {
+                ClientFrame::CloseStdin(_) if hello_seen && attached => {
                     let _ = input.send(Input::Close).await;
                 }
                 ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
@@ -583,29 +579,15 @@ fn start_client(
         }
     });
 
-    Client {
-        generation,
-        welcomed: false,
-        tx,
-        detach: Some(detach_tx),
-    }
+    Client { generation, welcomed: false, tty, tx, detach: Some(detach_tx) }
 }
 
 fn resize(child: &Child, size: TtySize) {
     if let Some(master) = &child.master {
-        let ws = Winsize {
-            ws_row: size.rows,
-            ws_col: size.cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
+        let ws = Winsize { ws_row: size.rows, ws_col: size.cols, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: TIOCSWINSZ reads a `winsize` from the pointer, which is valid for the call.
         unsafe {
-            libc::ioctl(
-                master.get_ref().as_raw_fd(),
-                libc::TIOCSWINSZ,
-                &ws as *const Winsize,
-            );
+            libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCSWINSZ, &ws as *const Winsize);
         }
     }
 }
@@ -654,11 +636,7 @@ fn credentials(account: &Account) -> io::Result<Option<Credentials>> {
     let groups = nix::unistd::getgrouplist(&name, nix::unistd::Gid::from_raw(account.gid))
         .map(|g| g.into_iter().map(|g| g.as_raw()).collect())
         .unwrap_or_else(|_| vec![account.gid]);
-    Ok(Some(Credentials {
-        uid: account.uid,
-        gid: account.gid,
-        groups,
-    }))
+    Ok(Some(Credentials { uid: account.uid, gid: account.gid, groups }))
 }
 
 /// Starts the session's child and the tasks that feed and read it.
@@ -670,24 +648,22 @@ fn start_child(
 ) -> io::Result<Child> {
     let env = environment(spec, account);
     let cwd = spec.cwd.clone().unwrap_or_else(|| account.home.clone());
+    if !Path::new(&cwd).is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("working directory {cwd} does not exist"),
+        ));
+    }
     let cwd = CString::new(cwd)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
     let creds = credentials(account)?;
 
     let mut cmd = tokio::process::Command::new(&spec.argv[0]);
-    cmd.args(&spec.argv[1..])
-        .env_clear()
-        .envs(env)
-        .kill_on_drop(false);
+    cmd.args(&spec.argv[1..]).env_clear().envs(env).kill_on_drop(false);
 
     let master = match spec.tty {
         Some(size) => {
-            let ws = Winsize {
-                ws_row: size.rows,
-                ws_col: size.cols,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            };
+            let ws = Winsize { ws_row: size.rows, ws_col: size.cols, ws_xpixel: 0, ws_ypixel: 0 };
             let pty = openpty(Some(&ws), None).map_err(io::Error::from)?;
             cmd.stdin(Stdio::from(pty.slave.try_clone()?))
                 .stdout(Stdio::from(pty.slave.try_clone()?))
@@ -696,9 +672,7 @@ fn start_child(
             Some(Arc::new(AsyncFd::new(pty.master)?))
         }
         None => {
-            cmd.stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
             None
         }
     };
@@ -835,18 +809,11 @@ mod tests {
         r.push(b"out1 ", false);
         r.push(b"out2 ", false);
         r.push(b"err", true);
-        let frames: Vec<_> = r.frames().collect();
         assert_eq!(
-            frames,
+            r.frames_from(0),
             vec![
-                ServerFrame::Replay(session::Replay {
-                    bytes: b"out1 out2 ".to_vec(),
-                    stderr: false
-                }),
-                ServerFrame::Replay(session::Replay {
-                    bytes: b"err".to_vec(),
-                    stderr: true
-                }),
+                ServerFrame::Replay(session::Replay { bytes: b"out1 out2 ".to_vec(), stderr: false }),
+                ServerFrame::Replay(session::Replay { bytes: b"err".to_vec(), stderr: true }),
             ]
         );
 
@@ -856,15 +823,32 @@ mod tests {
         }
         assert_eq!(r.len, REPLAY_BYTES);
         let total: usize = r
-            .frames()
-            .map(|f| {
-                if let ServerFrame::Replay(p) = f {
-                    p.bytes.len()
-                } else {
-                    0
-                }
-            })
+            .frames_from(0)
+            .iter()
+            .map(|f| if let ServerFrame::Replay(p) = f { p.bytes.len() } else { 0 })
             .sum();
         assert_eq!(total, REPLAY_BYTES);
+        assert_eq!(r.end(), 3 * (REPLAY_BYTES as u64 / 2 + 1));
+    }
+
+    #[test]
+    fn resuming_skips_what_the_client_has() {
+        let mut r = Replay::default();
+        r.push(b"abc", false);
+        r.push(b"def", true);
+        assert_eq!(r.resume_point(4), (4, 0));
+        assert_eq!(
+            r.frames_from(4),
+            vec![ServerFrame::Replay(session::Replay { bytes: b"ef".to_vec(), stderr: true })]
+        );
+        assert_eq!(r.resume_point(99), (6, 0));
+
+        let mut r = Replay::default();
+        for _ in 0..3 {
+            r.push(&vec![b'x'; REPLAY_BYTES / 2 + 1], false);
+        }
+        let (at, lost) = r.resume_point(10);
+        assert_eq!(at, r.start);
+        assert_eq!(lost, r.start - 10);
     }
 }

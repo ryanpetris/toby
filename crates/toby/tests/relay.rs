@@ -54,14 +54,7 @@ fn open(env: &Env) -> DuplexStream {
 
 async fn control(env: &Env) -> DuplexStream {
     let mut c = open(env);
-    frame::send(
-        &mut c,
-        &HostHeader::Control(Control {
-            proto_versions: vec![1],
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut c, &HostHeader::Control(Control { proto_versions: vec![1] })).await.unwrap();
     let reply: Reply = frame::recv(&mut c).await.unwrap();
     assert_eq!(reply.into_result().unwrap(), Some(1));
     c
@@ -69,10 +62,7 @@ async fn control(env: &Env) -> DuplexStream {
 
 async fn call(c: &mut DuplexStream, req: Request) -> Response {
     frame::send(c, &req).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(15), frame::recv(c))
-        .await
-        .unwrap()
-        .unwrap()
+    tokio::time::timeout(Duration::from_secs(15), frame::recv(c)).await.unwrap().unwrap()
 }
 
 fn spec(id: &str, argv: &[&str]) -> SpawnSpec {
@@ -90,14 +80,7 @@ fn spec(id: &str, argv: &[&str]) -> SpawnSpec {
 
 async fn attach(env: &Env, id: &str) -> DuplexStream {
     let mut s = open(env);
-    frame::send(
-        &mut s,
-        &HostHeader::SessionAttach(SessionAttach {
-            session_id: id.into(),
-        }),
-    )
-    .await
-    .unwrap();
+    frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: id.into() })).await.unwrap();
     let reply: Reply = frame::recv(&mut s).await.unwrap();
     reply.into_result().unwrap();
     let hello = ClientFrame::Hello(Hello {
@@ -105,6 +88,7 @@ async fn attach(env: &Env, id: &str) -> DuplexStream {
         rows: 0,
         cols: 0,
         want_replay: true,
+        resume_from: None,
     });
     frame::send(&mut s, &hello).await.unwrap();
     s
@@ -113,10 +97,8 @@ async fn attach(env: &Env, id: &str) -> DuplexStream {
 async fn wait_exit(s: &mut DuplexStream) -> (String, ExitStatus) {
     let mut out = Vec::new();
     loop {
-        let f: ServerFrame = tokio::time::timeout(Duration::from_secs(15), frame::recv(s))
-            .await
-            .unwrap()
-            .unwrap();
+        let f: ServerFrame =
+            tokio::time::timeout(Duration::from_secs(15), frame::recv(s)).await.unwrap().unwrap();
         match f {
             ServerFrame::Stdout(o) => out.extend(o.bytes),
             ServerFrame::Replay(r) => out.extend(r.bytes),
@@ -133,18 +115,10 @@ async fn spawn_attach_list_and_forget() {
 
     let resp = call(
         &mut c,
-        Request::Spawn(relay::Spawn {
-            spec: spec("s1", &["sh", "-c", "echo hi; exit 4"]),
-            version: None,
-        }),
+        Request::Spawn(relay::Spawn { spec: spec("s1", &["sh", "-c", "echo hi; exit 4"]), version: None }),
     )
     .await;
-    assert_eq!(
-        resp,
-        Response::Spawned(relay::Spawned {
-            session_id: "s1".into()
-        })
-    );
+    assert_eq!(resp, Response::Spawned(relay::Spawned { session_id: "s1".into() }));
 
     let mut s = attach(&env, "s1").await;
     let (out, status) = wait_exit(&mut s).await;
@@ -168,14 +142,7 @@ async fn spawn_attach_list_and_forget() {
 async fn kill_and_forget_sessions() {
     let env = env();
     let mut c = control(&env).await;
-    call(
-        &mut c,
-        Request::Spawn(relay::Spawn {
-            spec: spec("k1", &["sleep", "30"]),
-            version: None,
-        }),
-    )
-    .await;
+    call(&mut c, Request::Spawn(relay::Spawn { spec: spec("k1", &["sleep", "30"]), version: None })).await;
 
     let Response::SessionList(list) = call(&mut c, Request::Sessions(relay::Sessions {})).await else {
         panic!("expected a session list");
@@ -183,14 +150,8 @@ async fn kill_and_forget_sessions() {
     assert_eq!(list.sessions.len(), 1);
     assert_eq!(list.sessions[0].argv0, "sleep");
 
-    let resp = call(
-        &mut c,
-        Request::Kill(relay::Kill {
-            session_id: "k1".into(),
-            signal: libc::SIGKILL,
-        }),
-    )
-    .await;
+    let resp =
+        call(&mut c, Request::Kill(relay::Kill { session_id: "k1".into(), signal: libc::SIGKILL })).await;
     assert_eq!(resp, Response::Done(relay::Done {}));
 
     let mut exited = false;
@@ -205,13 +166,7 @@ async fn kill_and_forget_sessions() {
     }
     assert!(exited);
 
-    let resp = call(
-        &mut c,
-        Request::Forget(relay::Forget {
-            session_id: "k1".into(),
-        }),
-    )
-    .await;
+    let resp = call(&mut c, Request::Forget(relay::Forget { session_id: "k1".into() })).await;
     assert_eq!(resp, Response::Done(relay::Done {}));
     for _ in 0..500 {
         if !env.dir.path().join("sessions/k1").exists() {
@@ -226,67 +181,27 @@ async fn kill_and_forget_sessions() {
 async fn bad_requests_fail_cleanly() {
     let env = env();
     let mut c = control(&env).await;
-    let resp = call(
-        &mut c,
-        Request::Spawn(relay::Spawn {
-            spec: spec("../x", &["true"]),
-            version: None,
-        }),
-    )
-    .await;
+    let resp =
+        call(&mut c, Request::Spawn(relay::Spawn { spec: spec("../x", &["true"]), version: None })).await;
     assert!(matches!(resp, Response::Failed(_)));
     let resp = call(
         &mut c,
-        Request::Spawn(relay::Spawn {
-            spec: spec("v1", &["true"]),
-            version: Some("../..".into()),
-        }),
+        Request::Spawn(relay::Spawn { spec: spec("v1", &["true"]), version: Some("../..".into()) }),
     )
     .await;
     assert!(matches!(resp, Response::Failed(_)));
-    let resp = call(
-        &mut c,
-        Request::Kill(relay::Kill {
-            session_id: "missing".into(),
-            signal: 15,
-        }),
-    )
-    .await;
+    let resp = call(&mut c, Request::Kill(relay::Kill { session_id: "missing".into(), signal: 15 })).await;
     assert!(matches!(resp, Response::Failed(_)));
 
     let mut s = open(&env);
-    frame::send(
-        &mut s,
-        &HostHeader::SessionAttach(SessionAttach {
-            session_id: "../../etc".into(),
-        }),
-    )
-    .await
-    .unwrap();
-    assert!(
-        frame::recv::<Reply, _>(&mut s)
-            .await
-            .unwrap()
-            .into_result()
-            .is_err()
-    );
+    frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: "../../etc".into() }))
+        .await
+        .unwrap();
+    assert!(frame::recv::<Reply, _>(&mut s).await.unwrap().into_result().is_err());
 
     let mut s = open(&env);
-    frame::send(
-        &mut s,
-        &HostHeader::Control(Control {
-            proto_versions: vec![7],
-        }),
-    )
-    .await
-    .unwrap();
-    assert!(
-        frame::recv::<Reply, _>(&mut s)
-            .await
-            .unwrap()
-            .into_result()
-            .is_err()
-    );
+    frame::send(&mut s, &HostHeader::Control(Control { proto_versions: vec![7] })).await.unwrap();
+    assert!(frame::recv::<Reply, _>(&mut s).await.unwrap().into_result().is_err());
 }
 
 #[tokio::test]
@@ -302,19 +217,8 @@ async fn dial_splices_to_a_guest_endpoint() {
     });
 
     let mut c = open(&env);
-    frame::send(
-        &mut c,
-        &HostHeader::Dial(Dial {
-            target: Endpoint::Tcp { addr },
-        }),
-    )
-    .await
-    .unwrap();
-    frame::recv::<Reply, _>(&mut c)
-        .await
-        .unwrap()
-        .into_result()
-        .unwrap();
+    frame::send(&mut c, &HostHeader::Dial(Dial { target: Endpoint::Tcp { addr } })).await.unwrap();
+    frame::recv::<Reply, _>(&mut c).await.unwrap().into_result().unwrap();
     c.write_all(b"ping").await.unwrap();
     let mut buf = [0u8; 4];
     c.read_exact(&mut buf).await.unwrap();
@@ -330,9 +234,7 @@ async fn guest_listeners_report_accepted_connections() {
         &mut c,
         Request::Listen(relay::Listen {
             listener_id: "f1".into(),
-            bind: Endpoint::Unix {
-                path: path.display().to_string(),
-            },
+            bind: Endpoint::Unix { path: path.display().to_string() },
             mode: Some(0o666),
         }),
     )
@@ -347,12 +249,7 @@ async fn guest_listeners_report_accepted_connections() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
     let header: GuestHeader = frame::recv(&mut host).await.unwrap();
-    assert_eq!(
-        header,
-        GuestHeader::Accepted(Accepted {
-            listener_id: "f1".into()
-        })
-    );
+    assert_eq!(header, GuestHeader::Accepted(Accepted { listener_id: "f1".into() }));
     frame::send(&mut host, &Reply::ok()).await.unwrap();
 
     guest_client.write_all(b"abc").await.unwrap();
@@ -360,13 +257,7 @@ async fn guest_listeners_report_accepted_connections() {
     host.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"abc");
 
-    let resp = call(
-        &mut c,
-        Request::Unlisten(relay::Unlisten {
-            listener_id: "f1".into(),
-        }),
-    )
-    .await;
+    let resp = call(&mut c, Request::Unlisten(relay::Unlisten { listener_id: "f1".into() })).await;
     assert_eq!(resp, Response::Done(relay::Done {}));
 }
 
@@ -374,52 +265,24 @@ async fn guest_listeners_report_accepted_connections() {
 async fn repeated_spawns_are_idempotent() {
     let env = env();
     let mut c = control(&env).await;
-    let spawn = relay::Spawn {
-        spec: spec("r1", &["sleep", "30"]),
-        version: None,
-    };
+    let spawn = relay::Spawn { spec: spec("r1", &["sleep", "30"]), version: None };
     for _ in 0..2 {
         let resp = call(&mut c, Request::Spawn(spawn.clone())).await;
-        assert_eq!(
-            resp,
-            Response::Spawned(relay::Spawned {
-                session_id: "r1".into()
-            })
-        );
+        assert_eq!(resp, Response::Spawned(relay::Spawned { session_id: "r1".into() }));
     }
-    let other = relay::Spawn {
-        spec: spec("r1", &["sleep", "31"]),
-        version: None,
-    };
-    assert!(matches!(
-        call(&mut c, Request::Spawn(other)).await,
-        Response::Failed(_)
-    ));
-    call(
-        &mut c,
-        Request::Kill(relay::Kill {
-            session_id: "r1".into(),
-            signal: libc::SIGKILL,
-        }),
-    )
-    .await;
+    let other = relay::Spawn { spec: spec("r1", &["sleep", "31"]), version: None };
+    assert!(matches!(call(&mut c, Request::Spawn(other)).await, Response::Failed(_)));
+    call(&mut c, Request::Kill(relay::Kill { session_id: "r1".into(), signal: libc::SIGKILL })).await;
 }
 
 #[tokio::test]
 async fn failed_starts_report_the_reason() {
     let env = env();
     let mut c = control(&env).await;
-    let resp = call(
-        &mut c,
-        Request::Spawn(relay::Spawn {
-            spec: spec("x1", &["/no/such/command"]),
-            version: None,
-        }),
-    )
-    .await;
-    let Response::Failed(f) = resp else {
-        panic!("expected a failure, got {resp:?}")
-    };
+    let resp =
+        call(&mut c, Request::Spawn(relay::Spawn { spec: spec("x1", &["/no/such/command"]), version: None }))
+            .await;
+    let Response::Failed(f) = resp else { panic!("expected a failure, got {resp:?}") };
     assert!(f.error.contains("could not start"), "{}", f.error);
     assert!(!env.dir.path().join("sessions/x1").exists());
 }

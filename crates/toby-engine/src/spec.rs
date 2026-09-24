@@ -10,22 +10,14 @@ pub enum Arch {
 
 impl Arch {
     pub fn host() -> Arch {
-        if cfg!(target_arch = "aarch64") {
-            Arch::Aarch64
-        } else {
-            Arch::X86_64
-        }
+        if cfg!(target_arch = "aarch64") { Arch::Aarch64 } else { Arch::X86_64 }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootSpec {
     /// Direct kernel boot with the image's kernel and Toby's initramfs.
-    Kernel {
-        kernel: PathBuf,
-        initramfs: PathBuf,
-        cmdline: String,
-    },
+    Kernel { kernel: PathBuf, initramfs: PathBuf, cmdline: String },
     /// UEFI firmware booting the disk's own bootloader.
     Firmware { path: PathBuf },
 }

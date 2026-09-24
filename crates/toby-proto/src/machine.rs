@@ -103,8 +103,6 @@ messages! {
 
 impl Response {
     pub fn failed(error: impl std::fmt::Display) -> Self {
-        Response::Failed(Failed {
-            error: error.to_string(),
-        })
+        Response::Failed(Failed { error: error.to_string() })
     }
 }

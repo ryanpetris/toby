@@ -101,10 +101,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Frame, Error>
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await?;
     let payload = buf.split_off(1);
-    Ok(Frame {
-        kind: buf[0],
-        payload,
-    })
+    Ok(Frame { kind: buf[0], payload })
 }
 
 /// Writes pre-encoded frame bytes and flushes.

@@ -40,8 +40,11 @@ full-screen programs to redraw. Attaching from a second terminal detaches the
 first.
 
 If the connection to a session is lost (for example while Toby's host or
-guest processes restart), Toby reattaches automatically for up to 30 seconds.
-Output produced while disconnected is not shown again.
+guest processes restart), Toby reattaches automatically for up to 30 seconds
+and continues the output where it stopped. If more than 1 MiB of output was
+produced in the meantime, the part that is no longer buffered is lost:
+`toby exec` without a terminal then fails with an error, and a terminal
+session shows a notice.
 
 When an attachment ends, Toby turns off terminal modes the session left on
 (alternate screen, bracketed paste, mouse reporting, hidden cursor, keyboard

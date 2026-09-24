@@ -26,13 +26,7 @@ impl Control {
         let mut stream = UnixStream::connect(runtime.control_sock())
             .await
             .with_context(|| format!("connecting to {}", runtime.control_sock().display()))?;
-        frame::send(
-            &mut stream,
-            &Request::Hello(machine::Hello {
-                versions: SUPPORTED.to_vec(),
-            }),
-        )
-        .await?;
+        frame::send(&mut stream, &Request::Hello(machine::Hello { versions: SUPPORTED.to_vec() })).await?;
         match frame::recv::<Response, _>(&mut stream).await? {
             Response::Welcome(_) => Ok(Control { stream }),
             Response::Failed(f) => bail!("machine refused the connection: {}", f.error),
@@ -87,11 +81,7 @@ async fn select(paths: &Paths, sel: &MachineSelector) -> anyhow::Result<(String,
         1 => Ok(running.remove(0)),
         _ => bail!(
             "several machines are running; choose one with --machine: {}",
-            running
-                .iter()
-                .map(|(id, _)| id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            running.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -102,11 +92,7 @@ fn connector(session_sock: PathBuf, session_id: String) -> toby_term::Connect {
         let id = session_id.clone();
         Box::pin(async move {
             let mut s = UnixStream::connect(&sock).await?;
-            frame::send(
-                &mut s,
-                &HostHeader::SessionAttach(SessionAttach { session_id: id }),
-            )
-            .await?;
+            frame::send(&mut s, &HostHeader::SessionAttach(SessionAttach { session_id: id })).await?;
             let reply: Reply = frame::recv(&mut s).await?;
             reply.into_result().map_err(std::io::Error::other)?;
             Ok(s)
@@ -124,12 +110,26 @@ async fn attach_terminal(
     replay: bool,
     redraw: bool,
 ) -> anyhow::Result<ExitCode> {
-    let outcome = toby_term::attach(
-        connector(runtime.session_sock(), session_id.to_string()),
-        replay,
-        redraw,
-    )
-    .await;
+    // Signals for the session travel over the machine's control socket, so
+    // they arrive even while the session's input is backed up.
+    let signals: toby_term::SignalSink = {
+        let runtime = runtime.clone();
+        let id = session_id.to_string();
+        Box::new(move |signal| {
+            let runtime = runtime.clone();
+            let session_id = id.clone();
+            Box::pin(async move {
+                let mut c = Control::connect(&runtime).await.map_err(std::io::Error::other)?;
+                c.call(Request::Kill(machine::Kill { session_id, signal }))
+                    .await
+                    .map_err(std::io::Error::other)?;
+                Ok(())
+            })
+        })
+    };
+    let outcome =
+        toby_term::attach(connector(runtime.session_sock(), session_id.to_string()), replay, redraw, signals)
+            .await;
     Ok(match outcome? {
         Outcome::Exited(status) => exit_code(status),
         Outcome::Replaced(reason) => {
@@ -208,11 +208,7 @@ pub async fn attach(session: Option<String>) -> anyhow::Result<ExitCode> {
         }
         _ => bail!(
             "several detached sessions are running; choose one: {}",
-            candidates
-                .iter()
-                .map(|(_, _, s)| s.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            candidates.iter().map(|(_, _, s)| s.id.as_str()).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -220,10 +216,7 @@ pub async fn attach(session: Option<String>) -> anyhow::Result<ExitCode> {
 /// `toby sessions ls`.
 pub async fn list() -> anyhow::Result<ExitCode> {
     let (_, paths) = load_config()?;
-    println!(
-        "{:<26}  {:<26}  {:<16}  {:<10}  STATE",
-        "SESSION", "MACHINE", "COMMAND", "ATTACHED"
-    );
+    println!("{:<26}  {:<26}  {:<16}  {:<10}  STATE", "SESSION", "MACHINE", "COMMAND", "ATTACHED");
     for (machine, runtime) in running_machines(&paths).await {
         let Ok(mut c) = Control::connect(&runtime).await else {
             continue;
@@ -235,10 +228,7 @@ pub async fn list() -> anyhow::Result<ExitCode> {
                 Some(ExitStatus::Signal(n)) => format!("killed by signal {n}"),
             };
             let attached = if s.attached { "yes" } else { "no" };
-            println!(
-                "{:<26}  {:<26}  {:<16}  {:<10}  {state}",
-                s.id, machine, s.argv0, attached
-            );
+            println!("{:<26}  {:<26}  {:<16}  {:<10}  {state}", s.id, machine, s.argv0, attached);
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -258,11 +248,7 @@ pub async fn kill(id: &str) -> anyhow::Result<ExitCode> {
         }
         let running = |list: &[SessionInfo]| list.iter().any(|s| s.id == id && s.exit.is_none());
         for signal in [libc::SIGHUP, libc::SIGTERM] {
-            c.call(Request::Kill(machine::Kill {
-                session_id: id.to_string(),
-                signal,
-            }))
-            .await?;
+            c.call(Request::Kill(machine::Kill { session_id: id.to_string(), signal })).await?;
         }
         for _ in 0..30 {
             if !running(&c.sessions().await?) {
@@ -270,11 +256,7 @@ pub async fn kill(id: &str) -> anyhow::Result<ExitCode> {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        c.call(Request::Kill(machine::Kill {
-            session_id: id.to_string(),
-            signal: libc::SIGKILL,
-        }))
-        .await?;
+        c.call(Request::Kill(machine::Kill { session_id: id.to_string(), signal: libc::SIGKILL })).await?;
         return Ok(ExitCode::SUCCESS);
     }
     bail!("no session {id}")

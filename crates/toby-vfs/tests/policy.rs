@@ -31,29 +31,10 @@ fn fixture() -> Fixture {
         guest_gid: GUEST_UID,
     };
     let tree = Tree::new(squash).unwrap();
-    tree.mount(
-        "/projects/p",
-        MountSpec {
-            source: rw.clone(),
-            read_only: false,
-        },
-    )
-    .unwrap();
-    tree.mount(
-        "/versions",
-        MountSpec {
-            source: ro.clone(),
-            read_only: true,
-        },
-    )
-    .unwrap();
+    tree.mount("/projects/p", MountSpec { source: rw.clone(), read_only: false }).unwrap();
+    tree.mount("/versions", MountSpec { source: ro.clone(), read_only: true }).unwrap();
     tree.filesystem().init(FsOptions::all()).unwrap();
-    Fixture {
-        _dir: dir,
-        rw,
-        ro,
-        tree,
-    }
+    Fixture { _dir: dir, rw, ro, tree }
 }
 
 fn name(s: &str) -> CString {
@@ -62,21 +43,13 @@ fn name(s: &str) -> CString {
 
 /// A request context as the guest's root would send it, remapped as the server does.
 fn ctx(fs: &impl FileSystem) -> Context {
-    let mut c = Context {
-        uid: 0,
-        gid: 0,
-        pid: 1,
-    };
+    let mut c = Context { uid: 0, gid: 0, pid: 1 };
     fs.id_remap(&mut c).unwrap();
     c
 }
 
 fn guest_ctx(fs: &impl FileSystem, uid: u32) -> Context {
-    let mut c = Context {
-        uid,
-        gid: uid,
-        pid: 1,
-    };
+    let mut c = Context { uid, gid: uid, pid: 1 };
     fs.id_remap(&mut c).unwrap();
     c
 }
@@ -94,19 +67,13 @@ fn walk(fs: &impl FileSystem, path: &[&str]) -> Entry {
 }
 
 fn create(fs: &impl FileSystem, parent: u64, n: &str, mode: u32, uid: u32) -> std::io::Result<Entry> {
-    let args = CreateIn {
-        flags: libc::O_RDWR as u32,
-        mode: libc::S_IFREG | mode,
-        umask: 0,
-        fuse_flags: 0,
-    };
-    fs.create(&guest_ctx(fs, uid), parent.into(), &name(n), args)
-        .map(|(e, h, _, _)| {
-            if let Some(h) = h {
-                let _ = fs.release(&ctx(fs), e.inode.into(), 0, h, false, false, None);
-            }
-            e
-        })
+    let args = CreateIn { flags: libc::O_RDWR as u32, mode: libc::S_IFREG | mode, umask: 0, fuse_flags: 0 };
+    fs.create(&guest_ctx(fs, uid), parent.into(), &name(n), args).map(|(e, h, _, _)| {
+        if let Some(h) = h {
+            let _ = fs.release(&ctx(fs), e.inode.into(), 0, h, false, false, None);
+        }
+        e
+    })
 }
 
 fn errno(e: std::io::Error) -> i32 {
@@ -124,10 +91,7 @@ fn files_from_any_guest_identity_belong_to_the_host_user() {
     assert_eq!(by_root.attr.st_uid, GUEST_UID);
     assert_eq!(by_user.attr.st_uid, GUEST_UID);
     for n in ["root-file", "user-file"] {
-        assert_eq!(
-            std::fs::metadata(f.rw.join(n)).unwrap().uid(),
-            nix::unistd::getuid().as_raw()
-        );
+        assert_eq!(std::fs::metadata(f.rw.join(n)).unwrap().uid(), nix::unistd::getuid().as_raw());
     }
 }
 
@@ -136,21 +100,8 @@ fn other_owners_are_reported_as_overflow() {
     let f = fixture();
     let fs = f.tree.filesystem();
     // /proc/1 is owned by root on the host, which is not the host user.
-    let tree = Tree::new(Squash {
-        host_uid: 99999,
-        host_gid: 99999,
-        guest_uid: 1,
-        guest_gid: 1,
-    })
-    .unwrap();
-    tree.mount(
-        "/v",
-        MountSpec {
-            source: f.ro.clone(),
-            read_only: true,
-        },
-    )
-    .unwrap();
+    let tree = Tree::new(Squash { host_uid: 99999, host_gid: 99999, guest_uid: 1, guest_gid: 1 }).unwrap();
+    tree.mount("/v", MountSpec { source: f.ro.clone(), read_only: true }).unwrap();
     let other = tree.filesystem();
     other.init(FsOptions::all()).unwrap();
     let e = walk(&*other, &["v", "file"]);
@@ -170,13 +121,7 @@ fn chown_is_limited_to_the_guest_user_and_root() {
     for (uid, ok) in [(GUEST_UID, true), (0, true), (1234, false)] {
         attr.st_uid = uid;
         attr.st_gid = uid;
-        let r = fs.setattr(
-            &c,
-            e.inode.into(),
-            attr,
-            None,
-            SetattrValid::UID | SetattrValid::GID,
-        );
+        let r = fs.setattr(&c, e.inode.into(), attr, None, SetattrValid::UID | SetattrValid::GID);
         assert_eq!(r.is_ok(), ok, "chown to {uid}");
         if let Err(err) = r {
             assert_eq!(errno(err), libc::EPERM);
@@ -190,26 +135,15 @@ fn setid_bits_are_stripped() {
     let fs = f.tree.filesystem();
     let p = walk(&*fs, &["projects", "p"]);
     let e = create(&*fs, p.inode, "suid", 0o4755, 0).unwrap();
-    assert_eq!(
-        std::fs::metadata(f.rw.join("suid")).unwrap().permissions().mode() & 0o7777,
-        0o755
-    );
+    assert_eq!(std::fs::metadata(f.rw.join("suid")).unwrap().permissions().mode() & 0o7777, 0o755);
 
     let mut attr: stat64 = unsafe { std::mem::zeroed() };
     attr.st_mode = libc::S_IFREG | 0o6755;
-    fs.setattr(&ctx(&*fs), e.inode.into(), attr, None, SetattrValid::MODE)
-        .unwrap();
-    assert_eq!(
-        std::fs::metadata(f.rw.join("suid")).unwrap().permissions().mode() & 0o7777,
-        0o755
-    );
+    fs.setattr(&ctx(&*fs), e.inode.into(), attr, None, SetattrValid::MODE).unwrap();
+    assert_eq!(std::fs::metadata(f.rw.join("suid")).unwrap().permissions().mode() & 0o7777, 0o755);
 
-    fs.mkdir(&ctx(&*fs), p.inode.into(), &name("d"), 0o2775, 0)
-        .unwrap();
-    assert_eq!(
-        std::fs::metadata(f.rw.join("d")).unwrap().permissions().mode() & 0o7777,
-        0o775
-    );
+    fs.mkdir(&ctx(&*fs), p.inode.into(), &name("d"), 0o2775, 0).unwrap();
+    assert_eq!(std::fs::metadata(f.rw.join("d")).unwrap().permissions().mode() & 0o7777, 0o775);
 }
 
 #[test]
@@ -219,9 +153,7 @@ fn fifos_and_devices_are_refused() {
     let p = walk(&*fs, &["projects", "p"]);
     let c = ctx(&*fs);
     for mode in [libc::S_IFIFO, libc::S_IFCHR, libc::S_IFBLK] {
-        let err = fs
-            .mknod(&c, p.inode.into(), &name("n"), mode | 0o644, 0, 0)
-            .unwrap_err();
+        let err = fs.mknod(&c, p.inode.into(), &name("n"), mode | 0o644, 0, 0).unwrap_err();
         assert_eq!(errno(err), libc::EPERM);
     }
     assert!(!f.rw.join("n").exists());
@@ -234,10 +166,7 @@ fn dot_lookups_are_rejected() {
     let p = walk(&*fs, &["projects", "p"]);
     let c = ctx(&*fs);
     for n in [".", ".."] {
-        assert_eq!(
-            errno(fs.lookup(&c, p.inode.into(), &name(n)).unwrap_err()),
-            libc::ENOENT
-        );
+        assert_eq!(errno(fs.lookup(&c, p.inode.into(), &name(n)).unwrap_err()), libc::ENOENT);
     }
 }
 
@@ -249,21 +178,9 @@ fn read_only_mounts_refuse_writes() {
     let file = walk(&*fs, &["versions", "file"]);
     let c = ctx(&*fs);
 
-    assert_eq!(
-        errno(create(&*fs, v.inode, "new", 0o644, 0).unwrap_err()),
-        libc::EROFS
-    );
-    assert_eq!(
-        errno(fs.unlink(&c, v.inode.into(), &name("file")).unwrap_err()),
-        libc::EROFS
-    );
-    assert_eq!(
-        errno(
-            fs.open(&c, file.inode.into(), libc::O_WRONLY as u32, 0)
-                .unwrap_err()
-        ),
-        libc::EROFS
-    );
+    assert_eq!(errno(create(&*fs, v.inode, "new", 0o644, 0).unwrap_err()), libc::EROFS);
+    assert_eq!(errno(fs.unlink(&c, v.inode.into(), &name("file")).unwrap_err()), libc::EROFS);
+    assert_eq!(errno(fs.open(&c, file.inode.into(), libc::O_WRONLY as u32, 0).unwrap_err()), libc::EROFS);
     assert!(fs.open(&c, file.inode.into(), libc::O_RDONLY as u32, 0).is_ok());
 }
 
@@ -274,15 +191,7 @@ fn a_new_session_keeps_mounts_and_full_options() {
     // The fixture's first session negotiated everything; a firmware-like
     // session negotiates nothing.
     fs.init(FsOptions::empty()).unwrap();
-    f.tree
-        .mount(
-            "/projects/q",
-            MountSpec {
-                source: f.rw.clone(),
-                read_only: false,
-            },
-        )
-        .unwrap();
+    f.tree.mount("/projects/q", MountSpec { source: f.rw.clone(), read_only: false }).unwrap();
 
     let opts = fs.init(FsOptions::all()).unwrap();
     assert!(opts.contains(FsOptions::MAX_PAGES), "{opts:?}");

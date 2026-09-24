@@ -6,11 +6,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "toby",
-    version,
-    about = "Run development tools inside virtual machines"
-)]
+#[command(name = "toby", version, about = "Run development tools inside virtual machines")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -495,10 +491,7 @@ pub fn expand_multicall(argv: Vec<OsString>) -> Vec<OsString> {
     let Some(first) = argv.first() else {
         return argv;
     };
-    let name = std::path::Path::new(first)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
+    let name = std::path::Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or_default();
     match multicall(name) {
         Some(words) => {
             let mut out: Vec<OsString> = vec!["toby".into()];
@@ -530,10 +523,7 @@ mod tests {
             expand_multicall(os(&["/run/toby/bin/toby-connect", "mcp/toby"])),
             os(&["toby", "guest", "connect", "mcp/toby"])
         );
-        assert_eq!(
-            expand_multicall(os(&["tobyd"])),
-            os(&["toby", "internal", "daemon"])
-        );
+        assert_eq!(expand_multicall(os(&["tobyd"])), os(&["toby", "internal", "daemon"]));
         assert_eq!(expand_multicall(os(&["toby", "doctor"])), os(&["toby", "doctor"]));
     }
 

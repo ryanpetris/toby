@@ -32,12 +32,8 @@ pub struct UserInfo {
 pub fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut f =
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
         ciborium::into_writer(value, &mut f).map_err(io::Error::other)?;
         f.sync_all()?;
     }

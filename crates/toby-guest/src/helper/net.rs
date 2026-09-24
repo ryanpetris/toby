@@ -27,12 +27,7 @@ struct SockaddrIn {
 
 impl SockaddrIn {
     fn new(a: Ipv4Addr) -> Self {
-        SockaddrIn {
-            family: libc::AF_INET as u16,
-            port: 0,
-            addr: a.octets(),
-            zero: [0; 8],
-        }
+        SockaddrIn { family: libc::AF_INET as u16, port: 0, addr: a.octets(), zero: [0; 8] }
     }
 }
 
@@ -79,17 +74,11 @@ const RTF_GATEWAY: libc::c_ushort = 0x2;
 fn ifreq(name: &str) -> io::Result<IfReq> {
     let bytes = name.as_bytes();
     if bytes.len() >= 16 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "interface name too long",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "interface name too long"));
     }
     let mut n = [0u8; 16];
     n[..bytes.len()].copy_from_slice(bytes);
-    Ok(IfReq {
-        name: n,
-        data: IfReqData { pad: [0; 24] },
-    })
+    Ok(IfReq { name: n, data: IfReqData { pad: [0; 24] } })
 }
 
 fn socket() -> io::Result<OwnedFd> {
@@ -105,11 +94,7 @@ fn socket() -> io::Result<OwnedFd> {
 fn ioctl<T>(fd: &OwnedFd, req: libc::c_ulong, arg: &mut T) -> io::Result<()> {
     // SAFETY: `arg` points to a correctly laid out structure for `req`.
     let r = unsafe { libc::ioctl(fd.as_raw_fd(), req as _, arg as *mut T) };
-    if r < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    if r < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
 fn set_up(fd: &OwnedFd, name: &str) -> io::Result<()> {
@@ -122,11 +107,7 @@ fn set_up(fd: &OwnedFd, name: &str) -> io::Result<()> {
 }
 
 fn netmask(prefix: u8) -> Ipv4Addr {
-    let bits = if prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix.min(32) as u32)
-    };
+    let bits = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix.min(32) as u32) };
     Ipv4Addr::from(bits)
 }
 
@@ -158,11 +139,8 @@ fn resolv_target(etc_resolv: &Path) -> io::Result<PathBuf> {
         return Ok(etc_resolv.to_path_buf());
     }
     let link = std::fs::read_link(etc_resolv)?;
-    let target = if link.is_absolute() {
-        link
-    } else {
-        etc_resolv.parent().unwrap_or(Path::new("/")).join(link)
-    };
+    let target =
+        if link.is_absolute() { link } else { etc_resolv.parent().unwrap_or(Path::new("/")).join(link) };
     if !target.exists() {
         if let Some(p) = target.parent() {
             std::fs::create_dir_all(p)?;
@@ -173,14 +151,8 @@ fn resolv_target(etc_resolv: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn bind_mount(src: &Path, dst: &Path) -> io::Result<()> {
-    nix::mount::mount(
-        Some(src),
-        dst,
-        None::<&str>,
-        nix::mount::MsFlags::MS_BIND,
-        None::<&str>,
-    )
-    .map_err(io::Error::from)
+    nix::mount::mount(Some(src), dst, None::<&str>, nix::mount::MsFlags::MS_BIND, None::<&str>)
+        .map_err(io::Error::from)
 }
 
 fn is_mountpoint(path: &Path) -> bool {
@@ -238,12 +210,9 @@ pub fn net_up(opts: &NetUp, run_dir: &Path) -> io::Result<()> {
     }
     if Path::new("/run/systemd/resolve").is_dir() {
         // systemd-resolved answers on 127.0.0.53 and needs the server too.
-        let _ = std::process::Command::new("resolvectl")
-            .args(["dns", &iface, &opts.dns.to_string()])
-            .status();
-        let _ = std::process::Command::new("resolvectl")
-            .args(["domain", &iface, "~."])
-            .status();
+        let _ =
+            std::process::Command::new("resolvectl").args(["dns", &iface, &opts.dns.to_string()]).status();
+        let _ = std::process::Command::new("resolvectl").args(["domain", &iface, "~."]).status();
     }
     Ok(())
 }
@@ -269,11 +238,7 @@ mod tests {
     fn finds_the_virtio_interface_by_driver() {
         let dir = tempfile::tempdir().unwrap();
         let sys = dir.path().join("sys");
-        for (name, driver) in [
-            ("lo", None),
-            ("ens5", Some("virtio_net")),
-            ("docker0", Some("bridge")),
-        ] {
+        for (name, driver) in [("lo", None), ("ens5", Some("virtio_net")), ("docker0", Some("bridge"))] {
             let dev = sys.join(name).join("device");
             std::fs::create_dir_all(&dev).unwrap();
             if let Some(d) = driver {

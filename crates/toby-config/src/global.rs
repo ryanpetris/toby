@@ -49,6 +49,9 @@ pub struct Programs {
     pub passt: Option<PathBuf>,
     /// Directory of installed Toby versions (`<version>/toby` and `current`).
     pub versions: Option<PathBuf>,
+    /// Directory with the bundled mkosi, image configurations and dracut
+    /// module (`mkosi/`, `images/`, `dracut/`).
+    pub share: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -61,24 +64,23 @@ pub struct Network {
 /// Bundled program locations (plan §4).
 pub const BUNDLED_CLOUD_HYPERVISOR: &str = "/usr/lib/toby/cloud-hypervisor";
 pub const BUNDLED_VERSIONS: &str = "/usr/lib/toby/versions";
+pub const BUNDLED_SHARE: &str = "/usr/share/toby";
 
 impl Programs {
     pub fn cloud_hypervisor(&self) -> PathBuf {
-        self.cloud_hypervisor
-            .clone()
-            .unwrap_or_else(|| BUNDLED_CLOUD_HYPERVISOR.into())
+        self.cloud_hypervisor.clone().unwrap_or_else(|| BUNDLED_CLOUD_HYPERVISOR.into())
     }
 
     /// The edk2 firmware for this architecture.
     pub fn firmware(&self) -> PathBuf {
         self.firmware.clone().unwrap_or_else(|| {
-            let name = if cfg!(target_arch = "aarch64") {
-                "CLOUDHV_EFI.fd"
-            } else {
-                "CLOUDHV.fd"
-            };
+            let name = if cfg!(target_arch = "aarch64") { "CLOUDHV_EFI.fd" } else { "CLOUDHV.fd" };
             PathBuf::from("/usr/lib/toby/firmware").join(name)
         })
+    }
+
+    pub fn share(&self) -> PathBuf {
+        self.share.clone().unwrap_or_else(|| BUNDLED_SHARE.into())
     }
 
     pub fn versions(&self) -> PathBuf {

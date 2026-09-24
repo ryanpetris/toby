@@ -88,9 +88,7 @@ impl Reply {
     }
 
     pub fn version(version: u32) -> Self {
-        Reply::Ok(Ok {
-            version: Some(version),
-        })
+        Reply::Ok(Ok { version: Some(version) })
     }
 
     pub fn refused(error: impl Into<String>) -> Self {

@@ -106,7 +106,7 @@ Client frames:
 
 | Type | Frame |
 | --- | --- |
-| 1 | `Hello { versions, rows, cols, want_replay }`, the first frame |
+| 1 | `Hello { versions, rows, cols, want_replay, resume_from }`, the first frame |
 | 2 | `Stdin { bytes }` |
 | 3 | `CloseStdin {}` |
 | 4 | `Resize { rows, cols }` |
@@ -116,13 +116,23 @@ Session frames:
 
 | Type | Frame |
 | --- | --- |
-| 64 | `Welcome { version, state, tty }`; `state` is `running` or the exit status |
+| 64 | `Welcome { version, state, tty, offset, lost }`; `state` is `running` or the exit status |
 | 65 | `Replay { bytes, stderr }`: recent output (up to 1 MiB) after the welcome, if requested; `stderr` marks standard-error output of sessions without a terminal |
 | 66 | `Stdout { bytes }` |
 | 67 | `Stderr { bytes }` (sessions without a terminal) |
 | 68 | `Exit { status }` |
 | 69 | `Detached { reason }`: another client attached; the connection closes |
 | 70 | `Refused { error }` |
+
+Output is numbered by offset: the count of output bytes since the session
+started. `Welcome.offset` is the offset of the first byte the client receives
+next. A client that reconnects sends `resume_from` with the offset it has
+reached and receives the buffered output from there; `Welcome.lost` counts
+bytes that were no longer buffered. Without `resume_from`, `want_replay`
+selects the whole buffer or nothing.
+
+A client of a session with a terminal that stops reading for 30 seconds is
+disconnected; for a session without a terminal, output waits for the client.
 
 One client is attached at a time; a new attachment detaches the previous one.
 A command that cannot be started (for a session that starts on attach) writes

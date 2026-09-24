@@ -54,19 +54,11 @@ fn backend(spec: &MountSpec) -> io::Result<BackFileSystem> {
     };
     let fs = PassthroughFs::<()>::new(cfg)?;
     fs.import()?;
-    Ok(if spec.read_only {
-        Box::new(Guard::read_only(fs))
-    } else {
-        Box::new(fs)
-    })
+    Ok(if spec.read_only { Box::new(Guard::read_only(fs)) } else { Box::new(fs) })
 }
 
 fn options() -> VfsOptions {
-    VfsOptions {
-        no_open: false,
-        no_opendir: false,
-        ..VfsOptions::default()
-    }
+    VfsOptions { no_open: false, no_opendir: false, ..VfsOptions::default() }
 }
 
 fn build(table: &Table) -> io::Result<Vfs> {
@@ -81,16 +73,11 @@ fn build(table: &Table) -> io::Result<Vfs> {
 fn check_path(path: &str) -> io::Result<()> {
     let ok = path.starts_with('/')
         && path.len() > 1
-        && path[1..]
-            .split('/')
-            .all(|c| !c.is_empty() && c != "." && c != "..");
+        && path[1..].split('/').all(|c| !c.is_empty() && c != "." && c != "..");
     if ok {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid mount path {path}"),
-        ))
+        Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid mount path {path}")))
     }
 }
 
@@ -120,15 +107,9 @@ impl Tree {
         check_path(path)?;
         let mut table = self.table.lock().unwrap();
         if table.contains_key(path) {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{path} is already mounted"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{path} is already mounted")));
         }
-        self.top
-            .current()
-            .mount(backend(&spec)?, path)
-            .map_err(vfs_error)?;
+        self.top.current().mount(backend(&spec)?, path).map_err(vfs_error)?;
         table.insert(path.to_string(), spec);
         Ok(())
     }
@@ -136,22 +117,14 @@ impl Tree {
     pub fn unmount(&self, path: &str) -> io::Result<()> {
         let mut table = self.table.lock().unwrap();
         if table.remove(path).is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{path} is not mounted"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{path} is not mounted")));
         }
         self.top.current().umount(path).map_err(vfs_error)?;
         Ok(())
     }
 
     pub fn mounts(&self) -> Vec<(String, MountSpec)> {
-        self.table
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        self.table.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
 

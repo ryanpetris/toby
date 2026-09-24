@@ -107,8 +107,7 @@ pub fn valid_name(n: &str) -> bool {
     !b.is_empty()
         && b.len() <= 64
         && b[0].is_ascii_alphanumeric()
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
 }
 
 pub fn check_name(kind: &str, n: &str) -> io::Result<()> {
@@ -123,10 +122,7 @@ pub fn check_name(kind: &str, n: &str) -> io::Result<()> {
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub fn load<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
@@ -168,17 +164,11 @@ mod tests {
             id: "01J".into(),
             arch: "x86_64".into(),
             created: 1,
-            source: ImageSource::Dockerfile {
-                path: "/p/Dockerfile".into(),
-                context: "/p".into(),
-            },
+            source: ImageSource::Dockerfile { path: "/p/Dockerfile".into(), context: "/p".into() },
             source_hash: "abc".into(),
             kernel_version: "6.12".into(),
             adaptation_version: 1,
-            config: ImageConfig {
-                env: vec!["A=1".into()],
-                ..Default::default()
-            },
+            config: ImageConfig { env: vec!["A=1".into()], ..Default::default() },
         };
         store(&dir.path().join("01J.toml"), &img).unwrap();
         assert_eq!(load::<ImageRecord>(&dir.path().join("01J.toml")).unwrap(), img);

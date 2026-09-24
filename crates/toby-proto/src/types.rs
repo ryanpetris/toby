@@ -51,14 +51,10 @@ impl std::str::FromStr for Endpoint {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(addr) = s.strip_prefix("tcp:") {
-            return Ok(Endpoint::Tcp {
-                addr: addr.to_string(),
-            });
+            return Ok(Endpoint::Tcp { addr: addr.to_string() });
         }
         if let Some(path) = s.strip_prefix("unix:") {
-            return Ok(Endpoint::Unix {
-                path: path.to_string(),
-            });
+            return Ok(Endpoint::Unix { path: path.to_string() });
         }
         Err(format!("endpoint must start with tcp: or unix: ({s})"))
     }
