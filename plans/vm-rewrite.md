@@ -375,6 +375,7 @@ runtime (direct back end)       = $TOBY_RUNTIME_DIR or /tmp/toby-<uid>/ (0700, o
     vsock.sock                hybrid vsock (host→guest connects)
     vsock.sock_1024           hybrid vsock (guest→host port 1024)
     fs.sock                   vhost-user socket for toby-fs
+    fs-control.sock           toby-fs control (attachments, §10.2)
     net.sock                  vhost-user socket for passt
     console.log               guest console
 ```
@@ -571,8 +572,10 @@ relay_version = "1.0.0"
 proto = 1
 [[attach]]
 id = "a1"
-state = "ready"            # pending | ready | failed
-error = ""
+host = "/home/user/src/toby"
+at = "/toby/workspace/toby"
+read_only = false
+state = "ready"            # ready (mounted) | failed (see error)
 [[forward]]
 id = "f1"
 state = "listening"
@@ -725,7 +728,8 @@ filesystems under one device).
 
 ### 10.2 Control API (stable, unix socket, framed CBOR)
 
-`Add{id, host_path, read_only}`, `Remove{id}`, `List`. `toby-fs` opens the
+On `<rt>/fs-control.sock`: `Add{id, host_path, read_only}` (idempotent for
+the same path and mode), `Remove{id}` (idempotent), `List`. `toby-fs` opens the
 host path once and roots a passthrough file system there. Lookups walk one
 component at a time from the parent's `O_PATH` descriptor (`openat` with
 `O_NOFOLLOW`), so symlinks are returned to the guest and resolved there,
@@ -751,16 +755,24 @@ did the move.)
 
 ### 10.4 Attach flow
 
-1. `tobyd` adds `[[attach]]` to desired state.
-2. `toby-machine` calls `toby-fs` `Add`.
-3. `toby-machine` runs `toby-helper attach --src /run/toby/fs/projects/<id>
-   --at <target> --ro=<bool>` as root (bind mount with `nosuid,nodev`,
-   read-only remount when requested; creates the mount point).
-4. Detach: helper unmounts (refuses while in use unless forced), then
-   `toby-fs` `Remove`.
+1. `tobyd` adds `[[attach]]` to desired state (until M5, `toby mount`
+   edits `machine.toml` itself under a lock).
+2. `toby-machine` sees the change (inotify on the state directory) and
+   reconciles: it calls `toby-fs` `Add`, then runs `toby-helper attach
+   --src /run/toby/fs/projects/<id> --at <target> [--ro]` as root (bind
+   mount with `nosuid,nodev`, read-only remount when requested; creates
+   the mount point; refuses if something else is mounted there).
+3. Detach: the helper unmounts, which is refused while the mount is in use,
+   then `toby-fs` `Remove`.
+4. `status.toml` lists every attachment that is desired or still mounted,
+   with `state` (`ready` or `failed`), `error`, and where it is mounted, so
+   a restarted `toby-machine` can still detach it. The writer waits for
+   `observed_generation`; an attachment that is still listed after its
+   removal could not be detached, and the writer puts it back into the
+   desired state and reports the error.
 5. Attachment reference counting lives in `tobyd`: session-scoped
    attachments are removed when the last session using them ends; pinned
-   attachments stay until `toby detach` or machine stop.
+   attachments stay until `toby unmount` or machine stop.
 6. Mount points in `$HOME` or the root that correspond to removed
    attachments are left as empty directories owned by root with mode 0555
    so writes fail instead of landing in the root.
@@ -794,8 +806,15 @@ did the move.)
   than the 1024 default).
 - Requests are processed on one thread per queue; with the kernel's full
   option set this matched or beat virtiofsd (1 GiB write 1.4 s vs 4.0 s,
-  `git status` on 96k files equal). M4 re-measures and adds a pool only if
-  measurements call for it.
+  `git status` on 96k files equal). M4 measurement (an attachment added at
+  runtime to an Arch machine with 4 vCPUs, a generated git tree of 96k
+  files in 300 directories, guest caches dropped for the cold runs): 1 GiB
+  sequential write + fsync 0.65 s (the same write to the guest's own root
+  disk: 5.0 s), 1 GiB cold read 0.29 s, `git status` cold 6.1 s and warm
+  0.36 s, `find` over the tree 0.24 s. No thread pool is needed. The
+  bootstrap builder's log shows the firmware's session (`DO_READDIRPLUS`
+  only) followed by the kernel's with the full option set (`MAX_PAGES`,
+  `WRITEBACK_CACHE`, `PARALLEL_DIROPS`, …).
 - Removing a mount leaves an empty pseudo directory; `toby-fs` removes it.
 
 ---

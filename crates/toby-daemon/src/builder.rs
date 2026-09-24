@@ -153,9 +153,9 @@ impl Builder {
             else {
                 continue;
             };
+            // The lock file stays: a build may be waiting on it.
             if let Ok(_lock) = Flock::lock(file, FlockArg::LockExclusiveNonblock) {
                 std::fs::remove_file(&path)?;
-                let _ = std::fs::remove_file(&lock_path);
                 removed.push(path);
             }
         }
@@ -163,19 +163,24 @@ impl Builder {
     }
 
     /// Removes what interrupted builds left behind: unfinished image
-    /// directories and builder machine state no running build holds.
+    /// directories, builder machine state and import directories that no
+    /// running build holds. Each build locks its own right after creating
+    /// them, so only directories older than a minute are considered.
     fn sweep(&self) {
         let parent = |p: PathBuf| p.parent().map(Path::to_path_buf).unwrap_or_default();
-        let images = parent(self.paths.image_dir("x"));
-        let machines = parent(self.paths.machine_state_dir("x"));
-        for (dir, is_leftover) in [
-            (images, (|n: &str| n.ends_with(".tmp")) as fn(&str) -> bool),
-            (machines, |n: &str| n.starts_with("builder-")),
-        ] {
+        // (directory, name prefix, name suffix)
+        let leftovers = [
+            (parent(self.paths.image_dir("x")), "", ".tmp"),
+            (parent(self.paths.machine_state_dir("x")), "builder-", ""),
+            (self.paths.state.clone(), "import-", ""),
+        ];
+        let recent = std::time::SystemTime::now() - Duration::from_secs(60);
+        for (dir, prefix, suffix) in leftovers {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if !is_leftover(&name) {
+                let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < recent);
+                if !name.starts_with(prefix) || !name.ends_with(suffix) || !old {
                     continue;
                 }
                 if let Ok(_held) = lock_dir(&e.path()) {
@@ -387,13 +392,14 @@ impl Builder {
                 std::fs::create_dir_all(&self.paths.state)?;
                 let dir = tempfile::Builder::new().prefix("import-").tempdir_in(&self.paths.state)?;
                 let file = dir.path().join("image.tar");
+                let held = lock_dir(dir.path())?;
                 if std::fs::hard_link(path, &file).is_err() {
                     std::fs::copy(path, &file)?;
                 }
                 Job {
                     args: vec!["archive".into(), "image.tar".into()],
                     context: Some(dir.path().to_path_buf()),
-                    _private: Some(dir),
+                    _private: Some((held, dir)),
                 }
             }
         })
@@ -593,7 +599,7 @@ impl Builder {
 struct Job {
     args: Vec<String>,
     context: Option<PathBuf>,
-    _private: Option<tempfile::TempDir>,
+    _private: Option<(Flock<File>, tempfile::TempDir)>,
 }
 
 /// Names a source's build cache.

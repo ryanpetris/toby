@@ -130,7 +130,13 @@ impl<F: FileSystem> FileSystem for Guard<F> {
                 rebuild(&self.inner)?;
             }
         }
-        self.current().init(capable)
+        let opts = self.current().init(capable)?;
+        if self.rebuild.is_some() {
+            // Visible in the file share's log: sessions must keep the full
+            // option set, whatever an earlier session negotiated.
+            eprintln!("FUSE session started with {opts:?}");
+        }
+        Ok(opts)
     }
 
     fn destroy(&self) {

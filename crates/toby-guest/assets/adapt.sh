@@ -51,8 +51,7 @@ have() {
 # modules directory too).
 newest_kernel() {
     for kver in $(ls "$tree/usr/lib/modules" 2>/dev/null | sort -rV); do
-        if [ -e "$tree/usr/lib/modules/$kver/vmlinuz" ] || [ -e "$tree/boot/vmlinuz-$kver" ] \
-            || [ -e "$tree/boot/vmlinuz-linux" ]; then
+        if [ -e "$tree/usr/lib/modules/$kver/vmlinuz" ] || [ -e "$tree/boot/vmlinuz-$kver" ]; then
             echo "$kver"
             return
         fi
