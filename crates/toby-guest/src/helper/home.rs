@@ -30,19 +30,31 @@ fn unescape(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The topmost mount at `path` (a canonical path): the root within its file
-/// system, decoded. Works on bytes, since names need not be UTF-8.
-fn top_mount(mountinfo: &[u8], path: &Path) -> Option<PathBuf> {
+/// A mount as mountinfo describes it.
+#[derive(Debug, PartialEq, Eq)]
+struct MountEntry {
+    /// The mounted directory within its file system, decoded.
+    root: PathBuf,
+    fstype: Vec<u8>,
+}
+
+/// The topmost mount at `path` (a canonical path). Works on bytes, since
+/// names need not be UTF-8.
+fn top_mount(mountinfo: &[u8], path: &Path) -> Option<MountEntry> {
     mountinfo.split(|b| *b == b'\n').rev().find_map(|l| {
-        let mut f = l.split(|b| *b == b' ');
-        let root = f.nth(3)?;
-        let point = f.next()?;
-        (unescape(point) == path.as_os_str().as_bytes())
-            .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&unescape(root))))
+        let fields: Vec<&[u8]> = l.split(|b| *b == b' ').collect();
+        let (root, point) = (fields.get(3)?, fields.get(4)?);
+        if unescape(point) != path.as_os_str().as_bytes() {
+            return None;
+        }
+        // Optional fields end with a lone "-"; the file system type follows.
+        let sep = fields.iter().skip(6).position(|f| *f == b"-")? + 6;
+        let fstype = fields.get(sep + 1)?.to_vec();
+        Some(MountEntry { root: PathBuf::from(std::ffi::OsStr::from_bytes(&unescape(root))), fstype })
     })
 }
 
-fn mount_at(path: &Path) -> Option<PathBuf> {
+fn mount_at(path: &Path) -> Option<MountEntry> {
     top_mount(&std::fs::read("/proc/self/mountinfo").ok()?, path)
 }
 
@@ -50,10 +62,14 @@ fn mounted_at(path: &Path) -> bool {
     mount_at(path).is_some()
 }
 
-/// Whether a mount's root is the attachment `src` serves (a path below the
-/// file share such as `/projects/<id>`).
-fn is_attachment(root: &Path, src: &Path) -> bool {
-    root != Path::new("/") && src.ends_with(root.strip_prefix("/").unwrap_or(root))
+/// Where the file share is mounted in the guest.
+const FILE_SHARE: &str = "/run/toby/fs";
+
+/// Whether a mount is the attachment `src` (`/run/toby/fs/projects/<id>`):
+/// the file share's `/projects/<id>` bound there.
+fn is_attachment(mount: &MountEntry, src: &Path) -> bool {
+    let Ok(rel) = src.strip_prefix(FILE_SHARE) else { return false };
+    mount.fstype == b"virtiofs" && mount.root == Path::new("/").join(rel) && mount.root != Path::new("/")
 }
 
 /// Copies `src` into `dst` recursively, keeping modes and symlinks, owned by
@@ -123,10 +139,10 @@ pub fn attach(src: &Path, at: &Path, read_only: bool) -> io::Result<()> {
     if created {
         mark_mount_point(&at);
     }
-    if let Some(root) = mount_at(&at) {
+    if let Some(mount) = mount_at(&at) {
         // Already attached (a helper run again after a restart), unless
         // something else is mounted there.
-        if is_attachment(&root, src) {
+        if is_attachment(&mount, src) {
             return Ok(());
         }
         return Err(io::Error::other(format!("something else is mounted at {}", at.display())));
@@ -156,7 +172,7 @@ pub fn detach(src: &Path, at: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     };
     match mount_at(&at) {
-        Some(root) if is_attachment(&root, src) => {
+        Some(mount) if is_attachment(&mount, src) => {
             umount2(&at, MntFlags::empty()).map_err(|e| match e {
                 nix::errno::Errno::EBUSY => io::Error::other(format!("{} is in use", at.display())),
                 e => io::Error::other(format!("unmounting {}: {e}", at.display())),
@@ -165,7 +181,7 @@ pub fn detach(src: &Path, at: &Path) -> io::Result<()> {
         Some(_) => return Err(io::Error::other(format!("something else is mounted at {}", at.display()))),
         None => return Ok(()),
     }
-    if mount_at(&at).is_some_and(|root| is_attachment(&root, src)) {
+    if mount_at(&at).is_some_and(|mount| is_attachment(&mount, src)) {
         return Err(io::Error::other(format!("{} is still mounted", at.display())));
     }
     lock_down(&at)
@@ -247,20 +263,24 @@ mod tests {
     #[test]
     fn mountinfo_fields_are_decoded() {
         let info = b"22 1 0:21 / / rw - ext4 /dev/vda rw\n\
-                    40 22 0:30 /projects/a1 /toby/workspace/My\\040Project rw,nosuid - virtiofs toby rw\n\
-                    41 22 0:30 /projects/b\\134x /srv/b rw - virtiofs toby rw\n";
-        assert_eq!(
-            top_mount(info, Path::new("/toby/workspace/My Project")),
-            Some(PathBuf::from("/projects/a1"))
-        );
-        assert_eq!(top_mount(info, Path::new("/srv/b")), Some(PathBuf::from("/projects/b\\x")));
+                    40 22 0:30 /projects/a1 /toby/workspace/My\\040Project rw,nosuid shared:5 - virtiofs toby rw\n\
+                    41 22 0:30 /projects/b\\134x /srv/b rw - virtiofs toby rw\n\
+                    42 22 8:1 /boot /build/boot rw - ext4 /dev/vda rw\n";
+        let a1 = top_mount(info, Path::new("/toby/workspace/My Project")).unwrap();
+        assert_eq!(a1, MountEntry { root: "/projects/a1".into(), fstype: b"virtiofs".to_vec() });
+        assert_eq!(top_mount(info, Path::new("/srv/b")).unwrap().root, PathBuf::from("/projects/b\\x"));
         assert_eq!(top_mount(info, Path::new("/toby/workspace/My\\040Project")), None);
         let odd = b"40 22 0:30 /projects/c /srv/\xff rw - virtiofs toby rw\n";
         let odd_path = Path::new(std::ffi::OsStr::from_bytes(b"/srv/\xff"));
-        assert_eq!(top_mount(odd, odd_path), Some(PathBuf::from("/projects/c")));
-        assert!(is_attachment(Path::new("/projects/a1"), Path::new("/run/toby/fs/projects/a1")));
-        assert!(!is_attachment(Path::new("/projects/a1"), Path::new("/run/toby/fs/projects/a2")));
-        assert!(!is_attachment(Path::new("/"), Path::new("/run/toby/fs/projects/a1")));
+        assert_eq!(top_mount(odd, odd_path).unwrap().root, PathBuf::from("/projects/c"));
+
+        assert!(is_attachment(&a1, Path::new("/run/toby/fs/projects/a1")));
+        assert!(!is_attachment(&a1, Path::new("/run/toby/fs/projects/a2")));
+        // A guest bind of its own /boot is not the attachment "boot".
+        let boot = top_mount(info, Path::new("/build/boot")).unwrap();
+        assert!(!is_attachment(&boot, Path::new("/run/toby/fs/projects/boot")));
+        let suffix = MountEntry { root: "/a1".into(), fstype: b"virtiofs".to_vec() };
+        assert!(!is_attachment(&suffix, Path::new("/run/toby/fs/projects/a1")));
     }
 
     #[test]

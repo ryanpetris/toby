@@ -119,7 +119,11 @@ impl Api {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> anyhow::Result<T> {
-        let resp = self.send(method, path, body).await?;
+        let resp = match self.send(method.clone(), path, body.clone()).await {
+            // A daemon that went away mid-request: reading again is safe.
+            Err(_) if method == Method::GET => self.send(method, path, body).await?,
+            r => r?,
+        };
         let status = resp.status();
         let bytes = resp.into_body().collect().await?.to_bytes();
         if !status.is_success() {

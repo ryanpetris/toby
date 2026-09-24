@@ -543,13 +543,18 @@ impl Machines {
         match &target.machine {
             Some(id) => {
                 let spec = self.record(id)?;
-                if self.observe(id).await.state != "ready" {
+                // Under the start lock, so idle stop either sees this activity
+                // or has already asked the machine to stop.
+                let _lock = self.lock.lock().await;
+                let state = self.observe(id).await.state;
+                if state != "ready" {
                     return Err(Error::new(
                         ErrorKind::Conflict,
                         "machine.not-running",
-                        format!("machine {id} is not running"),
+                        format!("machine {id} is {state}"),
                     ));
                 }
+                self.activity.lock().unwrap().insert(id.clone(), Instant::now());
                 Ok(spec)
             }
             None => {
@@ -625,6 +630,7 @@ impl Machines {
         session: Option<&str>,
     ) -> Result<AttachmentInfo> {
         self.record(id)?;
+        self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
         let host = std::fs::canonicalize(&req.host).map_err(|_| {
             Error::new(ErrorKind::NotFound, "attach.missing", format!("{} does not exist", req.host))
         })?;
@@ -1126,8 +1132,19 @@ impl Machines {
                 // machine meanwhile keeps it (it records activity first).
                 let decided = {
                     let _lock = self.lock.lock().await;
+                    // Checked again under the lock: sessions and mounts may
+                    // have been added meanwhile.
+                    let now_spec = self.record(&spec.id).unwrap_or_else(|_| spec.clone());
+                    let pinned =
+                        now_spec.attach.iter().any(|a| a.pinned) || now_spec.forward.iter().any(|f| f.pinned);
+                    let busy = match Control::connect(&self.runtime(&spec.id)).await {
+                        Ok(mut c) => {
+                            c.sessions().await.map(|l| l.iter().any(|s| s.exit.is_none())).unwrap_or(true)
+                        }
+                        Err(_) => true,
+                    };
                     let last = self.activity.lock().unwrap().get(&spec.id).copied().unwrap_or(now);
-                    let idle = Instant::now().duration_since(last) >= timeout;
+                    let idle = !pinned && !busy && Instant::now().duration_since(last) >= timeout;
                     if idle {
                         eprintln!("stopping idle machine {}", spec.id);
                         Some(self.request_stop(&spec.id, "idle-stop").await)
