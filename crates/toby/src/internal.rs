@@ -255,6 +255,7 @@ pub fn daemon() -> anyhow::Result<()> {
 /// on its own socket in the runtime directory.
 pub fn proxy() -> anyhow::Result<()> {
     let (_, paths) = load_config()?;
+    toby_fs::raise_fd_limit().context("raising the open file limit")?;
     let home = toby_config::paths::home_dir()?;
     let listeners = toby_svc::activation::take_listen_fds();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -308,6 +309,8 @@ async fn shutdown_signal() {
 
 /// `toby internal machine`: the machine's host process.
 pub fn machine(machine: &str) -> anyhow::Result<()> {
+    // Forwarded connections each hold descriptors.
+    toby_fs::raise_fd_limit().context("raising the open file limit")?;
     let host = Host::load(machine)?;
     let config = machine_config(&host)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -324,6 +327,7 @@ pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
     let host = Host::load(machine)?;
+    toby_fs::raise_fd_limit().context("raising the open file limit")?;
     // One supervisor per machine: a second one would take over its files.
     let _one = nix::fcntl::Flock::lock(
         std::fs::OpenOptions::new()

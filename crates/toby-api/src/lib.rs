@@ -142,6 +142,10 @@ pub struct MachineSelector {
 pub struct CreateSession {
     #[serde(flatten)]
     pub target: MachineSelector,
+    /// Chosen by the client; a request repeated with the same ID (after a
+    /// lost connection) gets the session the first one created.
+    #[serde(default)]
+    pub request_id: Option<String>,
     /// A tool to launch (plan §16.1); `argv` then holds extra arguments.
     #[serde(default)]
     pub tool: Option<String>,
@@ -332,6 +336,7 @@ mod tests {
     fn sessions_flatten_their_target() {
         let req = CreateSession {
             target: MachineSelector { home: Some("work".into()), ..Default::default() },
+            request_id: None,
             tool: None,
             yolo: false,
             attachments: Vec::new(),

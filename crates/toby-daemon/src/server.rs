@@ -326,13 +326,20 @@ async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
         let mut changed = b.subscribe();
-        let mut offset = 0;
+        let mut offset = 0u64;
         loop {
             changed.borrow_and_update();
-            let (bytes, done) = b.output_from(offset);
-            offset += bytes.len();
-            if !bytes.is_empty() && tx.send(Bytes::from(bytes)).await.is_err() {
-                return;
+            // Finished is read first, so the last output is read after it.
+            let done = b.finished();
+            loop {
+                let Ok(bytes) = b.output_from(offset) else { return };
+                if bytes.is_empty() {
+                    break;
+                }
+                offset += bytes.len() as u64;
+                if tx.send(Bytes::from(bytes)).await.is_err() {
+                    return;
+                }
             }
             if done || changed.changed().await.is_err() {
                 return;

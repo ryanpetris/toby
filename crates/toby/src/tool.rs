@@ -77,7 +77,7 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
                 ephemeral: args.ephemeral,
                 ..Default::default()
             };
-            let ensured: toby_api::Ensured = api.post("/v1/machines/ensure", &req).await?;
+            let ensured: toby_api::Ensured = api.post_again("/v1/machines/ensure", &req).await?;
             api.warn(&ensured.warnings);
             ensured.machine.id
         }
@@ -129,6 +129,7 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
         env.push(("TERM".to_string(), term));
     }
     let req = toby_api::CreateSession {
+        request_id: Some(toby_config::new_id()),
         target: toby_api::MachineSelector { machine: Some(machine), home: None, root: None },
         tool: Some(name),
         yolo: args.yolo,
@@ -142,7 +143,7 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
             toby_proto::types::TtySize { rows, cols }
         }),
     };
-    let created: toby_api::SessionCreated = api.post("/v1/sessions", &req).await?;
+    let created: toby_api::SessionCreated = api.post_again("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
     let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
     let result = attach_terminal(

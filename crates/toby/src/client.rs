@@ -97,6 +97,7 @@ pub async fn run_session(
         env.push(("TERM".to_string(), term));
     }
     let req = toby_api::CreateSession {
+        request_id: Some(toby_config::new_id()),
         target: selector(sel),
         tool: None,
         yolo: false,
@@ -110,7 +111,7 @@ pub async fn run_session(
             TtySize { rows, cols }
         }),
     };
-    let created: toby_api::SessionCreated = api.post("/v1/sessions", &req).await?;
+    let created: toby_api::SessionCreated = api.post_again("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
     let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
     let result = attach_terminal(

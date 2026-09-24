@@ -283,7 +283,7 @@ pub fn ensure_token(paths: &Paths, machine: &str) -> io::Result<String> {
     let token = format!("toby_{machine}_{hex}");
     std::fs::create_dir_all(paths.machine_state_dir(machine))?;
     // Written whole or not at all.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let tmp = path.with_extension(format!("tmp.{}", hex.get(..8).unwrap_or_default()));
     let _ = std::fs::remove_file(&tmp);
     {
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;

@@ -26,7 +26,6 @@ pub struct Build {
 }
 
 struct Inner {
-    output: Vec<u8>,
     state: &'static str,
     error: Option<String>,
     image: Option<String>,
@@ -44,18 +43,26 @@ impl Build {
         }
     }
 
-    /// Output from `offset` on, and whether the build has finished.
-    pub fn output_from(&self, offset: usize) -> (Vec<u8>, bool) {
-        let inner = self.inner.lock().unwrap();
-        (inner.output.get(offset..).unwrap_or_default().to_vec(), inner.state != "running")
+    pub fn finished(&self) -> bool {
+        self.inner.lock().unwrap().state != "running"
+    }
+
+    /// Up to 64 KiB of output from `offset` on, read from the log file (the
+    /// output is not kept in memory).
+    pub fn output_from(&self, offset: u64) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek};
+        let mut f = std::fs::File::open(&self.log_path)?;
+        f.seek(std::io::SeekFrom::Start(offset))?;
+        let mut buf = Vec::with_capacity(64 * 1024);
+        f.take(64 * 1024).read_to_end(&mut buf)?;
+        Ok(buf)
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
     }
 
-    fn append(&self, bytes: &[u8]) {
-        self.inner.lock().unwrap().output.extend_from_slice(bytes);
+    fn appended(&self) {
         self.changed.send_modify(|n| *n += 1);
     }
 
@@ -103,7 +110,7 @@ impl Builds {
         let build = Arc::new(Build {
             id: id.clone(),
             log_path,
-            inner: Mutex::new(Inner { output: Vec::new(), state: "running", error: None, image: None }),
+            inner: Mutex::new(Inner { state: "running", error: None, image: None }),
             changed: watch::channel(0).0,
         });
         self.builds.lock().unwrap().insert(id.clone(), build.clone());
@@ -112,7 +119,7 @@ impl Builds {
         tokio::spawn(async move {
             let mut out = |bytes: &[u8], _stderr: bool| {
                 let _ = file.write_all(bytes);
-                b.append(bytes);
+                b.appended();
             };
             let result = job(&mut out).await.map_err(|e| e.to_string());
             if let Err(e) = &result {

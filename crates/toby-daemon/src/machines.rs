@@ -27,8 +27,9 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// A guest helper may take up to two minutes (plan §9.6).
 const APPLY_TIMEOUT: Duration = Duration::from_secs(150);
 const IDLE_CHECK: Duration = Duration::from_secs(30);
-/// How long a requested start counts as running before its processes show.
-const START_GRACE: Duration = Duration::from_secs(30);
+/// How long a requested start counts as running before its processes show:
+/// as long as a start may take (`wait_ready` clears it sooner).
+const START_GRACE: Duration = START_TIMEOUT;
 
 /// Guest ends of the capabilities (plan §11.6).
 pub const MODELS_LISTEN: &str = "127.0.0.1:41100";
@@ -106,6 +107,8 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
+    /// Sessions created recently, by the client's request ID.
+    created: Mutex<std::collections::VecDeque<(String, String, String)>>,
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     linger_warned: AtomicBool,
@@ -178,6 +181,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
+            created: Mutex::default(),
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
@@ -642,7 +646,20 @@ impl Machines {
         session: Option<&str>,
     ) -> Result<AttachmentInfo> {
         self.record(id)?;
-        self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
+        {
+            // Under the start lock, so idle stop either sees this activity or
+            // has already asked the machine to stop (then this is refused).
+            let _lock = self.lock.lock().await;
+            let state = self.observe(id).await.state;
+            if state == "stopping" {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    "machine.busy",
+                    format!("machine {id} is stopping; try again"),
+                ));
+            }
+            self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
+        }
         let host = std::fs::canonicalize(&req.host).map_err(|_| {
             Error::new(ErrorKind::NotFound, "attach.missing", format!("{} does not exist", req.host))
         })?;
@@ -657,21 +674,13 @@ impl Machines {
             .to_str()
             .ok_or_else(|| Error::new(ErrorKind::BadRequest, "attach.invalid-path", "the path is not UTF-8"))?
             .to_string();
+        // Without a place, the directory's name under /toby/workspace; another
+        // directory of the same name gets a numbered place (chosen below,
+        // under the lock).
+        let numbered = req.at.is_none();
         let at = match req.at {
             Some(at) => at,
-            None => {
-                // Another directory of the same name gets a numbered place.
-                let base = default_guest_path(Path::new(&host))?;
-                let current = self.record(id)?;
-                let taken = |p: &str| current.attach.iter().any(|a| a.at == p && a.host != host);
-                let mut at = base.clone();
-                let mut n = 2;
-                while taken(&at) {
-                    at = format!("{base}-{n}");
-                    n += 1;
-                }
-                at
-            }
+            None => default_guest_path(Path::new(&host))?,
         };
         check_guest_path(&at)?;
 
@@ -695,7 +704,17 @@ impl Machines {
             ));
         }
         let mut shared = None;
+        let mut attach = attach;
         let generation = self.update_desired(id, |spec| {
+            if numbered {
+                let taken = |p: &str| spec.attach.iter().any(|a| a.at == p && a.host != host);
+                let mut n = 2;
+                while taken(&attach.at) {
+                    attach.at = format!("{at}-{n}");
+                    n += 1;
+                }
+            }
+            let at = attach.at.clone();
             if let Some(a) = spec.attach.iter_mut().find(|a| a.at == at) {
                 if let Some(s) = session
                     && a.host == host
@@ -1002,15 +1021,36 @@ impl Machines {
         if req.argv.is_empty() && req.tool.is_none() {
             return Err(Error::new(ErrorKind::BadRequest, "session.no-command", "no command given"));
         }
+        let request_id = req.request_id.clone();
+        if let Some(rid) = &request_id {
+            let found = self.created.lock().unwrap().iter().find(|(r, _, _)| r == rid).cloned();
+            if let Some((_, machine, session)) = found {
+                return Ok((self.record(&machine)?, session, Vec::new()));
+            }
+        }
         let manifest = req.tool.as_deref().map(|t| self.manifest(t)).transpose()?;
         let spec = self.select(&req.target).await?;
         let session_id = toby_config::new_id();
         let mut warnings = Vec::new();
-        // Until it runs, the session's items must not look abandoned.
+        // Until it runs, the session's items must not look abandoned; the
+        // guard also clears the mark if the request is abandoned.
+        struct Creating<'a>(&'a Machines, String);
+        impl Drop for Creating<'_> {
+            fn drop(&mut self) {
+                self.0.creating.lock().unwrap().remove(&self.1);
+            }
+        }
         self.creating.lock().unwrap().insert(session_id.clone());
-        let result = self.create_session_with(req, manifest, &spec, &session_id, &mut warnings).await;
-        self.creating.lock().unwrap().remove(&session_id);
-        result.map(|id| (spec, id, warnings))
+        let _creating = Creating(self, session_id.clone());
+        let id = self.create_session_with(req, manifest, &spec, &session_id, &mut warnings).await?;
+        if let Some(rid) = request_id {
+            let mut created = self.created.lock().unwrap();
+            created.push_back((rid, spec.id.clone(), id.clone()));
+            if created.len() > 256 {
+                created.pop_front();
+            }
+        }
+        Ok((spec, id, warnings))
     }
 
     async fn create_session_with(
@@ -1084,9 +1124,13 @@ impl Machines {
         if !has_owned {
             return;
         }
+        // Read before the session list: a session that finishes starting in
+        // between is then in one of the two.
+        let creating: Vec<String> = self.creating.lock().unwrap().iter().cloned().collect();
         let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { return };
         let Ok(sessions) = c.sessions().await else { return };
         let mut live: Vec<String> = sessions.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect();
+        live.extend(creating);
         let lock = self.machine_lock(&spec.id);
         let _lock = lock.lock().await;
         live.extend(self.creating.lock().unwrap().iter().cloned());

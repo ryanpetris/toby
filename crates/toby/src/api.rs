@@ -119,13 +119,17 @@ impl Api {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> anyhow::Result<T> {
-        let resp = match self.send(method.clone(), path, body.clone()).await {
-            // A daemon that went away mid-request: reading again is safe.
-            Err(_) if method == Method::GET => self.send(method, path, body).await?,
+        // A daemon that went away mid-request: reading again is safe.
+        let attempt = |method: Method, body: Option<Vec<u8>>| async move {
+            let resp = self.send(method, path, body).await?;
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await?.to_bytes();
+            anyhow::Ok((status, bytes))
+        };
+        let (status, bytes) = match attempt(method.clone(), body.clone()).await {
+            Err(_) if method == Method::GET => attempt(method, body).await?,
             r => r?,
         };
-        let status = resp.status();
-        let bytes = resp.into_body().collect().await?.to_bytes();
         if !status.is_success() {
             return Err(match serde_json::from_slice::<toby_api::ApiError>(&bytes) {
                 Ok(e) => Failure(e).into(),
@@ -141,6 +145,23 @@ impl Api {
 
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> anyhow::Result<T> {
         self.call(Method::POST, path, Some(serde_json::to_vec(body)?)).await
+    }
+
+    /// A POST that is safe to repeat (it carries a request ID or is
+    /// idempotent): retried once when the connection to a restarting daemon
+    /// breaks.
+    pub async fn post_again<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> anyhow::Result<T> {
+        let bytes = serde_json::to_vec(body)?;
+        match self.call(Method::POST, path, Some(bytes.clone())).await {
+            Err(e) if e.downcast_ref::<Failure>().is_none() => {
+                self.call(Method::POST, path, Some(bytes)).await.map_err(|again| again.context(e.to_string()))
+            }
+            r => r,
+        }
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
