@@ -81,7 +81,7 @@ fn split_path(path_and_query: &str) -> Option<(&str, &str)> {
 
 /// Whether a path (before its query) has no `.` or `..` segments and no
 /// encoded dots or separators, so an upstream cannot resolve it outside the
-/// configured URL.
+/// configured URL (a provider's or an HTTP MCP server's).
 fn plain_path(tail: &str) -> bool {
     let path = tail.split('?').next().unwrap_or_default();
     let lower = path.to_ascii_lowercase();
@@ -204,6 +204,12 @@ impl Proxy {
         let Some(provider) = config.models.get(name) else {
             return text(StatusCode::NOT_FOUND, format!("no model provider {name:?} is configured"));
         };
+        if !plain_path(tail) {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "the path may not contain dot segments or encoded separators",
+            );
+        }
         let upstream = format!("{}{tail}", provider.url.trim_end_matches('/'));
 
         let config_dir = self.config_path.parent().unwrap_or(&self.home).to_path_buf();

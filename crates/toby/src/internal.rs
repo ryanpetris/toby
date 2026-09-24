@@ -274,7 +274,8 @@ pub fn proxy() -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(&sock);
                 let l = tokio::net::UnixListener::bind(&sock)?;
                 std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-                (l, Some(sock))
+                let id = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&sock)?);
+                (l, Some((sock, id)))
             }
         };
         let proxy = std::sync::Arc::new(toby_proxy::Proxy::new(
@@ -287,7 +288,10 @@ pub fn proxy() -> anyhow::Result<()> {
             r = proxy.serve(listener) => r,
             _ = shutdown_signal() => Ok(()),
         };
-        if let Some(sock) = own {
+        // Only our own socket: a successor may have bound a new one.
+        if let Some((sock, id)) = own
+            && std::fs::metadata(&sock).is_ok_and(|m| std::os::unix::fs::MetadataExt::ino(&m) == id)
+        {
             let _ = std::fs::remove_file(sock);
         }
         result?;

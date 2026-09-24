@@ -109,6 +109,8 @@ pub struct Machines {
     creating: Mutex<std::collections::HashSet<String>>,
     /// Serializes changes to the machines' `yolo-sessions` files.
     yolo_file: Mutex<()>,
+    /// Serializes checking and adding forwards across machines.
+    forwards_lock: tokio::sync::Mutex<()>,
 
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -197,6 +199,7 @@ impl Machines {
             stopping: Mutex::default(),
             creating: Mutex::default(),
             yolo_file: Mutex::default(),
+            forwards_lock: Default::default(),
 
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
@@ -972,9 +975,12 @@ impl Machines {
             persist: session.is_none() && req.persist,
             sessions: session.map(|s| vec![s.to_string()]).unwrap_or_default(),
         };
+        // Checked and added under one lock, so concurrent requests for an
+        // address share one forward or see each other's.
+        let forwards = self.forwards_lock.lock().await;
+        let lock = self.machine_lock(id);
+        let _lock = lock.lock().await;
         if let Some(s) = session {
-            let lock = self.machine_lock(id);
-            let _lock = lock.lock().await;
             let mut shared = None;
             self.update_desired(id, |spec| {
                 if let Some(f) = spec
@@ -1017,8 +1023,6 @@ impl Machines {
             ));
         }
 
-        let lock = self.machine_lock(id);
-        let _lock = lock.lock().await;
         let running = self.observe(id).await.state == "ready";
         if !running && !forward.persist {
             return Err(Error::new(
@@ -1031,6 +1035,7 @@ impl Machines {
             spec.forward.push(forward.clone());
             Ok(())
         })?;
+        drop(forwards);
         if !running {
             return Ok(forward_info(&forward, None, false));
         }
