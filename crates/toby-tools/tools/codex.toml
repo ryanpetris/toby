@@ -17,7 +17,7 @@ format = "toml"
 pointer = "/mcp_servers"
 entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
 http_entry = """{ "url": "{{ url }}" }"""
-command_entry = """{ "command": {{ command|tojson }}, "args": {{ args|tojson }} }"""
+command_entry = """{ "command": {{ command|tojson }}, "args": {{ args|tojson }}, "env": {{ env|tojson }} }"""
 
 # The login's callback on localhost reaches the guest.
 [[tool.forwards]]

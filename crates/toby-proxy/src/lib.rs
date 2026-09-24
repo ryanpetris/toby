@@ -79,6 +79,17 @@ fn split_path(path_and_query: &str) -> Option<(&str, &str)> {
     (!provider.is_empty()).then_some((provider, tail))
 }
 
+/// Whether a path (before its query) has no `.` or `..` segments and no
+/// encoded dots or separators, so an upstream cannot resolve it outside the
+/// configured URL.
+fn plain_path(tail: &str) -> bool {
+    let path = tail.split('?').next().unwrap_or_default();
+    let lower = path.to_ascii_lowercase();
+    !path.split('/').any(|seg| seg == "." || seg == "..")
+        && !path.contains('\\')
+        && !["%2e", "%2f", "%5c"].iter().any(|e| lower.contains(e))
+}
+
 /// Compares secrets without stopping at the first difference.
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -98,15 +109,16 @@ impl Proxy {
     async fn handle(&self, machine: &str, req: Request<Incoming>) -> Response<Body> {
         let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
         match pq.strip_prefix("/mcp/") {
-            Some(rest) => self.mcp(rest, req).await,
+            Some(rest) => self.mcp(machine, rest, req).await,
             None => self.models(machine, req).await,
         }
     }
 
     /// An HTTP MCP server (plan §16.3): tools call `/mcp/<name>/…` and the
-    /// proxy adds the server's configured headers. The connection is from a
-    /// machine's own capability, which is what authorizes it.
-    async fn mcp(&self, rest: &str, mut req: Request<Incoming>) -> Response<Body> {
+    /// proxy adds the server's configured headers. The connection comes
+    /// from a machine's own capability; the server has to be one its tools
+    /// use.
+    async fn mcp(&self, machine: &str, rest: &str, mut req: Request<Incoming>) -> Response<Body> {
         let config = match GlobalConfig::load(&self.config_path) {
             Ok(c) => c,
             Err(e) => {
@@ -126,6 +138,20 @@ impl Proxy {
             Some(s) if s.kind == toby_config::global::McpKind::Http => s,
             _ => return text(StatusCode::NOT_FOUND, format!("no HTTP MCP server {name:?} is configured")),
         };
+        let reachable = toby_config::machine::MachineSpec::load(&self.paths.machine_desired(machine))
+            .is_ok_and(|spec| config.mcp_reachable(&spec, &name));
+        if !reachable {
+            return text(
+                StatusCode::FORBIDDEN,
+                format!("no tool of this machine uses the MCP server {name}"),
+            );
+        }
+        if !plain_path(&tail) {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "the path may not contain dot segments or encoded separators",
+            );
+        }
         let config_dir = self.config_path.parent().unwrap_or(&self.home).to_path_buf();
         let resolve = |v: &str| toby_config::subst::resolve(v, &config_dir, &self.home);
         let url = match server.url.as_deref().map(resolve) {
@@ -305,6 +331,15 @@ mod tests {
         assert_eq!(split_path("/openai"), Some(("openai", "")));
         assert_eq!(split_path("/"), None);
         assert_eq!(split_path("anthropic/v1"), None);
+    }
+
+    #[test]
+    fn mcp_paths_stay_under_the_server_url() {
+        assert!(plain_path("/sse?x=../y"));
+        assert!(plain_path(""));
+        for bad in ["/../x", "/a/./b", "/%2E%2E/x", "/a%2fb", "/a\\b"] {
+            assert!(!plain_path(bad), "{bad}");
+        }
     }
 
     #[test]

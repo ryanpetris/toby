@@ -191,6 +191,7 @@ async fn write_mcp(
                 (McpKind::Stdio, Placement::Machine) => {
                     ctx.command = server.command[0].clone();
                     ctx.args = server.command[1..].to_vec();
+                    ctx.env = server.env.clone().into_iter().collect();
                     mcp.command_entry
                         .as_ref()
                         .ok_or_else(|| err(format!("{} cannot run MCP servers itself", tool.name)))?

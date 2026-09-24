@@ -345,6 +345,8 @@ impl Builder {
             forward: Vec::new(),
             capabilities: Default::default(),
             idle_timeout: None,
+            services: None,
+            tools: Vec::new(),
         }
     }
 

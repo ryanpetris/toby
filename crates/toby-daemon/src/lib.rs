@@ -5,6 +5,7 @@ pub mod builder;
 pub mod builds;
 pub mod control;
 pub mod download;
+pub mod git;
 pub mod machines;
 pub mod mcp;
 pub mod server;
@@ -83,9 +84,7 @@ pub async fn run(
     }
     let machines = Arc::new(machines::Machines::new(config.clone(), paths.clone(), sup));
     let builder = Arc::new(builder::Builder::new(config, paths.clone(), exe));
-    if let Some(timeout) = idle {
-        tokio::spawn(machines.clone().idle_loop(timeout));
-    }
+    tokio::spawn(machines.clone().idle_loop(idle));
     tokio::spawn(machines.clone().session_loop());
     {
         // Old versions nothing runs any more go (plan §3.3); a versions
@@ -119,6 +118,8 @@ pub async fn run(
     }
     prune_build_logs(&paths.state.join("builds"));
     let approvals = approvals::Approvals::new(paths.state.join("approvals"));
+    // Nothing waits for approvals asked before a restart.
+    approvals.expire_all();
     let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default(), approvals });
     tokio::spawn(services::serve(daemon.clone(), capability));
     on_ready();

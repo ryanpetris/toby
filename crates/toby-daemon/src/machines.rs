@@ -107,6 +107,8 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
+    /// Tool sessions started with `--yolo`, per machine.
+    yolo: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -180,6 +182,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
+            yolo: Mutex::default(),
 
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
@@ -340,6 +343,16 @@ impl Machines {
 
     /// The machine for a home and root, started if needed (plan §8.2).
     pub async fn ensure(&self, req: toby_api::EnsureMachine) -> Result<MachineSpec> {
+        self.ensure_for(req, None).await
+    }
+
+    /// Like `ensure`; `services` names the isolated MCP server the machine
+    /// runs.
+    pub async fn ensure_for(
+        &self,
+        req: toby_api::EnsureMachine,
+        services: Option<&str>,
+    ) -> Result<MachineSpec> {
         let toby_api::EnsureMachine { home, root, ephemeral, cpus, memory } = req;
         let home = home.unwrap_or_else(|| self.config.defaults.home().to_string());
         let home_rec = self.store.home(&home).map_err(|_| {
@@ -407,6 +420,8 @@ impl Machines {
                 forward: Vec::new(),
                 capabilities: Default::default(),
                 idle_timeout: None,
+                services: None,
+                tools: Vec::new(),
             },
         };
         let id = template.id.clone();
@@ -432,9 +447,18 @@ impl Machines {
             // Only persistent attachments and forwards outlive a run.
             spec.attach.retain(|a| a.persist);
             spec.forward.retain(|f| f.persist);
-            spec.capabilities.models_listen = Some(MODELS_LISTEN.into());
-            toby_proxy::ensure_token(&self.paths, &id)?;
-            spec.capabilities.sandbox_socket = Some(SANDBOX_SOCKET.into());
+            if let Some(server) = services {
+                spec.services = Some(server.into());
+            }
+            // A services machine runs third-party code: it reaches neither
+            // other servers nor the models.
+            if spec.services.is_none() {
+                spec.capabilities.models_listen = Some(MODELS_LISTEN.into());
+                toby_proxy::ensure_token(&self.paths, &id)?;
+                spec.capabilities.sandbox_socket = Some(SANDBOX_SOCKET.into());
+            } else {
+                spec.capabilities = Default::default();
+            }
             spec.ephemeral = ephemeral;
             if let Some(cpus) = cpus {
                 spec.resources.cpus = cpus;
@@ -1076,6 +1100,7 @@ impl Machines {
     ) -> Result<String> {
         let spec = spec.clone();
         let session_id = session_id.to_string();
+        let yolo = req.yolo;
 
         let mut workspace = None;
         for a in req.attachments {
@@ -1085,6 +1110,14 @@ impl Machines {
         let cwd = req.cwd.or(workspace.clone());
         let (argv, env) = match &manifest {
             Some(m) => {
+                if !spec.tools.contains(&m.tool.name) {
+                    self.update_desired(&spec.id, |s| {
+                        if !s.tools.contains(&m.tool.name) {
+                            s.tools.push(m.tool.name.clone());
+                        }
+                        Ok(())
+                    })?;
+                }
                 for f in &m.tool.forwards {
                     let addr = format!("127.0.0.1:{}", f.port);
                     let fwd = toby_api::AddForward {
@@ -1127,7 +1160,36 @@ impl Machines {
         let mut c = Control::connect(&self.runtime(&spec.id)).await?;
         let id = c.spawn(session).await?;
         self.activity.lock().unwrap().insert(spec.id.clone(), Instant::now());
+        if manifest.is_some() && yolo {
+            self.yolo.lock().unwrap().entry(spec.id.clone()).or_default().insert(id.clone());
+        }
         Ok(id)
+    }
+
+    /// Whether a tool in the machine runs without its permission prompts:
+    /// `settings.yolo`, or a running session started with `--yolo`.
+    pub async fn yolo(&self, machine: &str) -> bool {
+        if self.current_config().settings.yolo {
+            return true;
+        }
+        if self.yolo.lock().unwrap().get(machine).is_none_or(|s| s.is_empty()) {
+            return false;
+        }
+        let live: Vec<String> = match Control::connect(&self.runtime(machine)).await {
+            Ok(mut c) => c
+                .sessions()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.exit.is_none())
+                .map(|s| s.id)
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let mut yolo = self.yolo.lock().unwrap();
+        let set = yolo.entry(machine.to_string()).or_default();
+        set.retain(|s| live.contains(s));
+        !set.is_empty()
     }
 
     /// Removes attachments and forwards whose sessions have all ended.
@@ -1246,10 +1308,13 @@ impl Machines {
 
     /// Stops machines that had no sessions and nothing pinned for the idle
     /// timeout (plan §8.3). Detached sessions count as activity.
-    pub async fn idle_loop(self: std::sync::Arc<Self>, timeout: Duration) {
+    pub async fn idle_loop(self: std::sync::Arc<Self>, timeout: Option<Duration>) {
         loop {
             tokio::time::sleep(IDLE_CHECK).await;
             for spec in self.records() {
+                // Without a timeout of its own or a global one, a machine
+                // keeps running.
+                let Some(timeout) = spec.idle_timeout.map(Duration::from_secs).or(timeout) else { continue };
                 if self.observe(&spec.id).await.state != "ready" {
                     continue;
                 }
@@ -1260,7 +1325,6 @@ impl Machines {
                     Err(_) => true,
                 };
                 let pinned = spec.attach.iter().any(|a| a.pinned) || spec.forward.iter().any(|f| f.pinned);
-                let timeout = spec.idle_timeout.map(Duration::from_secs).unwrap_or(timeout);
                 let now = Instant::now();
                 let last = *self.activity.lock().unwrap().entry(spec.id.clone()).or_insert(now);
                 if busy || pinned {

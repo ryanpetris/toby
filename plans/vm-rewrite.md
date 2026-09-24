@@ -1683,11 +1683,19 @@ Built-in MCP server in `tobyd`, reached with `toby-connect mcp/toby`:
 Actions that need approval create an approval record and block until
 decided or timed out.
 
+The guest writes the repository, so git runs with hooks and fsmonitor off,
+`https`/`ssh` transports only, configured remotes only, a resolved path
+that stays in the attachment, and only when a guest-writable repository
+config sets nothing beyond an allowlist of keys. A machine reaches only
+the MCP servers of the tools started in it; services machines get no
+capabilities.
+
 ### 16.5 Approvals
 
-- Record: `{id, created, machine, session, kind, summary, detail,
-  requested_by, status, decided_by, decided_at}` persisted in
-  `<state>/approvals/` so `tobyd` restarts keep them.
+- Record: `{id, created, expires, machine, kind, summary, detail,
+  status, decided_by, decided_at}` persisted in
+  `<state>/approvals/`; pending ones expire when `tobyd` restarts, as
+  nothing waits for them any more.
 - Decided by: overlay (default, milestone 9), `toby approvals [<id>]`,
   web UI. First decision wins; events notify all clients.
 - Before milestone 9: the attached CLI prints a one-line notice above the

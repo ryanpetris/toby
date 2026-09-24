@@ -32,6 +32,8 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 /// Forwarded guest connections spliced at once.
 const MAX_SPLICES: usize = 512;
+/// Sandbox connections open at once: each can start an MCP server.
+const MAX_SANDBOX: usize = 32;
 /// Helper output kept for error messages.
 const HELPER_OUTPUT: usize = 4096;
 /// How long the guest gets to power off after the power button.
@@ -70,6 +72,7 @@ pub struct Machine {
     forwards: forward::Forwards,
     /// Bounds forwarded connections spliced at once.
     splices: Arc<tokio::sync::Semaphore>,
+    sandboxes: Arc<tokio::sync::Semaphore>,
     /// A relay hello arrived while a check was running.
     hello_pending: std::sync::atomic::AtomicBool,
     /// Guest listeners an earlier run of this process registered; removed
@@ -124,6 +127,7 @@ impl Machine {
             mounted: Mutex::new(mounted),
             forwards: Default::default(),
             splices: Arc::new(tokio::sync::Semaphore::new(MAX_SPLICES)),
+            sandboxes: Arc::new(tokio::sync::Semaphore::new(MAX_SANDBOX)),
             hello_pending: false.into(),
             stale_listeners: Mutex::new(stale_listeners),
         })
@@ -599,6 +603,10 @@ impl Machine {
                 if a.listener_id == forward::SANDBOX && self.forwards.target(forward::SANDBOX).is_some() =>
             {
                 drop(_permit);
+                let Ok(_sandbox) = self.sandboxes.clone().try_acquire_owned() else {
+                    frame::send(&mut s, &Reply::refused("too many connections")).await?;
+                    return Ok(());
+                };
                 frame::send(&mut s, &Reply::ok()).await?;
                 self.sandbox(s).await?;
             }

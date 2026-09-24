@@ -123,13 +123,15 @@ mcp = ["github", "docs"]
 ```
 
 Toby writes the servers a tool's `mcp` list names, and its own server
-`toby`, into the tool's configuration when it prepares the tool.
+`toby`, into the tool's configuration when it prepares the tool. A machine
+reaches only the servers listed for the tools started in it.
 
 - A `stdio` server whose command or environment uses `{file:}` or `{env:}`
   runs isolated: in a small machine of its own (`toby mcp ls` shows it),
   started when a tool connects and stopped after five idle minutes. Its
   secrets exist only in that server's environment; the tool's machine
-  never has them. `placement = "machine"` runs a server without secrets
+  never has them. `toby mcp logs` shows what the server writes to its
+  standard error. `placement = "machine"` runs a server without secrets
   in the tool's machine instead.
 - An `http` server is called through Toby's proxy, which adds its headers;
   the credentials stay on the host.
@@ -144,21 +146,36 @@ toby mcp restart github
 
 Toby's own MCP server lets a tool act on the host: `git_status`,
 `git_fetch`, `git_commit`, `git_push`, `git_rebase` and `git_tag` run with
-your git configuration and credentials in the host directory of the
-mounted project that holds the path; `forward_request` asks for a port
-forward and `session_info` describes the machine.
+your git configuration and credentials in the repository of the mounted
+project that holds the path; `forward_request` asks for a port forward
+while the machine's sessions run, and `session_info` describes the
+machine.
+
+The machine can write the project's repository, so these actions run git
+without the repository's hooks, fetch and push only over `https` and `ssh`
+to remotes already configured, and refuse a repository inside the project
+whose `.git/config` sets anything beyond remotes, branches, `user.name`,
+`user.email` and basic `core` settings; the error names the key to
+remove. Projects mounted read-only allow only status and push.
 
 Actions that need approval wait until you decide. A notice appears in the
 attached session; answer with:
 
 ```sh
 toby approvals                               # pending first
-toby approvals ID approve                    # or deny
+toby approvals ID approve                    # or deny; shows the action and asks first
 ```
 
+An approval nobody decides expires after ten minutes, and when the daemon
+restarts. A daemon restart also ends the tools' connections to Toby's
+server; tools started afterwards connect again.
+
 `[permissions.actions]` sets the policy per action: `allow`, `deny`,
-`ask`, or `always-ask`. Without configuration, status and fetch are
-allowed, push always asks, and the others ask.
+`ask` (skipped when a tool in the machine runs with `--yolo`), or
+`always-ask`. The actions are `git.status`, `git.fetch`, `git.commit`,
+`git.push`, `git.rebase`, `git.tag`, `forward` and `session.info`. Without
+configuration, status and session information are allowed, push always
+asks, and the others ask.
 
 ```toml
 [permissions.actions]

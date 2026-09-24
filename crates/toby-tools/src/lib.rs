@@ -109,7 +109,7 @@ pub struct Mcp {
     pub entry: String,
     /// An HTTP server behind the proxy (`url`).
     pub http_entry: Option<String>,
-    /// A server run in the machine (`command`, `args`).
+    /// A server run in the machine (`command`, `args`, `env`).
     pub command_entry: Option<String>,
 }
 
@@ -177,9 +177,10 @@ pub struct Context {
     pub name: String,
     /// An HTTP MCP server's URL through the proxy.
     pub url: String,
-    /// A machine MCP server's command and arguments.
+    /// A machine MCP server's command, arguments and environment.
     pub command: String,
     pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -346,6 +347,7 @@ mod tests {
             url: "http://127.0.0.1:41100/mcp/gh".into(),
             command: "npx".into(),
             args: vec!["-y".into(), "srv \"x\"".into()],
+            env: [("LOG_LEVEL".to_string(), "debug".to_string())].into(),
             ..Default::default()
         };
         for m in builtin() {

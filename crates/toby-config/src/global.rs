@@ -111,18 +111,43 @@ impl McpServer {
 pub enum ActionPolicy {
     Allow,
     Deny,
-    /// Ask, unless `--yolo`.
+    /// Ask, unless a tool in the machine runs with `--yolo` (or
+    /// `settings.yolo`).
     Ask,
     /// Ask, even with `--yolo`.
     AlwaysAsk,
 }
 
+/// The Toby MCP host actions `[permissions.actions]` can name.
+pub const ACTIONS: &[&str] = &[
+    "git.status",
+    "git.fetch",
+    "git.commit",
+    "git.push",
+    "git.rebase",
+    "git.tag",
+    "forward",
+    "session.info",
+];
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Permissions {
     /// Host actions such as `git.push`, by name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "actions")]
     pub actions: std::collections::BTreeMap<String, ActionPolicy>,
+}
+
+fn actions<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<std::collections::BTreeMap<String, ActionPolicy>, D::Error> {
+    let map = std::collections::BTreeMap::<String, ActionPolicy>::deserialize(d)?;
+    match map.keys().find(|k| !ACTIONS.contains(&k.as_str())) {
+        Some(k) => {
+            Err(serde::de::Error::custom(format!("unknown action {k:?}; actions are {}", ACTIONS.join(", "))))
+        }
+        None => Ok(map),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -296,6 +321,17 @@ impl Programs {
 }
 
 impl GlobalConfig {
+    /// Whether a machine may reach MCP server `name`: Toby's own server
+    /// from any machine but a services machine, another server when a tool
+    /// started in the machine lists it.
+    pub fn mcp_reachable(&self, spec: &crate::machine::MachineSpec, name: &str) -> bool {
+        if spec.services.is_some() {
+            return false;
+        }
+        name == "toby"
+            || spec.tools.iter().any(|t| self.tools.get(t).is_some_and(|t| t.mcp.iter().any(|m| m == name)))
+    }
+
     /// Loads the configuration file; a missing file means defaults.
     pub fn load(path: &Path) -> io::Result<GlobalConfig> {
         match std::fs::read_to_string(path) {
@@ -335,6 +371,30 @@ mod tests {
         let d: Daemon = toml::from_str("idle_timeout = \"0\"").unwrap();
         assert_eq!(d.idle_timeout().unwrap(), None);
         assert_eq!(Daemon::default().idle_timeout().unwrap(), Some(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn unknown_actions_are_refused() {
+        assert!(toml::from_str::<GlobalConfig>("[permissions.actions]\n\"git.push\" = \"allow\"\n").is_ok());
+        let e =
+            toml::from_str::<GlobalConfig>("[permissions.actions]\n\"git.psuh\" = \"allow\"\n").unwrap_err();
+        assert!(e.to_string().contains("git.psuh"), "{e}");
+    }
+
+    #[test]
+    fn machines_reach_the_mcp_servers_of_their_tools() {
+        let cfg: GlobalConfig = toml::from_str("[tools.claude]\nmcp = [\"github\"]\n").unwrap();
+        let mut spec: crate::machine::MachineSpec = toml::from_str(
+            "schema = 1\ngeneration = 1\nid = \"m\"\nroot = \"r\"\n[resources]\ncpus = 1\nmemory = \"1G\"\n",
+        )
+        .unwrap();
+        assert!(cfg.mcp_reachable(&spec, "toby"));
+        assert!(!cfg.mcp_reachable(&spec, "github"));
+        spec.tools.push("claude".into());
+        assert!(cfg.mcp_reachable(&spec, "github"));
+        assert!(!cfg.mcp_reachable(&spec, "docs"));
+        spec.services = Some("github".into());
+        assert!(!cfg.mcp_reachable(&spec, "toby"));
     }
 
     #[test]

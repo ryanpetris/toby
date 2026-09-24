@@ -176,11 +176,12 @@ impl Relay {
         let sock = dir.join(session_files::SOCKET);
 
         // A spawn repeated after a lost reply must not run the command twice:
-        // every spawned ID leaves a marker that outlives its session.
+        // every spawned ID leaves a marker that outlives its session, with a
+        // digest of the request (its environment can hold secrets).
         let marker = self.paths.sessions().join(".spawned").join(&id);
+        let digest = spec_digest(&spec)?;
         if marker.exists() && !dir.exists() {
-            let existing: SpawnSpec = record::read(&marker)?;
-            if existing != spec {
+            if std::fs::read_to_string(&marker)? != digest {
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("session {id} exists")));
             }
             return Ok(id);
@@ -204,8 +205,9 @@ impl Relay {
         std::fs::write(dir.join(session_files::VERSION), &version)?;
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
+            prune_markers(parent);
         }
-        record::write(&marker, &spec)?;
+        std::fs::write(&marker, &digest)?;
 
         let mut cmd = match self.launcher {
             Launcher::SystemdScope => {
@@ -499,5 +501,24 @@ pub async fn run(paths: GuestPaths) -> io::Result<()> {
         tokio::spawn(async move {
             let _ = relay.handle(conn).await;
         });
+    }
+}
+/// A spawn request's digest, for recognizing a repeated one.
+fn spec_digest(spec: &SpawnSpec) -> io::Result<String> {
+    use sha2::Digest;
+    let mut bytes = Vec::new();
+    ciborium::into_writer(spec, &mut bytes).map_err(io::Error::other)?;
+    Ok(sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Spawn markers are only needed while a request can be repeated.
+fn prune_markers(dir: &std::path::Path) {
+    const KEEP: Duration = Duration::from_secs(24 * 3600);
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > KEEP));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }

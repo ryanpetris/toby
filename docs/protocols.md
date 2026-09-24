@@ -190,3 +190,27 @@ only from processes of their own user.
 | Type | Header |
 | --- | --- |
 | 1 | `FromMachine { machine_id }` |
+
+## Sandbox capability
+
+`toby-connect <target>` in a machine opens `/run/toby/sandbox.sock` and
+sends one request; the connection then carries the target's own protocol
+(JSON-RPC for MCP servers).
+
+| Type | Request |
+| --- | --- |
+| 1 | `Connect { target }`, such as `mcp/toby` or `mcp/github` |
+
+`toby internal machine` passes the request to tobyd's `capability.sock`
+after a `FromMachine` header and gets one response:
+
+| Type | Response |
+| --- | --- |
+| 64 | `Serve {}`: tobyd serves the connection itself (`mcp/toby`) |
+| 65 | `Splice { machine, target }`: connect to `target` in machine `machine` (an isolated MCP server) |
+| 66 | `Refused { error }` |
+
+The guest gets the stream `Reply` for it: `Ok` (112) when the connection
+continues to tobyd or to the other machine, `Refused { error }` (113)
+otherwise. A machine reaches Toby's own server and the servers its tools
+list in `[tools.<name>].mcp`; services machines have no sandbox socket.

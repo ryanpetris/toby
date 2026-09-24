@@ -4,11 +4,13 @@
 //! secrets only in that process's environment, and the two machines' host
 //! processes splice the connection without tobyd.
 
+use std::collections::HashMap;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use toby_config::global::{McpKind, McpServer, Placement};
+use toby_config::machine::MachineSpec;
 use toby_proto::capability::{CapRequest, CapResponse, Refused, Serve, Splice};
 use toby_proto::frame;
 use toby_proto::service::ServiceHeader;
@@ -34,17 +36,32 @@ fn refused(error: impl Into<String>) -> CapResponse {
     CapResponse::Refused(Refused { error: error.into() })
 }
 
+/// Serializes preparing each server's services machine.
+fn server_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(Default::default);
+    LOCKS.lock().unwrap().entry(name.into()).or_default().clone()
+}
+
 /// Makes sure the services machine for `name` exists and runs.
 async fn ensure_machine(d: &Daemon, name: &str) -> Result<String, String> {
+    let lock = server_lock(name);
+    let _lock = lock.lock().await;
     let pair = pair_name(name);
     let store = &d.builder.store;
-    if store.home(&pair).is_err() {
-        store.create_home(&pair, "mcp", 1000, 4 << 30).await.map_err(|e| e.to_string())?;
-        let mut sink = |_: &[u8], _: bool| {};
-        if let Err(e) = d.builder.format_home(&pair, &mut sink).await {
-            let _ = store.remove_home(&pair);
-            return Err(format!("preparing the home of {name}: {e}"));
+    let formatted = match store.home(&pair) {
+        Ok(h) => h.formatted,
+        Err(_) => {
+            store.create_home(&pair, "mcp", 1000, 4 << 30).await.map_err(|e| e.to_string())?;
+            false
         }
+    };
+    if !formatted {
+        let mut sink = |_: &[u8], _: bool| {};
+        d.builder
+            .format_home(&pair, &mut sink)
+            .await
+            .map_err(|e| format!("preparing the home of {name}: {e}"))?;
     }
     if store.root(&pair).is_err() {
         let image = d
@@ -62,7 +79,7 @@ async fn ensure_machine(d: &Daemon, name: &str) -> Result<String, String> {
         cpus: Some(SERVICES_CPUS),
         memory: Some(SERVICES_MEMORY.into()),
     };
-    let spec = d.machines.ensure(req).await.map_err(|e| e.message)?;
+    let spec = d.machines.ensure_for(req, Some(name)).await.map_err(|e| e.message)?;
     d.machines.set_idle_timeout(&spec.id, SERVICES_IDLE).map_err(|e| e.message)?;
     Ok(spec.id)
 }
@@ -114,14 +131,17 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
     Ok(Splice { machine, target: Endpoint::Unix { path: socket } })
 }
 
-async fn decide(d: &Daemon, target: &str) -> CapResponse {
+async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
     let Some(name) = target.strip_prefix("mcp/") else {
         return refused(format!("unknown target {target:?}"));
     };
+    let config = d.machines.current_config();
+    if !config.mcp_reachable(spec, name) {
+        return refused(format!("no tool of this machine uses the MCP server {name}"));
+    }
     if name == "toby" {
         return CapResponse::Serve(Serve {});
     }
-    let config = d.machines.current_config();
     let Some(server) = config.mcp.get(name) else {
         return refused(format!("no MCP server {name} is configured"));
     };
@@ -151,16 +171,15 @@ pub async fn connection(d: Arc<Daemon>, mut s: UnixStream) -> io::Result<()> {
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no request"))??;
     let (machine, target) = header;
-    if d.machines.record(&machine).is_err() {
+    let Ok(spec) = d.machines.record(&machine) else {
         frame::send(&mut s, &refused("unknown machine")).await?;
         return Ok(());
-    }
-    let answer = decide(&d, &target).await;
+    };
+    let answer = decide(&d, &spec, &target).await;
     let serve = matches!(answer, CapResponse::Serve(_));
     frame::send(&mut s, &answer).await?;
     if serve {
-        let server = crate::mcp::Server { machines: &d.machines, approvals: &d.approvals, machine };
-        server.serve(s).await?;
+        crate::mcp::Server { daemon: d, machine }.serve(s).await?;
     }
     Ok(())
 }

@@ -39,6 +39,14 @@ pub struct MachineSpec {
     /// `daemon.idle_timeout` (services machines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout: Option<u64>,
+    /// The isolated MCP server a services machine runs; such a machine
+    /// gets no capabilities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<String>,
+    /// Tools started in the machine: their `mcp` lists name the MCP servers
+    /// it may reach.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

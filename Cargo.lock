@@ -1687,6 +1687,7 @@ dependencies = [
  "nix 0.31.3",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toby-proto",
  "toby-tools",
