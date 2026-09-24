@@ -62,7 +62,7 @@ pub async fn approvals(args: ApprovalsArgs) -> anyhow::Result<ExitCode> {
 /// Text from a guest, without control characters other than newlines or
 /// characters that reorder or hide text.
 fn clean(s: &str) -> String {
-    let invisible = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}');
+    let invisible = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{00ad}' | '\u{180e}');
     s.chars().map(|c| if (c.is_control() && c != '\n') || invisible(c) { ' ' } else { c }).collect()
 }
 

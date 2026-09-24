@@ -2,10 +2,10 @@
 //! (plan §16.4). A project's repository is the guest's to write: its config
 //! and hooks can run commands, and its paths can lead anywhere on the host.
 //! So git never runs in it. Each action uses a private bare repository whose
-//! config the host writes and which reads the project's objects through an
-//! alternate; tobyd itself reads the project's config, HEAD and refs and
-//! writes back refs and packs, resolving every path beneath the repository's
-//! directory without following links.
+//! config the host writes, holding the project's packs and loose objects as
+//! hard links (or copies); tobyd itself reads the project's config, HEAD,
+//! refs and object files and writes back refs and packs, resolving every
+//! path beneath the repository's directory without following links.
 
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
@@ -27,7 +27,6 @@ const MAX_REFS: usize = 100_000;
 /// Settings every command runs with, over any config.
 const OVERRIDES: &[&str] = &[
     "core.hooksPath=/dev/null",
-    "core.alternateRefsCommand=true",
     "protocol.allow=never",
     "protocol.https.allow=always",
     "protocol.ssh.allow=always",
@@ -90,18 +89,25 @@ fn open_dir(dir: BorrowedFd, path: &str) -> io::Result<OwnedFd> {
     Ok(openat2(dir, path, beneath(OFlag::O_RDONLY | OFlag::O_DIRECTORY))?)
 }
 
-/// Reads a regular file beneath `dir`; `None` when it does not exist.
-fn read_file(dir: BorrowedFd, path: &str) -> io::Result<Option<Vec<u8>>> {
+/// Opens a regular file beneath `dir`, following no links; `None` when it
+/// does not exist.
+fn open_file(dir: BorrowedFd, path: &str) -> io::Result<Option<std::fs::File>> {
     let fd = match openat2(dir, path, beneath(OFlag::O_RDONLY | OFlag::O_NONBLOCK)) {
         Ok(fd) => fd,
         Err(nix::errno::Errno::ENOENT) => return Ok(None),
         Err(e) => return Err(err(format!("{path}: {e}"))),
     };
-    let mut f = std::fs::File::from(fd);
-    let meta = f.metadata()?;
-    if !meta.is_file() {
+    let f = std::fs::File::from(fd);
+    if !f.metadata()?.is_file() {
         return Err(err(format!("{path} is not a file")));
     }
+    Ok(Some(f))
+}
+
+/// Reads a regular file beneath `dir`; `None` when it does not exist.
+fn read_file(dir: BorrowedFd, path: &str) -> io::Result<Option<Vec<u8>>> {
+    let Some(mut f) = open_file(dir, path)? else { return Ok(None) };
+    let meta = f.metadata()?;
     if meta.len() > MAX_FILE {
         return Err(err(format!("{path} is too large")));
     }
@@ -130,6 +136,11 @@ fn make_dirs(dir: BorrowedFd, path: &str) -> io::Result<OwnedFd> {
 
 /// Writes a file beneath `dir` in one step (a new file renamed into place).
 fn write_file(dir: BorrowedFd, path: &str, content: &[u8]) -> io::Result<()> {
+    write_from(dir, path, &mut &content[..])
+}
+
+/// Like `write_file`, with the content read from `from`.
+fn write_from(dir: BorrowedFd, path: &str, from: &mut dyn Read) -> io::Result<()> {
     let (parent, name) = match path.rsplit_once('/') {
         Some((p, n)) => (make_dirs(dir, p)?, n),
         None => (open_dir(dir, ".")?, path),
@@ -138,7 +149,7 @@ fn write_file(dir: BorrowedFd, path: &str, content: &[u8]) -> io::Result<()> {
     let fd =
         openat2(parent.as_fd(), tmp.as_str(), beneath(OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL))?;
     let mut f = std::fs::File::from(fd);
-    let written = f.write_all(content).and_then(|()| f.sync_all());
+    let written = io::copy(from, &mut f).and_then(|_| f.sync_all());
     let renamed = written.and_then(|()| {
         nix::fcntl::renameat(parent.as_fd(), tmp.as_str(), parent.as_fd(), name).map_err(io::Error::from)
     });
@@ -327,6 +338,21 @@ pub fn name(s: &str) -> Result<&str, String> {
     if bad { Err(format!("{s:?} is not a valid name")) } else { Ok(s) }
 }
 
+/// A remote URL git may use: `https://`, `ssh://` or `host:path`.
+fn url(u: &str) -> Result<&str, String> {
+    #[cfg(test)]
+    if tests::LOCAL_REMOTES.get() && u.starts_with('/') {
+        return Ok(u);
+    }
+    let scp = u.split_once(':').is_some_and(|(host, path)| {
+        !host.is_empty() && !host.contains('/') && !path.starts_with("//") && !path.is_empty()
+    });
+    let ok = !u.starts_with('-')
+        && !u.chars().any(|c| c.is_control() || c.is_whitespace())
+        && (u.starts_with("https://") || u.starts_with("ssh://") || scp);
+    if ok { Ok(u) } else { Err(format!("the remote URL {u:?} is not an https or ssh URL")) }
+}
+
 fn object_id(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
@@ -417,8 +443,9 @@ impl Repo {
         known.extend(self.refs(&format!("refs/remotes/{}/", remote.name)));
         private.set_refs(&known).await?;
         let refspec = format!("+refs/heads/*:refs/remotes/{}/*", remote.name);
-        let out =
-            private.run(&["fetch", "--no-tags", "--no-write-fetch-head", remote.url(), &refspec]).await?;
+        let out = private
+            .run(&["fetch", "--no-tags", "--no-write-fetch-head", "--", url(remote.url())?, &refspec])
+            .await?;
         let log = output(&out);
         if !out.status.success() {
             return Err(log);
@@ -438,8 +465,8 @@ impl Repo {
             if read_file(objects.as_fd(), &format!("pack/{name}")).is_ok_and(|f| f.is_some()) {
                 continue;
             }
-            let data = std::fs::read(&p).map_err(|e| e.to_string())?;
-            write_file(objects.as_fd(), &format!("pack/{name}"), &data)
+            let mut data = std::fs::File::open(&p).map_err(|e| e.to_string())?;
+            write_from(objects.as_fd(), &format!("pack/{name}"), &mut data)
                 .map_err(|e| format!("writing {name}: {e}"))?;
         }
         let prefix = format!("refs/remotes/{}/", remote.name);
@@ -465,7 +492,7 @@ impl Repo {
     ) -> Result<String, String> {
         let private = Private::new(self, scratch).await?;
         let refspec = format!("{id}:refs/heads/{branch}");
-        let out = private.run(&["push", "--no-verify", remote.push_url(), &refspec]).await?;
+        let out = private.run(&["push", "--no-verify", "--", url(remote.push_url())?, &refspec]).await?;
         let log = output(&out);
         if !out.status.success() {
             return Err(log);
@@ -484,27 +511,81 @@ fn output(o: &Output) -> String {
     s
 }
 
-/// A private bare repository borrowing the project's objects.
+/// A private bare repository with the project's objects.
 struct Private {
     dir: tempfile::TempDir,
-    objects: OwnedFd,
+}
+
+/// Puts the open file `f` at `dest`: a hard link to it, or a copy on
+/// another file system.
+fn take(f: &mut std::fs::File, dest: &Path) -> io::Result<()> {
+    let src = format!("/proc/self/fd/{}", f.as_raw_fd());
+    let cwd = nix::fcntl::AT_FDCWD;
+    if nix::unistd::linkat(cwd, src.as_str(), cwd, dest, nix::fcntl::AtFlags::AT_SYMLINK_FOLLOW).is_ok() {
+        return Ok(());
+    }
+    let mut out = std::fs::File::create_new(dest)?;
+    io::copy(f, &mut out).map(drop)
+}
+
+fn hex(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 impl Private {
     async fn new(repo: &Repo, scratch: &Path) -> Result<Private, String> {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let dir = tempfile::Builder::new().prefix("git-").tempdir_in(scratch).map_err(|e| e.to_string())?;
-        let objects = open_dir(repo.common.as_fd(), "objects").map_err(|e| format!("objects: {e}"))?;
-        let p = Private { dir, objects };
+        let p = Private { dir };
         let format = format!("--object-format={}", repo.object_format);
         let out = p.run(&["init", "-q", "--bare", &format]).await?;
         if !out.status.success() {
             return Err(output(&out));
         }
-        // The descriptor is open in git and the processes it starts.
-        let alternate = format!("/proc/self/fd/{}\n", p.objects.as_raw_fd());
-        std::fs::write(p.dir.path().join("objects/info/alternates"), alternate).map_err(|e| e.to_string())?;
+        p.take_objects(repo).map_err(|e| format!("reading the project's objects: {e}"))?;
         Ok(p)
+    }
+
+    /// Links the project's packs and loose objects in, each file opened
+    /// beneath the objects directory without following links. Nothing else
+    /// (such as `info/alternates`) is taken.
+    fn take_objects(&self, repo: &Repo) -> io::Result<()> {
+        let objects = open_dir(repo.common.as_fd(), "objects")?;
+        let dest = self.dir.path().join("objects");
+        let list = |dir: &OwnedFd| -> io::Result<Vec<(String, bool)>> {
+            Ok(std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?
+                .flatten()
+                .filter_map(|e| Some((e.file_name().into_string().ok()?, e.file_type().ok()?.is_dir())))
+                .collect())
+        };
+        if let Ok(pack) = open_dir(objects.as_fd(), "pack") {
+            for (name, is_dir) in list(&pack)? {
+                let wanted = [".pack", ".idx", ".rev"].iter().any(|x| name.ends_with(x));
+                if is_dir || !name.starts_with("pack-") || !wanted {
+                    continue;
+                }
+                if let Some(mut f) = open_file(pack.as_fd(), &name)? {
+                    take(&mut f, &dest.join("pack").join(&name))?;
+                }
+            }
+        }
+        for (sub, is_dir) in list(&objects)? {
+            if !is_dir || sub.len() != 2 || !hex(&sub) {
+                continue;
+            }
+            let src = open_dir(objects.as_fd(), &sub)?;
+            let target = dest.join(&sub);
+            std::fs::create_dir_all(&target)?;
+            for (name, is_dir) in list(&src)? {
+                if is_dir || !matches!(name.len(), 38 | 62) || !hex(&name) {
+                    continue;
+                }
+                if let Some(mut f) = open_file(src.as_fd(), &name)? {
+                    take(&mut f, &target.join(&name))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Refs the fetch can tell the remote it has; objects that are not
@@ -552,7 +633,6 @@ impl Private {
         if tests::LOCAL_REMOTES.get() {
             cmd.args(["-c", "protocol.file.allow=always"]);
         }
-        let fd = self.objects.as_raw_fd();
         cmd.args(args)
             .current_dir(self.dir.path())
             .env_clear()
@@ -561,16 +641,6 @@ impl Private {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        // SAFETY: fcntl is async-signal-safe; it keeps the objects
-        // directory open across exec for the alternate.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
         let run = async {
             let mut child = cmd.spawn()?;
             let mut stdin = child.stdin.take().expect("piped");
@@ -710,12 +780,15 @@ mod tests {
         let repo = open(&spec(&project), &[], "/toby/workspace/app").unwrap();
         let scratch = tmp.path().join("scratch");
         let id = repo.resolve("refs/heads/main").unwrap();
-        // Transports that reach host files are refused.
-        let local = tmp.path().join("r.git").display().to_string();
-        let remote = Remote { name: "origin".into(), url: Some(local), push_url: None };
-        let e = repo.push(&scratch, &remote, "main", &id).await.unwrap_err();
-        assert!(e.contains("transport 'file' not allowed"), "{e}");
-        assert!(repo.fetch(&scratch, &remote).await.is_err());
+        // Only https and ssh remotes.
+        for bad in ["/srv/r.git", "file:///srv/r.git", "-u/x:y", "ext::sh -c x", "http://h/r.git"] {
+            let remote = Remote { name: "origin".into(), url: Some(bad.into()), push_url: None };
+            let e = repo.push(&scratch, &remote, "main", &id).await.unwrap_err();
+            assert!(e.contains("not an https or ssh URL"), "{bad}: {e}");
+            assert!(repo.fetch(&scratch, &remote).await.is_err());
+        }
+        assert!(url("git@example.com:app.git").is_ok());
+        assert!(url("ssh://example.com/app.git").is_ok());
         assert!(!marker.exists());
         assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     }
@@ -755,5 +828,26 @@ mod tests {
         git(&project, &["cat-file", "-e", &format!("{new}:g")]);
         git(&project, &["fsck", "--no-progress"]);
         assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+
+        // Objects of another repository, borrowed through an alternate the
+        // guest wrote, are not pushed.
+        let secret = tmp.path().join("secret");
+        std::fs::create_dir(&secret).unwrap();
+        git(&secret, &["init", "-q", "-b", "main"]);
+        git(
+            &secret,
+            &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "s"],
+        );
+        let hidden = git(&secret, &["rev-parse", "main"]);
+        let alternates = project.join(".git/objects/info/alternates");
+        std::fs::write(&alternates, format!("{}\n", secret.join(".git/objects").display())).unwrap();
+        std::fs::write(project.join(".git/refs/heads/evil"), format!("{hidden}\n")).unwrap();
+        assert!(repo.push(&scratch, remote, "evil", &hidden).await.is_err());
+        let out = std::process::Command::new("git")
+            .args(["cat-file", "-e", &hidden])
+            .current_dir(&bare)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
     }
 }

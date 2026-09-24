@@ -36,7 +36,7 @@ const MAX_PENDING: usize = 8;
 
 /// Characters that reorder or hide text without showing themselves.
 fn invisible(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}')
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{00ad}' | '\u{180e}')
 }
 
 /// Guest text for a terminal: control and invisible formatting characters
