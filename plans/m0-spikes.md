@@ -1,11 +1,10 @@
 # M0 spike results
 
 Results of the milestone 0 spikes from `plans/vm-rewrite.md` (§23 M0). Each
-item records what was run, the measurements, and a go/no-go. The plan has been
-updated wherever a result changed a decision; the "Plan changes" list at the
-end names each change.
+item records what was run, the measurements, and a go/no-go. The plan states
+the resulting decisions.
 
-Test host: x86_64, Linux 7.2, 22 CPUs, systemd 261, passt 2026_07_28.
+Test host: x86_64, Linux 7.2, systemd 261, passt 2026_07_28.
 Versions tested: Cloud Hypervisor v53.0 (static release), rust-hypervisor-firmware
 0.5.0, Cloud Hypervisor edk2 `CLOUDHV.fd` release `ch-97eeb7b09`, mkosi v27,
 Debian 13 `genericcloud` amd64 (`latest`, kernel 6.12.107, systemd 257.13),
@@ -81,14 +80,17 @@ to a bare ext4 disk (serial `out`), and booted directly with
 ## 3. passt vhost-user networking — GO (with required flags)
 
 `passt --vhost-user -s <rt>/net.sock -f -4 -a 10.0.2.15 -n 24 -g 10.0.2.2
---dns-forward 10.0.2.3 -D 10.0.2.3 --no-map-gw -t none -u none` with Cloud
-Hypervisor `--net vhost_user=true,socket=<rt>/net.sock,vhost_mode=client`:
-ICMP, TCP (HTTPS) and UDP egress work.
+--dns-forward 10.0.2.3 -D 10.0.2.3 --dns-host 127.0.0.53 --no-map-gw -t none
+-u none` with Cloud Hypervisor
+`--net vhost_user=true,socket=<rt>/net.sock,vhost_mode=client`: ICMP, TCP
+(HTTPS), UDP and forwarded DNS work. `--no-map-gw` keeps host loopback
+services unreachable from the guest.
 
-- With `--no-map-gw` (required so the guest cannot reach host loopback
-  services), passt sends forwarded DNS to `0.0.0.0:53` unless the upstream is
-  given explicitly. `--dns-host <first nameserver of the host resolv.conf>`
-  fixes it (including a `127.0.0.53` stub resolver). Toby passes it always.
+- Without `--dns-host`, forwarded DNS went to `0.0.0.0:53`: `-D` makes passt
+  skip importing the host's nameservers, so the forwarder has no upstream.
+  (pasta with the same flags but without `-D` forwarded DNS correctly.) The
+  upstream must be an IPv4 address because guest networking is IPv4 only
+  (`-4`); the test host's first nameserver was the `127.0.0.53` stub.
 - passt in vhost-user mode keeps running after the VMM disconnects; it must be
   stopped with its machine (unit `StopWhenUnneeded`/`BindsTo`, or the direct
   supervisor). On Arch the process re-executes as `passt.avx2`, so it must be
@@ -101,7 +103,7 @@ ICMP, TCP (HTTPS) and UDP egress work.
   Toby's own `net-up` configures every machine, including the bootstrap
   builder.
 
-## 4. virtio-fs with fuse-backend-rs — GO (with a thread pool in M4)
+## 4. virtio-fs with fuse-backend-rs — GO
 
 A spike back end on `vhost-user-backend` 0.21 (`vhost` 0.15, `virtio-queue`
 0.17, `vm-memory` =0.17.1, matching `fuse-backend-rs` 0.14 with feature
@@ -125,26 +127,36 @@ the unprivileged host user.
 - `Vfs::lookup` accepts `.` and `..` (for NFS export); the wrapper rejects both
   so no lookup can walk above an attachment root.
 - edk2's `VirtioFsDxe` in the firmware sends its own `FUSE_INIT` (7.31) before
-  the kernel; Cloud Hypervisor sends no `RESET_DEVICE`. The kernel's later
-  `INIT` must therefore reset the session instead of failing (`Vfs` rejects a
-  second `INIT` by itself). The wrapper does this.
+  the kernel; Cloud Hypervisor sends no `RESET_DEVICE`. `Vfs` rejects a second
+  `INIT` by itself; the spike's wrapper called `destroy` and let the kernel's
+  `INIT` through, but `Vfs::init` had already narrowed its stored options to
+  the firmware's few flags, and `destroy` does not restore them. The kernel
+  session then ran without `MAX_PAGES`, `WRITEBACK_CACHE` and similar
+  options.
 - Guest `umount` of a busy bind mount fails with "target is busy"; after a
   host-side removal the guest sees `ENOENT`, not a hang. The `Vfs` leaves an
   empty pseudo directory for a removed mount.
 
 Benchmark (96k-file Linux checkout, guest with 4 vCPUs, `cache=auto`
-equivalent):
+equivalent). Both back ends process each queue on one thread (virtiofsd's
+`--thread-pool-size` defaults to 0).
 
-| Operation | Toby spike (single-threaded) | virtiofsd 1.14 `--sandbox=none` |
-| --- | --- | --- |
-| `git status` cold (guest caches dropped) | 12.7 s | 11.8 s |
-| `git status` warm | 0.77–0.84 s | 0.68–0.91 s |
-| `grep -r` over `include/` cold | 0.41 s | 0.49 s |
-| 1 GiB sequential write + fsync | 4.6 s | 1.6 s |
+| Operation | Toby spike, firmware boot | virtiofsd 1.14, firmware boot | Toby spike, direct kernel boot | virtiofsd 1.14, direct kernel boot |
+| --- | --- | --- | --- | --- |
+| `git status` cold (guest caches dropped) | 12.7 s | 11.8 s | 11.8 s | 12.2 s |
+| `git status` warm | 0.77–0.84 s | 0.68–0.91 s | 0.72–0.81 s | 0.73–0.80 s |
+| `grep -r` over `include/` cold | 0.41 s | 0.49 s | 0.51 s | 0.47 s |
+| 1 GiB sequential write + fsync | 4.6 s | 1.6 s | 1.4 s | 4.0 s |
 
-Metadata-heavy work matches virtiofsd. Bulk writes are slower because the
-spike processes the queue on one thread; M4 adds a worker pool (as virtiofsd
-does). The `virtiofsd` fallback is not needed.
+The firmware-boot write gap came from the narrowed options above: with the
+kernel's full option set (direct kernel boot, one `INIT`), the spike matched
+virtiofsd on metadata work and wrote faster. `toby-fs` therefore rebuilds the
+`Vfs` with its original options when a new `INIT` arrives. The virtiofsd
+fallback is not needed.
+
+- With `inode_file_handles = false` each looked-up inode holds an `O_PATH`
+  descriptor until the guest forgets it; the benchmark ran with a raised
+  descriptor limit, which `toby-fs` sets itself.
 
 ## 5. Hybrid vsock — GO
 
@@ -156,16 +168,16 @@ does). The `virtiofsd` fallback is not needed.
   `vsock_loopback`; CID 3 is `ENODEV`) and, where possible, arrive with a peer
   CID other than 2; the relay's "peer CID must be 2" check is sufficient.
 
-## 6. PTY over vsock — GO
+## 6. PTY over vsock — GO for latency; terminal behavior tested in M2
 
 - Round-trip latency of 1-byte messages over hybrid vsock: 26 µs average
   (2000 samples). Echo throughput: about 410 MB/s.
 - An interactive shell over vsock (sshd socket-activated on `AF_VSOCK`) was
-  used throughout the spikes without perceptible latency. Full-screen TUI
-  correctness depends only on byte transparency, which the splice path
-  preserves; M2 acceptance tests it with the real session protocol.
+  used throughout the spikes without perceptible latency.
+- Resize, signals and full-screen programs over the session protocol were not
+  tested here; they are part of M2's acceptance criteria.
 
-## 7. logind and lingering — GO (by inspection; not exercised by logging out)
+## 7. logind and lingering — not exercised; confirmed in M5
 
 - The test host has `KillUserProcesses=no` and `Linger=no`; the user manager
   runs as `user@<uid>.service` in a `manager` session.
@@ -174,8 +186,9 @@ does). The `virtiofsd` fallback is not needed.
   linger enabled; processes started outside the user manager (the `direct`
   back end, e.g. under tmux) survive logout only with `KillUserProcesses=no`.
 - Ending every login session was not possible from the test session, so the
-  behavior was not observed directly. The linger warning (§12.2) and the
-  `toby daemon status` note for the direct back end cover both cases.
+  behavior was not observed. M5's acceptance criteria include logout with and
+  without linger for the `systemd-user` back end and logout with
+  `KillUserProcesses=no` for the `direct` back end.
 
 ## Other findings
 
@@ -183,20 +196,3 @@ does). The `virtiofsd` fallback is not needed.
   checked when CI is created in M1.
 - The latest Cloud Hypervisor release is v53.0; it is the pinned version.
 - mkosi's latest release is v27; it is the pinned version.
-
-## Plan changes
-
-1. Firmware: Cloud Hypervisor edk2 (`CLOUDHV.fd` / `CLOUDHV_EFI.fd`) replaces
-   rust-hypervisor-firmware everywhere (§2, §4, §7.2, §9.3, §15.2, §19, M11).
-2. Pinned versions: Cloud Hypervisor v53.0, edk2 `ch-97eeb7b09`, mkosi v27
-   (§4).
-3. passt invocation fixed, with `--no-map-gw` and an explicit `--dns-host`;
-   passt lifetime and naming notes (§11.1).
-4. `net-up` selects the interface by driver (§9.6).
-5. mkosi invocation: run `bin/mkosi` directly; `--workspace-directory` on the
-   cache disk; `python3-pefile` in the builder dependencies (§15.2, §15.3).
-6. Adaptation runs in a private mount namespace, runs `systemd-hwdb update`;
-   export uses `cp --one-file-system` (§15.3, §15.4).
-7. `toby-fs`: repeated `INIT` resets the session; `.`/`..` lookups rejected;
-   worker thread pool; dependency versions pinned (§10).
-8. Leftover `qemu-img` references replaced by `imago` (§5, §19).

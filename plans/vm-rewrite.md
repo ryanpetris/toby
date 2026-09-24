@@ -11,8 +11,10 @@ rules in `AGENTS.md` still apply (no shims, no dual paths, delete replaced
 behavior completely).
 
 Items marked **VERIFY** are assumptions still to confirm: the static musl
-`mimalloc` build and CI KVM runners in M1, and the macOS items when that back
-end is designed.
+`mimalloc` build and CI KVM runners in M1, aarch64 firmware in M11, and the
+macOS items when that back end is designed. Two M0 items are confirmed by
+later acceptance tests: full-screen terminal behavior over the session
+protocol (M2) and logout behavior of both back ends (M5).
 
 ---
 
@@ -215,13 +217,14 @@ Rules:
     (≥ v51: qcow2 `backing_files=on`, discard/write-zeroes on qcow2, hybrid
     vsock, vhost-user net and fs), installed at
     `/usr/lib/toby/cloud-hypervisor`.
-  - Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd` on x86_64,
-    `CLOUDHV_EFI.fd` on aarch64), upstream release binary from
-    `cloud-hypervisor/edk2`, pinned release, installed at
-    `/usr/lib/toby/firmware/CLOUDHV.fd` (arch-dependent, so `/usr/lib`, not
-    `/usr/share`). Used only for the one-time bootstrap builder (§15.2); it
-    boots the stock cloud image through shim, which rust-hypervisor-firmware
-    cannot.
+  - Cloud Hypervisor's edk2 firmware, upstream release binary from
+    `cloud-hypervisor/edk2`, pinned release, installed under its upstream
+    name: `/usr/lib/toby/firmware/CLOUDHV.fd` on x86_64,
+    `/usr/lib/toby/firmware/CLOUDHV_EFI.fd` on aarch64 (arch-dependent, so
+    `/usr/lib`, not `/usr/share`). Used only for the one-time bootstrap
+    builder (§15.2); its UEFI variable services let the cloud image's shim
+    and GRUB boot. The package ships edk2's `License.txt` and the notices of
+    every component compiled into the pinned build.
   - mkosi, pinned release (Python source; LGPL-2.1-or-later), installed at
     `/usr/share/toby/mkosi/` and used only inside builder machines (served
     through the runtime tree), plus the default image's mkosi
@@ -240,8 +243,10 @@ Rules:
     bundled path. No `PATH` lookup for bundled programs, so Toby always
     uses the version it was tested with.
 - **System-installed** (package dependency, not bundled; GPL):
-  passt with vhost-user support (tested with 2026_07_28). Found via config
-  override or `PATH`; version checked.
+  passt with vhost-user support. Found via config override or `PATH`;
+  version checked against the minimum, which is 2026_07_28 (the tested
+  release) until packaging (M11) establishes the oldest release providing
+  `--vhost-user`, `--dns-host` and `--no-map-gw` that passes the tests.
 - Toby never downloads programs at runtime. A missing or too-old program
   produces an error naming it, the required version and the package to
   install; `toby doctor` lists everything.
@@ -349,7 +354,7 @@ reported by `tobyd` and errors on mismatch.
   homes/<name>.qcow2
   builder/<arch>/
     bootstrap-<distro>-<version>.qcow2   stock cloud image, used once (§15.2); deletable afterwards
-    cache.qcow2                          persistent /var/lib/containers for builds
+    cache.qcow2                          persistent build cache (§15.3)
 
 runtime (systemd-user back end) = /run/user/<uid>/toby/
 runtime (direct back end)       = $TOBY_RUNTIME_DIR or /tmp/toby-<uid>/ (0700, owner verified)
@@ -445,7 +450,7 @@ cloud-hypervisor
   --vsock cid=3,socket=<rt>/vsock.sock
   --rng src=/dev/urandom
   --console file=<rt>/console.log --serial off
-  [--firmware /usr/lib/toby/firmware/CLOUDHV.fd]      # bootstrap builder only (no --kernel)
+  [--firmware /usr/lib/toby/firmware/CLOUDHV.fd]      # bootstrap builder only (no --kernel); per-arch file, §4
   [--platform oem_strings=[...]]                      # bootstrap builder only (credential injection)
 ```
 
@@ -532,7 +537,7 @@ image = "01J…"                   # image whose vmlinuz/initramfs.img boot this
 
 [[attach]]
 id = "a1"
-host = "/home/ryan/code/toby"
+host = "/home/user/src/toby"
 at = "/toby/workspace/toby"
 read_only = false
 pinned = false            # manual `toby attach` sets true
@@ -631,9 +636,9 @@ the bootstrap image (Debian 13 has 257):
 - `io.systemd.credential.binary:systemd.extra-unit.toby-relay.service=<base64>`
 - `io.systemd.credential.binary:systemd.unit-dropin.multi-user.target~toby=<base64 "[Unit]\nWants=toby-relay.service">`
 
-Cloud Hypervisor OEM strings reach systemd 257 as system credentials
-(confirmed in M0). The Debian cloud image has no network without a cloud-init
-datasource; `net-up` (§9.6) configures it like every other machine.
+Cloud Hypervisor OEM strings reach systemd 257 as system credentials. The
+Debian cloud image has no network without a cloud-init datasource; `net-up`
+(§9.6) configures it like every other machine.
 
 ### 9.4 Guest runtime tree (served by `toby-fs`)
 
@@ -669,7 +674,8 @@ All run as `Root` through the relay, in order, idempotent:
 
 1. `toby-helper net-up --addr … --gw … --dns …`: configures the virtio-net
    interface (selected by driver, since its name follows the PCI slot),
-   default route and `lo` via netlink; writes `/run/toby/resolv.conf` and
+   default route and `lo` via netlink; the DNS server is passt's forwarder
+   address (`10.0.2.3`), never a host address; writes `/run/toby/resolv.conf` and
    bind-mounts it over `/etc/resolv.conf` (handles a symlinked
    `/etc/resolv.conf`). Sets the hostname to the home name.
 2. `toby-helper user-setup --name <u> --uid <n> --shell <sh> --sudo=<bool>`:
@@ -707,11 +713,15 @@ filesystems under one device).
 ### 10.2 Control API (stable, unix socket, framed CBOR)
 
 `Add{id, host_path, read_only}`, `Remove{id}`, `List`. `toby-fs` opens the
-host path once as an `O_PATH` directory descriptor and roots the
-passthrough there. All lookups stay beneath that descriptor
-(`openat2` with `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`); symlinks are
-resolved inside the guest, never followed out of the attachment on the
-host.
+host path once and roots a passthrough file system there. Lookups walk one
+component at a time from the parent's `O_PATH` descriptor (`openat` with
+`O_NOFOLLOW`), so symlinks are returned to the guest and resolved there,
+never followed on the host. Names containing `/` are rejected by the `Vfs`,
+the passthrough treats `..` at its root as `.`, and the identity wrapper
+(§10.5) rejects `.` and `..` lookups entirely, so no lookup can climb above
+an attachment root. (An inode the host user moves out of an attachment
+while the guest holds it stays reachable through that inode; the host user
+did the move.)
 
 ### 10.3 Identity mapping
 
@@ -742,7 +752,7 @@ host.
    attachments are left as empty directories owned by root with mode 0555
    so writes fail instead of landing in the root.
 
-### 10.5 Implementation notes (from M0)
+### 10.5 Implementation notes
 
 - Crate versions must match fuse-backend-rs: `fuse-backend-rs` 0.14 (feature
   `vhost-user-fs`), `vhost-user-backend` 0.21, `vhost` 0.15, `virtio-queue`
@@ -756,11 +766,23 @@ host.
   guest remounts the share read-write.
 - The wrapper rejects `.` and `..` lookups (the `Vfs` accepts them for NFS
   export).
-- A second `FUSE_INIT` resets the session: edk2 firmware sends its own `INIT`
-  before the kernel, and Cloud Hypervisor sends no `RESET_DEVICE`.
-- Requests are processed by a worker pool; a single-threaded queue was 3x
-  slower than virtiofsd for bulk writes (metadata-heavy work such as
-  `git status` on 96k files matched virtiofsd).
+- A second `FUSE_INIT` starts a new session: edk2 firmware sends its own
+  `INIT` (with few flags) before the kernel, and Cloud Hypervisor sends no
+  `RESET_DEVICE`. `Vfs::init` narrows its stored options to the client's
+  flags and `destroy` does not restore them, so `toby-fs` handles a repeated
+  `INIT` by building a fresh `Vfs` with the original options and re-adding
+  every current mount from its own mount table (runtime tree and
+  attachments). Negotiated FUSE state and open handles are dropped; the
+  mount table survives.
+- Open descriptors: with `inode_file_handles = false` every inode the guest
+  has looked up holds an `O_PATH` descriptor until the guest forgets it, so
+  `toby-fs` raises its `RLIMIT_NOFILE` soft limit to the hard limit at start
+  and `toby-fs@.service` sets `LimitNOFILE=` high (large trees need more
+  than the 1024 default).
+- Requests are processed on one thread per queue; with the kernel's full
+  option set this matched or beat virtiofsd (1 GiB write 1.4 s vs 4.0 s,
+  `git status` on 96k files equal). M4 re-measures and adds a pool only if
+  measurements call for it.
 - Removing a mount leaves an empty pseudo directory; `toby-fs` removes it.
 
 ---
@@ -771,18 +793,23 @@ host.
 
 `toby-net@<id>` runs passt with fixed guest addressing (`10.0.2.15/24`,
 gateway `10.0.2.2`, DNS forwarder `10.0.2.3`; configurable) and no inbound
-port forwarding. Cloud Hypervisor connects as a vhost-user net client.
+port forwarding. Guest networking is IPv4 only. Cloud Hypervisor connects as
+a vhost-user net client.
 
 ```text
 passt --vhost-user -s <rt>/net.sock -f -4 -a 10.0.2.15 -n 24 -g 10.0.2.2 \
-      --dns-forward 10.0.2.3 -D 10.0.2.3 --dns-host <first host nameserver> \
+      --dns-forward 10.0.2.3 -D 10.0.2.3 --dns-host <host IPv4 nameserver> \
       --no-map-gw -t none -u none
 ```
 
 - `--no-map-gw` keeps host loopback services unreachable from the guest.
-  With it, passt forwards DNS to `0.0.0.0` unless `--dns-host` names the
-  upstream, so `toby internal net` always passes the first nameserver of the
-  host's `/etc/resolv.conf` (a `127.0.0.53` stub works).
+- `-D` makes passt skip importing the host's nameservers, so the upstream
+  for the IPv4 forwarder must be named with `--dns-host`. `toby internal
+  net` passes the first IPv4 `nameserver` of the host's `/etc/resolv.conf`
+  (a `127.0.0.53` stub works and follows host network changes; any other
+  address is fixed for the machine's lifetime). With no IPv4 nameserver the
+  machine fails to start with an error naming the problem; `[network]
+  dns_host` in the global config overrides the choice.
 - passt keeps running after the VMM disconnects; it is stopped with its
   machine (unit relationships or the direct supervisor), tracked by PID
   (it re-executes under another name, e.g. `passt.avx2`). A stale
@@ -1069,6 +1096,9 @@ compositor:
 backend = "systemd-user"         # or "direct"
 idle_timeout = "15m"
 
+[network]
+# dns_host = "192.0.2.53"         # host resolver passt forwards guest DNS to; default: first IPv4 nameserver
+
 [paths]
 storage_root = "~/.local/share/toby"
 state_root = "~/.local/state/toby"
@@ -1179,7 +1209,7 @@ compatibility with the old files). Unknown fields are errors.
 ```toml
 # <state>/homes/work.toml
 name = "work"
-username = "ryan"
+username = "user"
 uid = 1000
 sudo = true
 default_root = "work"
@@ -1187,7 +1217,7 @@ default_root = "work"
 # <state>/roots/work.toml
 name = "work"
 image = "01J…"
-source = { dockerfile = "/home/ryan/code/toby/.toby/Dockerfile" }
+source = { dockerfile = "/home/user/src/toby/.toby/Dockerfile" }
 ```
 
 ### 14.5 Resource defaults (overridable globally, per project, per home)
@@ -1273,9 +1303,10 @@ and MCP images (`[mcp.<name>].image`) alike:
     make, openssh-client, python3, and Node.js LTS (from the NodeSource apt
     repository configured through mkosi's sandbox tree, since Debian's own
     Node.js is older than the tools need);
-  - plus what builders need: buildah, podman, e2fsprogs, bubblewrap and
-    mkosi's other runtime dependencies (mkosi itself comes from the runtime
-    tree, below).
+  - plus what builders need: python3-pefile, bubblewrap, buildah, podman,
+    fuse-overlayfs, uidmap, e2fsprogs, dracut-core, debian-archive-keyring,
+    cpio and systemd-container (the set §15.2 installs into the bootstrap
+    builder; mkosi itself comes from the runtime tree, below).
   - Built the first time it is needed and rebuilt when the bundled
     configuration or the bundled mkosi version changes (content hash).
 - The same default image boots **builder machines**, so there is one image
@@ -1319,34 +1350,38 @@ image, so the first build needs a different starting point:
 
 1. `tobyd` creates `images/<new>/disk.qcow2` (sparse, default 64 GiB) and
    starts a builder machine: the default image with an ephemeral layer,
-   `cache.qcow2` (serial `cache`; holds `/var/lib/containers` and mkosi's
-   package cache, incremental cache and tools tree), the output disk
-   (serial `out`), the build context attached read-only at
-   `/build/context`, and the new image directory `images/<new>.tmp/`
-   attached writable at `/build/boot`.
+   `cache.qcow2` (serial `cache`), the output disk (serial `out`), the
+   build context attached read-only at `/build/context`, and the new image
+   directory `images/<new>.tmp/` attached writable at `/build/boot`. The
+   builder mounts the cache disk at `/cache` (ext4, formatted on first use)
+   and bind-mounts `/cache/containers` onto `/var/lib/containers`; mkosi's
+   package cache, incremental cache, workspace, output directory and default
+   tools tree (which mkosi keeps in the output directory) live under
+   `/cache/mkosi`.
 2. Produce the root tree (as root, streamed to the build log):
    - mkosi: `/run/toby/fs/runtime/mkosi/bin/mkosi
      -C /build/context --format=directory --architecture=<arch>
-     --output-directory=/cache/work --output=tree
-     --workspace-directory=/cache/work --incremental=yes
+     --output-directory=/cache/mkosi/out --output=<build-id>
+     --workspace-directory=/cache/mkosi/work --incremental=yes
      --package-cache-directory=/cache/mkosi/packages
      --cache-directory=/cache/mkosi/cache --tools-tree=default build`
      (`bin/mkosi` is a shell wrapper that finds Python itself; the tools tree
-     provides the package manager for non-Debian targets and is cached on the
-     cache disk). The tree is `/cache/work/tree`; build trees and the mkosi
-     workspace live on the cache disk so nothing is copied across devices. Confirm option names against the pinned mkosi
-     release; Toby's overrides always win over the user's `mkosi.conf` for
-     format, architecture, output and cache locations.
-   - Dockerfile: `buildah build --layers -f <file> -t toby/build
-     /build/context`, then `ctr=$(buildah from toby/build)` and
-     `tree=$(buildah mount $ctr)`.
+     provides the package manager for non-Debian targets). The tree is
+     `/cache/mkosi/out/<build-id>`; it is removed after export, because mkosi
+     skips a build whose output already exists. Everything stays on the
+     cache disk, so nothing is copied across devices. Toby's overrides always
+     win over the user's `mkosi.conf` for format, architecture, output and
+     cache locations.
+   - Dockerfile: `buildah build --layers --network host -f <file>
+     -t toby/build /build/context`, then `ctr=$(buildah from toby/build)`
+     and `tree=$(buildah mount $ctr)`.
    - Registry: `buildah pull <ref>` then as above (registry credentials: an
      auth file given with a `{file:…}` substitution is attached read-only
      for this build only).
    - OCI archive: `buildah pull oci-archive:/build/context/<file>` then as
      above.
-3. Boot adaptation (§15.4) on the tree, run with `chroot` into it (or
-   `buildah run` for container sources).
+3. Boot adaptation (§15.4) on the tree, run with `chroot` into it with the
+   builder's network and resolver available.
 4. Export: `mkfs.ext4 -L toby-root /dev/disk/by-id/virtio-out`, mount at
    `/out`, `cp -a --sparse=always --one-file-system "$tree"/. /out/`, copy the kernel and
    generated initramfs to `/build/boot/` (`vmlinuz`, `initramfs.img`),
@@ -1382,9 +1417,9 @@ Then:
 
 1. Install the `99toby` dracut module into
    `/usr/lib/dracut/modules.d/99toby/` (copied from the runtime tree).
-2. Generate the initramfs:
+2. Run `systemd-hwdb update`, then generate the initramfs:
    `dracut --no-hostonly --force --kver <kver> --add toby --add-drivers "…virtio list…" /boot/toby-initramfs.img`.
-3. Run `systemd-hwdb update`; make `/sbin/init` resolve to systemd; mask units that make no sense in a
+3. Make `/sbin/init` resolve to systemd; mask units that make no sense in a
    Toby machine (`getty@tty1`, `serial-getty@hvc0`, `systemd-firstboot`,
    network managers that would fight `net-up`); empty `/etc/machine-id` so
    each root gets its own on first boot.
@@ -1665,7 +1700,9 @@ side is always Linux and identical on every host.
 aarch64: the `toby` binary built for `aarch64-unknown-linux-musl`;
 bootstrap uses Debian arm64 genericcloud; boot adaptation installs the
 distro's arm64 kernel; the bundled firmware on aarch64 is edk2
-`CLOUDHV_EFI.fd` from the same release as the x86_64 `CLOUDHV.fd`.
+`CLOUDHV_EFI.fd` from the same release as the x86_64 `CLOUDHV.fd`
+(**VERIFY** in M11 that it boots the arm64 cloud image and whether Cloud
+Hypervisor loads it with `--firmware` or `--kernel` on aarch64).
 
 ---
 
@@ -1756,8 +1793,7 @@ Disk images: `imago` (qcow2 creation).
 External programs: bundled `cloud-hypervisor`, edk2 firmware and mkosi
 (§4); system-installed `passt` and `journalctl` (systemd-user
 back end). No programs are downloaded at runtime. Inside builder machines
-(from the default image): `podman`/`buildah`, `dracut`, `e2fsprogs`,
-`python3`, `bubblewrap` and mkosi's other dependencies.
+(from the default image): the builder set listed in §15.1.
 
 License policy in `deny.toml`: allow Apache-2.0, MIT, BSD-2/3, ISC, Zlib,
 Unicode; review anything else.
@@ -1781,7 +1817,7 @@ user-visible behavior; acceptance criteria demonstrated.
    mkosi runs as root inside a VM with its tools tree and caches on a
    separate disk.
 3. `passt --vhost-user` works as Cloud Hypervisor's network back end
-   (or decide on the pasta-namespace fallback).
+   with guest DNS through passt's forwarder.
 4. fuse-backend-rs `Vfs` + passthrough over vhost-user, unprivileged, with a
    passthrough mount added and removed while the guest runs; squashed
    identity; basic `git status` benchmark vs virtiofsd.
@@ -1831,7 +1867,10 @@ reset returns to image state; home persists across roots.
 `toby-vfs`, `toby-fs`, attach/detach with identity mapping and policies.
 Acceptance: attach a project while a session runs; files created in the
 guest as root or user appear owned by the host user; no escape via
-symlinks (tests); detach refused while busy; benchmark recorded.
+symlinks or `..` lookups (tests, including crafted requests); detach
+refused while busy; a tree larger than the default descriptor limit works;
+the bootstrap builder (firmware boot, repeated `INIT`) keeps its full FUSE
+options; benchmark recorded.
 
 ### M5: Control plane and supervision
 
@@ -1841,7 +1880,10 @@ linger warning, `toby daemon`, `toby doctor`, sessions API, CLI rewritten
 on the API.
 Acceptance: `tobyd` restart during an active session is invisible;
 machines survive `tobyd` restart in both back ends; idle stop works;
-pairing conflicts reported clearly.
+pairing conflicts reported clearly; with the `systemd-user` back end,
+machines stop when the user's last login session ends without linger and
+keep running with linger; with the `direct` back end, machines survive
+logout when logind has `KillUserProcesses=no`.
 
 ### M6: Forwards, models proxy, tools
 
@@ -1913,7 +1955,7 @@ Decided (kept for reference):
    `/usr/lib/toby/`; passt is a system dependency; no program is downloaded
    at runtime.
 3. No prebuilt images. Users' existing image sources are built and
-   boot-adapted automatically; the default image is a bundled Dockerfile
+   boot-adapted automatically; the default image is a bundled mkosi configuration
    (§15).
 4. Resource defaults as in §14.5.
 5. Passwordless sudo on by default (`home.sudo = false` disables).
