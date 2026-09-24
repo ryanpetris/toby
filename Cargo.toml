@@ -44,6 +44,7 @@ tower = "0.5.3"
 ulid = "3.0.0"
 unicode-width = "0.2.1"
 ureq = "3.4.2"
+utoipa = { version = "5", default-features = false, features = ["macros"] }
 vhost = { version = "0.15", features = ["vhost-user-backend"] }
 vhost-user-backend = "0.21"
 virtio-bindings = "0.2"

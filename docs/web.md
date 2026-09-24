@@ -17,3 +17,6 @@ The web UI listens on 127.0.0.1 only, on a free port, or on the port
 [daemon]
 web_port = 7474
 ```
+
+The pages use tobyd's API, which `GET /v1/openapi.json` describes, on the
+daemon's socket or, logged in, on the web UI's port.

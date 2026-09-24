@@ -7,7 +7,7 @@ use toby_proto::types::{Identity, SessionInfo, TtySize};
 /// Path of the API socket below the runtime directory.
 pub const SOCKET: &str = "tobyd.sock";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ApiError {
     /// Stable identifier, e.g. `machine.pair-in-use`.
     pub code: String,
@@ -15,13 +15,13 @@ pub struct ApiError {
 }
 
 /// A warning for the CLI to print unless the user suppressed its ID.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Warning {
     pub id: String,
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DaemonInfo {
     pub version: String,
     pub pid: u32,
@@ -35,7 +35,7 @@ pub struct DaemonInfo {
 }
 
 /// `GET /v1/machines`, and the result of starting one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineInfo {
     pub id: String,
     pub home: Option<String>,
@@ -51,7 +51,7 @@ pub struct MachineInfo {
     pub idle_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AttachmentInfo {
     pub id: String,
     pub host: String,
@@ -64,7 +64,7 @@ pub struct AttachmentInfo {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ForwardInfo {
     pub id: String,
     /// `host-to-guest` or `guest-to-host`.
@@ -79,7 +79,7 @@ pub struct ForwardInfo {
 }
 
 /// `POST /v1/machines/{id}/forwards`. Addresses are `ADDR:PORT`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AddForward {
     /// `host-to-guest` or `guest-to-host`.
     pub direction: String,
@@ -93,7 +93,7 @@ pub struct AddForward {
 
 /// `POST /v1/machines/ensure`: the machine for a home and root, started if
 /// needed. Unset fields use the configured defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EnsureMachine {
     pub home: Option<String>,
     pub root: Option<String>,
@@ -107,14 +107,14 @@ pub struct EnsureMachine {
     pub memory: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Ensured {
     pub machine: MachineInfo,
     pub warnings: Vec<Warning>,
 }
 
 /// `POST /v1/machines/{id}/attachments`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AddAttachment {
     pub host: String,
     /// Default: `/toby/workspace/<directory name>`.
@@ -130,7 +130,7 @@ pub struct AddAttachment {
 }
 
 /// Selects a machine: by ID, or by home and root (started if needed).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineSelector {
     pub machine: Option<String>,
     pub home: Option<String>,
@@ -138,7 +138,7 @@ pub struct MachineSelector {
 }
 
 /// `POST /v1/sessions`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CreateSession {
     #[serde(flatten)]
     pub target: MachineSelector,
@@ -165,7 +165,7 @@ pub struct CreateSession {
     pub tty: Option<TtySize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SessionCreated {
     pub id: String,
     pub machine: String,
@@ -177,7 +177,7 @@ pub struct SessionCreated {
 }
 
 /// `GET /v1/sessions`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineSession {
     pub machine: String,
     pub session_socket: String,
@@ -188,14 +188,14 @@ pub struct MachineSession {
 
 /// `POST /v1/machines/{id}/tools/{name}/prepare`: check, install or update
 /// a tool and write its files; returns a build ID.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PrepareTool {
     #[serde(default)]
     pub upgrade: bool,
 }
 
 /// `POST /v1/sessions/{id}/kill`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct KillSession {
     /// A signal number; default: end the session (hangup, then terminate,
     /// then kill).
@@ -204,12 +204,12 @@ pub struct KillSession {
 
 /// A build or other builder job (`POST /v1/builds`, `/v1/homes`,
 /// `/v1/images/prepare`): its logs stream from `GET /v1/builds/{id}/logs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BuildStarted {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BuildStatus {
     pub id: String,
     /// `running`, `succeeded` or `failed`.
@@ -221,7 +221,7 @@ pub struct BuildStatus {
 }
 
 /// An image source as the API names it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Default,
@@ -231,13 +231,13 @@ pub enum Source {
     Archive { path: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct StartBuild {
     pub source: Source,
 }
 
 /// `POST /v1/images/prepare` (plan §15.6).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Prepare {
     #[serde(default)]
     pub all: bool,
@@ -246,13 +246,13 @@ pub struct Prepare {
 }
 
 /// `POST /v1/bootstrap`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Bootstrap {
     /// A local Debian 13 cloud image to start from instead of downloading one.
     pub base: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ImageInfo {
     pub id: String,
     pub created: u64,
@@ -263,7 +263,7 @@ pub struct ImageInfo {
     pub roots: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RootInfo {
     pub name: String,
     pub image: String,
@@ -271,20 +271,20 @@ pub struct RootInfo {
     pub newer_image: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CreateRoot {
     pub name: String,
     /// An image ID or `default`.
     pub image: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Rebase {
     /// Default: the newest image of the root's source.
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HomeInfo {
     pub name: String,
     pub username: String,
@@ -295,7 +295,7 @@ pub struct HomeInfo {
     pub created: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CreateHome {
     pub name: String,
     pub username: String,
@@ -303,7 +303,7 @@ pub struct CreateHome {
 }
 
 /// `GET /v1/approvals`: pending first, then recent decisions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ApprovalInfo {
     pub id: String,
     pub created: u64,
@@ -316,20 +316,20 @@ pub struct ApprovalInfo {
 }
 
 /// `POST /v1/approvals/{id}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Decide {
     /// `approve` or `deny`.
     pub decision: String,
 }
 
 /// `POST /v1/web/token`: a one-time login URL for the web UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WebToken {
     pub url: String,
 }
 
 /// `GET /v1/mcp`: a configured MCP server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct McpInfo {
     pub name: String,
     /// `stdio` or `http`.
@@ -343,7 +343,7 @@ pub struct McpInfo {
 
 /// A change, sent on `GET /v1/events` (a WebSocket) as one JSON text
 /// message each. Clients fetch what changed through the other routes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Event {
     /// `machine`, `session`, `approval` or `build`; `resync` when events
     /// were missed and everything should be fetched again.
@@ -358,7 +358,7 @@ pub struct Event {
 }
 
 /// `POST /v1/versions/gc`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct VersionsCollected {
     pub removed: Vec<String>,
     /// Versions still in use.
@@ -368,7 +368,7 @@ pub struct VersionsCollected {
 }
 
 /// Names removed by a prune.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Pruned {
     pub images: Vec<String>,
     pub caches: Vec<String>,

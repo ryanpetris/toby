@@ -1757,12 +1757,14 @@ Served on `<rt>/tobyd.sock` for the CLI and, when enabled, on
 `127.0.0.1:<port>` for the web UI. OpenAPI generated with `utoipa`.
 
 ```text
+GET    /v1/openapi.json                    this API's OpenAPI document
 GET    /v1/daemon                          version, backend, linger, paths
 GET    /v1/events                  (WS)    approvals, machine/session/attach/forward/build/MCP events
 
 GET    /v1/images                          list
 POST   /v1/images/prepare                  {default, mcp[], project, all, rebuild, pull} → build ids (§15.6)
 POST   /v1/builds                          start build {source, arch, size} → build id
+GET    /v1/builds                          builds of the last hour
 GET    /v1/builds/{id}                     status
 GET    /v1/builds/{id}/logs                output so far, then streamed until the build ends (chunked)
 POST   /v1/bootstrap                       {base} → build id (§15.2)
@@ -1801,16 +1803,14 @@ POST   /v1/approvals/{id}                  {decision: approve|deny}
 POST   /v1/web/token                       one-time URL for the web UI
 ```
 
-Long operations (machine start, tool install) return quickly with an
-operation ID and report progress through `/v1/events`; the CLI renders
-progress from events.
-
-M5 implements the API without `/v1/events`, the WebSocket endpoints and
-the OpenAPI document, which arrive with the web UI (M10). Until then
-`POST /v1/machines/ensure` and `POST /v1/sessions` return once the machine
-is ready, and builder jobs (builds, bootstrap, home formatting) return a
-build ID whose output streams from `/v1/builds/{id}/logs`. Errors are
-`{code, message}` with a stable code such as `machine.pair-in-use`.
+`POST /v1/machines/ensure` and `POST /v1/sessions` return once the
+machine is ready; builder jobs (builds, bootstrap, home formatting, tool
+preparation) return a build ID whose output streams from
+`/v1/builds/{id}/logs`. `GET /v1/events` reports changes to machines,
+sessions, approvals and builds; clients fetch what changed. Errors are
+`{code, message}` with a stable code such as `machine.pair-in-use`. The
+OpenAPI document is `GET /v1/openapi.json`. `GET /v1/sessions/{id}/io`
+stays reserved (§21).
 
 ---
 

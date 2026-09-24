@@ -14,7 +14,7 @@ pub fn negotiate(offered: &[u32]) -> Option<u32> {
 }
 
 /// Who a guest command runs as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Identity {
     /// The home's user.
@@ -23,7 +23,7 @@ pub enum Identity {
 }
 
 /// Terminal size in character cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TtySize {
     pub rows: u16,
     pub cols: u16,
@@ -81,7 +81,7 @@ pub struct SpawnSpec {
 }
 
 /// How a session's process ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExitStatus {
     Code(i32),
@@ -99,7 +99,7 @@ impl ExitStatus {
 }
 
 /// A live or exited session as reported by the relay.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SessionInfo {
     pub id: String,
     pub argv0: String,

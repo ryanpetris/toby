@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+utoipa.workspace = true
 serde.workspace = true
 toby-proto.workspace = true
 
