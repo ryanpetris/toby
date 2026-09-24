@@ -86,7 +86,7 @@ impl Supervisor {
     /// Restarts the models proxy (process `pid`) on the current version.
     pub async fn restart_proxy(&self, paths: &Paths, pid: i32) -> io::Result<()> {
         match self {
-            Supervisor::Systemd(s) => s.restart("toby-proxy.service").await,
+            Supervisor::Systemd(s) => s.try_restart("toby-proxy.service").await,
             Supervisor::Direct { .. } => {
                 terminate(pid).await?;
                 self.ensure_proxy(paths).await
@@ -98,7 +98,7 @@ impl Supervisor {
     /// version; the VM keeps running.
     pub async fn restart_machine_process(&self, id: &str, pid: i32) -> io::Result<()> {
         match self {
-            Supervisor::Systemd(s) => s.restart(&format!("toby-machine@{id}.service")).await,
+            Supervisor::Systemd(s) => s.try_restart(&format!("toby-machine@{id}.service")).await,
             // The machine's supervisor starts it again.
             Supervisor::Direct { .. } => terminate(pid).await,
         }

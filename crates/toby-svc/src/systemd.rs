@@ -12,7 +12,7 @@ use zbus::zvariant::OwnedObjectPath;
 trait Manager {
     fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
-    fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn try_restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
     fn load_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
     fn reset_failed_unit(&self, name: &str) -> zbus::Result<()>;
 }
@@ -80,8 +80,9 @@ impl SystemdUser {
         self.manager().await?.reset_failed_unit(unit).await.map_err(err)
     }
 
-    pub async fn restart(&self, unit: &str) -> io::Result<()> {
-        self.manager().await?.restart_unit(unit, "replace").await.map(drop).map_err(err)
+    /// Restarts the unit if it runs; does nothing otherwise.
+    pub async fn try_restart(&self, unit: &str) -> io::Result<()> {
+        self.manager().await?.try_restart_unit(unit, "replace").await.map(drop).map_err(err)
     }
 
     async fn unit(&self, unit: &str) -> io::Result<UnitProxy<'_>> {

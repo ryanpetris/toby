@@ -78,19 +78,41 @@ fn installed(versions: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
+/// How long ago a version directory was installed: its change time,
+/// which copying or unpacking with old times cannot set back.
+fn installed_for(dir: &Path) -> Option<Duration> {
+    let ctime = std::os::unix::fs::MetadataExt::ctime(&std::fs::metadata(dir).ok()?);
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(ctime).ok()?);
+    SystemTime::now().duration_since(at).ok()
+}
+
 /// Whether an installed version may go: nothing uses it, it is not
 /// `current`, and it is a complete install that is not new.
-fn removable(dir: &Path, version: &str, used: &BTreeSet<String>, current: &str, now: SystemTime) -> bool {
-    let old = std::fs::metadata(dir)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age >= MIN_AGE));
-    !used.contains(version) && version != current && dir.join("toby").is_file() && old
+fn removable(
+    dir: &Path,
+    version: &str,
+    used: &BTreeSet<String>,
+    current: &str,
+    age: Option<Duration>,
+) -> bool {
+    !used.contains(version)
+        && version != current
+        && dir.join("toby").is_file()
+        && age.is_some_and(|a| a >= MIN_AGE)
+}
+
+/// Whether a version from a guest is a plausible version name.
+fn version_name(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 64
+        && !v.starts_with('.')
+        && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
 }
 
 /// The version a session binary path in the guest names.
 fn guest_binary_version(path: &str) -> Option<String> {
     let v = path.strip_prefix("/run/toby/fs/versions/")?.split('/').next()?;
-    (!v.is_empty()).then(|| v.to_string())
+    version_name(v).then(|| v.to_string())
 }
 
 /// Versions still needed; an error when a running machine does not answer,
@@ -145,7 +167,7 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
         // Read again for each: an upgrade may switch it meanwhile.
         let Some(current) = current(&versions) else { break };
         let dir = versions.join(&v);
-        if !removable(&dir, &v, &used, &current, SystemTime::now()) {
+        if !removable(&dir, &v, &used, &current, installed_for(&dir)) {
             continue;
         }
         match std::fs::remove_dir_all(&dir) {
@@ -164,6 +186,10 @@ pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::path
     let Some(current) = current(&versions) else { return };
     for p in host_processes(&versions).into_iter().filter(|p| p.version != current) {
         let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
+        // Builders run no units of their own and end with their build.
+        if matches!(args.as_slice(), ["internal", "machine", "--machine", id] if id.starts_with("builder-")) {
+            continue;
+        }
         let result = match args.as_slice() {
             ["internal", "proxy", ..] => machines.supervisor.restart_proxy(paths, p.pid).await,
             ["internal", "machine", "--machine", id] => {
@@ -182,12 +208,10 @@ pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::path
 mod tests {
     use super::*;
 
-    fn install(versions: &Path, v: &str, age: Duration) {
+    fn install(versions: &Path, v: &str) {
         let dir = versions.join(v);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("toby"), "").unwrap();
-        let t = SystemTime::now() - age;
-        std::fs::File::open(&dir).unwrap().set_modified(t).unwrap();
     }
 
     #[test]
@@ -205,26 +229,26 @@ mod tests {
     fn only_old_unused_complete_versions_go() {
         let tmp = tempfile::tempdir().unwrap();
         let v = tmp.path();
-        let day = Duration::from_secs(86400);
-        install(v, "0.16.0", day);
-        install(v, "0.17.0", day);
-        install(v, "0.18.0", day);
-        install(v, "0.19.0", Duration::ZERO);
+        for name in ["0.16.0", "0.17.0", "0.18.0"] {
+            install(v, name);
+        }
         std::fs::create_dir(v.join("partial")).unwrap();
         let used: BTreeSet<String> = ["0.17.0".to_string()].into();
-        let now = SystemTime::now();
-        let go = |name: &str| removable(&v.join(name), name, &used, "0.18.0", now);
-        assert!(go("0.16.0"));
-        assert!(!go("0.17.0"), "in use");
-        assert!(!go("0.18.0"), "current");
-        assert!(!go("0.19.0"), "just installed");
-        assert!(!go("partial"), "no binary");
+        let day = Some(Duration::from_secs(86400));
+        let go = |name: &str, age| removable(&v.join(name), name, &used, "0.18.0", age);
+        assert!(go("0.16.0", day));
+        assert!(!go("0.17.0", day), "in use");
+        assert!(!go("0.18.0", day), "current");
+        assert!(!go("0.16.0", Some(Duration::from_secs(60))), "just installed");
+        assert!(!go("0.16.0", installed_for(&v.join("0.16.0"))), "installed now, whatever its times say");
+        assert!(!go("partial", day), "no binary");
     }
 
     #[test]
     fn session_binaries_name_their_version() {
         assert_eq!(guest_binary_version("/run/toby/fs/versions/0.18.0/toby").as_deref(), Some("0.18.0"));
         assert_eq!(guest_binary_version("/usr/bin/claude"), None);
+        assert_eq!(guest_binary_version("/run/toby/fs/versions/\u{1b}[2J/toby"), None);
     }
 
     #[test]
