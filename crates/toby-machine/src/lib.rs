@@ -32,6 +32,8 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 /// Forwarded guest connections spliced at once.
 const MAX_SPLICES: usize = 512;
+/// How often forwards that failed are tried again.
+const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 /// Sandbox connections open at once: each can start an MCP server.
 const MAX_SANDBOX: usize = 32;
 /// Helper output kept for error messages.
@@ -72,6 +74,8 @@ pub struct Machine {
     forwards: forward::Forwards,
     /// Bounds forwarded connections spliced at once.
     splices: Arc<tokio::sync::Semaphore>,
+    /// A reconciliation left forwards to try again.
+    retry: std::sync::atomic::AtomicBool,
     sandboxes: Arc<tokio::sync::Semaphore>,
     /// A relay hello arrived while a check was running.
     hello_pending: std::sync::atomic::AtomicBool,
@@ -127,6 +131,7 @@ impl Machine {
             mounted: Mutex::new(mounted),
             forwards: Default::default(),
             splices: Arc::new(tokio::sync::Semaphore::new(MAX_SPLICES)),
+            retry: Default::default(),
             sandboxes: Arc::new(tokio::sync::Semaphore::new(MAX_SANDBOX)),
             hello_pending: false.into(),
             stale_listeners: Mutex::new(stale_listeners),
@@ -317,9 +322,16 @@ impl Machine {
         );
         *self.mounted.lock().unwrap() = mounted;
 
-        let mut forward_errors =
-            self.forwards.reconcile_host(self.config.runtime.vsock(), &spec.forward).await;
+        let mut forward_errors = self
+            .forwards
+            .reconcile_host(self.config.runtime.vsock(), &spec.forward, self.splices.clone())
+            .await;
         forward_errors.extend(self.register_guest(self.guest_listeners(&spec)).await);
+        // Listeners that failed and removals the relay did not confirm are
+        // tried again.
+        if !forward_errors.is_empty() || !self.stale_listeners.lock().unwrap().is_empty() {
+            self.retry.store(true, std::sync::atomic::Ordering::Release);
+        }
         let capability_error = [forward::MODELS, forward::SANDBOX]
             .iter()
             .find_map(|id| forward_errors.get(*id).map(|e| format!("capability {id}: {e}")));
@@ -383,8 +395,10 @@ impl Machine {
         let earlier: Vec<String> = std::mem::take(&mut *self.stale_listeners.lock().unwrap());
         stale.extend(earlier.into_iter().filter(|id| !wanted.iter().any(|w| &w.id == id)));
         for id in stale {
-            let _ =
-                self.relay.call(&relay::Request::Unlisten(relay::Unlisten { listener_id: id.clone() })).await;
+            let unlisten = relay::Request::Unlisten(relay::Unlisten { listener_id: id.clone() });
+            if self.relay.call(&unlisten).await.is_err() {
+                self.stale_listeners.lock().unwrap().push(id.clone());
+            }
             self.forwards.guest.lock().unwrap().remove(&id);
         }
         for l in wanted {
@@ -420,12 +434,19 @@ impl Machine {
     }
 
     /// Registers every guest listener again: a restarted relay has none.
-    async fn relisten(&self) {
+    /// Listeners that fail are dropped from the registry; returns whether
+    /// all succeeded.
+    async fn relisten(&self) -> bool {
         let all: Vec<forward::GuestListener> =
             self.forwards.guest.lock().unwrap().values().cloned().collect();
+        let mut ok = true;
         for l in all {
-            let _ = self.listen(&l).await;
+            if self.listen(&l).await.is_err() {
+                self.forwards.guest.lock().unwrap().remove(&l.id);
+                ok = false;
+            }
         }
+        ok
     }
 
     /// Marks the machine ready once the relay answers and the boot helpers
@@ -475,12 +496,11 @@ impl Machine {
             // A new boot has none of the previous boot's mounts or listeners.
             self.mounted.lock().unwrap().clear();
             self.forwards.guest.lock().unwrap().clear();
+            self.stale_listeners.lock().unwrap().clear();
         }
         let mut error = None;
-        if !done || !ready {
+        if !done || !ready || !self.relisten().await {
             error = self.reconcile().await.err();
-        } else {
-            self.relisten().await;
         }
         self.update_status(|s| {
             s.state = State::Ready;
@@ -512,6 +532,26 @@ impl Machine {
             tokio::spawn(async move {
                 while !this.relay_up().await && this.status.lock().unwrap().state != State::Failed {
                     tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
+        }
+
+        {
+            let this = self.clone();
+            tokio::spawn(async move {
+                use std::sync::atomic::Ordering;
+                loop {
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                    if !this.retry.swap(false, Ordering::AcqRel) {
+                        continue;
+                    }
+                    let _booting = this.booting.lock().await;
+                    if this.status.lock().unwrap().state == State::Ready {
+                        let error = this.reconcile().await.err();
+                        this.update_status(|s| s.error = error);
+                    } else {
+                        this.retry.store(true, Ordering::Release);
+                    }
                 }
             });
         }

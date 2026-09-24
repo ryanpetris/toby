@@ -124,6 +124,20 @@ fn state_name(s: State) -> &'static str {
     }
 }
 
+/// Whether two host listen addresses cannot both be bound: the same
+/// address, or the same port where one is a wildcard.
+fn binds_overlap(a: &str, b: &str) -> bool {
+    match (a.parse::<std::net::SocketAddr>(), b.parse::<std::net::SocketAddr>()) {
+        (Ok(a), Ok(b)) => {
+            let wildcard = |x: &std::net::SocketAddr, y: &std::net::SocketAddr| {
+                x.ip().is_unspecified() && (x.is_ipv6() || y.is_ipv4())
+            };
+            a.port() == b.port() && (a.ip() == b.ip() || wildcard(&a, &b) || wildcard(&b, &a))
+        }
+        _ => a == b,
+    }
+}
+
 fn is_builder(id: &str) -> bool {
     id.starts_with("builder-")
 }
@@ -945,8 +959,10 @@ impl Machines {
         // A host address can be listened on once, across machines.
         if direction == Direction::HostToGuest {
             for other in self.records() {
-                if let Some(f) =
-                    other.forward.iter().find(|f| f.direction == Direction::HostToGuest && f.host == req.host)
+                if let Some(f) = other
+                    .forward
+                    .iter()
+                    .find(|f| f.direction == Direction::HostToGuest && binds_overlap(&f.host, &req.host))
                     && (other.id == id || self.running(&other.id).await)
                 {
                     return Err(Error::new(
@@ -1452,6 +1468,16 @@ mod tests {
     fn default_mount_point_uses_the_directory_name() {
         assert_eq!(default_guest_path(Path::new("/home/u/src/toby")).unwrap(), "/toby/workspace/toby");
         assert!(default_guest_path(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn wildcard_binds_overlap() {
+        assert!(binds_overlap("0.0.0.0:3000", "127.0.0.1:3000"));
+        assert!(binds_overlap("127.0.0.1:3000", "0.0.0.0:3000"));
+        assert!(binds_overlap("[::]:3000", "127.0.0.1:3000"));
+        assert!(!binds_overlap("0.0.0.0:3000", "[::1]:3000"));
+        assert!(!binds_overlap("0.0.0.0:3000", "127.0.0.1:3001"));
+        assert!(!binds_overlap("127.0.0.1:3000", "127.0.0.2:3000"));
     }
 
     #[test]

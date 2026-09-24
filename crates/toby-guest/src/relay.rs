@@ -187,20 +187,16 @@ impl Relay {
             return Ok(id);
         }
         if dir.exists() {
-            let existing: SpawnSpec = record::read(&dir.join(session_files::SPEC))?;
-            if existing != spec {
-                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("session {id} exists")));
-            }
-            let deadline = tokio::time::Instant::now() + SPAWN_TIMEOUT;
-            while !sock.exists() {
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            return Ok(id);
+            return joined(&dir, &spec).await.map(|()| id);
         }
-        session::prepare(&self.paths, &spec)?;
+        match session::prepare(&self.paths, &spec) {
+            Ok(_) => {}
+            // A spawn of the same ID got there first.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return joined(&dir, &spec).await.map(|()| id);
+            }
+            Err(e) => return Err(e),
+        }
         let version = s.version.clone().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
         std::fs::write(dir.join(session_files::VERSION), &version)?;
         if let Some(parent) = marker.parent() {
@@ -503,6 +499,26 @@ pub async fn run(paths: GuestPaths) -> io::Result<()> {
         });
     }
 }
+/// Waits for the session another spawn with the same ID and request is
+/// starting.
+async fn joined(dir: &std::path::Path, spec: &SpawnSpec) -> io::Result<()> {
+    let deadline = tokio::time::Instant::now() + SPAWN_TIMEOUT;
+    loop {
+        if let Ok(existing) = record::read::<SpawnSpec>(&dir.join(session_files::SPEC)) {
+            if existing != *spec {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the session exists"));
+            }
+            if dir.join(session_files::SOCKET).exists() {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A spawn request's digest, for recognizing a repeated one.
 fn spec_digest(spec: &SpawnSpec) -> io::Result<String> {
     use sha2::Digest;

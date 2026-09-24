@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use toby_config::machine::{Direction, Forward, ForwardState, ForwardStatus};
 use toby_proto::frame;
@@ -13,6 +13,7 @@ use toby_proto::service::{FromMachine, ServiceHeader};
 use toby_proto::stream::{Dial, HostHeader};
 use toby_proto::types::Endpoint;
 use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
 use crate::link::open_relay;
@@ -58,7 +59,13 @@ impl Forwards {
 
     /// Makes the host listeners match `wanted` (host-to-guest forwards).
     /// Returns the forwards that could not listen, with the error.
-    pub async fn reconcile_host(&self, vsock: PathBuf, wanted: &[Forward]) -> HashMap<String, String> {
+    /// Each connection takes one of `splices` while it lasts.
+    pub async fn reconcile_host(
+        &self,
+        vsock: PathBuf,
+        wanted: &[Forward],
+        splices: Arc<Semaphore>,
+    ) -> HashMap<String, String> {
         let wanted: Vec<&Forward> = wanted.iter().filter(|f| f.direction == Direction::HostToGuest).collect();
         let mut errors = HashMap::new();
         {
@@ -78,7 +85,7 @@ impl Forwards {
             match TcpListener::bind(f.host.as_str()).await {
                 Ok(listener) => {
                     let target = tcp(&f.guest);
-                    let vsock = vsock.clone();
+                    let (vsock, splices) = (vsock.clone(), splices.clone());
                     let handle = tokio::spawn(async move {
                         loop {
                             let conn = match listener.accept().await {
@@ -89,9 +96,12 @@ impl Forwards {
                                     continue;
                                 }
                             };
+                            // Excess connections are closed.
+                            let Ok(permit) = splices.clone().try_acquire_owned() else { continue };
                             let (vsock, target) = (vsock.clone(), target.clone());
                             tokio::spawn(async move {
                                 let _ = dial(&vsock, target, conn).await;
+                                drop(permit);
                             });
                         }
                     })

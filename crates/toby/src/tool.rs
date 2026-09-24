@@ -83,16 +83,8 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
         }
     };
 
-    let prepare = toby_api::PrepareTool { upgrade: args.upgrade };
-    let started: toby_api::BuildStarted = api
-        .post(&format!("/v1/machines/{}/tools/{}/prepare", segment(&machine), segment(&name)), &prepare)
-        .await?;
-    api.follow_build(&started.id).await?;
-    if args.install {
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if args.attach {
+    // Reattaching needs nothing prepared.
+    if args.attach && !args.install {
         let sessions: Vec<toby_api::MachineSession> = api.get("/v1/sessions").await?;
         if let Some(s) = sessions
             .into_iter()
@@ -107,6 +99,15 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
             )
             .await;
         }
+    }
+
+    let prepare = toby_api::PrepareTool { upgrade: args.upgrade };
+    let started: toby_api::BuildStarted = api
+        .post(&format!("/v1/machines/{}/tools/{}/prepare", segment(&machine), segment(&name)), &prepare)
+        .await?;
+    api.follow_build(&started.id).await?;
+    if args.install {
+        return Ok(ExitCode::SUCCESS);
     }
 
     let projects =

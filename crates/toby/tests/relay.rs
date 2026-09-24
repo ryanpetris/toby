@@ -276,6 +276,24 @@ async fn repeated_spawns_are_idempotent() {
 }
 
 #[tokio::test]
+async fn concurrent_spawns_of_one_id_start_it_once() {
+    let env = env();
+    let (mut a, mut b) = (control(&env).await, control(&env).await);
+    let marker = env.dir.path().join("ran");
+    let cmd = format!("echo x >> {}; sleep 5", marker.display());
+    let spawn = relay::Spawn { spec: spec("both", &["sh", "-c", &cmd]), version: None };
+    let (ra, rb) = tokio::join!(
+        call(&mut a, Request::Spawn(spawn.clone())),
+        call(&mut b, Request::Spawn(spawn.clone()))
+    );
+    let spawned = Response::Spawned(relay::Spawned { session_id: "both".into() });
+    assert_eq!((ra, rb), (spawned.clone(), spawned));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x\n");
+    call(&mut a, Request::Kill(relay::Kill { session_id: "both".into(), signal: libc::SIGKILL })).await;
+}
+
+#[tokio::test]
 async fn failed_starts_report_the_reason() {
     let env = env();
     let mut c = control(&env).await;
