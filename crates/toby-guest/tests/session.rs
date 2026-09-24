@@ -398,3 +398,17 @@ async fn output_waits_for_a_reconnecting_client() {
     assert_eq!(status, Some(ExitStatus::Code(0)));
     task.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn the_exit_reaches_a_client_that_takes_over() {
+    let env = env();
+    let task = start(&env, spec_on_attach("x1", &["sh", "-c", "head -c 2000000 /dev/zero; exit 5"])).await;
+    // The first client starts the command and never reads.
+    let _stalled = attach(&env, "x1", false).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut second = attach_resume(&env, "x1", 0).await;
+    let (_, status) = count_until_exit(&mut second, None).await;
+    assert_eq!(status, Some(ExitStatus::Code(5)));
+    task.await.unwrap().unwrap();
+}

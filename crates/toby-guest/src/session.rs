@@ -311,10 +311,15 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     let hold_for_client = !tty && spec.start_on_attach;
     let mut exited_at: Option<tokio::time::Instant> = None;
     // The exit has been queued for the attached client; resolves once written.
-    let mut exit_flush: Option<oneshot::Receiver<()>> = None;
+    // Generation of the client it was queued for, and its completion.
+    let mut exit_flush: Option<(u64, oneshot::Receiver<()>)> = None;
 
     loop {
         let now = tokio::time::Instant::now();
+        // An exit queued for a client that has since gone is delivered again.
+        if exit_flush.as_ref().is_some_and(|(g, _)| client.as_ref().map(|c| c.generation) != Some(*g)) {
+            exit_flush = None;
+        }
         let welcomed = client.as_ref().is_some_and(|c| c.welcomed);
         let client_full = welcomed && client.as_ref().is_some_and(|c| c.tx.capacity() == 0);
         let held = client_full
@@ -333,6 +338,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
         let drained = exit.is_some() && (output_done || drain_deadline.is_some_and(|d| now >= d));
         if let (Some(status), true, None) = (exit, drained, &exit_flush) {
             if rec.info.exit.is_none() {
+                // The command could not start (start-on-attach failure).
                 rec.info.exit = Some(status);
                 record::write(&dir.join(session_files::RECORD), &rec)?;
                 record::write(&dir.join(session_files::EXIT), &status)?;
@@ -344,7 +350,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                         c.tx.try_send(Outgoing::Frame(ServerFrame::Exit(session::Exit { status }))).is_ok()
                             && c.tx.try_send(Outgoing::Flush(done_tx)).is_ok();
                     if queued {
-                        exit_flush = Some(done_rx);
+                        exit_flush = Some((c.generation, done_rx));
                     } else {
                         drop_client(&mut client, dir, &mut rec);
                     }
@@ -362,7 +368,14 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                 }
             }
         }
-        let awaiting_room = client_full || (drained && exit_flush.is_none() && welcomed);
+        // Room for one output frame, or for the exit and its flush.
+        let room_needed = if drained && exit_flush.is_none() && welcomed {
+            2
+        } else if client_full {
+            1
+        } else {
+            0
+        };
 
         let deadline = [
             if drained {
@@ -384,6 +397,11 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                 match event {
                     Event::Exited(status) => {
                         exit = Some(status);
+                        // Recorded at once, so listings show it even while
+                        // output is still waiting for a client.
+                        rec.info.exit = Some(status);
+                        record::write(&dir.join(session_files::RECORD), &rec)?;
+                        record::write(&dir.join(session_files::EXIT), &status)?;
                         exited_at = Some(tokio::time::Instant::now());
                         drain_deadline = Some(tokio::time::Instant::now() + DRAIN_AFTER_EXIT);
                     }
@@ -522,14 +540,20 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
                 }
                 Some(Out::End) | None => output_done = true,
             },
-            _ = room(&client), if awaiting_room => {}
-            r = flushed(&mut exit_flush), if exit_flush.is_some() => {
+            ok = room(&client, room_needed), if room_needed > 0 => {
+                if !ok {
+                    drop_client(&mut client, dir, &mut rec);
+                }
+            }
+            (g, ok) = flushed(&mut exit_flush), if exit_flush.is_some() => {
                 exit_flush = None;
-                if r {
+                if ok {
                     break;
                 }
-                // The client went away before receiving the exit.
-                drop_client(&mut client, dir, &mut rec);
+                // That client went away before receiving the exit.
+                if client.as_ref().is_some_and(|c| c.generation == g) {
+                    drop_client(&mut client, dir, &mut rec);
+                }
             }
             _ = sleep_until(deadline) => {
                 if stall_deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
@@ -567,20 +591,20 @@ async fn queue(c: &Client, frame: ServerFrame) -> bool {
     c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL).await.is_ok()
 }
 
-/// Resolves when the client's queue has room.
-async fn room(client: &Option<Client>) {
+/// Resolves when the client's queue has room for `n` frames; false if the
+/// client's writer is gone.
+async fn room(client: &Option<Client>, n: usize) -> bool {
     match client {
-        Some(c) => {
-            let _ = c.tx.reserve().await;
-        }
+        Some(c) => c.tx.reserve_many(n).await.is_ok(),
         None => std::future::pending().await,
     }
 }
 
-/// Resolves with whether the queued exit was written to the client.
-async fn flushed(rx: &mut Option<oneshot::Receiver<()>>) -> bool {
-    match rx {
-        Some(rx) => rx.await.is_ok(),
+/// Resolves with the client generation and whether the queued exit was
+/// written to it.
+async fn flushed(pending: &mut Option<(u64, oneshot::Receiver<()>)>) -> (u64, bool) {
+    match pending {
+        Some((g, rx)) => (*g, rx.await.is_ok()),
         None => std::future::pending().await,
     }
 }

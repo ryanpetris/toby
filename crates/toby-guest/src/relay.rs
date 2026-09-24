@@ -334,7 +334,11 @@ impl Relay {
             // The command has not started yet (it starts on attach): end the session.
             return kill(Pid::from_raw(rec.session_pid), Signal::SIGTERM).map_err(io::Error::from);
         }
-        killpg(Pid::from_raw(rec.child_pgid), sig).map_err(io::Error::from)
+        match killpg(Pid::from_raw(rec.child_pgid), sig) {
+            // The command already exited; its session records that shortly.
+            Err(nix::errno::Errno::ESRCH) => Ok(()),
+            r => r.map_err(io::Error::from),
+        }
     }
 
     fn forget(&self, id: &str) -> io::Result<()> {
