@@ -241,10 +241,16 @@ fn kitty_key(input: &[u8]) -> Option<(usize, u32, u32, u32)> {
 /// (up to a size).
 fn unfinished(input: &[u8]) -> Option<usize> {
     const MAX_HELD: usize = 64 << 10;
+    const MAX_CSI: usize = 1024;
     let start = input.iter().rposition(|b| *b == 0x1b)?;
     let rest = &input[start + 1..];
     match rest.first() {
-        Some(b'[') => rest[1..].iter().all(|b| (0x20..=0x3f).contains(b)).then_some(start),
+        // A lone escape may begin a sequence; the 50 ms release sends it as
+        // the Escape key.
+        None => Some(start),
+        Some(b'[') => {
+            (rest[1..].iter().all(|b| (0x20..=0x3f).contains(b)) && rest.len() < MAX_CSI).then_some(start)
+        }
         Some(b']' | b'P' | b'_') => {
             (!rest.contains(&0x07) && input.len() - start < MAX_HELD).then_some(start)
         }
@@ -276,8 +282,13 @@ pub struct DetachFilter {
 fn readable(wait: Duration) -> bool {
     use std::os::fd::AsRawFd;
     let mut pfd = libc::pollfd { fd: io::stdin().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    // SAFETY: one valid pollfd.
-    unsafe { libc::poll(&mut pfd, 1, wait.as_millis() as i32) > 0 }
+    loop {
+        // SAFETY: one valid pollfd.
+        let n = unsafe { libc::poll(&mut pfd, 1, wait.as_millis() as i32) };
+        if n >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return n > 0;
+        }
+    }
 }
 
 impl DetachFilter {
@@ -829,10 +840,18 @@ impl Attached {
     /// Writes what the compositor drew, and notes whether the overlay is
     /// open.
     fn screen(&mut self, out: &[u8]) -> io::Result<()> {
-        if let Some(c) = &self.comp {
-            self.overlay.store(c.takes_input(), std::sync::atomic::Ordering::Release);
+        use std::sync::atomic::Ordering;
+        // Keys go to the overlay once it has been written, and decide from
+        // then on after the arming time.
+        let result = write_out(out, false);
+        if let Some(c) = &mut self.comp {
+            let takes = c.takes_input();
+            if takes && c.overlay_open() && !self.overlay.load(Ordering::Acquire) {
+                c.shown_now();
+            }
+            self.overlay.store(takes, Ordering::Release);
         }
-        write_out(out, false)
+        result
     }
 
     fn exited(&self, status: ExitStatus) -> io::Result<Outcome> {
@@ -1034,6 +1053,17 @@ mod tests {
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;"), (vec![], None), "the rest comes with the next read");
         assert_eq!(f.feed(b"5ud"), (vec![], Some(Command::Detach)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"x\x1b"), (b"x".to_vec(), None), "a read may end after the escape");
+        assert_eq!(f.feed(b"[92;5ua"), (vec![], Some(Command::Approvals)));
+        let mut f = DetachFilter::default();
+        assert_eq!(f.feed(b"\x1b"), (vec![], None));
+        assert_eq!(f.release(), b"\x1b", "the Escape key, when nothing follows");
+        // An unfinished control sequence is held up to a size.
+        let mut long = b"\x1b[".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 2000));
+        assert_eq!(f.feed(&long).0, long);
+        assert!(!f.holding());
         let mut f = DetachFilter::default();
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[92;5u"), (b"\x1b[92;5u".to_vec(), None));
         assert_eq!(f.feed(b"\x1b[92;5u\x1b[120u"), (b"\x1b[92;5u\x1b[120u".to_vec(), None));

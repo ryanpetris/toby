@@ -751,7 +751,6 @@ impl Compositor {
         if self.shown.is_none() && fresh.is_some() {
             self.shown = fresh;
             self.armed = Instant::now() + ARMING;
-            self.pasting = false;
         }
         let mut out = Vec::new();
         self.draw(&mut out);
@@ -781,6 +780,12 @@ impl Compositor {
         self.overlay.is_some()
     }
 
+    /// The overlay has just reached the terminal: keys decide only after
+    /// the arming time from now.
+    pub fn shown_now(&mut self) {
+        self.armed = self.armed.max(Instant::now() + ARMING);
+    }
+
     /// Whether input goes through `key`: the overlay is on the screen, or a
     /// paste that began under it goes on.
     pub fn takes_input(&self) -> bool {
@@ -806,8 +811,10 @@ impl Compositor {
             return (Vec::new(), None, input.to_vec());
         };
         let (keys, session) = split_input(input);
-        if session.windows(6).any(|w| w == b"\x1b[200~") && !session.windows(6).any(|w| w == b"\x1b[201~") {
-            self.pasting = true;
+        // Pasting when the last paste marker starts one.
+        let last = |m: &[u8]| session.windows(6).rposition(|w| w == m);
+        if let Some(start) = last(b"\x1b[200~") {
+            self.pasting = last(b"\x1b[201~").is_none_or(|end| end < start);
         }
         // Typed before the overlay could be read: meant for the session.
         if Instant::now() < self.armed {
@@ -1336,6 +1343,16 @@ mod tests {
         assert!(!t.comp.overlay_open());
         let screen: String = (0..11).map(|r| t.row(r) + "\n").collect();
         assert!(!screen.contains("y approve"), "the overlay is gone from the terminal: {screen}");
+
+        // A paste that ends and another that starts in one read.
+        let mut t = Terminal::new(12, 50);
+        t.status(status(&[("a2", "two")]));
+        t.comp.armed = Instant::now();
+        t.comp.key(b"\x1b[200~one\x1b[201~\x1b[200~tw");
+        assert_eq!(t.comp.key(b"y").2, b"y", "the second paste goes on");
+        // A new approval does not end a paste.
+        t.status(status(&[("a2", "two"), ("a3", "three")]));
+        assert_eq!(t.comp.key(b"n").2, b"n");
     }
 
     #[test]
