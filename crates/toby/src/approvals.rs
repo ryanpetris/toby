@@ -76,12 +76,15 @@ pub fn ui(api: Arc<Api>, machine: String) -> (toby_term::Ui, tokio::task::JoinHa
         // or its approvals, and now and then in case events are missed.
         let mut events = api.events().await.ok();
         let mut refresh = true;
+        // Decisions that did not reach tobyd; their approvals show again.
+        let mut failed: Vec<String> = Vec::new();
         let mut last = tokio::time::Instant::now();
         loop {
             if refresh || last.elapsed() >= std::time::Duration::from_secs(30) {
                 refresh = false;
                 last = tokio::time::Instant::now();
-                if let Some(s) = status_of(&api, &machine).await {
+                if let Some(mut s) = status_of(&api, &machine).await {
+                    s.failed = std::mem::take(&mut failed);
                     status_tx.send_if_modified(|old| {
                         let changed = *old != s;
                         *old = s;
@@ -112,7 +115,10 @@ pub fn ui(api: Arc<Api>, machine: String) -> (toby_term::Ui, tokio::task::JoinHa
                 d = decided.recv() => {
                     let Some((id, approve)) = d else { return };
                     let decision = toby_api::Decide { decision: if approve { "approve" } else { "deny" }.into() };
-                    let _: anyhow::Result<()> = api.post(&format!("/v1/approvals/{}", segment(&id)), &decision).await;
+                    let sent: anyhow::Result<()> = api.post(&format!("/v1/approvals/{}", segment(&id)), &decision).await;
+                    if sent.is_err() {
+                        failed.push(id);
+                    }
                     refresh = true;
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
@@ -142,7 +148,7 @@ async fn status_of(api: &Api, machine: &str) -> Option<toby_term::compositor::St
             detail: clean(&a.detail),
         })
         .collect();
-    Some(toby_term::compositor::Status { items, approvals })
+    Some(toby_term::compositor::Status { items, approvals, failed: Vec::new() })
 }
 
 pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {

@@ -29,6 +29,8 @@ pub struct Status {
     pub items: Vec<String>,
     /// Approvals waiting for the user.
     pub approvals: Vec<Approval>,
+    /// Approvals whose decision here did not reach tobyd.
+    pub failed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +55,11 @@ const ANSWERED_FOR: Duration = Duration::from_secs(10);
 /// Longest control sequence kept; longer ones are dropped, as terminals
 /// ignore them.
 const MAX_SEQUENCE: usize = 256;
+/// Lines the emulators keep above their screens.
+const HISTORY: usize = 1000;
+/// What a soft reset (`CSI ! p`) resets, for the mirror, whose emulator
+/// does not know it.
+const SOFT_RESET: &[u8] = b"\x1b[4l\x1b[?6l\x1b(B\x1b)B\x1b*B\x1b+B\x0f\x1b[0m";
 
 const BAR_STYLE: &str = "\x1b[0;38;2;232;232;227;48;2;52;52;50m";
 const OVERLAY_STYLE: &str = "\x1b[0;38;2;232;232;227;48;2;32;32;30m";
@@ -98,7 +105,8 @@ struct Screen {
 
 impl Screen {
     fn new(rows: u16, cols: u16) -> Screen {
-        let config = Config { scrolling_history: 0, ..Config::default() };
+        // History lets a resize bring lines back, as terminals do.
+        let config = Config { scrolling_history: HISTORY, ..Config::default() };
         let size = Size { rows: rows.into(), cols: cols.into() };
         Screen { term: alacritty_terminal::Term::new(config, &size, VoidListener), parser: Processor::new() }
     }
@@ -201,25 +209,28 @@ fn same_cell(a: &Cell, b: &Cell) -> bool {
     a.c == b.c && same_look(a, b) && same_link(a, b) && z(a) == z(b)
 }
 
-/// Writes row `row` of `screen` at the terminal's row `row + 1`, all of it.
-fn write_row(screen: &Screen, row: usize, out: &mut Vec<u8>) {
-    let mut s = format!("\x1b[{};1H\x1b#5\x1b[0m\x1b]8;;\x1b\\", row + 1);
+/// Writes columns `from..to` of row `row` of `screen` at the terminal's
+/// row `row + 1`.
+fn write_row(screen: &Screen, row: usize, from: usize, to: usize, out: &mut Vec<u8>) {
+    let mut s = format!("\x1b[{};{}H\x1b[0m\x1b]8;;\x1b\\", row + 1, from + 1);
     let blank = Cell::default();
     let mut prev = &blank;
     let cols = screen.cols();
-    for col in 0..cols {
+    for col in from..to {
         let cell = screen.cell(row, col);
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
         }
-        if col == 0 || !same_look(cell, prev) {
+        if col == from || !same_look(cell, prev) {
             s.push_str(&sgr(cell));
         }
         if !same_link(cell, prev) {
             s.push_str(&link(cell));
         }
         let wide = cell.flags.contains(Flags::WIDE_CHAR);
-        if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) || (wide && col + 1 == cols) {
+        if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+            || (wide && (col + 1 == cols || col + 1 == to))
+        {
             s.push(' ');
         } else {
             s.push(cell.c);
@@ -241,6 +252,8 @@ enum State {
     /// After ESC and an intermediate byte, such as `(`.
     EscapeIntermediate,
     Csi,
+    /// A control sequence too long to keep, dropped up to its end.
+    CsiIgnore,
     /// A string (OSC, DCS, APC, PM, SOS) until ST, or BEL for OSC.
     Text {
         osc: bool,
@@ -267,10 +280,27 @@ struct Scan {
     gl: u8,
     /// The terminal may have lost the scroll region.
     region_lost: bool,
+    /// Where in the output soft resets ended.
+    soft_resets: Vec<usize>,
 }
 
-fn numbers(params: &[u8]) -> Vec<Option<u16>> {
-    params.split(|b| *b == b';').map(|n| std::str::from_utf8(n).ok()?.parse().ok()).collect()
+/// Parameters as numbers (empty is `None`, larger than `u16` the maximum);
+/// `None` overall when one is not a plain number.
+fn numbers(params: &[u8]) -> Option<Vec<Option<u16>>> {
+    params
+        .split(|b| *b == b';')
+        .map(|n| match n {
+            [] => Some(None),
+            _ if n.iter().all(u8::is_ascii_digit) => Some(Some(
+                std::str::from_utf8(n)
+                    .ok()?
+                    .parse::<u64>()
+                    .map(|v| v.min(u16::MAX.into()) as u16)
+                    .unwrap_or(u16::MAX),
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 impl Scan {
@@ -345,10 +375,21 @@ impl Scan {
                 }
                 out.push(0x1b);
             }
-            State::EscapeIntermediate => {
-                if b >= 0x30 {
+            State::EscapeIntermediate => match b {
+                0x1b => {
+                    self.state = State::Escape;
+                    self.sequence.clear();
+                    self.sequence.push(b);
+                    return;
+                }
+                0x30.. => self.state = State::Ground,
+                _ => {}
+            },
+            State::CsiIgnore => {
+                if (0x40..=0x7e).contains(&b) {
                     self.state = State::Ground;
                 }
+                return;
             }
             State::Csi => match b {
                 // Another escape ends this one unfinished.
@@ -360,18 +401,22 @@ impl Scan {
                 }
                 // Controls run where they are.
                 0x00..=0x1f => {}
+                // Terminals ignore DEL inside a sequence.
+                0x7f => return,
                 0x40..=0x7e => {
                     self.sequence.push(b);
                     self.state = State::Ground;
                     let sequence = std::mem::take(&mut self.sequence);
-                    if sequence.len() <= MAX_SEQUENCE {
-                        self.csi(&sequence, limit, out);
-                    }
+                    self.csi(&sequence, limit, out);
                     self.sequence = sequence;
                     return;
                 }
                 _ => {
                     self.sequence.push(b);
+                    if self.sequence.len() > MAX_SEQUENCE {
+                        self.sequence.clear();
+                        self.state = State::CsiIgnore;
+                    }
                     return;
                 }
             },
@@ -405,7 +450,25 @@ impl Scan {
             _ => (None, body),
         };
         let intermediate = params.iter().any(|b| (0x20..=0x2f).contains(b));
-        let n = numbers(params);
+        if private.is_none() && fin == b'p' && params == b"!" {
+            // A soft reset: the margins, modes and character sets go.
+            self.top = 1;
+            self.bottom = limit;
+            self.gl = 0;
+            self.region_lost = true;
+            out.extend_from_slice(sequence);
+            self.soft_resets.push(out.len());
+            return;
+        }
+        let moves = private.is_none() && !intermediate && matches!(fin, b'r' | b'H' | b'f' | b'd');
+        let Some(n) = numbers(params) else {
+            // A cursor move or region the terminal may read otherwise is
+            // not passed on.
+            if !moves {
+                out.extend_from_slice(sequence);
+            }
+            return;
+        };
         let first = n.first().copied().flatten().unwrap_or(0);
         match (private, intermediate, fin) {
             (None, false, b'r') => {
@@ -425,12 +488,6 @@ impl Scan {
                 out.extend_from_slice(rest);
                 out.push(fin);
                 return;
-            }
-            (None, true, b'p') if params.ends_with(b"!") => {
-                // A soft reset: the margins go.
-                self.top = 1;
-                self.bottom = limit;
-                self.region_lost = true;
             }
             (Some(b'?'), false, b'h' | b'l') if n.iter().flatten().any(|m| matches!(m, 47 | 1047 | 1049)) => {
                 self.region_lost = true;
@@ -530,13 +587,18 @@ pub struct Compositor {
     answered: HashMap<String, Instant>,
     /// Something waits to be drawn until the output is at rest.
     pending: bool,
+    /// The terminal was resized: where it moved its contents is its own
+    /// choice, so all is drawn again from the session's screen.
+    repaint: bool,
+    /// A paste is coming in while the overlay is open; it is the session's.
+    pasting: bool,
 }
 
 impl Compositor {
     /// Whether a terminal of this size has room for the status line and
     /// the overlay.
     pub fn fits(rows: u16, cols: u16) -> bool {
-        rows >= 4 && cols >= 30
+        rows >= 8 && cols >= 30
     }
 
     /// For a terminal of `rows`×`cols` (it has to `fit`).
@@ -554,6 +616,8 @@ impl Compositor {
             seen: Default::default(),
             answered: Default::default(),
             pending: false,
+            repaint: false,
+            pasting: false,
         }
     }
 
@@ -609,8 +673,16 @@ impl Compositor {
         }
         let mut pass = Vec::with_capacity(bytes.len());
         self.scan.feed(bytes, self.limit(), &mut pass);
-        self.emit(&mut out, &pass);
-        self.screen.feed(bytes);
+        // The session's screen sees what the terminal sees.
+        self.screen.feed(&pass);
+        let mut at = 0;
+        for end in std::mem::take(&mut self.scan.soft_resets) {
+            self.mirror.feed(&pass[at..end]);
+            self.mirror.feed(SOFT_RESET);
+            at = end;
+        }
+        self.mirror.feed(&pass[at..]);
+        out.extend_from_slice(&pass);
         let bar_hit = self.mirror.text(usize::from(self.rows - 1)) != self.bar_text();
         if bar_hit || self.scan.region_lost || self.pending || self.shown.is_some() {
             self.draw(&mut out);
@@ -629,6 +701,7 @@ impl Compositor {
         self.scan.bottom = rows - 1;
         self.scan.region_lost = true;
         self.overlay = None;
+        self.repaint = true;
         let mut out = Vec::new();
         self.draw(&mut out);
         out
@@ -640,8 +713,11 @@ impl Compositor {
         for a in &status.approvals {
             self.seen.insert(a.id.clone());
         }
-        self.answered
-            .retain(|id, at| at.elapsed() < ANSWERED_FOR && status.approvals.iter().any(|a| &a.id == id));
+        self.answered.retain(|id, at| {
+            at.elapsed() < ANSWERED_FOR
+                && !status.failed.contains(id)
+                && status.approvals.iter().any(|a| &a.id == id)
+        });
         self.status = status;
         if self.shown.as_ref().is_some_and(|id| !self.pending_approvals().any(|a| &a.id == id)) {
             self.shown = self.first_pending();
@@ -685,11 +761,31 @@ impl Compositor {
         let Some(id) = self.shown.clone().filter(|_| self.overlay.is_some()) else {
             return (Vec::new(), None, input.to_vec());
         };
+        // A paste spread over reads goes to the session to its end.
+        if self.pasting {
+            match input.windows(6).position(|w| w == b"\x1b[201~") {
+                Some(p) => {
+                    self.pasting = false;
+                    let (mut out, decision, rest) = self.key(&input[p + 6..]);
+                    let mut session = input[..p + 6].to_vec();
+                    session.append(&mut out.split_off(0));
+                    return (Vec::new(), decision, [session, rest].concat());
+                }
+                None => return (Vec::new(), None, input.to_vec()),
+            }
+        }
         let (keys, session) = split_input(input);
-        // Exactly one key, pressed without modifiers, once the overlay takes
-        // keys; anything else typed is dropped.
+        if session.windows(6).any(|w| w == b"\x1b[200~") && !session.windows(6).any(|w| w == b"\x1b[201~") {
+            self.pasting = true;
+        }
+        // Typed before the overlay could be read: meant for the session.
+        if Instant::now() < self.armed {
+            return (Vec::new(), None, input.to_vec());
+        }
+        // Exactly one key, pressed without modifiers; anything else typed
+        // is dropped.
         let decision = match keys.as_slice() {
-            [k] if Instant::now() >= self.armed => match key(k) {
+            [k] => match key(k) {
                 Some(Key::Char('y')) => Some(true),
                 Some(Key::Char('n')) => Some(false),
                 Some(Key::Escape) => None,
@@ -742,11 +838,17 @@ impl Compositor {
 
     /// What the terminal has now, before drawing.
     fn save(&self) -> Saved {
-        let cursor = self.mirror.term.grid().cursor.clone();
+        self.save_from(true)
+    }
+
+    /// The cursor and modes of the terminal (`mirror`) or of the session.
+    fn save_from(&self, mirror: bool) -> Saved {
+        let from = if mirror { &self.mirror } else { &self.screen };
+        let cursor = from.term.grid().cursor.clone();
         let wrap_cell = cursor
             .input_needs_wrap
-            .then(|| self.mirror.cell(cursor.point.line.0 as usize, cursor.point.column.0).clone());
-        Saved { cursor, mode: *self.mirror.term.mode(), wrap_cell }
+            .then(|| from.cell(cursor.point.line.0 as usize, cursor.point.column.0).clone());
+        Saved { cursor, mode: *from.term.mode(), wrap_cell }
     }
 
     /// Makes the terminal write plain text anywhere: no insert or origin
@@ -786,9 +888,7 @@ impl Compositor {
             _ => s.push_str(&at(row, col)),
         }
         s.push_str(&sgr(&saved.cursor.template));
-        if saved.cursor.template.hyperlink().is_some() {
-            s.push_str(&link(&saved.cursor.template));
-        }
+        s.push_str(&link(&saved.cursor.template));
         for (i, index) in [
             ('(', CharsetIndex::G0),
             (')', CharsetIndex::G1),
@@ -815,17 +915,25 @@ impl Compositor {
         self.emit(out, s.as_bytes());
     }
 
-    /// Repaints the session's rows where the terminal differs from the
-    /// session's screen (an overlay, or a status line left by a resize).
+    /// Repaints the cells of the session's rows where the terminal differs
+    /// from the session's screen (an overlay, or a status line left by a
+    /// resize), with a column more on each side for wide characters.
     fn sync_rows(&mut self, out: &mut Vec<u8>) {
         let cols = self.screen.cols().min(self.mirror.cols());
         for row in 0..usize::from(self.limit()) {
-            let differs = (0..cols).any(|c| !same_cell(self.mirror.cell(row, c), self.screen.cell(row, c)));
-            if differs {
-                let mut bytes = Vec::new();
-                write_row(&self.screen, row, &mut bytes);
-                self.emit(out, &bytes);
-            }
+            let differs = |c: &usize| !same_cell(self.mirror.cell(row, *c), self.screen.cell(row, *c));
+            let Some(first) = (0..cols).find(differs) else { continue };
+            let last = (0..cols).rev().find(differs).unwrap_or(first);
+            let (from, to) = (first.saturating_sub(1), (last + 2).min(cols));
+            // Not from inside a wide character.
+            let from = if self.screen.cell(row, from).flags.contains(Flags::WIDE_CHAR_SPACER) {
+                from.saturating_sub(1)
+            } else {
+                from
+            };
+            let mut bytes = Vec::new();
+            write_row(&self.screen, row, from, to, &mut bytes);
+            self.emit(out, &bytes);
         }
     }
 
@@ -838,7 +946,8 @@ impl Compositor {
             return;
         }
         self.pending = false;
-        let saved = self.save();
+        // After a resize the cursor goes where the session has it.
+        let saved = if self.repaint { self.save_from(false) } else { self.save_from(true) };
         self.neutral(&saved, out);
         if self.scan.region_lost {
             let region = format!("\x1b[{};{}r", self.scan.top, self.scan.bottom);
@@ -846,7 +955,17 @@ impl Compositor {
             self.scan.region_lost = false;
         }
         let lines = self.overlay_lines();
-        if self.overlay.as_ref().map(|(_, _, l)| l) != lines.as_ref().map(|(_, _, l)| l) {
+        if self.repaint {
+            self.repaint = false;
+            let cols = self.screen.cols();
+            for row in 0..usize::from(self.limit()) {
+                let mut bytes = Vec::new();
+                write_row(&self.screen, row, 0, cols, &mut bytes);
+                self.emit(out, &bytes);
+            }
+            let rows = self.rows;
+            self.emit(out, format!("\x1b[{rows};1H\x1b[2K").as_bytes());
+        } else if self.overlay.as_ref().map(|(_, _, l)| l) != lines.as_ref().map(|(_, _, l)| l) {
             self.overlay = None;
             self.sync_rows(out);
         }
@@ -904,6 +1023,9 @@ impl Compositor {
         let mut rows = vec![format!("┌─{title} {}{tail}┐", "─".repeat(fill.saturating_sub(1)))];
         rows.extend(lines.iter().map(|l| format!("│ {} │", fit(l, inner))));
         rows.push(format!("└{}┘", "─".repeat(usize::from(w - 2))));
+        if rows.len() > usize::from(self.limit()) {
+            return None;
+        }
         let top = self.limit() + 1 - rows.len() as u16;
         let left = (self.cols - w) / 2 + 1;
         Some((top, left, rows))
@@ -978,7 +1100,8 @@ fn key(input: &[u8]) -> Option<Key> {
                 Some(e) => e.parse().ok()?,
                 None => 1,
             };
-            if modifiers != 1 || event != 1 {
+            // Caps Lock and Num Lock are not modifiers here.
+            if (modifiers.saturating_sub(1) & !(64 | 128)) != 0 || event != 1 {
                 return None;
             }
         }
@@ -1061,6 +1184,7 @@ mod tests {
                     detail: String::new(),
                 })
                 .collect(),
+            failed: Vec::new(),
         }
     }
 
@@ -1138,7 +1262,7 @@ mod tests {
         t.status(status(&[("a1", "one")]));
         let (_, decision, forward) = t.comp.key(b"y");
         assert_eq!(decision, None, "typed before the overlay could be read");
-        assert!(forward.is_empty());
+        assert_eq!(forward, b"y", "and so the session's");
         t.comp.armed = Instant::now();
         // More than one key, a modifier or a release decides nothing.
         for input in [&b"yes"[..], b"\x1b[121;5u", b"\x1b[121;1:3u"] {
@@ -1148,6 +1272,40 @@ mod tests {
         let (_, decision, forward) = t.comp.key(b"\x1b[12;40R");
         assert_eq!((decision, forward), (None, b"\x1b[12;40R".to_vec()));
         assert_eq!(t.key(b"\x1b[121u"), Some(("a1".into(), true)));
+    }
+
+    #[test]
+    fn a_paste_over_reads_stays_the_sessions() {
+        let mut t = Terminal::new(12, 50);
+        t.status(status(&[("a1", "one")]));
+        t.comp.armed = Instant::now();
+        assert_eq!(t.comp.key(b"\x1b[200~first").2, b"\x1b[200~first");
+        assert_eq!(t.comp.key(b"y").2, b"y", "still pasting");
+        let (_, decision, forward) = t.comp.key(b"end\x1b[201~");
+        assert_eq!((decision, forward), (None, b"end\x1b[201~".to_vec()));
+        assert_eq!(t.key(b"y"), Some(("a1".into(), true)));
+    }
+
+    #[test]
+    fn malformed_moves_and_overlong_sequences_do_not_pass() {
+        let mut out = Vec::new();
+        let mut scan = Scan::new(10);
+        scan.feed(b"\x1b[99:1Ha\x1b[9\x7f9;1Hb\x1b(\x1b[99;1Hc", 10, &mut out);
+        assert_eq!(out, b"a\x1b[10;1Hb\x1b(\x1b[10;1Hc");
+        let mut out = Vec::new();
+        let long = [b"\x1b[".to_vec(), vec![b'0'; 300], b"24;1Hd".to_vec()].concat();
+        scan.feed(&long, 10, &mut out);
+        assert_eq!(out, b"d");
+        assert!(scan.sequence.capacity() < 1024);
+    }
+
+    #[test]
+    fn a_soft_reset_reaches_the_mirror() {
+        let mut t = Terminal::new(12, 50);
+        t.session(b"\x1b[4h\x1b(0x\x1b[!p");
+        let mode = *t.comp.mirror.term.mode();
+        assert!(!mode.contains(TermMode::INSERT));
+        assert_eq!(t.comp.mirror.term.grid().cursor.charsets[CharsetIndex::G0], StandardCharset::Ascii);
     }
 
     #[test]
@@ -1200,6 +1358,12 @@ mod tests {
         }
         assert_eq!(t.row(8), "line 19", "the whole session area scrolls");
         assert_eq!(t.row(9), " m1 · dev/arch");
+        // Growing leaves no old status line in the session's rows.
+        t.vt.screen_mut().set_size(12, 50);
+        let out = t.comp.resize(12, 50);
+        t.apply(out);
+        let screen: String = (0..11).map(|r| t.row(r) + "\n").collect();
+        assert!(!screen.contains("dev/arch"), "{screen}");
     }
 
     #[test]
@@ -1224,6 +1388,7 @@ mod tests {
         assert_eq!(key(b"\x1b[121;1u"), Some(Key::Char('y')));
         assert_eq!(key(b"\x1b[121;1:2u"), None);
         assert_eq!(key(b"\x1b[121;3u"), None);
+        assert_eq!(key(b"\x1b[121;65u"), Some(Key::Char('y')), "Caps Lock is not a modifier");
         assert_eq!(key(b"yy"), None);
         let (keys, session) = split_input(b"y\x1b[200~pasted\x1b[201~\x1b[<0;1;2M\x1b]11;rgb:0/0/0\x1b\\");
         assert_eq!(keys, vec![b"y".to_vec()]);

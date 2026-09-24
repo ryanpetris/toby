@@ -755,7 +755,8 @@ impl Attached {
         match &mut self.comp {
             Some(c) => {
                 let out = c.output(bytes);
-                write_out(&out, false)
+                // The overlay may have been drawn only now.
+                self.screen(&out)
             }
             None => write_out(bytes, false),
         }

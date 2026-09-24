@@ -1180,6 +1180,7 @@ state_root = "~/.local/state/toby"
 [settings]
 suppress_warnings = []           # registered warning IDs, or ["*"]; e.g. "daemon.linger-disabled"
 yolo = false
+status_line = true               # the status line and approval overlays in attached terminals
 projects_dir = "~/Projects"      # base for relative project paths
 allow_external_projects = false
 autoload_project_config = false
