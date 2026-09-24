@@ -1,6 +1,8 @@
 //! The per-machine virtio-fs back end: serves a [`toby_vfs::Tree`] to Cloud
 //! Hypervisor over vhost-user (plan §10).
 
+pub mod control;
+
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, RwLock};

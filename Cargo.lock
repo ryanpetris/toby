@@ -1297,7 +1297,10 @@ dependencies = [
  "fuse-backend-rs",
  "libc",
  "nix 0.31.3",
+ "tempfile",
+ "toby-proto",
  "toby-vfs",
+ "tokio",
  "vhost",
  "vhost-user-backend",
  "virtio-bindings",
@@ -1324,6 +1327,7 @@ dependencies = [
 name = "toby-machine"
 version = "0.17.0"
 dependencies = [
+ "nix 0.31.3",
  "toby-config",
  "toby-engine",
  "toby-proto",

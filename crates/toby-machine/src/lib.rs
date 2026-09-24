@@ -4,18 +4,19 @@
 
 pub mod link;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use toby_config::machine::{MachineStatus, State};
+use toby_config::machine::{Attach, AttachState, AttachStatus, MachineSpec, MachineStatus, State};
 use toby_config::paths::MachineRuntime;
 use toby_engine::cloud_hypervisor::Api;
 use toby_proto::machine::{self, Request, Response};
 use toby_proto::stream::{GuestHeader, HostHeader, Reply};
-use toby_proto::{frame, relay, session, types};
+use toby_proto::{frame, fs, relay, session, types};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::link::{RelayControl, open_relay};
@@ -36,6 +37,8 @@ const POWER_OFF_GRACE: Duration = Duration::from_secs(30);
 pub struct Config {
     pub id: String,
     pub generation: u64,
+    /// The desired state file, watched for changes.
+    pub desired: PathBuf,
     pub runtime: MachineRuntime,
     /// Toby version guest sessions are started with.
     pub runtime_version: String,
@@ -54,6 +57,8 @@ pub struct Machine {
     booting: tokio::sync::Mutex<()>,
     /// Bounds guest connections being handled at once.
     pending_guest: Arc<tokio::sync::Semaphore>,
+    /// Attachments mounted in the guest, by ID.
+    mounted: Mutex<BTreeMap<String, Attach>>,
 }
 
 fn bind(path: &Path) -> io::Result<UnixListener> {
@@ -66,10 +71,26 @@ fn bind(path: &Path) -> io::Result<UnixListener> {
 impl Machine {
     pub fn new(config: Config, on_ready: impl Fn() + Send + Sync + 'static) -> Arc<Machine> {
         // Keep the record of completed boot helpers across restarts of this process.
-        let previous = MachineStatus::load(&config.runtime.status()).ok();
+        let previous = MachineStatus::load(&config.runtime.status()).ok().unwrap_or_default();
+        let mounted = previous
+            .attach
+            .iter()
+            .filter(|a| a.state == AttachState::Ready)
+            .map(|a| {
+                let attach = Attach {
+                    id: a.id.clone(),
+                    host: a.host.clone(),
+                    at: a.at.clone(),
+                    read_only: a.read_only,
+                    pinned: false,
+                };
+                (a.id.clone(), attach)
+            })
+            .collect();
         let status = MachineStatus {
             observed_generation: config.generation,
-            helpers_boot_id: previous.and_then(|p| p.helpers_boot_id),
+            helpers_boot_id: previous.helpers_boot_id,
+            attach: previous.attach,
             ..Default::default()
         };
         Arc::new(Machine {
@@ -80,6 +101,7 @@ impl Machine {
             on_ready: Box::new(on_ready),
             booting: tokio::sync::Mutex::new(()),
             pending_guest: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_GUEST)),
+            mounted: Mutex::new(mounted),
         })
     }
 
@@ -138,21 +160,130 @@ impl Machine {
         }
     }
 
+    /// Runs a helper and turns anything but success into an error message.
+    async fn helper(&self, argv: &[String]) -> Result<(), String> {
+        let result = tokio::time::timeout(HELPER_TIMEOUT, self.run_helper(argv))
+            .await
+            .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "did not finish in time")));
+        match result {
+            Ok((types::ExitStatus::Code(0), _)) => Ok(()),
+            Ok((status, output)) => {
+                // Helpers report their own errors as "toby: <message>".
+                let message = output.trim().trim_start_matches("toby: ");
+                if message.is_empty() {
+                    Err(format!("failed with exit status {}", status.code()))
+                } else {
+                    Err(message.to_string())
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     async fn run_boot_helpers(&self) -> Result<(), String> {
         for argv in &self.config.boot_helpers {
-            let name = argv.get(3).cloned().unwrap_or_else(|| argv.join(" "));
-            let result = tokio::time::timeout(HELPER_TIMEOUT, self.run_helper(argv))
-                .await
-                .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "did not finish in time")));
-            match result {
-                Ok((types::ExitStatus::Code(0), _)) => {}
-                Ok((status, output)) => {
-                    return Err(format!("{name} failed ({}): {}", status.code(), output.trim()));
-                }
-                Err(e) => return Err(format!("{name}: {e}")),
-            }
+            let name = argv.get(3).map_or("helper", String::as_str);
+            self.helper(argv).await.map_err(|e| format!("{name}: {e}"))?;
         }
         Ok(())
+    }
+
+    /// `toby guest helper <args>` with the machine's runtime version.
+    fn helper_argv(&self, args: &[&str]) -> Vec<String> {
+        let toby = format!("/run/toby/fs/versions/{}/toby", self.config.runtime_version);
+        [toby.as_str(), "guest", "helper"].iter().chain(args).map(|s| s.to_string()).collect()
+    }
+
+    async fn attach(&self, fs: &mut FsControl, a: &Attach) -> Result<(), String> {
+        let add = fs::Add { id: a.id.clone(), host_path: a.host.clone(), read_only: a.read_only };
+        fs.call(fs::Request::Add(add)).await.map_err(|e| format!("serving {}: {e}", a.host))?;
+        let src = format!("/run/toby/fs/projects/{}", a.id);
+        let mut args = vec!["attach", "--src", &src, "--at", &a.at];
+        if a.read_only {
+            args.push("--ro");
+        }
+        if let Err(e) = self.helper(&self.helper_argv(&args)).await {
+            let _ = fs.call(fs::Request::Remove(fs::Remove { id: a.id.clone() })).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    async fn detach(&self, fs: &mut FsControl, a: &Attach) -> Result<(), String> {
+        self.helper(&self.helper_argv(&["detach", "--at", &a.at])).await?;
+        fs.call(fs::Request::Remove(fs::Remove { id: a.id.clone() }))
+            .await
+            .map_err(|e| format!("removing {}: {e}", a.host))
+    }
+
+    /// Brings the guest's attachments in line with the desired state (plan
+    /// §10.4). Callers hold `booting`.
+    async fn reconcile(&self) {
+        let spec = match MachineSpec::load(&self.config.desired) {
+            Ok(s) => s,
+            Err(e) => {
+                self.update_status(|s| s.error = Some(format!("reading the desired state: {e}")));
+                return;
+            }
+        };
+        let mut fs = match FsControl::connect(&self.config.runtime.fs_control_sock()).await {
+            Ok(f) => f,
+            Err(e) => {
+                self.update_status(|s| s.error = Some(format!("file sharing is not available: {e}")));
+                return;
+            }
+        };
+        let desired: BTreeMap<String, Attach> =
+            spec.attach.iter().map(|a| (a.id.clone(), a.clone())).collect();
+        let same = |a: &Attach, b: &Attach| a.host == b.host && a.at == b.at && a.read_only == b.read_only;
+        let mut mounted = self.mounted.lock().unwrap().clone();
+        let mut errors: BTreeMap<String, String> = BTreeMap::new();
+
+        for (id, a) in mounted.clone() {
+            if desired.get(&id).is_some_and(|d| same(d, &a)) {
+                continue;
+            }
+            match self.detach(&mut fs, &a).await {
+                Ok(()) => {
+                    mounted.remove(&id);
+                }
+                Err(e) => {
+                    errors.insert(id, e);
+                }
+            }
+        }
+        for (id, a) in &desired {
+            if mounted.contains_key(id) {
+                continue;
+            }
+            match self.attach(&mut fs, a).await {
+                Ok(()) => {
+                    mounted.insert(id.clone(), a.clone());
+                }
+                Err(e) => {
+                    errors.insert(id.clone(), e);
+                }
+            }
+        }
+
+        let entry = |a: &Attach, state| AttachStatus {
+            id: a.id.clone(),
+            host: a.host.clone(),
+            at: a.at.clone(),
+            read_only: a.read_only,
+            state,
+            error: errors.get(&a.id).cloned(),
+        };
+        let mut entries: Vec<AttachStatus> = mounted.values().map(|a| entry(a, AttachState::Ready)).collect();
+        entries.extend(
+            desired.values().filter(|a| !mounted.contains_key(&a.id)).map(|a| entry(a, AttachState::Failed)),
+        );
+        *self.mounted.lock().unwrap() = mounted;
+        self.update_status(|s| {
+            s.attach = entries;
+            s.observed_generation = spec.generation;
+            s.error = None;
+        });
     }
 
     /// Marks the machine ready once the relay answers and the boot helpers
@@ -175,13 +306,23 @@ impl Machine {
             Ok(relay::Response::RelayInfo(info)) => info,
             _ => return false,
         };
-        let done = self.status.lock().unwrap().helpers_boot_id.as_deref() == Some(info.boot_id.as_str());
-        if !done && let Err(e) = self.run_boot_helpers().await {
-            self.update_status(|s| {
-                s.state = State::Failed;
-                s.error = Some(e);
-            });
-            return false;
+        let (done, ready) = {
+            let s = self.status.lock().unwrap();
+            (s.helpers_boot_id.as_deref() == Some(info.boot_id.as_str()), s.state == State::Ready)
+        };
+        if !done {
+            if let Err(e) = self.run_boot_helpers().await {
+                self.update_status(|s| {
+                    s.state = State::Failed;
+                    s.error = Some(e);
+                });
+                return false;
+            }
+            // A new boot has none of the previous boot's mounts.
+            self.mounted.lock().unwrap().clear();
+        }
+        if !done || !ready {
+            self.reconcile().await;
         }
         self.update_status(|s| {
             s.state = State::Ready;
@@ -204,6 +345,7 @@ impl Machine {
         let control = bind(&rt.control_sock())?;
         let sessions = bind(&rt.session_sock())?;
         self.update_status(|s| s.state = State::Starting);
+        self.clone().watch_desired()?;
 
         // After a restart of this process the relay is already running and
         // will not announce itself again, so keep checking until it answers.
@@ -243,6 +385,38 @@ impl Machine {
                 },
             }
         }
+    }
+
+    /// Reconciles whenever the desired state file is replaced.
+    fn watch_desired(self: Arc<Self>) -> io::Result<()> {
+        use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+        use tokio::io::unix::AsyncFd;
+
+        let dir = self.config.desired.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let name = self.config.desired.file_name().map(|n| n.to_owned());
+        let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)?;
+        inotify.add_watch(&dir, AddWatchFlags::IN_CLOSE_WRITE | AddWatchFlags::IN_MOVED_TO)?;
+        let fd = AsyncFd::new(Watch(inotify))?;
+        tokio::spawn(async move {
+            loop {
+                let Ok(mut guard) = fd.readable().await else { return };
+                let changed = match guard.get_inner().0.read_events() {
+                    Ok(events) => events.iter().any(|e| e.name.as_ref() == name.as_ref()),
+                    Err(nix::errno::Errno::EAGAIN) => {
+                        guard.clear_ready();
+                        continue;
+                    }
+                    Err(_) => return,
+                };
+                if changed {
+                    let _booting = self.booting.lock().await;
+                    if self.status.lock().unwrap().state == State::Ready {
+                        self.reconcile().await;
+                    }
+                }
+            }
+        });
+        Ok(())
     }
 
     /// A connection the guest opened to the host. Everything from the guest is
@@ -397,4 +571,40 @@ pub async fn power_off(api: Api) {
     }
     let _ = api.shutdown().await;
     let _ = api.shutdown_vmm().await;
+}
+
+struct Watch(nix::sys::inotify::Inotify);
+
+impl std::os::fd::AsRawFd for Watch {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsFd;
+        self.0.as_fd().as_raw_fd()
+    }
+}
+
+/// A connection to the machine's file sharing control socket.
+struct FsControl {
+    stream: UnixStream,
+}
+
+impl FsControl {
+    async fn connect(path: &Path) -> io::Result<FsControl> {
+        let mut stream = UnixStream::connect(path).await?;
+        frame::send(&mut stream, &fs::Request::Hello(fs::Hello { versions: types::SUPPORTED.to_vec() }))
+            .await?;
+        match frame::recv(&mut stream).await? {
+            fs::Response::Welcome(_) => Ok(FsControl { stream }),
+            fs::Response::Failed(f) => Err(io::Error::other(f.error)),
+            other => Err(io::Error::other(format!("unexpected response {other:?}"))),
+        }
+    }
+
+    async fn call(&mut self, req: fs::Request) -> io::Result<()> {
+        frame::send(&mut self.stream, &req).await?;
+        match frame::recv(&mut self.stream).await? {
+            fs::Response::Done(_) => Ok(()),
+            fs::Response::Failed(f) => Err(io::Error::other(f.error)),
+            other => Err(io::Error::other(format!("unexpected response {other:?}"))),
+        }
+    }
 }

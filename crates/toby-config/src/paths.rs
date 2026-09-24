@@ -168,6 +168,9 @@ impl MachineRuntime {
     pub fn fs_sock(&self) -> PathBuf {
         self.dir.join("fs.sock")
     }
+    pub fn fs_control_sock(&self) -> PathBuf {
+        self.dir.join("fs-control.sock")
+    }
     pub fn net_sock(&self) -> PathBuf {
         self.dir.join("net.sock")
     }

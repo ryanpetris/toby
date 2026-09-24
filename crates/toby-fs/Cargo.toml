@@ -11,13 +11,18 @@ publish.workspace = true
 fuse-backend-rs.workspace = true
 libc.workspace = true
 nix.workspace = true
+toby-proto.workspace = true
 toby-vfs.workspace = true
+tokio.workspace = true
 vhost.workspace = true
 vhost-user-backend.workspace = true
 virtio-bindings.workspace = true
 virtio-queue.workspace = true
 vm-memory.workspace = true
 vmm-sys-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

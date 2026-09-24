@@ -6,6 +6,6 @@ pub mod home;
 pub mod net;
 pub mod user;
 
-pub use home::{attach, home_mount, links};
+pub use home::{attach, detach, home_mount, links};
 pub use net::{NetUp, net_up};
 pub use user::{UserSetup, user_setup};

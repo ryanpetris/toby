@@ -68,7 +68,7 @@ async fn running_machines(paths: &Paths) -> Vec<(String, MachineRuntime)> {
 }
 
 /// Resolves the machine a command targets.
-async fn select(paths: &Paths, sel: &MachineSelector) -> anyhow::Result<(String, MachineRuntime)> {
+pub async fn select(paths: &Paths, sel: &MachineSelector) -> anyhow::Result<(String, MachineRuntime)> {
     if let Some(id) = &sel.machine {
         return Ok((id.clone(), paths.machine_runtime(id)));
     }

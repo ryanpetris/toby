@@ -187,6 +187,34 @@ pub struct MachineStatus {
     /// Guest boot for which the boot helpers last completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers_boot_id: Option<String>,
+    /// Attachments that are desired or still mounted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<AttachStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachState {
+    /// Mounted in the guest.
+    Ready,
+    /// Desired but not mounted; see the error.
+    Failed,
+}
+
+/// An attachment as the machine has it: mounted ones record where, so they
+/// can be detached even after the desired state no longer lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachStatus {
+    pub id: String,
+    pub host: String,
+    pub at: String,
+    #[serde(default)]
+    pub read_only: bool,
+    pub state: AttachState,
+    /// Why the attachment could not be mounted, or could not be detached
+    /// although the desired state no longer lists it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl MachineStatus {

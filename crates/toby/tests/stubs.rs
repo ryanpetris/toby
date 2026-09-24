@@ -11,7 +11,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["machine", "stop", "--all"],
     &["machine", "logs", "m1", "-f"],
     &["mount", "/tmp", "--at", "/x", "--ro", "--persist"],
-    &["unmount", "/tmp"],
     &["forward", "add", "3000", "--to-host"],
     &["forward", "rm", "f1"],
     &["forward", "ls"],

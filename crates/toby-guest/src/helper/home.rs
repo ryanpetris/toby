@@ -1,10 +1,10 @@
-//! `home-mount` and `links`.
+//! `home-mount`, `attach`, `detach` and `links`.
 
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use nix::mount::{MsFlags, mount};
+use nix::mount::{MntFlags, MsFlags, mount, umount2};
 
 /// Marks a home that has been set up, so `/etc/skel` is copied only once.
 const MARKER: &str = ".toby-home";
@@ -67,12 +67,23 @@ pub fn home_mount(device: &Path, at: &Path, uid: u32, gid: u32, skel: &Path) -> 
     Ok(())
 }
 
+/// The root (within its file system) of the mount at `path`, if any.
+fn mount_root_at(path: &Path) -> Option<String> {
+    let info = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    info.lines().rev().find(|l| l.split(' ').nth(4) == path.to_str())?.split(' ').nth(3).map(str::to_string)
+}
+
 /// Bind-mounts an attachment from the file share at `at`, without setuid
 /// or device files, read-only if requested.
 pub fn attach(src: &Path, at: &Path, read_only: bool) -> io::Result<()> {
     std::fs::create_dir_all(at)?;
-    if mounted_at(at) {
-        return Ok(());
+    if let Some(root) = mount_root_at(at) {
+        // Already attached (a helper run again after a restart), unless
+        // something else is mounted there.
+        if src.to_str().is_some_and(|s| s.ends_with(&root)) && root != "/" {
+            return Ok(());
+        }
+        return Err(io::Error::other(format!("something else is mounted at {}", at.display())));
     }
     mount(Some(src), at, None::<&str>, MsFlags::MS_BIND, None::<&str>)
         .map_err(|e| io::Error::other(format!("mounting {} at {}: {e}", src.display(), at.display())))?;
@@ -81,6 +92,23 @@ pub fn attach(src: &Path, at: &Path, read_only: bool) -> io::Result<()> {
         flags |= MsFlags::MS_RDONLY;
     }
     mount(None::<&str>, at, None::<&str>, flags, None::<&str>).map_err(io::Error::from)
+}
+
+/// Unmounts an attachment; refused while it is in use. The mount point is
+/// left as an empty directory nobody can write to, so writes meant for the
+/// attachment fail instead of landing in the root or home.
+pub fn detach(at: &Path) -> io::Result<()> {
+    if mount_root_at(at).is_some() {
+        umount2(at, MntFlags::empty()).map_err(|e| match e {
+            nix::errno::Errno::EBUSY => io::Error::other(format!("{} is in use", at.display())),
+            e => io::Error::other(format!("unmounting {}: {e}", at.display())),
+        })?;
+    }
+    if at.is_dir() {
+        std::os::unix::fs::chown(at, Some(0), Some(0))?;
+        std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o555))?;
+    }
+    Ok(())
 }
 
 /// Multi-call names linked to the `toby` binary in `/run/toby/bin`.

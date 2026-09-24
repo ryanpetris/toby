@@ -221,3 +221,53 @@ fn unmounted_paths_disappear() {
     assert!(fs.lookup(&ctx(&*fs), projects.inode.into(), &name("p")).is_err());
     assert!(f.tree.unmount("/projects/p").is_err());
 }
+
+#[test]
+fn symlinks_are_not_followed_on_the_host() {
+    let f = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret"), "s").unwrap();
+    std::os::unix::fs::symlink(outside.path(), f.rw.join("out")).unwrap();
+    std::os::unix::fs::symlink("../../..", f.rw.join("up")).unwrap();
+    let fs = f.tree.filesystem();
+    let c = ctx(&*fs);
+
+    for link in ["out", "up"] {
+        let e = walk(&*fs, &["projects", "p", link]);
+        assert_eq!(e.attr.st_mode & libc::S_IFMT, libc::S_IFLNK, "{link}");
+        // The guest gets the link text and resolves it in its own tree.
+        assert!(fs.readlink(&c, e.inode.into()).is_ok());
+        // Looking up a name under the link must not reach the host target.
+        assert!(fs.lookup(&c, e.inode.into(), &name("secret")).is_err(), "{link}");
+    }
+}
+
+#[test]
+fn crafted_names_and_inodes_are_refused() {
+    let f = fixture();
+    std::fs::create_dir(f.rw.join("sub")).unwrap();
+    let fs = f.tree.filesystem();
+    let c = ctx(&*fs);
+    let p = walk(&*fs, &["projects", "p"]);
+    let sub = walk(&*fs, &["projects", "p", "sub"]);
+
+    for n in ["../x", "a/b", "/etc", "..", "."] {
+        assert!(fs.lookup(&c, sub.inode.into(), &name(n)).is_err(), "{n}");
+        assert!(create(&*fs, p.inode, n, 0o644, 0).is_err(), "{n}");
+    }
+    for n in ["..", "."] {
+        assert!(fs.lookup(&c, ROOT_ID.into(), &name(n)).is_err(), "{n}");
+    }
+    // Inode numbers the server never handed out.
+    for ino in [u64::MAX, 0xdead_beef, p.inode + (1 << 40)] {
+        assert!(fs.lookup(&c, ino.into(), &name("file")).is_err(), "{ino:#x}");
+        assert!(fs.getattr(&c, ino.into(), None).is_err(), "{ino:#x}");
+    }
+    // Renames and links cannot move names out of their mount.
+    let v = walk(&*fs, &["versions"]);
+    let file = walk(&*fs, &["versions", "file"]);
+    assert!(fs.link(&c, file.inode.into(), p.inode.into(), &name("stolen")).is_err());
+    assert!(fs.rename(&c, p.inode.into(), &name("sub"), v.inode.into(), &name("moved"), 0).is_err());
+    assert!(!f.rw.join("stolen").exists());
+    assert!(!f.ro.join("moved").exists());
+}

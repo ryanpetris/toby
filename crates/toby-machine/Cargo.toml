@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+nix.workspace = true
 toby-config.workspace = true
 toby-engine.workspace = true
 toby-proto.workspace = true

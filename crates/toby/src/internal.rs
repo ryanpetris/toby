@@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use toby_config::global::GlobalConfig;
@@ -76,7 +77,7 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
         guest_uid,
         guest_gid: guest_uid,
     };
-    let tree = toby_vfs::Tree::new(squash)?;
+    let tree = Arc::new(toby_vfs::Tree::new(squash)?);
     let ro = |source: PathBuf| toby_vfs::MountSpec { source, read_only: true };
 
     let versions = host.config.programs.versions();
@@ -93,9 +94,11 @@ pub fn fs(machine: &str) -> anyhow::Result<()> {
     }
     for a in &host.spec.attach {
         let spec = toby_vfs::MountSpec { source: PathBuf::from(&a.host), read_only: a.read_only };
-        tree.mount(&format!("/projects/{}", a.id), spec).with_context(|| format!("attaching {}", a.host))?;
+        tree.mount(&toby_fs::control::attachment_path(&a.id)?, spec)
+            .with_context(|| format!("attaching {}", a.host))?;
     }
 
+    toby_fs::control::spawn(&host.runtime.fs_control_sock(), tree.clone())?;
     toby_fs::serve(&host.runtime.fs_sock(), tree.filesystem(), toby_svc::notify::ready)?;
     Ok(())
 }
@@ -167,6 +170,7 @@ fn machine_config(host: &Host) -> anyhow::Result<toby_machine::Config> {
     Ok(toby_machine::Config {
         id: host.spec.id.clone(),
         generation: host.spec.generation,
+        desired: host.paths.machine_desired(&host.spec.id),
         runtime: host.runtime.clone(),
         runtime_version: current_runtime_version(&host.config.programs.versions()),
         boot_helpers: boot_helpers(host)?,
@@ -360,14 +364,6 @@ pub fn boot_helpers(host: &Host) -> anyhow::Result<Vec<Vec<String>>> {
         ]));
     }
     out.push(helper(&["links", "--target", "/run/toby/fs/versions/current/toby"]));
-    for a in &host.spec.attach {
-        let src = format!("/run/toby/fs/projects/{}", a.id);
-        let mut args = vec!["attach", "--src", &src, "--at", &a.at];
-        if a.read_only {
-            args.push("--ro");
-        }
-        out.push(helper(&args));
-    }
     Ok(out)
 }
 

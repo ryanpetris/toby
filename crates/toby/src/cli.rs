@@ -41,6 +41,8 @@ pub enum Command {
     Unmount {
         /// Host path or attachment ID
         target: String,
+        #[command(flatten)]
+        machine: MachineSelector,
     },
     /// Manage port forwards
     #[command(subcommand)]
@@ -458,6 +460,11 @@ pub enum HelperCommand {
         at: PathBuf,
         #[arg(long)]
         ro: bool,
+    },
+    /// Unmount an attached host directory
+    Detach {
+        #[arg(long)]
+        at: PathBuf,
     },
 }
 

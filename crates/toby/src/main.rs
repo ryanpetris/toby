@@ -4,6 +4,7 @@ mod cli;
 mod client;
 mod images;
 mod internal;
+mod mounts;
 
 use std::process::ExitCode;
 
@@ -58,8 +59,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Sessions(SessionsCommand::Kill { id }) => return runtime()?.block_on(client::kill(&id)),
         Command::Attach { session } => return runtime()?.block_on(client::attach(session)),
         Command::Machine(_) => "machine",
-        Command::Mount(_) => "mount",
-        Command::Unmount { .. } => "unmount",
+        Command::Mount(a) => return runtime()?.block_on(mounts::mount(a)),
+        Command::Unmount { target, machine } => return runtime()?.block_on(mounts::unmount(target, machine)),
         Command::Forward(_) => "forward",
         Command::Image(cmd) => return runtime()?.block_on(images::image(cmd)),
         Command::Root(cmd) => return runtime()?.block_on(images::root(cmd)),
@@ -125,6 +126,7 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
         }
         HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
         HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
+        HelperCommand::Detach { at } => helper::detach(&at)?,
         HelperCommand::Build { id, kind, args } => {
             let args: Vec<String> = [id, kind].into_iter().chain(args).collect();
             helper::build::exec_script(&paths.root().join("build"), "build.sh", &args)?;
