@@ -1,6 +1,7 @@
 //! Wire formats shared by Toby processes: stream headers, relay control, the session protocol, machine
 //! control and file sharing control.
 
+pub mod capability;
 pub mod frame;
 pub mod fs;
 pub mod machine;

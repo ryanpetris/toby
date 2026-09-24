@@ -344,6 +344,7 @@ impl Builder {
             attach,
             forward: Vec::new(),
             capabilities: Default::default(),
+            idle_timeout: None,
         }
     }
 

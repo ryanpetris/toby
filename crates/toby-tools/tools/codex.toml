@@ -16,6 +16,8 @@ path = "~/.codex/config.toml"
 format = "toml"
 pointer = "/mcp_servers"
 entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
+http_entry = """{ "url": "{{ url }}" }"""
+command_entry = """{ "command": {{ command|tojson }}, "args": {{ args|tojson }} }"""
 
 # The login's callback on localhost reaches the guest.
 [[tool.forwards]]

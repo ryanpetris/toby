@@ -997,6 +997,7 @@ checksum = "86886cf6dbf4e614b19c9a1eec9775f021869d7eadde0fc73921a81b90c9b4c9"
 dependencies = [
  "memo-map",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1632,6 +1633,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "nix 0.31.3",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -1644,6 +1646,7 @@ dependencies = [
  "toby-svc",
  "toby-tools",
  "tokio",
+ "toml",
  "tower",
  "ureq",
 ]

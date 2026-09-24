@@ -98,7 +98,12 @@ pub struct Mcp {
     pub format: Format,
     /// JSON pointer of the object entries are written to.
     pub pointer: String,
+    /// A server reached with `toby-connect` (Toby's own, isolated ones).
     pub entry: String,
+    /// An HTTP server behind the proxy (`url`).
+    pub http_entry: Option<String>,
+    /// A server run in the machine (`command`, `args`).
+    pub command_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -163,6 +168,11 @@ pub struct Context {
     pub connect: String,
     /// MCP server name, when rendering an MCP entry.
     pub name: String,
+    /// An HTTP MCP server's URL through the proxy.
+    pub url: String,
+    /// A machine MCP server's command and arguments.
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +289,28 @@ mod tests {
         assert!(toml.contains("x = 1") && toml.contains("a = 1") && toml.contains("b = 2"), "{toml}");
         assert_eq!(patch(Some("old"), "new", Format::Text, Mode::Merge).unwrap(), "new");
         assert!(patch(Some("{"), "{}", Format::Json, Mode::Merge).is_err());
+    }
+
+    #[test]
+    fn mcp_entries_render_to_json() {
+        let ctx = Context {
+            connect: "/run/toby/bin/toby-connect".into(),
+            name: "gh".into(),
+            url: "http://127.0.0.1:41100/mcp/gh".into(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "srv \"x\"".into()],
+            ..Default::default()
+        };
+        for m in builtin() {
+            let mcp = m.tool.mcp.expect("built-in tools take MCP servers");
+            for t in
+                [Some(&mcp.entry), mcp.http_entry.as_ref(), mcp.command_entry.as_ref()].into_iter().flatten()
+            {
+                let out = render(t, &ctx).unwrap();
+                serde_json::from_str::<serde_json::Value>(&out)
+                    .unwrap_or_else(|e| panic!("{}: {out}: {e}", m.tool.name));
+            }
+        }
     }
 
     #[test]

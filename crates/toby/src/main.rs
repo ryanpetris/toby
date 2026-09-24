@@ -2,6 +2,7 @@
 
 mod admin;
 mod api;
+mod approvals;
 mod cli;
 mod client;
 mod forwards;
@@ -71,8 +72,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Root(cmd) => return runtime()?.block_on(images::root(cmd)),
         Command::Home(cmd) => return runtime()?.block_on(images::home(cmd)),
         Command::Builder(cmd) => return runtime()?.block_on(images::builder_cmd(cmd)),
-        Command::Mcp(_) => "mcp",
-        Command::Approvals(_) => "approvals",
+        Command::Mcp(cmd) => return runtime()?.block_on(approvals::mcp(cmd)),
+        Command::Approvals(args) => return runtime()?.block_on(approvals::approvals(args)),
         Command::Daemon(cmd) => return runtime()?.block_on(admin::daemon(cmd)),
         Command::Linger { state } => return runtime()?.block_on(admin::linger(state)),
         Command::Config(_) => "config",
@@ -106,7 +107,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     .block_on(toby_guest::session::run(toby_guest::paths::GuestPaths::from_env(), &id))?;
                 return Ok(ExitCode::SUCCESS);
             }
-            GuestCommand::Connect { .. } => "guest connect",
+            GuestCommand::Connect { target } => {
+                let socket = std::path::Path::new(toby_guest::connect::SANDBOX_SOCKET);
+                runtime()?.block_on(toby_guest::connect::run(socket, &target))?;
+                return Ok(ExitCode::SUCCESS);
+            }
             GuestCommand::Helper(cmd) => return helper(cmd).map(|()| ExitCode::SUCCESS),
         },
         Command::Tool(argv) => return runtime()?.block_on(tool::run(argv)),
@@ -134,6 +139,11 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
         HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
         HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
         HelperCommand::Detach { src, at } => helper::detach(&src, &at)?,
+        HelperCommand::ServeStdio { socket, command } => {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            let code = rt.block_on(helper::serve::serve_stdio(&socket, &command))?;
+            std::process::exit(code);
+        }
         HelperCommand::PatchFile { path, format, mode, content_hex } => {
             let bytes = (0..content_hex.len())
                 .step_by(2)

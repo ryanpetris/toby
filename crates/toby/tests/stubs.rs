@@ -7,15 +7,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_toby");
 
 const INVOCATIONS: &[&[&str]] = &[
     &["run", "-f", "launch.toml"],
-    &["mcp", "ls"],
-    &["mcp", "logs", "github"],
-    &["mcp", "restart", "github"],
-    &["approvals"],
-    &["approvals", "a1", "approve"],
     &["config", "get", "daemon.backend"],
     &["config", "set", "daemon.backend", "direct"],
     &["web"],
-    &["guest", "connect", "mcp/toby"],
 ];
 
 fn assert_stub(mut cmd: Command, label: &str) {
@@ -38,11 +32,13 @@ fn every_subcommand_runs() {
 #[test]
 fn multicall_names_dispatch() {
     let dir = tempdir();
+    // toby-connect is the guest's MCP bridge; outside a machine it has no
+    // sandbox socket to connect to.
     let link = dir.join("toby-connect");
     std::os::unix::fs::symlink(BIN, &link).unwrap();
-    let mut cmd = Command::new(&link);
-    cmd.arg("mcp/toby");
-    assert_stub(cmd, "toby-connect");
+    let out = Command::new(&link).arg("mcp/toby").output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("sandbox.sock"), "{out:?}");
 
     // tobyd is the daemon; its help shows the dispatch without starting it.
     let link = dir.join("tobyd");

@@ -567,6 +567,13 @@ impl Machine {
                 // over the control channel; the relay's answers there decide.
                 self.relay_up_if_idle().await;
             }
+            GuestHeader::Accepted(a)
+                if a.listener_id == forward::SANDBOX && self.forwards.target(forward::SANDBOX).is_some() =>
+            {
+                drop(_permit);
+                frame::send(&mut s, &Reply::ok()).await?;
+                self.sandbox(s).await?;
+            }
             GuestHeader::Accepted(a) => {
                 // Only listeners registered for this machine, each to its
                 // one configured target.
@@ -583,6 +590,60 @@ impl Machine {
                     Err(e) => frame::send(&mut s, &Reply::refused(format!("host target: {e}"))).await?,
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A connection to the sandbox capability: `toby-connect` names a target,
+    /// tobyd decides, and the connection goes to tobyd or straight to a
+    /// guest endpoint in another machine (plan §16.3).
+    async fn sandbox(&self, mut guest: UnixStream) -> io::Result<()> {
+        use toby_proto::capability::{CapRequest, CapResponse};
+        let req: CapRequest = tokio::time::timeout(GUEST_HEADER_TIMEOUT, frame::recv(&mut guest))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no request"))??;
+        let mut tobyd = match UnixStream::connect(&self.config.capability_sock).await {
+            Ok(s) => s,
+            Err(e) => {
+                frame::send(&mut guest, &Reply::refused(format!("tobyd is not reachable: {e}"))).await?;
+                return Ok(());
+            }
+        };
+        let hello = toby_proto::service::FromMachine { machine_id: self.config.id.clone() };
+        frame::send(&mut tobyd, &toby_proto::service::ServiceHeader::FromMachine(hello)).await?;
+        frame::send(&mut tobyd, &req).await?;
+        match frame::recv::<CapResponse, _>(&mut tobyd).await? {
+            CapResponse::Serve(_) => {
+                frame::send(&mut guest, &Reply::ok()).await?;
+                tokio::io::copy_bidirectional(&mut guest, &mut tobyd).await?;
+            }
+            CapResponse::Splice(sp) => {
+                drop(tobyd);
+                if sp.machine.is_empty()
+                    || !sp.machine.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    frame::send(&mut guest, &Reply::refused("invalid machine")).await?;
+                    return Ok(());
+                }
+                let vsock = self.config.runtime.dir.with_file_name(&sp.machine).join("vsock.sock");
+                // The target may take a moment to start listening.
+                let header = HostHeader::Dial(toby_proto::stream::Dial { target: sp.target });
+                let mut last = String::new();
+                for _ in 0..50 {
+                    match open_relay(&vsock, &header).await {
+                        Ok((mut other, Reply::Ok(_))) => {
+                            frame::send(&mut guest, &Reply::ok()).await?;
+                            tokio::io::copy_bidirectional(&mut guest, &mut other).await?;
+                            return Ok(());
+                        }
+                        Ok((_, Reply::Refused(r))) => last = r.error,
+                        Err(e) => last = e.to_string(),
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                frame::send(&mut guest, &Reply::refused(printable(last.as_bytes()))).await?;
+            }
+            CapResponse::Refused(r) => frame::send(&mut guest, &Reply::refused(r.error)).await?,
         }
         Ok(())
     }

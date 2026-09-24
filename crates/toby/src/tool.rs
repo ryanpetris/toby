@@ -136,6 +136,15 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
     };
     let created: toby_api::SessionCreated = api.post("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
-    attach_terminal(created.session_socket.into(), created.control_socket.into(), &created.id, true, false)
-        .await
+    let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
+    let result = attach_terminal(
+        created.session_socket.into(),
+        created.control_socket.into(),
+        &created.id,
+        true,
+        false,
+    )
+    .await;
+    notices.abort();
+    result
 }

@@ -1,11 +1,14 @@
 //! tobyd, the per-user control plane (plan §3, §8, §18).
 
+pub mod approvals;
 pub mod builder;
 pub mod builds;
 pub mod control;
 pub mod download;
 pub mod machines;
+pub mod mcp;
 pub mod server;
+pub mod services;
 pub mod supervisor;
 pub mod tools;
 
@@ -65,6 +68,7 @@ pub async fn run(
     config: GlobalConfig,
     paths: Paths,
     listener: tokio::net::UnixListener,
+    capability: tokio::net::UnixListener,
     on_ready: impl FnOnce(),
 ) -> io::Result<()> {
     let exe = supervisor::current_exe(&config.programs.versions())?;
@@ -89,7 +93,9 @@ pub async fn run(
         });
     }
     prune_build_logs(&paths.state.join("builds"));
-    let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default() });
+    let approvals = approvals::Approvals::new(paths.state.join("approvals"));
+    let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default(), approvals });
+    tokio::spawn(services::serve(daemon.clone(), capability));
     on_ready();
 
     let stopping = Arc::new(tokio::sync::Notify::new());

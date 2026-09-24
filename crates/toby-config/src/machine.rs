@@ -35,6 +35,10 @@ pub struct MachineSpec {
     pub forward: Vec<Forward>,
     #[serde(default)]
     pub capabilities: Capabilities,
+    /// Seconds without sessions before the machine stops, instead of
+    /// `daemon.idle_timeout` (services machines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

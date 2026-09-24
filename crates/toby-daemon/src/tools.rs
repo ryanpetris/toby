@@ -74,7 +74,7 @@ pub fn context(
         home,
         workspace: workspace.into(),
         connect: CONNECT.into(),
-        name: String::new(),
+        ..Default::default()
     })
 }
 
@@ -142,7 +142,61 @@ pub async fn prepare(
         let content = render(&f.template, &ctx).map_err(|e| err(format!("{name}: {}: {e}", f.path)))?;
         patch_file(machines, spec, &f.path, &content, f.format, f.mode).await?;
     }
-    Ok(())
+    write_mcp(machines, spec, manifest, &ctx).await
+}
+
+/// Writes the tool's MCP servers into its configuration (plan §16.3):
+/// Toby's own always, and those `[tools.<name>].mcp` names.
+async fn write_mcp(
+    machines: &Machines,
+    spec: &MachineSpec,
+    manifest: &Manifest,
+    ctx: &Context,
+) -> io::Result<()> {
+    use toby_config::global::{McpKind, Placement};
+    let tool = &manifest.tool;
+    let Some(mcp) = &tool.mcp else { return Ok(()) };
+    let config = machines.current_config();
+    let wanted = config.tools.get(&tool.name).map(|t| t.mcp.clone()).unwrap_or_default();
+    let mut servers = serde_json::Map::new();
+    for name in std::iter::once("toby".to_string()).chain(wanted) {
+        let mut ctx = ctx.clone();
+        ctx.name = name.clone();
+        let template = if name == "toby" {
+            &mcp.entry
+        } else {
+            let server = config.mcp.get(&name).ok_or_else(|| {
+                err(format!("tool {} names MCP server {name}, which is not configured", tool.name))
+            })?;
+            server.check(&name).map_err(err)?;
+            match (server.kind, server.placement()) {
+                (McpKind::Http, _) => {
+                    ctx.url = format!("http://{MODELS_LISTEN}/mcp/{name}");
+                    mcp.http_entry
+                        .as_ref()
+                        .ok_or_else(|| err(format!("{} cannot use HTTP MCP servers", tool.name)))?
+                }
+                (McpKind::Stdio, Placement::Isolated) => &mcp.entry,
+                (McpKind::Stdio, Placement::Machine) => {
+                    ctx.command = server.command[0].clone();
+                    ctx.args = server.command[1..].to_vec();
+                    mcp.command_entry
+                        .as_ref()
+                        .ok_or_else(|| err(format!("{} cannot run MCP servers itself", tool.name)))?
+                }
+            }
+        };
+        let entry = render(template, &ctx).map_err(|e| err(format!("{}: MCP {name}: {e}", tool.name)))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&entry).map_err(|e| err(format!("{}: MCP {name}: {e}", tool.name)))?;
+        servers.insert(name, value);
+    }
+    let patch = toby_tools::at_pointer(&mcp.pointer, serde_json::Value::Object(servers));
+    let content = match mcp.format {
+        toby_tools::Format::Toml => toml::to_string(&patch).map_err(|e| err(e.to_string()))?,
+        _ => patch.to_string(),
+    };
+    patch_file(machines, spec, &mcp.path, &content, mcp.format, toby_tools::Mode::Merge).await
 }
 
 /// Merges or writes a file in the home through the guest helper.

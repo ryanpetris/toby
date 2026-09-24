@@ -3,6 +3,7 @@ Description=Toby control plane socket
 
 [Socket]
 ListenStream=%t/toby/tobyd.sock
+ListenStream=%t/toby/capability.sock
 SocketMode=0600
 DirectoryMode=0700
 

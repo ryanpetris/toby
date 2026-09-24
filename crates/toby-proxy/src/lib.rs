@@ -91,7 +91,52 @@ impl Proxy {
         Ok(Proxy { config_path, paths, home, client })
     }
 
-    async fn handle(&self, machine: &str, mut req: Request<Incoming>) -> Response<Body> {
+    async fn handle(&self, machine: &str, req: Request<Incoming>) -> Response<Body> {
+        let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
+        match pq.strip_prefix("/mcp/") {
+            Some(rest) => self.mcp(rest, req).await,
+            None => self.models(machine, req).await,
+        }
+    }
+
+    /// An HTTP MCP server (plan §16.3): tools call `/mcp/<name>/…` and the
+    /// proxy adds the server's configured headers. The connection is from a
+    /// machine's own capability, which is what authorizes it.
+    async fn mcp(&self, rest: &str, mut req: Request<Incoming>) -> Response<Body> {
+        let config = match GlobalConfig::load(&self.config_path) {
+            Ok(c) => c,
+            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("configuration: {e}")),
+        };
+        let Some((name, tail)) = split_path(&format!("/{rest}")).map(|(n, t)| (n.to_string(), t.to_string()))
+        else {
+            return text(StatusCode::NOT_FOUND, "use /mcp/<server>");
+        };
+        let server = match config.mcp.get(&name) {
+            Some(s) if s.kind == toby_config::global::McpKind::Http => s,
+            _ => return text(StatusCode::NOT_FOUND, format!("no HTTP MCP server {name:?} is configured")),
+        };
+        let config_dir = self.config_path.parent().unwrap_or(&self.home).to_path_buf();
+        let resolve = |v: &str| toby_config::subst::resolve(v, &config_dir, &self.home);
+        let url = match server.url.as_deref().map(resolve) {
+            Some(Ok(u)) => u,
+            Some(Err(e)) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.url: {e}")),
+            None => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name} has no url")),
+        };
+        let upstream = format!("{}{tail}", url.trim_end_matches('/'));
+        let mut headers = Vec::new();
+        for (k, v) in &server.headers {
+            match resolve(v) {
+                Ok(v) => headers.push((k.clone(), v)),
+                Err(e) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.headers.{k}: {e}")),
+            }
+        }
+        for h in HOP_BY_HOP.iter().chain(&["authorization", "x-api-key"]) {
+            req.headers_mut().remove(*h);
+        }
+        self.forward(&name, req, &upstream, headers).await
+    }
+
+    async fn models(&self, machine: &str, mut req: Request<Incoming>) -> Response<Body> {
         let token_file = self.paths.machine_state_dir(machine).join("models-token");
         let expected = match std::fs::read_to_string(&token_file) {
             Ok(t) => t.trim().to_string(),
@@ -113,30 +158,43 @@ impl Proxy {
             return text(StatusCode::NOT_FOUND, format!("no model provider {name:?} is configured"));
         };
         let upstream = format!("{}{tail}", provider.url.trim_end_matches('/'));
-        let uri = match upstream.parse::<hyper::Uri>() {
-            Ok(u) => u,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("provider {name} url: {e}")),
-        };
 
         let config_dir = self.config_path.parent().unwrap_or(&self.home).to_path_buf();
-        let headers = req.headers_mut();
         for h in HOP_BY_HOP.iter().chain(&["authorization", "x-api-key"]) {
-            headers.remove(*h);
+            req.headers_mut().remove(*h);
         }
+        let mut headers = Vec::new();
         for (k, v) in &provider.headers {
-            let value = match toby_config::subst::resolve(v, &config_dir, &self.home) {
-                Ok(v) => v,
+            match toby_config::subst::resolve(v, &config_dir, &self.home) {
+                Ok(v) => headers.push((k.clone(), v)),
                 Err(e) => return text(StatusCode::BAD_GATEWAY, format!("provider {name} header {k}: {e}")),
-            };
-            match (HeaderName::try_from(k.as_str()), HeaderValue::try_from(value)) {
+            }
+        }
+        self.forward(name, req, &upstream, headers).await
+    }
+
+    /// Sends `req` to `upstream` with `headers` set, streaming both ways.
+    async fn forward(
+        &self,
+        name: &str,
+        mut req: Request<Incoming>,
+        upstream: &str,
+        headers: Vec<(String, String)>,
+    ) -> Response<Body> {
+        let uri = match upstream.parse::<hyper::Uri>() {
+            Ok(u) => u,
+            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+        };
+        for (k, v) in headers {
+            match (HeaderName::try_from(k.as_str()), HeaderValue::try_from(v)) {
                 (Ok(k), Ok(v)) => {
-                    headers.insert(k, v);
+                    req.headers_mut().insert(k, v);
                 }
-                _ => return text(StatusCode::BAD_GATEWAY, format!("provider {name} header {k} is invalid")),
+                _ => return text(StatusCode::BAD_GATEWAY, format!("{name}: header {k} is invalid")),
             }
         }
         if let Some(host) = uri.authority().and_then(|a| HeaderValue::try_from(a.as_str()).ok()) {
-            headers.insert(hyper::header::HOST, host);
+            req.headers_mut().insert(hyper::header::HOST, host);
         }
         *req.uri_mut() = uri;
         *req.version_mut() = hyper::Version::HTTP_11;

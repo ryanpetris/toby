@@ -295,6 +295,26 @@ pub struct CreateHome {
     pub uid: u32,
 }
 
+/// `GET /v1/approvals`: pending first, then recent decisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalInfo {
+    pub id: String,
+    pub created: u64,
+    pub machine: String,
+    pub kind: String,
+    pub summary: String,
+    pub detail: String,
+    /// `pending`, `approved`, `denied` or `expired`.
+    pub status: String,
+}
+
+/// `POST /v1/approvals/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decide {
+    /// `approve` or `deny`.
+    pub decision: String,
+}
+
 /// Names removed by a prune.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pruned {

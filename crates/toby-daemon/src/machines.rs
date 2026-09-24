@@ -392,6 +392,7 @@ impl Machines {
                 attach: Vec::new(),
                 forward: Vec::new(),
                 capabilities: Default::default(),
+                idle_timeout: None,
             },
         };
         let id = template.id.clone();
@@ -1086,6 +1087,19 @@ impl Machines {
 
     // Idle stop
 
+    /// Sets how long the machine may be idle before it stops.
+    pub fn set_idle_timeout(&self, id: &str, timeout: Duration) -> Result<()> {
+        let secs = timeout.as_secs();
+        if self.record(id)?.idle_timeout == Some(secs) {
+            return Ok(());
+        }
+        self.update_desired(id, |spec| {
+            spec.idle_timeout = Some(secs);
+            Ok(())
+        })
+        .map(drop)
+    }
+
     /// Removes records of stopped machines whose home or root no longer
     /// exists: that pair can never run again.
     async fn remove_stale(&self) {
@@ -1119,6 +1133,7 @@ impl Machines {
                     Err(_) => true,
                 };
                 let pinned = spec.attach.iter().any(|a| a.pinned) || spec.forward.iter().any(|f| f.pinned);
+                let timeout = spec.idle_timeout.map(Duration::from_secs).unwrap_or(timeout);
                 let now = Instant::now();
                 let last = *self.activity.lock().unwrap().entry(spec.id.clone()).or_insert(now);
                 if busy || pinned {

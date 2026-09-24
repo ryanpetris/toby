@@ -26,6 +26,103 @@ pub struct GlobalConfig {
     /// Per-tool settings, by tool name (plan §14.1).
     #[serde(default)]
     pub tools: std::collections::BTreeMap<String, ToolSettings>,
+    /// MCP servers, by name (plan §16.3).
+    #[serde(default)]
+    pub mcp: std::collections::BTreeMap<String, McpServer>,
+    #[serde(default)]
+    pub permissions: Permissions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpKind {
+    Stdio,
+    Http,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Placement {
+    /// In the tool's machine, as the user; no secrets.
+    Machine,
+    /// In a services machine of its own, with its secrets.
+    Isolated,
+}
+
+/// An MCP server (plan §16.3). Values in `env`, `url` and `headers` may use
+/// substitutions.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    pub kind: McpKind,
+    /// stdio: the command.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// stdio: its environment.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// stdio: where it runs; default isolated when it uses substitutions.
+    pub placement: Option<Placement>,
+    /// http: the server's URL.
+    pub url: Option<String>,
+    /// http: headers added by the proxy.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+fn uses_substitutions(s: &str) -> bool {
+    s.contains("{file:") || s.contains("{env:")
+}
+
+impl McpServer {
+    /// Where a stdio server runs.
+    pub fn placement(&self) -> Placement {
+        self.placement.unwrap_or_else(|| {
+            let secret = self.env.values().any(|v| uses_substitutions(v))
+                || self.command.iter().any(|c| uses_substitutions(c));
+            if secret { Placement::Isolated } else { Placement::Machine }
+        })
+    }
+
+    /// Checks the combination of fields.
+    pub fn check(&self, name: &str) -> Result<(), String> {
+        match self.kind {
+            McpKind::Stdio if self.command.is_empty() => {
+                Err(format!("mcp.{name}: a stdio server needs a command"))
+            }
+            McpKind::Stdio
+                if self.placement() == Placement::Machine
+                    && (self.env.values().any(|v| uses_substitutions(v))
+                        || self.command.iter().any(|c| uses_substitutions(c))) =>
+            {
+                Err(format!(
+                    "mcp.{name}: a server that runs in the tool's machine cannot use secrets; use placement = \"isolated\""
+                ))
+            }
+            McpKind::Http if self.url.is_none() => Err(format!("mcp.{name}: an http server needs a url")),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// How Toby MCP host actions are decided (plan §14.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActionPolicy {
+    Allow,
+    Deny,
+    /// Ask, unless `--yolo`.
+    Ask,
+    /// Ask, even with `--yolo`.
+    AlwaysAsk,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Permissions {
+    /// Host actions such as `git.push`, by name.
+    #[serde(default)]
+    pub actions: std::collections::BTreeMap<String, ActionPolicy>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -257,6 +354,23 @@ mod tests {
         let p = &cfg.models["anthropic"];
         assert_eq!(p.protocol, Protocol::Anthropic);
         assert_eq!(p.headers["x-api-key"], "{file:keys/a}");
+    }
+
+    #[test]
+    fn mcp_placement_follows_secrets() {
+        let cfg: GlobalConfig = toml::from_str(
+            "[mcp.gh]\nkind = \"stdio\"\ncommand = [\"gh-mcp\"]\nenv = { TOKEN = \"{file:keys/gh}\" }\n\
+             [mcp.fs]\nkind = \"stdio\"\ncommand = [\"fs-mcp\"]\n\
+             [mcp.bad]\nkind = \"stdio\"\ncommand = [\"x\"]\nplacement = \"machine\"\nenv = { T = \"{env:T}\" }\n\
+             [mcp.docs]\nkind = \"http\"\nurl = \"https://example.com/mcp\"\n\
+             [permissions.actions]\n\"git.push\" = \"always-ask\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.mcp["gh"].placement(), Placement::Isolated);
+        assert_eq!(cfg.mcp["fs"].placement(), Placement::Machine);
+        assert!(cfg.mcp["gh"].check("gh").is_ok() && cfg.mcp["docs"].check("docs").is_ok());
+        assert!(cfg.mcp["bad"].check("bad").is_err());
+        assert_eq!(cfg.permissions.actions["git.push"], ActionPolicy::AlwaysAsk);
     }
 
     #[test]

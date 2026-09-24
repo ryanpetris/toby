@@ -112,8 +112,17 @@ pub async fn run_session(
     };
     let created: toby_api::SessionCreated = api.post("/v1/sessions", &req).await?;
     api.warn(&created.warnings);
-    attach_terminal(created.session_socket.into(), created.control_socket.into(), &created.id, true, false)
-        .await
+    let notices = crate::approvals::notices(std::sync::Arc::new(api), created.machine.clone());
+    let result = attach_terminal(
+        created.session_socket.into(),
+        created.control_socket.into(),
+        &created.id,
+        true,
+        false,
+    )
+    .await;
+    notices.abort();
+    result
 }
 
 /// `toby attach [<session>]`.

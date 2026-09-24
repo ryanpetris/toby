@@ -25,6 +25,7 @@ pub struct Daemon {
     pub machines: Arc<Machines>,
     pub builder: Arc<Builder>,
     pub builds: Builds,
+    pub approvals: crate::approvals::Approvals,
 }
 
 type Shared = State<Arc<Daemon>>;
@@ -73,6 +74,8 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/roots/{name}", delete(remove_root))
         .route("/v1/homes", get(homes).post(create_home))
         .route("/v1/homes/{name}", delete(remove_home))
+        .route("/v1/approvals", get(approvals))
+        .route("/v1/approvals/{id}", post(decide))
         .with_state(daemon)
 }
 
@@ -449,6 +452,33 @@ async fn create_home(State(d): Shared, Json(req): Json<api::CreateHome>) -> ApiR
         })
     })?;
     Ok(started(b))
+}
+
+async fn approvals(State(d): Shared) -> ApiResult<Vec<api::ApprovalInfo>> {
+    let list = d.approvals.list()?;
+    Ok(Json(
+        list.into_iter()
+            .map(|a| api::ApprovalInfo {
+                id: a.id,
+                created: a.created,
+                machine: a.machine,
+                kind: a.kind,
+                summary: a.summary,
+                detail: a.detail,
+                status: a.status,
+            })
+            .collect(),
+    ))
+}
+
+async fn decide(State(d): Shared, Path(id): Path<String>, Json(req): Json<api::Decide>) -> ApiResult<()> {
+    let approve = match req.decision.as_str() {
+        "approve" => true,
+        "deny" => false,
+        _ => return Err(bad("approval.invalid", "decision must be approve or deny")),
+    };
+    d.approvals.decide(&id, approve, "cli")?;
+    Ok(Json(()))
 }
 
 async fn remove_home(State(d): Shared, Path(name): Path<String>) -> ApiResult<()> {

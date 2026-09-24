@@ -200,31 +200,47 @@ pub fn daemon() -> anyhow::Result<()> {
     };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let result = rt.block_on(async move {
-        // The socket systemd passed, or one of our own that we remove again.
-        let (listener, own) = match listeners.into_iter().next() {
-            Some(fd) => {
-                let l = std::os::unix::net::UnixListener::from(fd);
-                l.set_nonblocking(true)?;
-                (tokio::net::UnixListener::from_std(l)?, None)
-            }
+        // The sockets systemd passed (API, then capability), or our own.
+        let bind = |sock: &Path| -> anyhow::Result<(tokio::net::UnixListener, (PathBuf, u64))> {
+            let _ = std::fs::remove_file(sock);
+            let l = tokio::net::UnixListener::bind(sock)?;
+            std::fs::set_permissions(sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            let id = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(sock)?);
+            Ok((l, (sock.to_path_buf(), id)))
+        };
+        let from_fd = |fd: std::os::fd::OwnedFd| -> anyhow::Result<tokio::net::UnixListener> {
+            let l = std::os::unix::net::UnixListener::from(fd);
+            l.set_nonblocking(true)?;
+            Ok(tokio::net::UnixListener::from_std(l)?)
+        };
+        let mut fds = listeners.into_iter();
+        let mut own = Vec::new();
+        let listener = match fds.next() {
+            Some(fd) => from_fd(fd)?,
             None => {
                 let sock = paths.runtime.join(toby_api::SOCKET);
                 if tokio::net::UnixStream::connect(&sock).await.is_ok() {
                     bail!("tobyd is already running");
                 }
-                let _ = std::fs::remove_file(&sock);
-                let l = tokio::net::UnixListener::bind(&sock)?;
-                std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-                let id = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&sock)?);
-                (l, Some((sock, id)))
+                let (l, o) = bind(&sock)?;
+                own.push(o);
+                l
             }
         };
-        let result = toby_daemon::run(config, paths, listener, toby_svc::notify::ready).await;
-        // Only our own socket: a successor may have bound a new one.
-        if let Some((sock, id)) = own
-            && std::fs::metadata(&sock).is_ok_and(|m| std::os::unix::fs::MetadataExt::ino(&m) == id)
-        {
-            let _ = std::fs::remove_file(sock);
+        let capability = match fds.next() {
+            Some(fd) => from_fd(fd)?,
+            None => {
+                let (l, o) = bind(&paths.capability_sock())?;
+                own.push(o);
+                l
+            }
+        };
+        let result = toby_daemon::run(config, paths, listener, capability, toby_svc::notify::ready).await;
+        // Only our own sockets: a successor may have bound new ones.
+        for (sock, id) in own {
+            if std::fs::metadata(&sock).is_ok_and(|m| std::os::unix::fs::MetadataExt::ino(&m) == id) {
+                let _ = std::fs::remove_file(sock);
+            }
         }
         result?;
         anyhow::Ok(())

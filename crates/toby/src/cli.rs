@@ -467,6 +467,13 @@ pub enum HelperCommand {
         #[arg(long)]
         ro: bool,
     },
+    /// Run a command for one connection on a Unix socket
+    ServeStdio {
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Merge or write a configuration file (as the user)
     PatchFile {
         /// Path; `~/` is the home
