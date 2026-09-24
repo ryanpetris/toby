@@ -1,6 +1,7 @@
 # Toby VM rewrite: implementation plan
 
-Status: design agreed in discussion (2026-09-23/24). Not started.
+Status: design agreed in discussion (2026-09-23/24). M0 spikes done; results in
+`plans/m0-spikes.md`, and this plan reflects them.
 
 This plan replaces the current Go/Bubblewrap/OCI implementation with a Rust
 implementation that runs development tools inside KVM virtual machines. The
@@ -9,8 +10,9 @@ workspace. Nothing from the old design is kept for compatibility; the pre-1.0
 rules in `AGENTS.md` still apply (no shims, no dual paths, delete replaced
 behavior completely).
 
-Items marked **VERIFY** are assumptions to confirm in the milestone 0 spikes
-before anything is built on them.
+Items marked **VERIFY** are assumptions still to confirm: the static musl
+`mimalloc` build and CI KVM runners in M1, and the macOS items when that back
+end is designed.
 
 ---
 
@@ -213,19 +215,23 @@ Rules:
     (≥ v51: qcow2 `backing_files=on`, discard/write-zeroes on qcow2, hybrid
     vsock, vhost-user net and fs), installed at
     `/usr/lib/toby/cloud-hypervisor`.
-  - rust-hypervisor-firmware, upstream release binary, pinned version,
-    installed at `/usr/lib/toby/firmware/hypervisor-fw` (arch-dependent, so
-    `/usr/lib`, not `/usr/share`). Used only for the one-time bootstrap builder (§15.2).
+  - Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd` on x86_64,
+    `CLOUDHV_EFI.fd` on aarch64), upstream release binary from
+    `cloud-hypervisor/edk2`, pinned release, installed at
+    `/usr/lib/toby/firmware/CLOUDHV.fd` (arch-dependent, so `/usr/lib`, not
+    `/usr/share`). Used only for the one-time bootstrap builder (§15.2); it
+    boots the stock cloud image through shim, which rust-hypervisor-firmware
+    cannot.
   - mkosi, pinned release (Python source; LGPL-2.1-or-later), installed at
     `/usr/share/toby/mkosi/` and used only inside builder machines (served
     through the runtime tree), plus the default image's mkosi
     configuration at `/usr/share/toby/images/default/` (§15.1).
   - Pinned upstream release tags live in `packaging/bundled.toml` (e.g.
-    `cloud-hypervisor = "v51.1"`, `mkosi = "v26"`); no content hashes are
+    `cloud-hypervisor = "v53.0"`, `edk2 = "ch-97eeb7b09"`, `mkosi = "v27"`); no content hashes are
     stored in Toby. Packaging CI downloads the release artifacts for those
     tags over HTTPS, checks them against upstream-published checksums or
     signatures when the release provides them, and installs them. Licenses (Cloud Hypervisor Apache-2.0 /
-    BSD-3-Clause, firmware Apache-2.0, mkosi LGPL-2.1-or-later with its
+    BSD-3-Clause, edk2 firmware BSD-2-Clause-Patent, mkosi LGPL-2.1-or-later with its
     source) are installed with the package's
     license files (`/usr/share/licenses/toby/` on Arch,
     `/usr/share/doc/toby/copyright` on Debian).
@@ -234,9 +240,8 @@ Rules:
     bundled path. No `PATH` lookup for bundled programs, so Toby always
     uses the version it was tested with.
 - **System-installed** (package dependency, not bundled; GPL):
-  passt with vhost-user support (**VERIFY** minimum version and that Cloud
-  Hypervisor's `--net vhost_user=true` works with `passt --vhost-user`).
-  Found via config override or `PATH`; version checked.
+  passt with vhost-user support (tested with 2026_07_28). Found via config
+  override or `PATH`; version checked.
 - Toby never downloads programs at runtime. A missing or too-old program
   produces an error naming it, the required version and the package to
   install; `toby doctor` lists everything.
@@ -266,7 +271,7 @@ crates/
   toby-proto/                 wire formats: stream headers, relay control, session protocol, machine control
   toby-api/                   HTTP API types (serde + utoipa OpenAPI)
   toby-config/                config/manifest parsing, paths, secrets resolution
-  toby-store/                 images, roots, homes, boot kits, locks, qemu-img wrapper, GC
+  toby-store/                 images, roots, homes, boot kits, locks, qcow2 creation (imago), GC
   toby-engine/                VM engine trait + cloud-hypervisor implementation
   toby-svc/                   ServiceManager trait + systemd-user + direct implementations
   toby-vfs/                   virtio-fs server library (synthetic tree + passthrough mounts)
@@ -375,8 +380,8 @@ tree periodically so systemd-tmpfiles age-based cleanup does not remove it.
   maintainer), `Qcow2::create_builder`, for both empty images and overlays
   with a backing file and explicit backing format `qcow2` (never probe
   backing formats). Tests validate output with `qemu-img check` where
-  available (test-only dependency). **VERIFY** in M0 that the created
-  overlays open in Cloud Hypervisor with `backing_files=on`.
+  available (test-only dependency). Overlays created this way open in Cloud
+  Hypervisor with `backing_files=on`.
 - Root: qcow2 overlay `roots/<name>.qcow2` with backing file
   `images/<id>/disk.qcow2`, backing format `qcow2`.
   - `reset`: delete and recreate against the same image.
@@ -440,7 +445,7 @@ cloud-hypervisor
   --vsock cid=3,socket=<rt>/vsock.sock
   --rng src=/dev/urandom
   --console file=<rt>/console.log --serial off
-  [--firmware /usr/lib/toby/firmware/hypervisor-fw]   # bootstrap builder only (no --kernel)
+  [--firmware /usr/lib/toby/firmware/CLOUDHV.fd]      # bootstrap builder only (no --kernel)
   [--platform oem_strings=[...]]                      # bootstrap builder only (credential injection)
 ```
 
@@ -595,8 +600,8 @@ matches the image's distro.
 
 A pre-pivot hook runs in the initramfs just before switching root and
 writes runtime units into `/run/systemd/system` of the real root
-(`/run` is carried from the initramfs into the booted system — **VERIFY**
-with the chosen distro kernel/dracut combination):
+(`/run` is carried from the initramfs into the booted system; confirmed with
+Debian 13 and Arch kernels and dracut):
 
 - `run-toby-fs.mount`: `What=toby`, `Type=virtiofs`, `Where=/run/toby/fs`,
   `Options=ro,nosuid,nodev` (the runtime subtree is read-only; attachments
@@ -616,7 +621,8 @@ adaptation installs it into the image at
 ### 9.3 The bootstrap builder boots differently
 
 The one-time bootstrap builder (§15.2) boots the stock cloud image with the
-bundled firmware (the cloud image's own bootloader, kernel and initramfs).
+bundled edk2 firmware (the cloud image's own shim, GRUB, kernel and
+initramfs).
 Toby's units are injected with systemd credentials in SMBIOS OEM strings
 (Cloud Hypervisor `--platform oem_strings`), which requires systemd ≥ 256 in
 the bootstrap image (Debian 13 has 257):
@@ -625,8 +631,9 @@ the bootstrap image (Debian 13 has 257):
 - `io.systemd.credential.binary:systemd.extra-unit.toby-relay.service=<base64>`
 - `io.systemd.credential.binary:systemd.unit-dropin.multi-user.target~toby=<base64 "[Unit]\nWants=toby-relay.service">`
 
-**VERIFY** Cloud Hypervisor OEM strings reach systemd as credentials and
-that rust-hypervisor-firmware boots the chosen cloud image.
+Cloud Hypervisor OEM strings reach systemd 257 as system credentials
+(confirmed in M0). The Debian cloud image has no network without a cloud-init
+datasource; `net-up` (§9.6) configures it like every other machine.
 
 ### 9.4 Guest runtime tree (served by `toby-fs`)
 
@@ -660,8 +667,9 @@ served as long as any machine still runs something from it.
 
 All run as `Root` through the relay, in order, idempotent:
 
-1. `toby-helper net-up --addr … --gw … --dns …`: configures `eth0`, default
-   route and `lo` via netlink; writes `/run/toby/resolv.conf` and
+1. `toby-helper net-up --addr … --gw … --dns …`: configures the virtio-net
+   interface (selected by driver, since its name follows the PCI slot),
+   default route and `lo` via netlink; writes `/run/toby/resolv.conf` and
    bind-mounts it over `/etc/resolv.conf` (handles a symlinked
    `/etc/resolv.conf`). Sets the hostname to the home name.
 2. `toby-helper user-setup --name <u> --uid <n> --shell <sh> --sudo=<bool>`:
@@ -734,15 +742,26 @@ host.
    attachments are left as empty directories owned by root with mode 0555
    so writes fail instead of landing in the root.
 
-### 10.5 Risks
+### 10.5 Implementation notes (from M0)
 
-- **VERIFY** fuse-backend-rs passthrough works fully unprivileged
-  (file handles, `CAP_DAC_READ_SEARCH`, `O_PATH` behavior). Fallback: run
-  one upstream `virtiofsd` per attachment with `--translate-uid` /
-  `--translate-gid` and Cloud Hypervisor hotplug of fs devices; this changes
-  only `toby-fs`/`toby-machine`, not the rest of the design.
-- Performance on large repositories (`git status`, `npm install`):
-  benchmark cache modes in milestone 4.
+- Crate versions must match fuse-backend-rs: `fuse-backend-rs` 0.14 (feature
+  `vhost-user-fs`), `vhost-user-backend` 0.21, `vhost` 0.15, `virtio-queue`
+  0.17, `vm-memory` =0.17.1.
+- Passthrough runs unprivileged with `inode_file_handles = false` (inodes are
+  `O_PATH` descriptors).
+- The identity policy of §10.3 is a wrapper file system above the `Vfs`: its
+  `id_remap` sets the request context to uid/gid 0 so the passthrough never
+  switches credentials, and replies are mapped. Read-only mounts (runtime tree,
+  `--ro` attachments) are wrapped so every write returns `EROFS`, even if the
+  guest remounts the share read-write.
+- The wrapper rejects `.` and `..` lookups (the `Vfs` accepts them for NFS
+  export).
+- A second `FUSE_INIT` resets the session: edk2 firmware sends its own `INIT`
+  before the kernel, and Cloud Hypervisor sends no `RESET_DEVICE`.
+- Requests are processed by a worker pool; a single-threaded queue was 3x
+  slower than virtiofsd for bulk writes (metadata-heavy work such as
+  `git status` on 96k files matched virtiofsd).
+- Removing a mount leaves an empty pseudo directory; `toby-fs` removes it.
 
 ---
 
@@ -750,14 +769,24 @@ host.
 
 ### 11.1 Egress
 
-`toby-net@<id>` runs `passt --vhost-user` on `<rt>/net.sock` with fixed
-guest addressing (`10.0.2.15/24`, gateway `10.0.2.2`, DNS forwarder
-`10.0.2.3`; configurable), no inbound port forwarding. Cloud Hypervisor
-connects as a vhost-user net client.
+`toby-net@<id>` runs passt with fixed guest addressing (`10.0.2.15/24`,
+gateway `10.0.2.2`, DNS forwarder `10.0.2.3`; configurable) and no inbound
+port forwarding. Cloud Hypervisor connects as a vhost-user net client.
 
-Fallback if vhost-user passt is not usable (**VERIFY**): run
-cloud-hypervisor inside a pasta-created user+network namespace with a tap
-device. Only `toby-net`/`toby-vm` units change.
+```text
+passt --vhost-user -s <rt>/net.sock -f -4 -a 10.0.2.15 -n 24 -g 10.0.2.2 \
+      --dns-forward 10.0.2.3 -D 10.0.2.3 --dns-host <first host nameserver> \
+      --no-map-gw -t none -u none
+```
+
+- `--no-map-gw` keeps host loopback services unreachable from the guest.
+  With it, passt forwards DNS to `0.0.0.0` unless `--dns-host` names the
+  upstream, so `toby internal net` always passes the first nameserver of the
+  host's `/etc/resolv.conf` (a `127.0.0.53` stub works).
+- passt keeps running after the VMM disconnects; it is stopped with its
+  machine (unit relationships or the direct supervisor), tracked by PID
+  (it re-executes under another name, e.g. `passt.avx2`). A stale
+  `net.sock.repair` is removed before start.
 
 ### 11.2 vsock transport (Cloud Hypervisor hybrid vsock)
 
@@ -1275,9 +1304,10 @@ image, so the first build needs a different starting point:
    with the bundled firmware and credential injection (§9.3).
 3. Provision as root: `apt-get update && apt-get full-upgrade`, then
    install the default image's builder dependencies from Debian
-   (`apt-get install python3 bubblewrap buildah podman
-   e2fsprogs dracut` plus mkosi's other runtime dependencies for Debian
-   targets).
+   (`apt-get install python3 python3-pefile bubblewrap buildah podman
+   e2fsprogs dracut dracut-core debian-archive-keyring zstd cpio
+   systemd-container uidmap fuse-overlayfs`, mkosi's runtime dependencies for
+   Debian targets).
 4. Build the default image in it with the bundled mkosi and the bundled
    configuration (§15.3, §15.4). Power off.
 5. From now on builder machines boot the default image. The bootstrap cloud
@@ -1295,14 +1325,16 @@ image, so the first build needs a different starting point:
    `/build/context`, and the new image directory `images/<new>.tmp/`
    attached writable at `/build/boot`.
 2. Produce the root tree (as root, streamed to the build log):
-   - mkosi: `python3 /run/toby/fs/runtime/mkosi/bin/mkosi
+   - mkosi: `/run/toby/fs/runtime/mkosi/bin/mkosi
      -C /build/context --format=directory --architecture=<arch>
-     --output-directory=/build/tree --incremental=yes
+     --output-directory=/cache/work --output=tree
+     --workspace-directory=/cache/work --incremental=yes
      --package-cache-directory=/cache/mkosi/packages
      --cache-directory=/cache/mkosi/cache --tools-tree=default build`
-     (the tools tree provides the package manager for non-Debian targets;
-     it is cached on the cache disk). The tree is the configured output
-     under `/build/tree`. Confirm option names against the pinned mkosi
+     (`bin/mkosi` is a shell wrapper that finds Python itself; the tools tree
+     provides the package manager for non-Debian targets and is cached on the
+     cache disk). The tree is `/cache/work/tree`; build trees and the mkosi
+     workspace live on the cache disk so nothing is copied across devices. Confirm option names against the pinned mkosi
      release; Toby's overrides always win over the user's `mkosi.conf` for
      format, architecture, output and cache locations.
    - Dockerfile: `buildah build --layers -f <file> -t toby/build
@@ -1316,7 +1348,7 @@ image, so the first build needs a different starting point:
 3. Boot adaptation (§15.4) on the tree, run with `chroot` into it (or
    `buildah run` for container sources).
 4. Export: `mkfs.ext4 -L toby-root /dev/disk/by-id/virtio-out`, mount at
-   `/out`, `cp -a --sparse=always "$tree"/. /out/`, copy the kernel and
+   `/out`, `cp -a --sparse=always --one-file-system "$tree"/. /out/`, copy the kernel and
    generated initramfs to `/build/boot/` (`vmlinuz`, `initramfs.img`),
    capture the image config (container sources: `buildah inspect --type
    image`; mkosi: empty config plus `os-release`) into the image record,
@@ -1331,7 +1363,9 @@ toby-home`, §6.2).
 
 ### 15.4 Boot adaptation
 
-Runs inside the root tree as root (for every source kind; idempotent, so
+Runs inside the root tree as root, in a private mount namespace
+(`unshare -m`) so the `/proc`, `/sys` and `/dev` mounts it needs can never
+leak into the export (for every source kind; idempotent, so
 mkosi configurations that already include the kernel, dracut and systemd
 only get the hook and initramfs). Detects the distro from
 `/etc/os-release` (`ID`, `ID_LIKE`) and uses its package manager for
@@ -1350,7 +1384,7 @@ Then:
    `/usr/lib/dracut/modules.d/99toby/` (copied from the runtime tree).
 2. Generate the initramfs:
    `dracut --no-hostonly --force --kver <kver> --add toby --add-drivers "…virtio list…" /boot/toby-initramfs.img`.
-3. Make `/sbin/init` resolve to systemd; mask units that make no sense in a
+3. Run `systemd-hwdb update`; make `/sbin/init` resolve to systemd; mask units that make no sense in a
    Toby machine (`getty@tty1`, `serial-getty@hvc0`, `systemd-firstboot`,
    network managers that would fight `net-up`); empty `/etc/machine-id` so
    each root gets its own on first boot.
@@ -1617,7 +1651,7 @@ Keep these boundaries platform-neutral from the first commit:
 | Interface | Linux implementation | Later macOS implementation |
 | --- | --- | --- |
 | `Engine` | cloud-hypervisor child process | Virtualization.framework inside `toby-machine` (signed, virtualization entitlement) |
-| `DiskStore` | qcow2 + backing files via `qemu-img` | raw disks, APFS clones |
+| `DiskStore` | qcow2 + backing files via `imago` | raw disks, APFS clones |
 | `FileShare` | `toby-fs` vhost-user virtio-fs | VZ virtio-fs shares (**VERIFY** runtime share changes) |
 | `StreamTransport` | hybrid vsock Unix sockets | VZ virtio socket device |
 | `Network` | passt vhost-user | VZ NAT |
@@ -1630,8 +1664,8 @@ side is always Linux and identical on every host.
 
 aarch64: the `toby` binary built for `aarch64-unknown-linux-musl`;
 bootstrap uses Debian arm64 genericcloud; boot adaptation installs the
-distro's arm64 kernel; bundled firmware for Cloud Hypervisor on aarch64 is
-edk2 `CLOUDHV_EFI.fd` rather than rust-hypervisor-firmware (**VERIFY**).
+distro's arm64 kernel; the bundled firmware on aarch64 is edk2
+`CLOUDHV_EFI.fd` from the same release as the x86_64 `CLOUDHV.fd`.
 
 ---
 
@@ -1719,8 +1753,8 @@ so they are recreated on every start.
 
 Disk images: `imago` (qcow2 creation).
 
-External programs: bundled `cloud-hypervisor`, rust-hypervisor-firmware
-and mkosi (§4); system-installed `passt` and `journalctl` (systemd-user
+External programs: bundled `cloud-hypervisor`, edk2 firmware and mkosi
+(§4); system-installed `passt` and `journalctl` (systemd-user
 back end). No programs are downloaded at runtime. Inside builder machines
 (from the default image): `podman`/`buildah`, `dracut`, `e2fsprogs`,
 `python3`, `bubblewrap` and mkosi's other dependencies.
@@ -1737,7 +1771,7 @@ user-visible behavior; acceptance criteria demonstrated.
 
 ### M0: Spikes (throwaway code, answers every VERIFY)
 
-1. Builder boot: Cloud Hypervisor with rust-hypervisor-firmware boots
+1. Builder boot: Cloud Hypervisor with bundled firmware boots
    Debian 13 genericcloud from an `imago`-created overlay; OEM-string
    credentials inject a unit that starts.
 2. Boot adaptation by hand on two trees (a Debian tree from mkosi
@@ -1849,7 +1883,7 @@ As §21.
 ### M11: Packaging and polish
 
 Arch and Debian packages (the `toby` binary, units, dracut module, bundled
-cloud-hypervisor and rust-hypervisor-firmware from `packaging/bundled.toml`
+cloud-hypervisor and edk2 firmware from `packaging/bundled.toml`
 with their licenses, `passt` as a dependency), user docs, `image prune`, `root rebase`
 indicators, error message review, aarch64 enablement.
 
@@ -1875,7 +1909,7 @@ Decided (kept for reference):
 
 1. Verbs: `toby attach` for sessions, `toby mount` / `toby unmount` for
    host paths (§20).
-2. Cloud Hypervisor and rust-hypervisor-firmware are bundled in
+2. Cloud Hypervisor and its edk2 firmware are bundled in
    `/usr/lib/toby/`; passt is a system dependency; no program is downloaded
    at runtime.
 3. No prebuilt images. Users' existing image sources are built and
