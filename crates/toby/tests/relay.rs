@@ -36,14 +36,25 @@ fn env() -> Env {
     record::write(&paths.user_file(), &user).unwrap();
 
     let accepted = Arc::new(Mutex::new(Vec::new()));
+    let relay = Relay::new(paths, BIN.into(), Launcher::Direct, connector(&accepted));
+    Env { dir, relay, accepted }
+}
+
+fn connector(accepted: &Arc<Mutex<Vec<DuplexStream>>>) -> Connector {
     let sink = accepted.clone();
-    let connector: Connector = Arc::new(move || {
+    Arc::new(move || {
         let (host, guest) = tokio::io::duplex(1 << 16);
         sink.lock().unwrap().push(host);
         Box::pin(async move { Ok(Box::new(guest) as BoxStream) })
-    });
-    let relay = Relay::new(paths, BIN.into(), Launcher::Direct, connector);
-    Env { dir, relay, accepted }
+    })
+}
+
+impl Env {
+    /// A new relay process on the same guest state.
+    fn restart_relay(&mut self) {
+        let paths = GuestPaths::at(self.dir.path());
+        self.relay = Relay::new(paths, BIN.into(), Launcher::Direct, connector(&self.accepted));
+    }
 }
 
 fn open(env: &Env) -> DuplexStream {
@@ -393,7 +404,7 @@ async fn first_line(s: &mut DuplexStream) -> String {
 /// relay reports each session's version.
 #[tokio::test]
 async fn sessions_keep_their_version_across_an_upgrade() {
-    let env = env();
+    let mut env = env();
     for v in ["1.0.0", "1.1.0"] {
         let dir = env.dir.path().join("fs/versions").join(v);
         std::fs::create_dir_all(&dir).unwrap();
@@ -412,8 +423,12 @@ async fn sessions_keep_their_version_across_an_upgrade() {
     let line = first_line(&mut old).await;
     assert!(line.contains("/versions/1.0.0/toby guest session"), "{line}");
 
-    // A host process restarted on the new version spawns with it; the
-    // session already running keeps its own.
+    // The control processes restart on the new version and spawn with it;
+    // the session already running keeps its own.
+    drop(old);
+    env.restart_relay();
+    let mut c = control(&env).await;
+    let mut old = attach(&env, "old").await;
     assert!(matches!(call(&mut c, spawn("new", "1.1.0")).await, Response::Spawned(_)));
     let mut new = attach(&env, "new").await;
     let line = first_line(&mut new).await;

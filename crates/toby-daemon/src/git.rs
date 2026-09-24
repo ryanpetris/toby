@@ -27,6 +27,7 @@ const MAX_REFS: usize = 100_000;
 /// Settings every command runs with, over any config.
 const OVERRIDES: &[&str] = &[
     "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
     "protocol.allow=never",
     "protocol.https.allow=always",
     "protocol.ssh.allow=always",
@@ -73,6 +74,9 @@ pub struct Repo {
     remotes: Vec<Remote>,
     /// The project is mounted read-only.
     pub read_only: bool,
+    /// Host directories of every attachment: files beneath them are the
+    /// guests'.
+    guest_roots: Vec<PathBuf>,
 }
 
 fn err(msg: impl Into<String>) -> io::Error {
@@ -258,6 +262,7 @@ pub fn open(spec: &MachineSpec, guest_roots: &[PathBuf], guest: &str) -> Result<
         object_format,
         remotes: remotes(&entries),
         read_only: attach.read_only,
+        guest_roots: guest_roots.iter().cloned().chain(std::iter::once(root)).collect(),
     })
 }
 
@@ -439,6 +444,23 @@ impl Repo {
         out
     }
 
+    /// Where git goes for `url` with the host's git config applied
+    /// (`insteadOf`, `pushInsteadOf` for a push), after checking that no
+    /// guest can write that config.
+    pub async fn destination(&self, scratch: &Path, url: &str, push: bool) -> Result<String, String> {
+        let url = self::url(url)?;
+        std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
+        let dir = tempfile::Builder::new().prefix("git-").tempdir_in(scratch).map_err(|e| e.to_string())?;
+        let ok = |o: Output| if o.status.success() { Ok(o) } else { Err(output(&o)) };
+        ok(run_git(dir.path(), &["init", "-q", "--bare"], Vec::new()).await?)?;
+        check_host_config(dir.path(), &self.guest_roots).await?;
+        ok(run_git(dir.path(), &["remote", "add", "r", url], Vec::new()).await?)?;
+        let args: &[&str] =
+            if push { &["remote", "get-url", "--push", "r"] } else { &["remote", "get-url", "r"] };
+        let out = ok(run_git(dir.path(), args, Vec::new()).await?)?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// Fetches `remote`'s branches into `refs/remotes/<remote>/`, with the
     /// objects written into the project as packs. Returns git's output.
     pub async fn fetch(&self, scratch: &Path, remote: &Remote) -> Result<String, String> {
@@ -549,6 +571,7 @@ impl Private {
         if !out.status.success() {
             return Err(output(&out));
         }
+        check_host_config(p.dir.path(), &repo.guest_roots).await?;
         p.take_objects(repo).map_err(|e| format!("reading the project's objects: {e}"))?;
         Ok(p)
     }
@@ -632,38 +655,64 @@ impl Private {
     }
 
     async fn run_with(&self, args: &[&str], input: Vec<u8>) -> Result<Output, String> {
-        let mut cmd = tokio::process::Command::new("git");
-        cmd.arg("--git-dir").arg(self.dir.path());
-        for o in OVERRIDES {
-            cmd.arg("-c").arg(o);
-        }
-        #[cfg(test)]
-        if tests::LOCAL_REMOTES.get() {
-            cmd.args(["-c", "protocol.file.allow=always"]);
-        }
-        cmd.args(args)
-            .current_dir(self.dir.path())
-            .env_clear()
-            .envs(clean_env())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let run = async {
-            let mut child = cmd.spawn()?;
-            let mut stdin = child.stdin.take().expect("piped");
-            let feed = async move {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(&input).await;
-            };
-            let (out, ()) = tokio::join!(child.wait_with_output(), feed);
-            out
+        run_git(self.dir.path(), args, input).await
+    }
+}
+
+/// Refuses when a git config file of the host (system, global, or one they
+/// include) lies where a guest can write it: its settings run commands
+/// and redirect URLs.
+async fn check_host_config(git_dir: &Path, guest_roots: &[PathBuf]) -> Result<(), String> {
+    let out =
+        run_git(git_dir, &["config", "--list", "--show-origin", "--includes", "--null"], Vec::new()).await?;
+    for entry in out.stdout.split(|b| *b == 0).step_by(2) {
+        let Some(path) = std::str::from_utf8(entry).ok().and_then(|o| o.strip_prefix("file:")) else {
+            continue;
         };
-        match tokio::time::timeout(TIMEOUT, run).await {
-            Ok(Ok(o)) => Ok(o),
-            Ok(Err(e)) => Err(format!("running git: {e}")),
-            Err(_) => Err(format!("git did not finish within {} seconds", TIMEOUT.as_secs())),
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        if guest_roots.iter().any(|r| path.starts_with(r)) {
+            return Err(format!(
+                "your git config {} is inside a mounted project, so Toby's git actions do not run",
+                path.display()
+            ));
         }
+    }
+    Ok(())
+}
+
+/// Runs git with `git_dir` as its repository and the host's settings.
+async fn run_git(git_dir: &Path, args: &[&str], input: Vec<u8>) -> Result<Output, String> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("--git-dir").arg(git_dir);
+    for o in OVERRIDES {
+        cmd.arg("-c").arg(o);
+    }
+    #[cfg(test)]
+    if tests::LOCAL_REMOTES.get() {
+        cmd.args(["-c", "protocol.file.allow=always"]);
+    }
+    cmd.args(args)
+        .current_dir(git_dir)
+        .env_clear()
+        .envs(clean_env())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let run = async {
+        let mut child = cmd.spawn()?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let feed = async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&input).await;
+        };
+        let (out, ()) = tokio::join!(child.wait_with_output(), feed);
+        out
+    };
+    match tokio::time::timeout(TIMEOUT, run).await {
+        Ok(Ok(o)) => Ok(o),
+        Ok(Err(e)) => Err(format!("running git: {e}")),
+        Err(_) => Err(format!("git did not finish within {} seconds", TIMEOUT.as_secs())),
     }
 }
 

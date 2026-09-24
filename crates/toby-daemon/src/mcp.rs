@@ -73,6 +73,11 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
+/// A remote URL, and where the host's git config sends it if elsewhere.
+fn via(url: &str, to: &str) -> String {
+    if url == to { url.to_string() } else { format!("{url} via {to}") }
+}
+
 pub struct Server {
     pub daemon: Arc<Daemon>,
     pub machine: String,
@@ -168,7 +173,8 @@ impl Server {
                 if repo.read_only {
                     return Err(format!("{path} is mounted read-only"));
                 }
-                let summary = format!("git fetch {} ({}) into {at}", remote.name, remote.url());
+                let to = repo.destination(&scratch, remote.url(), false).await?;
+                let summary = format!("git fetch {} ({}) into {at}", remote.name, via(remote.url(), &to));
                 self.permitted("git.fetch", summary, String::new()).await?;
                 repo.fetch(&scratch, remote).await
             }
@@ -178,11 +184,12 @@ impl Server {
                     None => repo.branch()?,
                 };
                 let id = repo.resolve(&format!("refs/heads/{branch}"))?;
+                let to = repo.destination(&scratch, remote.push_url(), true).await?;
                 let summary = format!(
                     "git push {branch} ({}) to {} ({}) from {at}",
                     &id[..12],
                     remote.name,
-                    remote.push_url()
+                    via(remote.push_url(), &to)
                 );
                 self.permitted("git.push", summary, String::new()).await?;
                 repo.push(&scratch, remote, &branch, &id).await

@@ -83,24 +83,28 @@ impl Supervisor {
         }
     }
 
-    /// Restarts the models proxy (process `pid`) on the current version.
-    pub async fn restart_proxy(&self, paths: &Paths, pid: i32) -> io::Result<()> {
+    /// Restarts the models proxy (process `p`) on the current version.
+    pub async fn restart_proxy(&self, paths: &Paths, p: &crate::versions::HostProcess) -> io::Result<()> {
         match self {
             Supervisor::Systemd(s) => s.try_restart("toby-proxy.service").await,
             Supervisor::Direct { .. } => {
-                terminate(pid).await?;
+                terminate(p).await?;
                 self.ensure_proxy(paths).await
             }
         }
     }
 
-    /// Restarts a machine's host process (process `pid`) on the current
+    /// Restarts a machine's host process (process `p`) on the current
     /// version; the VM keeps running.
-    pub async fn restart_machine_process(&self, id: &str, pid: i32) -> io::Result<()> {
+    pub async fn restart_machine_process(
+        &self,
+        id: &str,
+        p: &crate::versions::HostProcess,
+    ) -> io::Result<()> {
         match self {
             Supervisor::Systemd(s) => s.try_restart(&format!("toby-machine@{id}.service")).await,
             // The machine's supervisor starts it again.
-            Supervisor::Direct { .. } => terminate(pid).await,
+            Supervisor::Direct { .. } => terminate(p).await,
         }
     }
 
@@ -128,16 +132,35 @@ impl Supervisor {
     }
 }
 
-/// Sends SIGTERM to `pid` and waits up to five seconds for it to exit.
-async fn terminate(pid: i32) -> io::Result<()> {
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM)?;
-    for _ in 0..50 {
-        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+/// Sends SIGTERM to process `p` and waits up to five seconds for it to
+/// exit. The signal goes through a pidfd opened while `p` still was that
+/// process, so a later process that got its pid is never signalled.
+pub(crate) async fn terminate(p: &crate::versions::HostProcess) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let gone = |e: io::Error| if e.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(e) };
+    // SAFETY: pidfd_open takes a pid and flags and returns a new fd.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, p.pid, 0) };
+    if fd < 0 {
+        return gone(io::Error::last_os_error());
     }
-    Err(io::Error::new(io::ErrorKind::TimedOut, format!("process {pid} did not exit")))
+    // SAFETY: the fd was just returned and is owned here.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    if crate::versions::start_time(p.pid) != Some(p.start) {
+        return Ok(());
+    }
+    // SAFETY: a valid pidfd, a signal number, no siginfo, no flags.
+    let sent = unsafe {
+        libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), libc::SIGTERM, std::ptr::null::<u8>(), 0)
+    };
+    if sent < 0 {
+        return gone(io::Error::last_os_error());
+    }
+    // A pidfd becomes readable when its process exits.
+    let fd = tokio::io::unix::AsyncFd::new(fd)?;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), fd.readable()).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, format!("process {} did not exit", p.pid))),
+    }
 }
 
 /// The pid of the machine's supervisor, if the pid file names a live

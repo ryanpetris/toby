@@ -1694,8 +1694,11 @@ decided or timed out.
 
 The guest writes the repository, so git never runs in it: its config and
 hooks can run commands. Each fetch or push uses a private bare repository
-with a host-written config that reads the project's objects through an
-alternate, over `https`/`ssh` only, to the URL shown in the approval;
+with a host-written config holding hard links to (or copies of) the
+project's pack and loose-object files, opened without following links,
+over `https`/`ssh` only, to the URL shown in the approval (with the
+host's `insteadOf` rewrites shown too; nothing runs while the host's git
+config is inside an attachment);
 `tobyd` reads the project's config, HEAD and refs and writes back packs
 and remote-tracking refs itself, resolving paths beneath the pinned
 repository directory without following links. A machine reaches only the

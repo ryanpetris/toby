@@ -22,19 +22,29 @@ const MIN_AGE: Duration = Duration::from_secs(3600);
 static COLLECTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A host process running from an installed version.
-struct HostProcess {
-    pid: i32,
+pub struct HostProcess {
+    pub pid: i32,
+    /// When it started (clock ticks after boot), which tells it from a
+    /// later process with the same pid.
+    pub start: u64,
     version: String,
     /// Its arguments after the program name.
     args: Vec<String>,
 }
 
+/// When process `pid` started, from `/proc/<pid>/stat`.
+pub fn start_time(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is in parentheses and may hold spaces.
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
 /// This user's processes running from `versions`, by their executables.
-fn host_processes(versions: &Path) -> Vec<HostProcess> {
+fn host_processes(versions: &Path) -> io::Result<Vec<HostProcess>> {
     let mut out = Vec::new();
     let canonical = std::fs::canonicalize(versions).unwrap_or_else(|_| versions.to_path_buf());
-    let Ok(procs) = std::fs::read_dir("/proc") else { return out };
-    for p in procs.flatten() {
+    for p in std::fs::read_dir("/proc")? {
+        let p = p?;
         let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
         let Ok(exe) = std::fs::read_link(p.path().join("exe")) else { continue };
         // A binary replaced on disk shows as "<path> (deleted)".
@@ -54,9 +64,10 @@ fn host_processes(versions: &Path) -> Vec<HostProcess> {
         }
         let args =
             cmdline.split(|b| *b == 0).skip(1).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        out.push(HostProcess { pid, version, args });
+        let Some(start) = start_time(pid) else { continue };
+        out.push(HostProcess { pid, start, version, args });
     }
-    out
+    Ok(out)
 }
 
 /// The version `current` points at, read now.
@@ -70,7 +81,7 @@ fn installed(versions: &Path) -> io::Result<Vec<String>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(versions)?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name != "current" && e.file_type().is_ok_and(|t| t.is_dir()) {
+        if name != "current" && !name.starts_with('.') && e.file_type().is_ok_and(|t| t.is_dir()) {
             out.push(name);
         }
     }
@@ -119,7 +130,8 @@ fn guest_binary_version(path: &str) -> Option<String> {
 /// since its sessions could not be seen.
 pub async fn in_use(machines: &Machines) -> Result<BTreeSet<String>, String> {
     let versions = machines.config.programs.versions();
-    let mut used: BTreeSet<String> = host_processes(&versions).into_iter().map(|p| p.version).collect();
+    let processes = host_processes(&versions).map_err(|e| format!("listing processes: {e}"))?;
+    let mut used: BTreeSet<String> = processes.into_iter().map(|p| p.version).collect();
     for spec in machines.records() {
         let observed = machines.observe(&spec.id).await;
         if observed.state == "stopped" {
@@ -170,9 +182,23 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
         if !removable(&dir, &v, &used, &current, installed_for(&dir)) {
             continue;
         }
-        match std::fs::remove_dir_all(&dir) {
+        // Moved aside first, so an upgrade or rollback that switches
+        // `current` to it meanwhile finds it put back.
+        let aside = versions.join(format!(".removing-{v}"));
+        match std::fs::rename(&dir, &aside) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                failed.push((v, e.to_string()));
+                continue;
+            }
+        }
+        if self::current(&versions).as_deref() == Some(v.as_str()) {
+            let _ = std::fs::rename(&aside, &dir);
+            continue;
+        }
+        match std::fs::remove_dir_all(&aside) {
             Ok(()) => removed.push(v),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => failed.push((v, e.to_string())),
         }
     }
@@ -184,16 +210,17 @@ pub async fn collect(machines: &Machines) -> io::Result<Collected> {
 pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::paths::Paths) {
     let versions = machines.config.programs.versions();
     let Some(current) = current(&versions) else { return };
-    for p in host_processes(&versions).into_iter().filter(|p| p.version != current) {
+    let Ok(processes) = host_processes(&versions) else { return };
+    for p in processes.into_iter().filter(|p| p.version != current) {
         let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
         // Builders run no units of their own and end with their build.
         if matches!(args.as_slice(), ["internal", "machine", "--machine", id] if id.starts_with("builder-")) {
             continue;
         }
         let result = match args.as_slice() {
-            ["internal", "proxy", ..] => machines.supervisor.restart_proxy(paths, p.pid).await,
+            ["internal", "proxy", ..] => machines.supervisor.restart_proxy(paths, &p).await,
             ["internal", "machine", "--machine", id] => {
-                machines.supervisor.restart_machine_process(id, p.pid).await
+                machines.supervisor.restart_machine_process(id, &p).await
             }
             _ => continue,
         };
@@ -206,6 +233,8 @@ pub async fn upgrade_control_tier(machines: &Machines, paths: &toby_config::path
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
     use super::*;
 
     fn install(versions: &Path, v: &str) {
@@ -253,12 +282,27 @@ mod tests {
         assert_eq!(guest_binary_version("/run/toby/fs/versions/\u{1b}[2J/toby"), None);
     }
 
+    #[tokio::test]
+    async fn only_the_process_seen_is_signalled() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let start = start_time(pid).unwrap();
+        let p = |start| HostProcess { pid, start, version: "0".into(), args: Vec::new() };
+        // Another process with the same pid is left alone.
+        crate::supervisor::terminate(&p(start + 1)).await.unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        crate::supervisor::terminate(&p(start)).await.unwrap();
+        assert!(child.wait().unwrap().signal().is_some());
+    }
+
     #[test]
     fn this_process_counts_as_a_user_of_its_directory() {
         let exe = std::env::current_exe().unwrap();
         let dir = exe.parent().unwrap().parent().unwrap();
         let name = exe.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
-        let me = host_processes(dir).into_iter().find(|p| p.pid == std::process::id() as i32).unwrap();
+        let me =
+            host_processes(dir).unwrap().into_iter().find(|p| p.pid == std::process::id() as i32).unwrap();
+        assert_eq!(Some(me.start), start_time(me.pid));
         assert_eq!(me.version, name);
         let args: Vec<String> = std::env::args().skip(1).collect();
         assert_eq!(me.args, args);

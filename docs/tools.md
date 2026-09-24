@@ -152,8 +152,10 @@ describes the machine.
 
 The machine can write the project's repository, so git never runs in it:
 Toby fetches and pushes through a private repository of its own, over
-`https` and `ssh` only, to the URL the approval shows, and writes the
-fetched objects and the remote-tracking branches back into the project.
+`https` and `ssh` only, to the URL the approval shows (and where your git
+config's `insteadOf` rules send it), and writes the fetched objects and
+the remote-tracking branches back into the project. They do not run while
+your git config is inside a mounted project.
 Hooks in the project do not run. Projects mounted read-only allow only
 pushes. The project's objects are linked into that repository, or copied
 when the project is on another file system than Toby's state directory,

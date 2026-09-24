@@ -999,14 +999,15 @@ impl Machines {
                 return Ok(forward_info(&f, None, true));
             }
         }
-        // A host address can be listened on once, across machines.
+        // A host address can be listened on once, across machines; a
+        // persistent forward holds it while its machine is stopped too.
         if direction == Direction::HostToGuest {
             for other in self.records() {
                 if let Some(f) = other
                     .forward
                     .iter()
                     .find(|f| f.direction == Direction::HostToGuest && binds_overlap(&f.host, &req.host))
-                    && (other.id == id || self.running(&other.id).await)
+                    && (other.id == id || f.persist || self.running(&other.id).await)
                 {
                     return Err(Error::new(
                         ErrorKind::Conflict,
