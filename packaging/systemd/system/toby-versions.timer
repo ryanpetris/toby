@@ -1,0 +1,9 @@
+[Unit]
+Description=Remove Toby versions nothing uses, daily
+
+[Timer]
+OnBootSec=1h
+OnUnitActiveSec=1d
+
+[Install]
+WantedBy=timers.target

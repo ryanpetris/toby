@@ -1,0 +1,6 @@
+[Unit]
+Description=Remove Toby versions nothing uses
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/toby/versions/current/toby internal collect-versions

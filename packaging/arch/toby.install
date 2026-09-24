@@ -1,0 +1,17 @@
+# The packaged binary becomes /usr/lib/toby/versions/<version>/toby, which
+# pacman does not own, so running machines keep the version they use until
+# nothing does (plan §3.3).
+
+post_install() {
+    /usr/lib/toby/dist/toby internal install-version
+    echo "toby: run 'toby doctor' as each user of Toby; enable toby-versions.timer to remove old versions daily."
+}
+
+post_upgrade() {
+    /usr/lib/toby/dist/toby internal install-version
+    echo "toby: restart each user's daemon to use the new version: toby daemon restart"
+}
+
+post_remove() {
+    rm -rf /usr/lib/toby/versions
+}

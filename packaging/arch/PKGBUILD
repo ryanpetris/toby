@@ -1,0 +1,36 @@
+# Builds Toby from this repository: `makepkg` in packaging/arch.
+# The Rust toolchain needs its musl target (rustup target add
+# x86_64-unknown-linux-musl, or the rust-musl package).
+
+pkgname=toby
+pkgver=0.17.0
+pkgrel=1
+pkgdesc='Run development tools inside virtual machines'
+arch=(x86_64 aarch64)
+license=(MIT Apache-2.0 BSD-3-Clause BSD-2-Clause-Patent LGPL-2.1-or-later)
+depends=('passt>=2025_01_21' systemd)
+makedepends=(cargo musl curl jq xz)
+# makepkg's LTO flags would reach the C build of the allocator.
+options=(!strip !debug !lto)
+install=toby.install
+# The bundled programs are downloaded by packaging/stage.sh and checked
+# against the digests their releases publish.
+source=()
+
+_repo() {
+    cd "$startdir/../.." && pwd
+}
+
+pkgver() {
+    sed -n 's/^version = "\(.*\)"/\1/p' "$(_repo)/Cargo.toml" | head -n 1
+}
+
+build() {
+    cd "$(_repo)"
+    CARGO_TARGET_DIR="$srcdir/target" cargo build --release --locked --target "$CARCH-unknown-linux-musl" -p toby
+}
+
+package() {
+    TOBY_BINARY="$srcdir/target/$CARCH-unknown-linux-musl/release/toby" ARCH="$CARCH" \
+        DOWNLOADS="$srcdir/downloads" "$(_repo)/packaging/stage.sh" "$pkgdir"
+}

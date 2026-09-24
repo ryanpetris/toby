@@ -1,5 +1,6 @@
 # Toby documentation
 
+- [Installing](install.md): packages, requirements and the first run.
 - [Tools and models](tools.md): `toby claude` and other tools, your own
   tool definitions, and model providers.
 - [Machines and the daemon](machines.md): where commands run, ports, idle

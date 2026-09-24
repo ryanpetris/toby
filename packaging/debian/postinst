@@ -1,0 +1,12 @@
+#!/bin/sh
+# The packaged binary becomes /usr/lib/toby/versions/<version>/toby, which
+# dpkg does not own, so running machines keep the version they use until
+# nothing does (plan §3.3).
+set -e
+if [ "$1" = configure ]; then
+    /usr/lib/toby/dist/toby internal install-version
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        systemctl enable --now toby-versions.timer || true
+    fi
+fi
