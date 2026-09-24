@@ -1,0 +1,8 @@
+[tool]
+name = "uv"
+aliases = ["uvx"]
+requires = ["sh", "curl"]
+check = ["uv", "--version"]
+install = { script = "curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh" }
+update = { script = "uv self update" }
+launch = ["uv"]

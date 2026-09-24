@@ -178,12 +178,11 @@ pub fn context(
                     tool.tool.name
                 )));
             };
-            let speaks = tool.tool.models.as_ref().map(|m| m.protocol);
             let offers = match provider.protocol {
                 toby_config::global::Protocol::Anthropic => toby_tools::Protocol::Anthropic,
                 toby_config::global::Protocol::Openai => toby_tools::Protocol::Openai,
             };
-            if speaks != Some(offers) {
+            if !tool.tool.models.as_ref().is_some_and(|m| m.protocols.contains(&offers)) {
                 return Err(err(format!(
                     "tool {} speaks another API than model provider {p}",
                     tool.tool.name
@@ -192,7 +191,13 @@ pub fn context(
             let token = toby_proxy::ensure_token(&machines.paths, &spec.id)?;
             let list =
                 machines.models_cache.lock().unwrap().get(&p).map(|(_, l)| l.clone()).unwrap_or_default();
-            Some(ModelsContext { url: format!("http://{MODELS_LISTEN}/{p}"), token, provider: p, list })
+            Some(ModelsContext {
+                url: format!("http://{MODELS_LISTEN}/{p}"),
+                token,
+                provider: p,
+                protocol: offers,
+                list,
+            })
         }
         _ => None,
     };
@@ -209,19 +214,26 @@ pub fn context(
                 Some(rest) => format!("{home}{rest}"),
                 None => p.clone(),
             };
+            let p = if p.len() > 1 { p.trim_end_matches('/').to_string() } else { p };
             (p, policy.as_str().to_string())
         })
         .collect();
     permissions.entry("/tmp".into()).or_insert_with(|| "allow".into());
+    for p in &session.projects {
+        permissions.entry(p.clone()).or_insert_with(|| "allow".into());
+    }
     let yolo = session.yolo || config.settings.yolo;
     if yolo {
         permissions.insert("/".into(), "allow".into());
     }
-    let allowed = permissions
-        .iter()
-        .filter(|(p, policy)| *policy == "allow" && !p.contains(['*', '?', '[']))
-        .map(|(p, _)| p.clone())
-        .collect();
+    let plain = |want: &str| {
+        permissions
+            .iter()
+            .filter(|(p, policy)| *policy == want && !p.contains(['*', '?', '[']))
+            .map(|(p, _)| p.clone())
+            .collect()
+    };
+    let (allowed, denied) = (plain("allow"), plain("deny"));
     Ok(Context {
         models,
         user,
@@ -231,6 +243,7 @@ pub fn context(
         instructions,
         permissions,
         allowed,
+        denied,
         projects: session.projects.clone(),
         yolo,
         ..Default::default()
@@ -289,6 +302,7 @@ pub async fn prepare(
     if let Some(p) = config.tools.get(&manifest.tool.name).and_then(|t| t.models.clone())
         && manifest.tool.models.is_some()
         && let Err(e) = discover_models(machines, &p).await
+        && !config.settings.suppressed("models.endpoint-unavailable")
     {
         out(format!("warning[models.endpoint-unavailable]: model provider {p}: {e}\n").as_bytes(), true);
     }
@@ -355,11 +369,19 @@ async fn prepare_one(
 
     let mut warnings = Vec::new();
     let ctx = context(machines, spec, manifest, session, &mut warnings)?;
+    let settings = machines.current_config().settings.clone();
     for w in warnings {
-        out(format!("{w}\n").as_bytes(), true);
+        let id =
+            w.strip_prefix("warning[").and_then(|w| w.split_once(']')).map(|(id, _)| id).unwrap_or_default();
+        if !settings.suppressed(id) {
+            out(format!("{w}\n").as_bytes(), true);
+        }
     }
     for f in &tool.files {
         let content = render(&f.template, &ctx).map_err(|e| err(format!("{name}: {}: {e}", f.path)))?;
+        if f.optional && content.trim().is_empty() {
+            continue;
+        }
         patch_file(machines, spec, &f.path, &content, f.format, f.mode).await?;
     }
     write_mcp(machines, spec, manifest, session, &ctx).await

@@ -1,0 +1,8 @@
+# The image provides npm; packages it installs globally go into the home.
+[tool]
+name = "npm"
+requires = ["npm"]
+check = ["npm", "--version"]
+launch = ["npm"]
+path = ["~/.local/npm-global/bin"]
+env = { NPM_CONFIG_PREFIX = "{{ home }}/.local/npm-global", NPM_CONFIG_CACHE = "{{ home }}/.cache/npm" }

@@ -1,0 +1,23 @@
+[tool]
+name = "gitlab_cli"
+aliases = ["glab"]
+requires = ["sh", "curl", "tar"]
+check = ["glab", "--version"]
+launch = ["glab"]
+
+[tool.install]
+script = """
+set -eu
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "GitLab CLI has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+url=$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest | grep -o "\\"direct_asset_url\\": *\\"[^\\"]*_linux_$arch\\.tar\\.gz\\"" | head -n 1 | sed 's/.*"\\(https[^"]*\\)"$/\\1/')
+[ -n "$url" ] || { echo "cannot find the latest GitLab CLI release" >&2; exit 1; }
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$url" | tar -xz -C "$tmp"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$tmp/bin/glab" "$HOME/.local/bin/glab"
+"""

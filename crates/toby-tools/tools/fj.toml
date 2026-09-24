@@ -1,0 +1,22 @@
+# Forgejo CLI.
+[tool]
+name = "fj"
+requires = ["sh", "curl", "tar"]
+check = ["fj", "version"]
+launch = ["fj"]
+
+[tool.install]
+script = """
+set -eu
+case "$(uname -m)" in
+  x86_64|aarch64) arch=$(uname -m) ;;
+  *) echo "Forgejo CLI has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+url=$(curl -fsSL 'https://codeberg.org/api/v1/repos/forgejo-contrib/forgejo-cli/releases?limit=1' | grep -o "\\"browser_download_url\\": *\\"[^\\"]*/forgejo-cli-$arch-linux\\.tar\\.gz\\"" | head -n 1 | sed 's/.*"\\(https[^"]*\\)"$/\\1/')
+[ -n "$url" ] || { echo "cannot find the latest Forgejo CLI release" >&2; exit 1; }
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$url" | tar -xz -C "$tmp"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$tmp/fj" "$HOME/.local/bin/fj"
+"""

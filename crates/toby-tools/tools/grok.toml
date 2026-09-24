@@ -1,0 +1,54 @@
+[tool]
+name = "grok"
+requires = ["bash", "curl"]
+check = ["grok", "--version"]
+launch = ["grok"]
+yolo = ["--always-approve"]
+path = ["~/.grok/bin"]
+
+[tool.install]
+script = """
+set -eu
+case "$(uname -m)" in
+  x86_64|aarch64) arch=$(uname -m) ;;
+  *) echo "Grok has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+version=$(curl -fsSL https://x.ai/cli/stable)
+[ -n "$version" ] || { echo "cannot find the latest Grok version" >&2; exit 1; }
+mkdir -p "$HOME/.grok/downloads" "$HOME/.grok/bin"
+binary="$HOME/.grok/downloads/grok-linux-$arch"
+curl -fsSL "https://x.ai/cli/grok-$version-linux-$arch" -o "$binary.tmp"
+chmod +x "$binary.tmp"
+mv -f "$binary.tmp" "$binary"
+ln -sf "../downloads/grok-linux-$arch" "$HOME/.grok/bin/grok"
+"""
+
+# Toby's MCP servers come as a plugin.
+[[tool.files]]
+path = "~/.grok/plugins/toby-session/plugin.json"
+format = "json"
+mode = "replace"
+template = """{ "name": "toby-session", "description": "Toby's MCP servers" }"""
+
+[[tool.files]]
+path = "~/.grok/config.toml"
+format = "toml"
+mode = "extend"
+template = """[plugins]
+enabled = ["toby-session"]
+"""
+
+[[tool.files]]
+path = "~/.grok/AGENTS.md"
+format = "text"
+mode = "replace"
+optional = true
+template = "{{ instructions }}"
+
+[tool.mcp]
+path = "~/.grok/plugins/toby-session/.mcp.json"
+format = "json"
+pointer = "/mcpServers"
+entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"], "enabled": true }"""
+http_entry = """{ "url": "{{ url }}", "enabled": true }"""
+command_entry = """{ "command": {{ command|tojson }}, "args": {{ args|tojson }}, "env": {{ env|tojson }}, "enabled": true }"""

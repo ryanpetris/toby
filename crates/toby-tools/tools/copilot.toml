@@ -1,0 +1,23 @@
+[tool]
+name = "copilot"
+requires = ["bash", "npm"]
+check = ["copilot", "--version"]
+install = { script = "npm install -g --prefix \"$HOME/.local\" @github/copilot" }
+update = { script = "npm install -g --prefix \"$HOME/.local\" @github/copilot@latest" }
+launch = ["copilot", "--additional-mcp-config", "@{{ home }}/.copilot/mcp-config.json"]
+yolo = ["--allow-all-tools"]
+
+[[tool.files]]
+path = "~/.copilot/copilot-instructions.md"
+format = "text"
+mode = "replace"
+optional = true
+template = "{{ instructions }}"
+
+[tool.mcp]
+path = "~/.copilot/mcp-config.json"
+format = "json"
+pointer = "/mcpServers"
+entry = """{ "type": "local", "command": "{{ connect }}", "args": ["mcp/{{ name }}"], "tools": ["*"] }"""
+http_entry = """{ "type": "http", "url": "{{ url }}", "tools": ["*"] }"""
+command_entry = """{ "type": "local", "command": {{ command|tojson }}, "args": {{ args|tojson }}, "env": {{ env|tojson }}, "tools": ["*"] }"""

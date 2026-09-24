@@ -4,12 +4,29 @@ requires = ["bash", "curl"]
 check = ["claude", "--version"]
 install = { script = "curl -fsSL https://claude.ai/install.sh | bash" }
 update = { script = "claude update" }
-launch = ["claude"]
+launch = ["claude", "--settings", "{{ home }}/.claude/toby/settings.json"]
 yolo = ["--dangerously-skip-permissions"]
 
 [tool.models]
-protocol = "anthropic"
+protocols = ["anthropic"]
 env = { ANTHROPIC_BASE_URL = "{{ models.url }}", ANTHROPIC_AUTH_TOKEN = "{{ models.token }}" }
+
+# Toby's settings for this launch, over the user's own.
+[[tool.files]]
+path = "~/.claude/toby/settings.json"
+format = "json"
+mode = "replace"
+template = """{ "permissions": {
+  "additionalDirectories": {{ allowed|tojson }},
+  "deny": [{% for p in denied %}{{ ("Read(/" ~ p ~ "/**)")|tojson }}, {{ ("Edit(/" ~ p ~ "/**)")|tojson }}{% if not loop.last %}, {% endif %}{% endfor %}]
+} }"""
+
+[[tool.files]]
+path = "~/.claude/CLAUDE.md"
+format = "text"
+mode = "replace"
+optional = true
+template = "{{ instructions }}"
 
 [tool.mcp]
 path = "~/.claude.json"

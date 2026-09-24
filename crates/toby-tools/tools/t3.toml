@@ -1,0 +1,9 @@
+# T3 Code. npm builds its terminal module, which needs a C++ toolchain.
+[tool]
+name = "t3"
+requires = ["bash", "npm", "make", "g++", "python3"]
+check = ["t3", "--version"]
+install = { script = "npm install -g --prefix \"$HOME/.local\" t3" }
+update = { script = "npm install -g --prefix \"$HOME/.local\" t3@latest" }
+launch = ["t3"]
+env = { T3CODE_NO_BROWSER = "1" }

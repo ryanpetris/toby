@@ -6,6 +6,34 @@ install = { script = "curl -fsSL https://opencode.ai/install | bash" }
 update = { script = "opencode upgrade" }
 launch = ["opencode"]
 path = ["~/.opencode/bin"]
+# Read after the user's and the project's configuration.
+env = { OPENCODE_CONFIG_DIR = "{{ home }}/.config/opencode/toby" }
+
+[tool.models]
+protocols = ["anthropic", "openai"]
+
+[[tool.files]]
+path = "~/.config/opencode/toby/opencode.json"
+format = "json"
+mode = "replace"
+template = """{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": { "external_directory": { {% for p, m in permissions|items %}{{ p|tojson }}: {{ m|tojson }}, {{ (p ~ "/**" if p != "/" else "/**")|tojson }}: {{ m|tojson }}{% if not loop.last %}, {% endif %}{% endfor %} } }
+  {%- if models %},
+  "provider": { {{ models.provider|tojson }}: {
+    "npm": {{ ("@ai-sdk/anthropic" if models.protocol == "anthropic" else "@ai-sdk/openai-compatible")|tojson }},
+    "options": { "baseURL": {{ (models.url ~ "/v1")|tojson }}, "apiKey": {{ models.token|tojson }} },
+    "models": { {% for m in models.list %}{{ m|tojson }}: {}{% if not loop.last %}, {% endif %}{% endfor %} }
+  } }
+  {%- endif %}
+}"""
+
+[[tool.files]]
+path = "~/.config/opencode/AGENTS.md"
+format = "text"
+mode = "replace"
+optional = true
+template = "{{ instructions }}"
 
 [tool.mcp]
 path = "~/.config/opencode/opencode.json"

@@ -68,8 +68,8 @@ pub struct Script {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
-    /// The API the tool speaks.
-    pub protocol: Protocol,
+    /// The APIs the tool speaks.
+    pub protocols: Vec<Protocol>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
@@ -106,6 +106,9 @@ pub struct File {
     pub format: Format,
     pub mode: Mode,
     pub template: String,
+    /// Not written when the template renders to whitespace only.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// Where MCP server entries go (plan §16.3).
@@ -143,7 +146,19 @@ pub struct ToolForward {
 const BUILTIN: &[&str] = &[
     include_str!("../tools/claude.toml"),
     include_str!("../tools/codex.toml"),
+    include_str!("../tools/copilot.toml"),
+    include_str!("../tools/cursor.toml"),
+    include_str!("../tools/dcode.toml"),
+    include_str!("../tools/exec.toml"),
+    include_str!("../tools/fj.toml"),
+    include_str!("../tools/github_cli.toml"),
+    include_str!("../tools/gitlab_cli.toml"),
+    include_str!("../tools/grok.toml"),
+    include_str!("../tools/npm.toml"),
     include_str!("../tools/opencode.toml"),
+    include_str!("../tools/speckit.toml"),
+    include_str!("../tools/t3.toml"),
+    include_str!("../tools/uv.toml"),
 ];
 
 /// Names of tools and their aliases: lowercase letters, digits, `-` and `_`.
@@ -221,6 +236,8 @@ pub struct Context {
     pub permissions: std::collections::BTreeMap<String, String>,
     /// The allowed ones without wildcards, sorted.
     pub allowed: Vec<String>,
+    /// The denied ones without wildcards, sorted.
+    pub denied: Vec<String>,
     /// Where the session's projects are in the machine.
     pub projects: Vec<String>,
     /// The tool runs without its permission prompts.
@@ -233,6 +250,8 @@ pub struct ModelsContext {
     pub token: String,
     /// The provider's name in the configuration.
     pub provider: String,
+    /// The provider's API: `anthropic` or `openai`.
+    pub protocol: Protocol,
     /// Models the provider lists, if it could be asked.
     pub list: Vec<String>,
 }
@@ -350,7 +369,12 @@ mod tests {
     #[test]
     fn builtins_parse() {
         let names: Vec<String> = builtin().into_iter().map(|m| m.tool.name).collect();
-        assert_eq!(names, ["claude", "codex", "opencode"]);
+        assert_eq!(names.len(), 15);
+        assert!(
+            ["claude", "codex", "opencode", "github_cli", "exec"]
+                .iter()
+                .all(|n| names.iter().any(|m| m == n))
+        );
     }
 
     #[test]
@@ -380,12 +404,98 @@ mod tests {
                 url: "http://127.0.0.1:41100/anthropic".into(),
                 token: "t".into(),
                 provider: "anthropic".into(),
+                protocol: Protocol::Anthropic,
                 list: vec!["m1".into()],
             }),
             ..Default::default()
         };
         assert_eq!(render("{{ models.url }}/v1", &ctx).unwrap(), "http://127.0.0.1:41100/anthropic/v1");
         assert!(render("{{ nothing }}", &ctx).is_err());
+    }
+
+    /// Every built-in template renders to its file's format, with and
+    /// without a provider, instructions and yolo.
+    #[test]
+    fn builtin_templates_render() {
+        let all = builtin();
+        let names: Vec<&str> = all.iter().map(|m| m.tool.name.as_str()).collect();
+        for m in &all {
+            for d in &m.tool.depends {
+                assert!(names.contains(&d.as_str()), "{} depends on {d}", m.tool.name);
+            }
+        }
+        for (with_models, instructions, yolo) in [(false, "", false), (true, "Be brief.\n", true)] {
+            for protocol in [Protocol::Anthropic, Protocol::Openai] {
+                let mut permissions = BTreeMap::new();
+                permissions.insert("/tmp".to_string(), "allow".to_string());
+                permissions.insert("/home/u/secret \"x\"".to_string(), "deny".to_string());
+                if yolo {
+                    permissions.insert("/".to_string(), "allow".to_string());
+                }
+                let ctx = Context {
+                    models: with_models.then(|| ModelsContext {
+                        url: "http://127.0.0.1:41100/p".into(),
+                        token: "t".into(),
+                        provider: "p".into(),
+                        protocol,
+                        list: vec!["m1".into(), "m2".into()],
+                    }),
+                    user: "u".into(),
+                    home: "/home/u".into(),
+                    workspace: "/toby/workspace/app".into(),
+                    connect: "/run/toby/bin/toby-connect".into(),
+                    name: "github".into(),
+                    url: "http://127.0.0.1:41100/mcp/github".into(),
+                    command: "npx".into(),
+                    args: vec!["-y".into(), "server".into()],
+                    instructions: instructions.into(),
+                    allowed: vec!["/tmp".into()],
+                    denied: vec!["/home/u/secret \"x\"".into()],
+                    permissions,
+                    projects: vec!["/toby/workspace/app".into(), "/toby/workspace/lib".into()],
+                    yolo,
+                    ..Default::default()
+                };
+                for m in &all {
+                    let t = &m.tool;
+                    let speaks = t.models.as_ref().is_some_and(|x| x.protocols.contains(&protocol));
+                    let ctx = Context { models: ctx.models.clone().filter(|_| speaks), ..ctx.clone() };
+                    for a in &t.launch {
+                        render(a, &ctx).unwrap_or_else(|e| panic!("{}: launch {a}: {e}", t.name));
+                    }
+                    let env = t
+                        .env
+                        .iter()
+                        .chain(t.models.iter().filter(|_| ctx.models.is_some()).flat_map(|x| &x.env));
+                    for (k, v) in env {
+                        render(v, &ctx).unwrap_or_else(|e| panic!("{}: env {k}: {e}", t.name));
+                    }
+                    for f in &t.files {
+                        let out = render(&f.template, &ctx)
+                            .unwrap_or_else(|e| panic!("{}: {}: {e}", t.name, f.path));
+                        if f.optional && out.trim().is_empty() {
+                            continue;
+                        }
+                        patch(None, &out, f.format, f.mode)
+                            .unwrap_or_else(|e| panic!("{}: {}: {e}\n{out}", t.name, f.path));
+                    }
+                    if let Some(mcp) = &t.mcp {
+                        for e in [Some(&mcp.entry), mcp.http_entry.as_ref(), mcp.command_entry.as_ref()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let out = render(e, &ctx).unwrap_or_else(|e| panic!("{}: MCP: {e}", t.name));
+                            serde_json::from_str::<serde_json::Value>(&out)
+                                .unwrap_or_else(|e| panic!("{}: MCP: {e}\n{out}", t.name));
+                        }
+                    }
+                }
+            }
+        }
+        let tools: BTreeMap<String, Manifest> = all.into_iter().map(|m| (m.tool.name.clone(), m)).collect();
+        assert_eq!(find(&tools, "gh").unwrap().tool.name, "github_cli");
+        assert_eq!(find(&tools, "codex").unwrap().tool.name, "codex");
+        assert!(find(&tools, "nothing").is_none());
     }
 
     #[test]
@@ -424,7 +534,7 @@ mod tests {
             ..Default::default()
         };
         for m in builtin() {
-            let mcp = m.tool.mcp.expect("built-in tools take MCP servers");
+            let Some(mcp) = m.tool.mcp else { continue };
             for t in
                 [Some(&mcp.entry), mcp.http_entry.as_ref(), mcp.command_entry.as_ref()].into_iter().flatten()
             {

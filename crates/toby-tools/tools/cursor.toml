@@ -1,0 +1,53 @@
+[tool]
+name = "cursor"
+aliases = ["cursor-agent"]
+requires = ["bash", "curl", "tar"]
+check = ["cursor-agent", "--version"]
+launch = ["cursor-agent", "--approve-mcps", "--sandbox", "disabled"]
+yolo = ["--force"]
+env = { CURSOR_CONFIG_DIR = "{{ home }}/.cursor", AGENT_CLI_CREDENTIAL_STORE = "file" }
+
+# Only cursor-agent is linked: Cursor's `agent` would take Grok's name.
+[tool.install]
+script = """
+set -eu
+case "$(uname -m)" in
+  x86_64) arch=x64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "Cursor has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+version=$(curl -fsSL https://cursor.com/install | sed -n 's|.*downloads.cursor.com/lab/\\([^/]*\\)/.*|\\1|p' | head -n 1)
+[ -n "$version" ] || { echo "cannot find the latest Cursor CLI version" >&2; exit 1; }
+dir="$HOME/.local/share/cursor-agent/versions/$version"
+if [ ! -x "$dir/cursor-agent" ]; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL "https://downloads.cursor.com/lab/$version/linux/$arch/agent-cli-package.tar.gz" | tar -xz -C "$tmp"
+  binary=$(find "$tmp" -type f -name cursor-agent | head -n 1)
+  [ -n "$binary" ] || { echo "the Cursor CLI package has no cursor-agent" >&2; exit 1; }
+  mkdir -p "$(dirname "$dir")"
+  rm -rf "$dir"
+  mv "$(dirname "$binary")" "$dir"
+fi
+mkdir -p "$HOME/.local/bin"
+ln -sf "$dir/cursor-agent" "$HOME/.local/bin/cursor-agent"
+"""
+
+[[tool.files]]
+path = "~/.cursor/rules/toby.mdc"
+format = "text"
+mode = "replace"
+optional = true
+template = """{% if instructions %}---
+alwaysApply: true
+---
+
+{{ instructions }}{% endif %}"""
+
+[tool.mcp]
+path = "~/.cursor/mcp.json"
+format = "json"
+pointer = "/mcpServers"
+entry = """{ "type": "stdio", "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
+http_entry = """{ "type": "http", "url": "{{ url }}" }"""
+command_entry = """{ "type": "stdio", "command": {{ command|tojson }}, "args": {{ args|tojson }}, "env": {{ env|tojson }} }"""

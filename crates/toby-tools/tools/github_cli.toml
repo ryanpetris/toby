@@ -1,0 +1,23 @@
+[tool]
+name = "github_cli"
+aliases = ["gh"]
+requires = ["sh", "curl", "tar"]
+check = ["gh", "--version"]
+launch = ["gh"]
+
+[tool.install]
+script = """
+set -eu
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "GitHub CLI has no build for $(uname -m)" >&2; exit 1 ;;
+esac
+url=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | grep -o "\\"browser_download_url\\": *\\"[^\\"]*_linux_$arch\\.tar\\.gz\\"" | head -n 1 | sed 's/.*"\\(https[^"]*\\)"$/\\1/')
+[ -n "$url" ] || { echo "cannot find the latest GitHub CLI release" >&2; exit 1; }
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$url" | tar -xz -C "$tmp"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$tmp"/*/bin/gh "$HOME/.local/bin/gh"
+"""

@@ -4,12 +4,28 @@ requires = ["bash", "npm"]
 check = ["codex", "--version"]
 install = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex" }
 update = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex@latest" }
-launch = ["codex"]
+launch = ["codex", "-c", "sandbox_workspace_write.writable_roots={{ allowed|tojson }}"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]
 
 [tool.models]
-protocol = "openai"
+protocols = ["openai"]
 env = { OPENAI_BASE_URL = "{{ models.url }}/v1", OPENAI_API_KEY = "{{ models.token }}" }
+
+# The projects are trusted, so Codex does not ask about each.
+[[tool.files]]
+path = "~/.codex/config.toml"
+format = "toml"
+mode = "merge"
+template = """{% for p in projects %}[projects.{{ p|tojson }}]
+trust_level = "trusted"
+{% endfor %}"""
+
+[[tool.files]]
+path = "~/.codex/AGENTS.md"
+format = "text"
+mode = "replace"
+optional = true
+template = "{{ instructions }}"
 
 [tool.mcp]
 path = "~/.codex/config.toml"

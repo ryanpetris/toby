@@ -1,0 +1,6 @@
+# A command given as parameters, or a login shell; for launch files, since
+# `toby exec` runs a command directly.
+[tool]
+name = "exec"
+check = ["true"]
+launch = ["sh", "-c", "[ $# -gt 0 ] || exec \"${SHELL:-/bin/sh}\" -l; exec \"$@\"", "exec"]

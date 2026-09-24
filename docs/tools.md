@@ -100,14 +100,55 @@ Codex session runs.
 
 ## Built-in tools
 
-| Tool | Installed with | Needs in the image |
-| --- | --- | --- |
-| `claude` | the Claude Code install script | `bash`, `curl` |
-| `codex` | npm, into `~/.local` | `bash`, `npm` |
-| `opencode` | the OpenCode install script | `bash`, `curl` |
+| Tool | Also found as | Installed with | Needs in the image |
+| --- | --- | --- | --- |
+| `claude` | | the Claude Code install script | `bash`, `curl` |
+| `codex` | | npm, into `~/.local` | `bash`, `npm` |
+| `opencode` | | the OpenCode install script | `bash`, `curl` |
+| `copilot` | | npm, into `~/.local` | `bash`, `npm` |
+| `cursor` | `cursor-agent` | the Cursor CLI package | `bash`, `curl`, `tar` |
+| `grok` | | the Grok CLI release | `bash`, `curl` |
+| `dcode` (Deep Agents Code) | | `uv tool install` | what `uv` needs |
+| `speckit` (Spec Kit) | `specify` | `uv tool install` from the latest release | `curl`, `git` |
+| `t3` (T3 Code) | | npm, into `~/.local` | `bash`, `npm`, `make`, `g++`, `python3` |
+| `uv` | `uvx` | the uv install script | `sh`, `curl` |
+| `npm` | | the image | `npm` |
+| `github_cli` | `gh` | the latest release | `sh`, `curl`, `tar` |
+| `gitlab_cli` | `glab` | the latest release | `sh`, `curl`, `tar` |
+| `fj` (Forgejo CLI) | | the latest release | `sh`, `curl`, `tar` |
+| `exec` | | nothing | nothing |
+
+`toby gh`, for example, runs `github_cli`. `dcode` and `speckit` install
+`uv` first and run with it on `PATH`. `npm` runs the image's npm with
+global packages in `~/.local/npm-global`. `exec` runs its parameters as a
+command, or a login shell without any; it is meant for launch files, as
+`toby exec` runs a command directly.
 
 A tool fails to start with a message naming the missing commands if the
 image lacks them; add them to the image.
+
+### Instructions and permissions
+
+```toml
+instructions = ["~/AGENTS.md", "~/instructions/*.md"]
+
+[permissions.paths]
+"~/notes" = "allow"
+"/srv/data" = "deny"
+```
+
+`instructions` are files on the host (a `*` in the last part of the path
+matches several), read at each launch and written, joined, into each
+tool's own instructions file in the home: `~/.claude/CLAUDE.md`,
+`~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`,
+`~/.copilot/copilot-instructions.md`, `~/.cursor/rules/toby.mdc`,
+`~/.grok/AGENTS.md` and the `toby` agent of Deep Agents Code. A missing
+file is reported as `config.instruction-missing`.
+
+`permissions.paths` are paths in the machine (`~` is the home there) that
+Claude Code, Codex and OpenCode may use outside the project, or may not.
+`/tmp` and the launch's projects are always allowed, and `--yolo` allows
+`/`. Codex also trusts the projects, so it does not ask about each.
 
 ## Your own tools
 
@@ -117,6 +158,8 @@ built-in one:
 ```toml
 [tool]
 name = "mytool"
+aliases = ["mt"]                             # toby mt runs it too
+depends = ["uv"]                             # prepared first, and on PATH
 requires = ["bash", "curl"]                 # commands the image must have
 check = ["mytool", "--version"]              # succeeds when installed
 install = { script = "curl -fsSL https://example.com/install.sh | bash" }
@@ -127,14 +170,15 @@ path = ["~/.mytool/bin"]                     # added to PATH (~/.local/bin alway
 env = { MYTOOL_THEME = "dark" }
 
 [tool.models]                                # used when a provider is configured
-protocol = "openai"
+protocols = ["openai"]                       # the APIs the tool speaks
 env = { OPENAI_BASE_URL = "{{ models.url }}/v1", OPENAI_API_KEY = "{{ models.token }}" }
 
 [[tool.files]]                               # written into the home before launch
 path = "~/.config/mytool/settings.json"
 format = "json"                              # json, toml or text
-mode = "merge"                               # merge into the file, or replace it
+mode = "merge"                               # merge into the file, extend (lists too), or replace it
 template = """{ "telemetry": false }"""
+optional = true                              # skipped when the template renders empty
 
 [[tool.forwards]]                            # while a session of the tool runs
 when = "login"
@@ -142,10 +186,12 @@ direction = "host-to-guest"
 port = 8123
 ```
 
-Templates are Jinja templates; they can use `models.url` and
-`models.token` (only when a provider is configured for the tool), `user`
-and `home`; `env` values can also use `workspace`, the project's path in
-the machine.
+Templates are Jinja templates. They can use `user`, `home`, `workspace`
+(the primary project's path in the machine), `projects`, `instructions`,
+`permissions` (path to `allow` or `deny`), `allowed` and `denied` (those
+without wildcards), `yolo`, and, when a provider is configured for the
+tool, `models.url`, `models.token`, `models.provider`, `models.protocol`
+and `models.list` (the provider's models, when it lists them).
 
 ## Models
 
@@ -169,6 +215,11 @@ params = ["--model", "opus"]                 # extra arguments of every launch
 `~/.config/toby/`, `~` allowed) and `{env:NAME}` an environment variable
 of the daemon; both are read when used. In the machine, the provider is at
 `http://127.0.0.1:41100/<provider>`.
+
+When it prepares a tool, Toby asks the provider for its models (cached
+for five minutes) and writes them into tools that list models, such as
+OpenCode. A provider that does not answer is reported as
+`models.endpoint-unavailable`.
 
 ## MCP servers
 

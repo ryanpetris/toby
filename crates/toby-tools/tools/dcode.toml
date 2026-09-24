@@ -1,0 +1,28 @@
+# Deep Agents Code.
+[tool]
+name = "dcode"
+depends = ["uv"]
+check = ["dcode", "--version"]
+install = { script = "uv tool install --prerelease allow deepagents-code" }
+update = { script = "uv tool install --upgrade --prerelease allow deepagents-code" }
+launch = ["dcode", "--mcp-config", "{{ home }}/.deepagents/.mcp.json", "--agent", "toby"]
+yolo = ["-y"]
+
+[tool.models]
+protocols = ["anthropic", "openai"]
+env = { DEEPAGENTS_CODE_ANTHROPIC_BASE_URL = "{% if models.protocol == 'anthropic' %}{{ models.url }}{% endif %}", DEEPAGENTS_CODE_ANTHROPIC_API_KEY = "{% if models.protocol == 'anthropic' %}{{ models.token }}{% endif %}", DEEPAGENTS_CODE_OPENAI_BASE_URL = "{% if models.protocol == 'openai' %}{{ models.url }}/v1{% endif %}", DEEPAGENTS_CODE_OPENAI_API_KEY = "{% if models.protocol == 'openai' %}{{ models.token }}{% endif %}" }
+
+# The `toby` agent.
+[[tool.files]]
+path = "~/.deepagents/toby/AGENTS.md"
+format = "text"
+mode = "replace"
+template = "{{ instructions }}"
+
+[tool.mcp]
+path = "~/.deepagents/.mcp.json"
+format = "json"
+pointer = "/mcpServers"
+entry = """{ "type": "stdio", "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
+http_entry = """{ "type": "http", "url": "{{ url }}" }"""
+command_entry = """{ "type": "stdio", "command": {{ command|tojson }}, "args": {{ args|tojson }}, "env": {{ env|tojson }} }"""

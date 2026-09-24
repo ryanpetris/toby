@@ -1,0 +1,16 @@
+# Spec Kit.
+[tool]
+name = "speckit"
+aliases = ["specify"]
+depends = ["uv"]
+requires = ["curl", "git"]
+check = ["specify", "--version"]
+launch = ["specify"]
+
+[tool.install]
+script = """
+set -eu
+tag=$(curl -fsSL https://api.github.com/repos/github/spec-kit/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed 's/.*"\\([^"]*\\)"$/\\1/')
+[ -n "$tag" ] || { echo "cannot find the latest Spec Kit release" >&2; exit 1; }
+uv tool install --force specify-cli --from "git+https://github.com/github/spec-kit.git@$tag"
+"""

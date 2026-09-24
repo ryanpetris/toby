@@ -1331,8 +1331,10 @@ These existing features keep their meaning in the new design:
   `/toby/workspace/<name>`; `workdir` defaults to the primary project.
 - **Tools**: the full current catalog becomes built-in manifests (§16.1):
   `opencode`, `claude`, `codex`, `copilot`, `cursor`, `dcode`, `grok`,
-  `speckit`, `t3`, `emdash`, `npm`, `uv`, `github_cli`, `gitlab_cli`, `fj`,
-  and `exec` (run an arbitrary command). `docker` is dropped. Tool
+  `speckit`, `t3`, `npm`, `uv`, `github_cli` (`gh`), `gitlab_cli`
+  (`glab`), `fj`, and `exec` (run the parameters, for launch files).
+  `docker` and `emdash` (a desktop app, with no display in a machine) are
+  dropped. Installers resolve release URLs in the guest. Tool
   dependencies are ordered topologically; `params` pass extra arguments;
   `--install` installs and exits; `--upgrade` forces the installer.
 - **Models**: discovery of the provider's model list is cached for 5
