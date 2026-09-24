@@ -11,8 +11,7 @@ use nix::mount::{MntFlags, MsFlags, mount, umount2};
 const MARKER: &str = ".toby-home";
 
 /// Decodes the octal escapes (`\040` for a space) of a mountinfo field.
-fn unescape(field: &str) -> Vec<u8> {
-    let b = field.as_bytes();
+fn unescape(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
@@ -32,10 +31,10 @@ fn unescape(field: &str) -> Vec<u8> {
 }
 
 /// The topmost mount at `path` (a canonical path): the root within its file
-/// system, decoded.
-fn top_mount(mountinfo: &str, path: &Path) -> Option<PathBuf> {
-    mountinfo.lines().rev().find_map(|l| {
-        let mut f = l.split(' ');
+/// system, decoded. Works on bytes, since names need not be UTF-8.
+fn top_mount(mountinfo: &[u8], path: &Path) -> Option<PathBuf> {
+    mountinfo.split(|b| *b == b'\n').rev().find_map(|l| {
+        let mut f = l.split(|b| *b == b' ');
         let root = f.nth(3)?;
         let point = f.next()?;
         (unescape(point) == path.as_os_str().as_bytes())
@@ -44,9 +43,7 @@ fn top_mount(mountinfo: &str, path: &Path) -> Option<PathBuf> {
 }
 
 fn mount_at(path: &Path) -> Option<PathBuf> {
-    // Lossy, so one line with an odd name cannot hide the others.
-    let info = std::fs::read("/proc/self/mountinfo").ok()?;
-    top_mount(&String::from_utf8_lossy(&info), path)
+    top_mount(&std::fs::read("/proc/self/mountinfo").ok()?, path)
 }
 
 fn mounted_at(path: &Path) -> bool {
@@ -249,7 +246,7 @@ mod tests {
 
     #[test]
     fn mountinfo_fields_are_decoded() {
-        let info = "22 1 0:21 / / rw - ext4 /dev/vda rw\n\
+        let info = b"22 1 0:21 / / rw - ext4 /dev/vda rw\n\
                     40 22 0:30 /projects/a1 /toby/workspace/My\\040Project rw,nosuid - virtiofs toby rw\n\
                     41 22 0:30 /projects/b\\134x /srv/b rw - virtiofs toby rw\n";
         assert_eq!(
@@ -258,6 +255,9 @@ mod tests {
         );
         assert_eq!(top_mount(info, Path::new("/srv/b")), Some(PathBuf::from("/projects/b\\x")));
         assert_eq!(top_mount(info, Path::new("/toby/workspace/My\\040Project")), None);
+        let odd = b"40 22 0:30 /projects/c /srv/\xff rw - virtiofs toby rw\n";
+        let odd_path = Path::new(std::ffi::OsStr::from_bytes(b"/srv/\xff"));
+        assert_eq!(top_mount(odd, odd_path), Some(PathBuf::from("/projects/c")));
         assert!(is_attachment(Path::new("/projects/a1"), Path::new("/run/toby/fs/projects/a1")));
         assert!(!is_attachment(Path::new("/projects/a1"), Path::new("/run/toby/fs/projects/a2")));
         assert!(!is_attachment(Path::new("/"), Path::new("/run/toby/fs/projects/a1")));

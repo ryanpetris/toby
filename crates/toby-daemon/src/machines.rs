@@ -642,8 +642,21 @@ impl Machines {
             Ok(())
         })?;
         let removed = removed.expect("set by update_desired");
-        if self.observe(id).await.state != "ready" {
-            return Ok(());
+        match self.observe(id).await.state {
+            "ready" => {}
+            "stopped" => return Ok(()),
+            // It restarted between the checks: nothing can confirm the detach.
+            state => {
+                self.update_desired(id, |spec| {
+                    spec.attach.push(removed.clone());
+                    Ok(())
+                })?;
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    "machine.busy",
+                    format!("machine {id} is {state}; try again when it is ready"),
+                ));
+            }
         }
         let status = match self.applied(id, generation).await {
             Ok(s) => s,
