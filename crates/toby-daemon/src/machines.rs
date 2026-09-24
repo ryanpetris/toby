@@ -107,8 +107,6 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
-    /// Tool sessions started with `--yolo`, per machine.
-    yolo: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -196,7 +194,6 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
-            yolo: Mutex::default(),
 
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
@@ -443,7 +440,20 @@ impl Machines {
         if self.observe(&id).await.state == "stopping" {
             self.wait_stopped(&id, Instant::now()).await;
         }
-        if self.running(&id).await {
+        let running = self.running(&id).await;
+        // A services machine runs only its server: an ordinary machine of
+        // the same home and root is not taken over while it runs.
+        if running
+            && let Some(server) = services
+            && template.services.as_deref() != Some(server)
+        {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "machine.pair-in-use",
+                format!("machine {id} uses home and root {}; stop it with: toby machine stop {id}", home),
+            ));
+        }
+        if running {
             // Recorded before letting go of the lock, so idle stop sees it.
             self.activity.lock().unwrap().insert(id.clone(), Instant::now());
             drop(_lock);
@@ -551,11 +561,33 @@ impl Machines {
         let asked = self.request_stop(id, "stop").await.unwrap_or_else(Instant::now);
         match self.wait_stopped(id, asked).await {
             Stopped::Restarted => return Ok(()),
-            Stopped::TimedOut => self.supervisor.kill(id, &self.runtime(id)).await?,
+            Stopped::TimedOut => {
+                if !self.kill_unless_restarted(id, asked).await? {
+                    return Ok(());
+                }
+            }
             Stopped::Yes => {}
         }
         self.forget(id);
         Ok(())
+    }
+
+    /// Kills a machine that did not stop after the stop `asked`, unless it
+    /// was started again since. Starts wait for the start lock, which is
+    /// held from the check to the kill. Returns whether it killed.
+    async fn kill_unless_restarted(&self, id: &str, asked: Instant) -> Result<bool> {
+        let _lock = self.lock.lock().await;
+        if self.restarted(id, asked) {
+            return Ok(false);
+        }
+        self.supervisor.kill(id, &self.runtime(id)).await?;
+        Ok(true)
+    }
+
+    /// Whether the machine was asked to start after `asked`.
+    fn restarted(&self, id: &str, asked: Instant) -> bool {
+        self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
+            || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked)
     }
 
     /// Asks the guest to power off; returns when that was asked, or `None`
@@ -580,12 +612,8 @@ impl Machines {
     /// again after the stop `asked` (then there is nothing left to stop).
     async fn wait_stopped(&self, id: &str, asked: Instant) -> Stopped {
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
-        let restarted = || {
-            self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
-                || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked)
-        };
         while tokio::time::Instant::now() < deadline {
-            if restarted() {
+            if self.restarted(id, asked) {
                 return Stopped::Restarted;
             }
             if self.observe(id).await.state == "stopped" {
@@ -593,8 +621,7 @@ impl Machines {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        // Checked again right before the caller would kill it.
-        if restarted() { Stopped::Restarted } else { Stopped::TimedOut }
+        Stopped::TimedOut
     }
 
     fn forget(&self, id: &str) {
@@ -1177,7 +1204,11 @@ impl Machines {
         let id = c.spawn(session).await?;
         self.activity.lock().unwrap().insert(spec.id.clone(), Instant::now());
         if manifest.is_some() && yolo {
-            self.yolo.lock().unwrap().entry(spec.id.clone()).or_default().insert(id.clone());
+            // Kept in the machine's state, so a restarted daemon knows it.
+            let path = self.paths.machine_state_dir(&spec.id).join("yolo-sessions");
+            let mut ids = std::fs::read_to_string(&path).unwrap_or_default();
+            ids.push_str(&format!("{id}\n"));
+            toby_config::machine::write_atomic(&path, ids.as_bytes())?;
         }
         Ok(id)
     }
@@ -1188,7 +1219,9 @@ impl Machines {
         if self.current_config().settings.yolo {
             return true;
         }
-        if self.yolo.lock().unwrap().get(machine).is_none_or(|s| s.is_empty()) {
+        let path = self.paths.machine_state_dir(machine).join("yolo-sessions");
+        let ids = std::fs::read_to_string(&path).unwrap_or_default();
+        if ids.trim().is_empty() {
             return false;
         }
         let live: Vec<String> = match Control::connect(&self.runtime(machine)).await {
@@ -1200,12 +1233,14 @@ impl Machines {
                 .filter(|s| s.exit.is_none())
                 .map(|s| s.id)
                 .collect(),
-            Err(_) => Vec::new(),
+            Err(_) => return false,
         };
-        let mut yolo = self.yolo.lock().unwrap();
-        let set = yolo.entry(machine.to_string()).or_default();
-        set.retain(|s| live.contains(s));
-        !set.is_empty()
+        let kept: Vec<&str> = ids.lines().filter(|id| live.iter().any(|l| l == id)).collect();
+        if kept.len() != ids.lines().count() {
+            let text: String = kept.iter().map(|id| format!("{id}\n")).collect();
+            let _ = toby_config::machine::write_atomic(&path, text.as_bytes());
+        }
+        !kept.is_empty()
     }
 
     /// Removes attachments and forwards whose sessions have all ended.
@@ -1380,7 +1415,9 @@ impl Machines {
                     match self.wait_stopped(&spec.id, asked).await {
                         Stopped::Restarted => continue,
                         Stopped::TimedOut => {
-                            let _ = self.supervisor.kill(&spec.id, &self.runtime(&spec.id)).await;
+                            if let Ok(false) = self.kill_unless_restarted(&spec.id, asked).await {
+                                continue;
+                            }
                         }
                         Stopped::Yes => {}
                     }

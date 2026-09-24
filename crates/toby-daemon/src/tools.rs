@@ -170,7 +170,7 @@ async fn write_mcp(
     let config = machines.current_config();
     let wanted = config.tools.get(&tool.name).map(|t| t.mcp.clone()).unwrap_or_default();
     let mut servers = serde_json::Map::new();
-    for name in std::iter::once("toby".to_string()).chain(wanted) {
+    for name in std::iter::once("toby".to_string()).chain(wanted.into_iter().filter(|n| n != "toby")) {
         let mut ctx = ctx.clone();
         ctx.name = name.clone();
         let template = if name == "toby" {

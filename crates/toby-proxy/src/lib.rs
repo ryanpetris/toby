@@ -138,6 +138,9 @@ impl Proxy {
             Some(s) if s.kind == toby_config::global::McpKind::Http => s,
             _ => return text(StatusCode::NOT_FOUND, format!("no HTTP MCP server {name:?} is configured")),
         };
+        if let Err(e) = server.check(&name) {
+            return text(StatusCode::NOT_FOUND, e);
+        }
         let reachable = toby_config::machine::MachineSpec::load(&self.paths.machine_desired(machine))
             .is_ok_and(|spec| config.mcp_reachable(&spec, &name));
         if !reachable {

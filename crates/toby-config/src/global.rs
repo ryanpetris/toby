@@ -86,6 +86,9 @@ impl McpServer {
 
     /// Checks the combination of fields.
     pub fn check(&self, name: &str) -> Result<(), String> {
+        if name == "toby" {
+            return Err("mcp.toby: toby is the name of Toby's own server".into());
+        }
         match self.kind {
             McpKind::Stdio if self.command.is_empty() => {
                 Err(format!("mcp.{name}: a stdio server needs a command"))
@@ -313,8 +316,8 @@ impl Programs {
 
 impl GlobalConfig {
     /// Whether a machine may reach MCP server `name`: Toby's own server
-    /// from any machine but a services machine, another server when a tool
-    /// started in the machine lists it.
+    /// (`toby`) from any machine but a services machine, a configured one
+    /// when a tool started in the machine lists it.
     pub fn mcp_reachable(&self, spec: &crate::machine::MachineSpec, name: &str) -> bool {
         if spec.services.is_some() {
             return false;

@@ -81,18 +81,23 @@ impl Approvals {
         toby_config::machine::write_atomic(&self.path(&a.id), &text)
     }
 
-    /// Pending approvals first, then recently decided ones, newest first.
-    /// Pending approvals past their time are expired.
-    pub fn list(&self) -> io::Result<Vec<Approval>> {
-        let mut all: Vec<Approval> = match std::fs::read_dir(&self.dir) {
-            Ok(entries) => entries
+    /// Every record, as stored.
+    fn read_all(&self) -> io::Result<Vec<Approval>> {
+        match std::fs::read_dir(&self.dir) {
+            Ok(entries) => Ok(entries
                 .flatten()
                 .filter_map(|e| std::fs::read_to_string(e.path()).ok())
                 .filter_map(|t| serde_json::from_str(&t).ok())
-                .collect(),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e),
-        };
+                .collect()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Pending approvals first, then recently decided ones, newest first.
+    /// Pending approvals past their time are expired.
+    pub fn list(&self) -> io::Result<Vec<Approval>> {
+        let mut all = self.read_all()?;
         let now = now();
         for a in all.iter_mut().filter(|a| a.status == "pending" && a.expires <= now) {
             let _lock = self.lock.lock().unwrap();
@@ -138,13 +143,20 @@ impl Approvals {
         detail: String,
         timeout: Duration,
     ) -> io::Result<Approval> {
-        let pending = self.list()?.iter().filter(|a| a.status == "pending" && a.machine == machine).count();
+        // Counted and created under the lock, so concurrent requests stay
+        // within the limit.
+        let lock = self.lock.lock().unwrap();
+        let created = now();
+        let pending = self
+            .read_all()?
+            .iter()
+            .filter(|a| a.status == "pending" && a.expires > created && a.machine == machine)
+            .count();
         if pending >= MAX_PENDING {
             return Err(io::Error::other(format!(
                 "machine {machine} already has {pending} pending approvals"
             )));
         }
-        let created = now();
         let a = Approval {
             id: toby_config::new_id(),
             created,
@@ -158,6 +170,7 @@ impl Approvals {
             decided_at: None,
         };
         self.store(&a)?;
+        drop(lock);
         self.prune();
         Ok(a)
     }
