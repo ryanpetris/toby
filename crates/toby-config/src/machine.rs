@@ -104,10 +104,16 @@ pub enum Direction {
 pub struct Forward {
     pub id: String,
     pub direction: Direction,
+    /// Host TCP address, e.g. `127.0.0.1:3000`.
     pub host: String,
+    /// Guest TCP address, e.g. `127.0.0.1:3000`.
     pub guest: String,
+    /// Kept without sessions until removed or the machine stops.
     #[serde(default)]
     pub pinned: bool,
+    /// Recreated every time the machine starts.
+    #[serde(default)]
+    pub persist: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +200,23 @@ pub struct MachineStatus {
     /// Attachments that are desired or still mounted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attach: Vec<AttachStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<ForwardStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardState {
+    Listening,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardStatus {
+    pub id: String,
+    pub state: ForwardState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

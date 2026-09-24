@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, FlockArg};
-use toby_api::{AttachmentInfo, MachineInfo, Warning};
+use toby_api::{AttachmentInfo, ForwardInfo, MachineInfo, Warning};
 use toby_config::global::{Backend, GlobalConfig};
-use toby_config::machine::{self, Attach, AttachState, MachineSpec, MachineStatus, RootSpec, State};
+use toby_config::machine::{
+    self, Attach, AttachState, Direction, Forward, ForwardState, MachineSpec, MachineStatus, RootSpec, State,
+};
 use toby_config::paths::{MachineRuntime, Paths};
 use toby_proto::types::{Identity, SessionInfo, SpawnSpec, TtySize};
 use toby_store::Store;
@@ -25,6 +27,10 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// A guest helper may take up to two minutes (plan §9.6).
 const APPLY_TIMEOUT: Duration = Duration::from_secs(150);
 const IDLE_CHECK: Duration = Duration::from_secs(30);
+
+/// Guest ends of the capabilities (plan §11.6).
+pub const MODELS_LISTEN: &str = "127.0.0.1:41100";
+pub const SANDBOX_SOCKET: &str = "/run/toby/sandbox.sock";
 
 /// An API error: a status class, a stable code and a message.
 #[derive(Debug)]
@@ -222,6 +228,7 @@ impl Machines {
             m.lock().unwrap().get(&spec.id).filter(|_| running).map(|t| now.duration_since(*t).as_secs())
         };
         let status_attach = observed.status.as_ref().map(|s| s.attach.clone()).unwrap_or_default();
+        let status_forward = observed.status.as_ref().map(|s| s.forward.clone()).unwrap_or_default();
         MachineInfo {
             id: spec.id.clone(),
             home: spec.home.clone(),
@@ -239,6 +246,11 @@ impl Machines {
             error: observed.status.and_then(|s| s.error),
             sessions,
             attachments: attachment_infos(spec, &status_attach, running),
+            forwards: spec
+                .forward
+                .iter()
+                .map(|f| forward_info(f, status_forward.iter().find(|s| s.id == f.id), running))
+                .collect(),
             uptime_secs: since(&self.started),
             idle_secs: if sessions > 0 { Some(0) } else { since(&self.activity) },
         }
@@ -360,8 +372,11 @@ impl Machines {
             let _file = self.lock_desired(&id)?;
             let path = self.paths.machine_desired(&id);
             let mut spec = MachineSpec::load(&path).unwrap_or(template);
-            // Only persistent attachments outlive a run of the machine.
+            // Only persistent attachments and forwards outlive a run.
             spec.attach.retain(|a| a.persist);
+            spec.forward.retain(|f| f.persist);
+            spec.capabilities.models_listen = Some(MODELS_LISTEN.into());
+            spec.capabilities.sandbox_socket = Some(SANDBOX_SOCKET.into());
             spec.ephemeral = ephemeral;
             spec.generation += 1;
             spec.store(&path)?;
@@ -654,6 +669,118 @@ impl Machines {
         Ok(())
     }
 
+    // Forwards
+
+    pub async fn add_forward(&self, id: &str, req: toby_api::AddForward) -> Result<ForwardInfo> {
+        self.record(id)?;
+        let direction = match req.direction.as_str() {
+            "host-to-guest" => Direction::HostToGuest,
+            "guest-to-host" => Direction::GuestToHost,
+            other => {
+                return Err(Error::new(
+                    ErrorKind::BadRequest,
+                    "forward.invalid",
+                    format!("unknown direction {other:?}"),
+                ));
+            }
+        };
+        for addr in [&req.host, &req.guest] {
+            if addr.parse::<std::net::SocketAddr>().is_err() {
+                return Err(Error::new(
+                    ErrorKind::BadRequest,
+                    "forward.invalid",
+                    format!("{addr:?} is not an address such as 127.0.0.1:3000"),
+                ));
+            }
+        }
+        let forward = Forward {
+            id: format!("f{}", toby_config::new_id().to_lowercase()),
+            direction,
+            host: req.host.clone(),
+            guest: req.guest.clone(),
+            pinned: req.pinned || req.persist,
+            persist: req.persist,
+        };
+        // A host address can be listened on once, across machines.
+        if direction == Direction::HostToGuest {
+            for other in self.records() {
+                if let Some(f) =
+                    other.forward.iter().find(|f| f.direction == Direction::HostToGuest && f.host == req.host)
+                    && (other.id == id || self.running(&other.id).await)
+                {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        "forward.host-in-use",
+                        format!("{} is already forwarded by machine {} ({})", req.host, other.id, f.id),
+                    ));
+                }
+            }
+        } else if self.record(id)?.forward.iter().any(|f| f.direction == direction && f.guest == req.guest) {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "forward.guest-in-use",
+                format!("{} is already forwarded in machine {id}", req.guest),
+            ));
+        }
+
+        let lock = self.machine_lock(id);
+        let _lock = lock.lock().await;
+        let running = self.observe(id).await.state == "ready";
+        if !running && !forward.persist {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "machine.not-running",
+                format!("machine {id} is not running; --persist adds the forward whenever it starts"),
+            ));
+        }
+        let generation = self.update_desired(id, |spec| {
+            spec.forward.push(forward.clone());
+            Ok(())
+        })?;
+        if !running {
+            return Ok(forward_info(&forward, None, false));
+        }
+        let status = self.applied(id, generation).await;
+        let failure = match &status {
+            Ok(s) => match s.forward.iter().find(|f| f.id == forward.id) {
+                Some(f) if f.state == ForwardState::Listening => None,
+                other => Some(other.and_then(|f| f.error.clone()).unwrap_or_else(|| "unknown error".into())),
+            },
+            Err(e) => Some(e.message.clone()),
+        };
+        if let Some(error) = failure {
+            self.update_desired(id, |spec| {
+                spec.forward.retain(|f| f.id != forward.id);
+                Ok(())
+            })?;
+            return Err(Error::new(ErrorKind::Internal, "forward.failed", error));
+        }
+        let status = status?;
+        Ok(forward_info(&forward, status.forward.iter().find(|f| f.id == forward.id), true))
+    }
+
+    pub async fn remove_forward(&self, id: &str, fid: &str) -> Result<()> {
+        self.record(id)?;
+        let lock = self.machine_lock(id);
+        let _lock = lock.lock().await;
+        let generation = self.update_desired(id, |spec| {
+            let before = spec.forward.len();
+            spec.forward.retain(|f| f.id != fid);
+            if spec.forward.len() == before {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    "forward.not-found",
+                    format!("no forward {fid} in {id}"),
+                ));
+            }
+            Ok(())
+        })?;
+        if self.observe(id).await.state == "ready" {
+            self.applied(id, generation).await?;
+        }
+        Ok(())
+    }
+
     // Sessions
 
     pub async fn create_session(&self, req: toby_api::CreateSession) -> Result<(MachineSpec, String)> {
@@ -769,6 +896,30 @@ fn attachment_info(
         persist: a.persist,
         state: match (status, running) {
             (Some(s), true) if s.state == AttachState::Ready => "ready".into(),
+            (Some(_), true) => "failed".into(),
+            _ => "pending".into(),
+        },
+        error: status.and_then(|s| s.error.clone()),
+    }
+}
+
+fn forward_info(
+    f: &Forward,
+    status: Option<&toby_config::machine::ForwardStatus>,
+    running: bool,
+) -> ForwardInfo {
+    ForwardInfo {
+        id: f.id.clone(),
+        direction: match f.direction {
+            Direction::HostToGuest => "host-to-guest".into(),
+            Direction::GuestToHost => "guest-to-host".into(),
+        },
+        host: f.host.clone(),
+        guest: f.guest.clone(),
+        pinned: f.pinned,
+        persist: f.persist,
+        state: match (status, running) {
+            (Some(s), true) if s.state == ForwardState::Listening => "listening".into(),
             (Some(_), true) => "failed".into(),
             _ => "pending".into(),
         },

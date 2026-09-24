@@ -54,6 +54,8 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/machines/{id}/stop", post(stop))
         .route("/v1/machines/{id}/attachments", post(add_attachment))
         .route("/v1/machines/{id}/attachments/{aid}", delete(remove_attachment))
+        .route("/v1/machines/{id}/forwards", post(add_forward))
+        .route("/v1/machines/{id}/forwards/{fid}", delete(remove_forward))
         .route("/v1/sessions", get(sessions).post(create_session))
         .route("/v1/sessions/{id}/kill", post(kill_session))
         .route("/v1/images", get(images))
@@ -122,6 +124,18 @@ async fn add_attachment(
 
 async fn remove_attachment(State(d): Shared, Path((id, aid)): Path<(String, String)>) -> ApiResult<()> {
     d.machines.remove_attachment(&id, &aid).await.map(Json)
+}
+
+async fn add_forward(
+    State(d): Shared,
+    Path(id): Path<String>,
+    Json(req): Json<api::AddForward>,
+) -> ApiResult<api::ForwardInfo> {
+    d.machines.add_forward(&id, req).await.map(Json)
+}
+
+async fn remove_forward(State(d): Shared, Path((id, fid)): Path<(String, String)>) -> ApiResult<()> {
+    d.machines.remove_forward(&id, &fid).await.map(Json)
 }
 
 // Sessions

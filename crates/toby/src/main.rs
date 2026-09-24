@@ -4,6 +4,7 @@ mod admin;
 mod api;
 mod cli;
 mod client;
+mod forwards;
 mod images;
 mod internal;
 mod mounts;
@@ -64,7 +65,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Machine(cmd) => return runtime()?.block_on(admin::machine(cmd)),
         Command::Mount(a) => return runtime()?.block_on(mounts::mount(a)),
         Command::Unmount { target, machine } => return runtime()?.block_on(mounts::unmount(target, machine)),
-        Command::Forward(_) => "forward",
+        Command::Forward(cmd) => return runtime()?.block_on(forwards::forward(cmd)),
         Command::Image(cmd) => return runtime()?.block_on(images::image(cmd)),
         Command::Root(cmd) => return runtime()?.block_on(images::root(cmd)),
         Command::Home(cmd) => return runtime()?.block_on(images::home(cmd)),

@@ -46,6 +46,7 @@ pub struct MachineInfo {
     pub error: Option<String>,
     pub sessions: usize,
     pub attachments: Vec<AttachmentInfo>,
+    pub forwards: Vec<ForwardInfo>,
     pub uptime_secs: Option<u64>,
     pub idle_secs: Option<u64>,
 }
@@ -61,6 +62,33 @@ pub struct AttachmentInfo {
     /// `ready`, `failed` or `pending`.
     pub state: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardInfo {
+    pub id: String,
+    /// `host-to-guest` or `guest-to-host`.
+    pub direction: String,
+    pub host: String,
+    pub guest: String,
+    pub pinned: bool,
+    pub persist: bool,
+    /// `listening`, `failed` or `pending`.
+    pub state: String,
+    pub error: Option<String>,
+}
+
+/// `POST /v1/machines/{id}/forwards`. Addresses are `ADDR:PORT`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddForward {
+    /// `host-to-guest` or `guest-to-host`.
+    pub direction: String,
+    pub host: String,
+    pub guest: String,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub persist: bool,
 }
 
 /// `POST /v1/machines/ensure`: the machine for a home and root, started if

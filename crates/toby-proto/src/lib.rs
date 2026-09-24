@@ -5,6 +5,7 @@ pub mod frame;
 pub mod fs;
 pub mod machine;
 pub mod relay;
+pub mod service;
 pub mod session;
 pub mod stream;
 pub mod types;

@@ -170,6 +170,8 @@ fn machine_config(host: &Host) -> anyhow::Result<toby_machine::Config> {
         runtime: host.runtime.clone(),
         runtime_version: current_runtime_version(&host.config.programs.versions()),
         boot_helpers: boot_helpers(host)?,
+        proxy_sock: host.paths.proxy_sock(),
+        capability_sock: host.paths.capability_sock(),
     })
 }
 

@@ -116,6 +116,16 @@ impl Paths {
         MachineRuntime { dir: self.runtime.join("machines").join(id) }
     }
 
+    /// The models proxy's socket (plan §11.6).
+    pub fn proxy_sock(&self) -> PathBuf {
+        self.runtime.join("proxy.sock")
+    }
+
+    /// tobyd's endpoint for guest capability requests.
+    pub fn capability_sock(&self) -> PathBuf {
+        self.runtime.join("capability.sock")
+    }
+
     pub fn machines_runtime(&self) -> PathBuf {
         self.runtime.join("machines")
     }

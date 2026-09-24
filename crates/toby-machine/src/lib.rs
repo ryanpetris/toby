@@ -2,6 +2,7 @@
 //! host-side sockets, keeps the relay control channel, and splices streams
 //! between host clients and the guest (plan §8.3, §11, §13.3).
 
+pub mod forward;
 pub mod link;
 
 use std::collections::BTreeMap;
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use toby_config::machine::{Attach, AttachState, AttachStatus, MachineSpec, MachineStatus, State};
+use toby_config::machine::{Attach, AttachState, AttachStatus, Direction, MachineSpec, MachineStatus, State};
 use toby_config::paths::MachineRuntime;
 use toby_engine::cloud_hypervisor::Api;
 use toby_proto::machine::{self, Request, Response};
@@ -47,6 +48,9 @@ pub struct Config {
     /// Commands run as root, in order, once per guest boot before the machine
     /// is ready (plan §9.6).
     pub boot_helpers: Vec<Vec<String>>,
+    /// Host services guest capabilities connect to (plan §11.6).
+    pub proxy_sock: PathBuf,
+    pub capability_sock: PathBuf,
 }
 
 pub struct Machine {
@@ -61,6 +65,7 @@ pub struct Machine {
     pending_guest: Arc<tokio::sync::Semaphore>,
     /// Attachments mounted in the guest, by ID.
     mounted: Mutex<BTreeMap<String, Attach>>,
+    forwards: forward::Forwards,
 }
 
 fn bind(path: &Path) -> io::Result<UnixListener> {
@@ -106,6 +111,7 @@ impl Machine {
             booting: tokio::sync::Mutex::new(()),
             pending_guest: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_GUEST)),
             mounted: Mutex::new(mounted),
+            forwards: Default::default(),
         })
     }
 
@@ -292,11 +298,114 @@ impl Machine {
             desired.values().filter(|a| !mounted.contains_key(&a.id)).map(|a| entry(a, AttachState::Failed)),
         );
         *self.mounted.lock().unwrap() = mounted;
+
+        let mut forward_errors =
+            self.forwards.reconcile_host(self.config.runtime.vsock(), &spec.forward).await;
+        forward_errors.extend(self.register_guest(self.guest_listeners(&spec)).await);
+        let capability_error = [forward::MODELS, forward::SANDBOX]
+            .iter()
+            .find_map(|id| forward_errors.get(*id).map(|e| format!("capability {id}: {e}")));
+        let forwards = forward::statuses(&spec.forward, &forward_errors);
         self.update_status(|s| {
             s.attach = entries;
+            s.forward = forwards;
             s.observed_generation = spec.generation;
         });
-        Ok(())
+        match capability_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// The guest listeners the desired state asks for: guest-to-host
+    /// forwards and the capabilities.
+    fn guest_listeners(&self, spec: &MachineSpec) -> Vec<forward::GuestListener> {
+        let mut out: Vec<forward::GuestListener> = spec
+            .forward
+            .iter()
+            .filter(|f| f.direction == Direction::GuestToHost)
+            .map(|f| forward::GuestListener {
+                id: f.id.clone(),
+                bind: forward::tcp(&f.guest),
+                mode: None,
+                target: forward::Target::Tcp(f.host.clone()),
+            })
+            .collect();
+        if let Some(addr) = &spec.capabilities.models_listen {
+            out.push(forward::GuestListener {
+                id: forward::MODELS.into(),
+                bind: forward::tcp(addr),
+                mode: None,
+                target: forward::Target::Service(self.config.proxy_sock.clone()),
+            });
+        }
+        if let Some(path) = &spec.capabilities.sandbox_socket {
+            out.push(forward::GuestListener {
+                id: forward::SANDBOX.into(),
+                bind: types::Endpoint::Unix { path: path.clone() },
+                // Every guest user may reach the sandbox API.
+                mode: Some(0o666),
+                target: forward::Target::Service(self.config.capability_sock.clone()),
+            });
+        }
+        out
+    }
+
+    /// Registers `wanted` with the relay and removes listeners no longer
+    /// wanted. Returns the listeners that failed, with the error.
+    async fn register_guest(
+        &self,
+        wanted: Vec<forward::GuestListener>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut errors = std::collections::HashMap::new();
+        let stale: Vec<String> = {
+            let current = self.forwards.guest.lock().unwrap();
+            current.keys().filter(|id| !wanted.iter().any(|w| &w.id == *id)).cloned().collect()
+        };
+        for id in stale {
+            let _ =
+                self.relay.call(&relay::Request::Unlisten(relay::Unlisten { listener_id: id.clone() })).await;
+            self.forwards.guest.lock().unwrap().remove(&id);
+        }
+        for l in wanted {
+            let unchanged = self.forwards.guest.lock().unwrap().get(&l.id) == Some(&l);
+            if unchanged {
+                continue;
+            }
+            match self.listen(&l).await {
+                Ok(()) => {
+                    self.forwards.guest.lock().unwrap().insert(l.id.clone(), l);
+                }
+                Err(e) => {
+                    self.forwards.guest.lock().unwrap().remove(&l.id);
+                    errors.insert(l.id, e);
+                }
+            }
+        }
+        errors
+    }
+
+    async fn listen(&self, l: &forward::GuestListener) -> Result<(), String> {
+        let req = relay::Request::Listen(relay::Listen {
+            listener_id: l.id.clone(),
+            bind: l.bind.clone(),
+            mode: l.mode,
+        });
+        match self.relay.call(&req).await {
+            Ok(relay::Response::Done(_)) => Ok(()),
+            Ok(relay::Response::Failed(f)) => Err(printable(f.error.as_bytes())),
+            Ok(other) => Err(format!("unexpected relay response {other:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Registers every guest listener again: a restarted relay has none.
+    async fn relisten(&self) {
+        let all: Vec<forward::GuestListener> =
+            self.forwards.guest.lock().unwrap().values().cloned().collect();
+        for l in all {
+            let _ = self.listen(&l).await;
+        }
     }
 
     /// Marks the machine ready once the relay answers and the boot helpers
@@ -337,6 +446,8 @@ impl Machine {
         let mut error = None;
         if !done || !ready {
             error = self.reconcile().await.err();
+        } else {
+            self.relisten().await;
         }
         self.update_status(|s| {
             s.state = State::Ready;
@@ -455,8 +566,21 @@ impl Machine {
                 // over the control channel; the relay's answers there decide.
                 self.relay_up_if_idle().await;
             }
-            GuestHeader::Accepted(_) => {
-                frame::send(&mut s, &Reply::refused("unknown listener")).await?;
+            GuestHeader::Accepted(a) => {
+                // Only listeners registered for this machine, each to its
+                // one configured target.
+                let Some(target) = self.forwards.target(&a.listener_id) else {
+                    frame::send(&mut s, &Reply::refused("unknown listener")).await?;
+                    return Ok(());
+                };
+                drop(_permit);
+                match forward::connect_target(&target, &self.config.id).await {
+                    Ok(mut host) => {
+                        frame::send(&mut s, &Reply::ok()).await?;
+                        tokio::io::copy_bidirectional(&mut s, &mut host).await?;
+                    }
+                    Err(e) => frame::send(&mut s, &Reply::refused(format!("host target: {e}"))).await?,
+                }
             }
         }
         Ok(())
