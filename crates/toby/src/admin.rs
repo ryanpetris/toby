@@ -134,7 +134,7 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
             match backend {
                 Backend::SystemdUser => match info.linger {
                     Some(true) => println!("linger: on"),
-                    Some(false) => println!("linger: off (machines stop after your last login session ends)"),
+                    Some(false) => println!("linger: off; machines stop after your last login session ends"),
                     None => println!("linger: unknown"),
                 },
                 Backend::Direct => println!(
@@ -184,7 +184,7 @@ async fn stop_daemon(backend: Backend, running: bool) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     let wait = || async {
         if tokio::time::Instant::now() > deadline {
-            bail!("tobyd did not stop");
+            bail!("tobyd did not stop; see: toby daemon logs");
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         anyhow::Ok(())
@@ -235,7 +235,7 @@ pub async fn linger(state: OnOff) -> anyhow::Result<ExitCode> {
     if let Err(e) = toby_svc::systemd::set_linger(uid, on).await {
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())?.map(|u| u.name).unwrap_or_default();
         let verb = if on { "enable-linger" } else { "disable-linger" };
-        bail!("{e}\nrun with administrator rights: loginctl {verb} {user}");
+        bail!("{e}; run as root: loginctl {verb} {user}");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -297,7 +297,7 @@ pub async fn collect_versions() -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;
     let r: toby_api::VersionsCollected = api.post("/v1/versions/gc", &()).await?;
     for v in &r.removed {
-        println!("removed version {v}");
+        println!("Removed version {v}");
     }
     println!("in use: {}", r.kept.join(", "));
     for (v, e) in &r.failed {
@@ -390,18 +390,18 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
                 Ok(systemd) => {
                     r.ok("back end systemd-user: user instance reachable");
                     match systemd.state("tobyd.socket").await.as_deref() {
-                        Ok("not-found") => r.fail("tobyd.socket is not installed"),
+                        Ok("not-found") => r.fail("tobyd.socket is not installed; install the Toby package, or run: toby config set daemon.backend direct"),
                         Ok(state) => r.ok(&format!("tobyd.socket: {state}")),
                         Err(e) => r.fail(&format!("tobyd.socket: {e}")),
                     }
                     match toby_svc::systemd::linger(nix::unistd::getuid().as_raw()).await {
                     Ok(true) => r.ok("linger is on"),
-                    Ok(false) => r.warn("linger is off: machines stop after your last login session ends (toby linger on)"),
+                    Ok(false) => r.warn("linger is off; machines stop after your last login session ends (toby linger on)"),
                     Err(e) => r.warn(&format!("linger unknown: {e}")),
                 }
                 }
                 Err(e) => r.fail(&format!(
-                    "back end systemd-user: {e} (set daemon.backend = \"direct\" to run without it)"
+                    "back end systemd-user: {e}; to run without it: toby config set daemon.backend direct"
                 )),
             }
         }
@@ -412,7 +412,6 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
             }
         }
     }
-    r.ok(&format!("runtime directory: {}", paths.runtime.display()));
 
     // Substitutions are resolved when used; unresolved ones show up here
     // first (plan §14.2).
@@ -473,8 +472,7 @@ pub fn config(cmd: crate::cli::ConfigCommand) -> anyhow::Result<ExitCode> {
             }
         }
         ConfigCommand::Set { key, value } => {
-            let out = toby_config::edit::set(&text, &key, &value)
-                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            let out = toby_config::edit::set(&text, &key, &value).map_err(anyhow::Error::msg)?;
             // A symlinked file (kept with other dotfiles) is written where it
             // points, keeping its permissions.
             let target = std::fs::canonicalize(&path).unwrap_or(path);

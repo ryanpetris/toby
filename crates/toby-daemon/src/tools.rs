@@ -151,8 +151,7 @@ fn instructions(
             match std::fs::read_to_string(&f) {
                 Ok(text) if !text.trim().is_empty() => docs.push(text.trim_end_matches('\n').to_string()),
                 Ok(_) => {}
-                Err(_) => warnings
-                    .push(format!("warning[config.instruction-missing]: {} cannot be read", f.display())),
+                Err(e) => warnings.push(format!("warning[config.instruction-missing]: {}: {e}", f.display())),
             }
         }
     }
@@ -174,7 +173,7 @@ pub fn context(
         Some(p) if tool.tool.models.is_some() => {
             let Some(provider) = config.models.get(&p) else {
                 return Err(err(format!(
-                    "tool {} uses model provider {p}, which is not configured",
+                    "tools.{}.models: no model provider {p} is configured",
                     tool.tool.name
                 )));
             };
@@ -184,8 +183,13 @@ pub fn context(
             };
             if !tool.tool.models.as_ref().is_some_and(|m| m.protocols.contains(&offers)) {
                 return Err(err(format!(
-                    "tool {} speaks another API than model provider {p}",
-                    tool.tool.name
+                    "tools.{}.models: {} cannot use the {} API of provider {p}",
+                    tool.tool.name,
+                    tool.tool.name,
+                    match offers {
+                        toby_tools::Protocol::Anthropic => "Anthropic",
+                        toby_tools::Protocol::Openai => "OpenAI",
+                    }
                 )));
             }
             let token = toby_proxy::ensure_token(&machines.paths, &spec.id)?;
@@ -322,6 +326,10 @@ async fn prepare_one(
 ) -> io::Result<()> {
     let tool = &manifest.tool;
     let name = &tool.name;
+    let root = match &spec.root {
+        toby_config::machine::RootSpec::Named(r) => r.clone(),
+        _ => "the machine's root".into(),
+    };
     for r in &tool.requires {
         if r.is_empty() || !r.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b)) {
             return Err(err(format!("tool {name} requires an invalid command name {r:?}")));
@@ -330,7 +338,7 @@ async fn prepare_one(
     let requires = tool.requires.join(" ");
     let script = format!(
         "missing=; for c in {requires}; do command -v \"$c\" >/dev/null 2>&1 || missing=\"$missing $c\"; done; \
-         if [ -n \"$missing\" ]; then echo \"the root lacks:$missing; they belong in the image\" >&2; exit 3; fi"
+         if [ -n \"$missing\" ]; then echo \"needs$missing, which root {root} lacks; add them to its image and run: toby root rebase {root}\" >&2; exit 3; fi"
     );
     let mut sink = |_: &[u8], _: bool| {};
     let mut errors = Vec::new();
@@ -352,13 +360,15 @@ async fn prepare_one(
             // The image provides it.
             (true, None, None) => "true",
             (false, _, None) => {
-                return Err(err(format!("{name} is not in the root; it belongs in the image")));
+                return Err(err(format!(
+                    "{name} is not in root {root}; add it to its image and run: toby root rebase {root}"
+                )));
             }
         };
         let verb = if installed { "Updating" } else { "Installing" };
         out(format!("==> {verb} {name}\n").as_bytes(), false);
         if run_user(machines, spec, shell(tool, script), &mut *out).await? != ExitStatus::Code(0) {
-            return Err(err(format!("installing {name} failed")));
+            return Err(err(format!("{} {name} failed", verb.to_lowercase())));
         }
         if run_user(machines, spec, shell(tool, &format!("{check} >/dev/null 2>&1")), &mut sink).await?
             != ExitStatus::Code(0)
@@ -422,7 +432,7 @@ async fn write_mcp(
                     ctx.url = format!("http://{MODELS_LISTEN}/mcp/{name}");
                     mcp.http_entry
                         .as_ref()
-                        .ok_or_else(|| err(format!("{} cannot use HTTP MCP servers", tool.name)))?
+                        .ok_or_else(|| err(format!("{} cannot use HTTP MCP server {name}", tool.name)))?
                 }
                 (McpKind::Stdio, Placement::Isolated) => &mcp.entry,
                 (McpKind::Stdio, Placement::Machine) => {
@@ -431,7 +441,12 @@ async fn write_mcp(
                     ctx.env = server.env.clone().into_iter().collect();
                     mcp.command_entry
                         .as_ref()
-                        .ok_or_else(|| err(format!("{} cannot run MCP servers itself", tool.name)))?
+                        .ok_or_else(|| {
+                            err(format!(
+                                "{} cannot run MCP server {name} in its machine; set mcp.{name}.placement = \"isolated\"",
+                                tool.name
+                            ))
+                        })?
                 }
             }
         };

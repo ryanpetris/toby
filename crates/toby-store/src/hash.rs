@@ -24,7 +24,7 @@ fn feed_file(h: &mut Sha256, path: &Path) -> io::Result<()> {
 
 pub fn hash_file(path: &Path) -> io::Result<String> {
     let mut h = Sha256::new();
-    feed_file(&mut h, path)?;
+    feed_file(&mut h, path).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
     Ok(hex(h.finalize()))
 }
 
@@ -74,7 +74,8 @@ fn walk(h: &mut Sha256, root: &Path, rel: &Path) -> io::Result<()> {
 /// Hashes a directory tree: names, modes, file contents and symlink targets.
 pub fn hash_tree(root: &Path) -> io::Result<String> {
     let mut h = Sha256::new();
-    walk(&mut h, root, Path::new(""))?;
+    walk(&mut h, root, Path::new(""))
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", root.display())))?;
     Ok(hex(h.finalize()))
 }
 

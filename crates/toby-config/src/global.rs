@@ -108,7 +108,7 @@ impl McpServer {
     /// Checks the combination of fields.
     pub fn check(&self, name: &str) -> Result<(), String> {
         if name == "toby" {
-            return Err("mcp.toby: toby is the name of Toby's own server".into());
+            return Err("mcp.toby: the name toby is reserved; choose another".into());
         }
         match self.kind {
             McpKind::Stdio if self.command.is_empty() => {
@@ -124,13 +124,13 @@ impl McpServer {
                 ))
             }
             McpKind::Http if self.url.is_some() && (!self.command.is_empty() || self.port.is_some()) => {
-                Err(format!("mcp.{name}: an http server has a url, or a command and the port it listens on"))
+                Err(format!("mcp.{name}: an http server has a url or a command and port, not both"))
             }
             McpKind::Http if self.url.is_none() && (self.command.is_empty() || self.port.is_none()) => Err(
                 format!("mcp.{name}: an http server needs a url, or a command and the port it listens on"),
             ),
             McpKind::Stdio if self.port.is_some() || self.url.is_some() => {
-                Err(format!("mcp.{name}: a stdio server has no url or port"))
+                Err(format!("mcp.{name}: a stdio server takes no url or port"))
             }
             _ if !self.own_machine() && (self.image.is_some() || !self.host_ports.is_empty()) => {
                 Err(format!(

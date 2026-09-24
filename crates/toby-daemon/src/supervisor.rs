@@ -67,7 +67,7 @@ impl Supervisor {
                 if s.state("toby-proxy.socket").await? == "not-found" {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
-                        "toby-proxy.socket is not installed",
+                        "toby-proxy.socket is not installed; install the Toby package",
                     ));
                 }
                 s.start("toby-proxy.socket").await
@@ -115,7 +115,7 @@ impl Supervisor {
             Supervisor::Systemd(s) => s.stop(&vm_unit(id)).await,
             Supervisor::Direct { .. } => {
                 let pid = supervisor_pid(id, runtime).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "the machine's supervisor is gone")
+                    io::Error::new(io::ErrorKind::NotFound, format!("machine {id} is not running"))
                 })?;
                 nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM)
                     .map_err(io::Error::from)

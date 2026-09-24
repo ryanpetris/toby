@@ -22,9 +22,12 @@ async fn ensure_home(api: &Api, name: &str) -> anyhow::Result<()> {
     }
     eprintln!("==> Creating home {name}");
     let uid = nix::unistd::getuid().as_raw();
-    let username = nix::unistd::User::from_uid(nix::unistd::getuid())?
-        .map(|u| u.name)
-        .context("cannot determine your user name; create the home with: toby home create")?;
+    let username =
+        nix::unistd::User::from_uid(nix::unistd::getuid())?.map(|u| u.name).with_context(|| {
+            format!(
+                "cannot determine your user name; create the home with: toby home create {name} --user NAME"
+            )
+        })?;
     let started: toby_api::BuildStarted =
         api.post("/v1/homes", &toby_api::CreateHome { name: name.into(), username, uid }).await?;
     api.follow_build(&started.id).await.map(drop)
@@ -33,8 +36,8 @@ async fn ensure_home(api: &Api, name: &str) -> anyhow::Result<()> {
 fn absolute(dir: &Path, p: &str) -> anyhow::Result<String> {
     let home = toby_config::paths::home_dir()?;
     let p = dir.join(toby_config::paths::expand(&home, p));
-    let p = std::fs::canonicalize(&p).with_context(|| format!("{} does not exist", p.display()))?;
-    p.to_str().map(str::to_string).context("the path is not UTF-8")
+    let p = std::fs::canonicalize(&p).with_context(|| p.display().to_string())?;
+    p.to_str().map(str::to_string).with_context(|| format!("{} is not UTF-8", p.display()))
 }
 
 /// An image configuration as the API names it: none for the default image,
@@ -99,11 +102,13 @@ async fn ensure_root(
 }
 
 fn utf8(args: &[OsString]) -> anyhow::Result<Vec<String>> {
-    args.iter().map(|a| a.to_str().map(str::to_string).context("arguments must be UTF-8")).collect()
+    args.iter()
+        .map(|a| a.to_str().map(str::to_string).with_context(|| format!("argument {a:?} is not UTF-8")))
+        .collect()
 }
 
 pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
-    let name = argv[0].to_str().context("the tool name is not UTF-8")?.to_string();
+    let name = argv[0].to_str().with_context(|| format!("argument {:?} is not UTF-8", argv[0]))?.to_string();
     let args = ToolArgs::try_parse_from(&argv[1..]).unwrap_or_else(|e| e.exit());
     let flags = Flags {
         tool: Some(name),
@@ -134,7 +139,7 @@ async fn launch(
     if let Some(t) = &flags.tool
         && toby_tools::find(&tools, t).is_none()
     {
-        anyhow::bail!("there is no command or tool {t:?}; see toby --help");
+        anyhow::bail!("there is no command or tool {t}; see: toby --help");
     }
     let home_dir = toby_config::paths::home_dir()?;
     let plan =
@@ -182,7 +187,7 @@ async fn launch(
 
     let mut attachments = Vec::new();
     for p in &plan.projects {
-        let host = p.host.to_str().context("the project path is not UTF-8")?.to_string();
+        let host = p.host.to_str().with_context(|| format!("{} is not UTF-8", p.host.display()))?.to_string();
         attachments.push(toby_api::AddAttachment {
             host,
             at: Some(p.at()),

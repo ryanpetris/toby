@@ -160,6 +160,14 @@ pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {
         let pair = format!("mcp-{name}");
         machines.iter().find(|m| m.home.as_deref() == Some(pair.as_str())).cloned()
     };
+    // Why a server has no machine to look at.
+    let no_machine = |name: &str| match config.mcp.get(name) {
+        None => anyhow::anyhow!("no MCP server {name} is configured"),
+        Some(s) if !s.own_machine() => {
+            anyhow::anyhow!("MCP server {name} does not run in a machine of its own")
+        }
+        Some(_) => anyhow::anyhow!("MCP server {name} has not started yet"),
+    };
     match cmd {
         McpCommand::Ls => {
             let mut rows =
@@ -189,7 +197,7 @@ pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {
         McpCommand::Logs { name, follow } => {
             // The server's own output, kept in its services machine's home.
             if services(&name).is_none() {
-                bail!("{name} has no services machine");
+                return Err(no_machine(&name));
             }
             let log = toby_guest::helper::serve::LOG;
             let tail = if follow { "tail -n 200 -F" } else { "tail -n 200" };
@@ -202,7 +210,7 @@ pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {
         }
         McpCommand::Restart { name } => {
             // The next connection starts it again.
-            let Some(m) = services(&name) else { bail!("{name} has no services machine") };
+            let Some(m) = services(&name) else { return Err(no_machine(&name)) };
             if m.state != "stopped" {
                 let () = api.post(&format!("/v1/machines/{}/stop", segment(&m.id)), &()).await?;
             }

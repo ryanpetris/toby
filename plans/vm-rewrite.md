@@ -1051,8 +1051,7 @@ Linger warning:
   logind's `Linger` property for the user is false, print once per `tobyd`
   lifetime:
   ```text
-  warning[daemon.linger-disabled]: linger is off; machines and sessions stop shortly after your last login session ends.
-           enable: loginctl enable-linger   ·   silence: add "daemon.linger-disabled" to settings.suppress_warnings
+  warning[daemon.linger-disabled]: linger is off; machines stop after your last login session ends; turn it on with: toby linger on
   ```
 - Silence through the general warning mechanism:
   `settings.suppress_warnings = ["daemon.linger-disabled"]` (§14.6).
@@ -1854,7 +1853,7 @@ under qemu-user; booting on aarch64 hardware has not been tried.
 
 ```text
 toby <tool> [--home H] [--root R] [--project PATH]… [--ephemeral] [--attach|--new] [--yolo] [--install] [--upgrade] [-- args…]
-toby run -f <launch.toml>        # named launch file (§14.6)
+toby run -f <launch.toml> [launch options] [-- args…]   # named launch file (§14.6)
 toby exec [--as-root] [--home H --root R | --machine ID] [--cwd DIR] -- CMD…
 toby shell [--as-root] [--home H --root R | --machine ID]
 

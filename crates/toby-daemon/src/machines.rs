@@ -60,11 +60,11 @@ impl Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         let (kind, code) = match e.kind() {
-            io::ErrorKind::NotFound => (ErrorKind::NotFound, "not-found"),
-            io::ErrorKind::InvalidInput => (ErrorKind::BadRequest, "invalid"),
-            io::ErrorKind::AlreadyExists => (ErrorKind::Conflict, "exists"),
-            io::ErrorKind::ResourceBusy => (ErrorKind::Conflict, "in-use"),
-            _ => (ErrorKind::Internal, "error"),
+            io::ErrorKind::NotFound => (ErrorKind::NotFound, "io.not-found"),
+            io::ErrorKind::InvalidInput => (ErrorKind::BadRequest, "io.invalid"),
+            io::ErrorKind::AlreadyExists => (ErrorKind::Conflict, "io.exists"),
+            io::ErrorKind::ResourceBusy => (ErrorKind::Conflict, "io.in-use"),
+            _ => (ErrorKind::Internal, "io.failed"),
         };
         Error::new(kind, code, e.to_string())
     }
@@ -362,12 +362,8 @@ impl Machines {
         match toby_svc::systemd::linger(uid).await {
             Ok(false) if !self.linger_warned.swap(true, Ordering::AcqRel) => vec![Warning {
                 id: "daemon.linger-disabled".into(),
-                message: concat!(
-                    "linger is off; machines and sessions stop shortly after your last login session ends.\n",
-                    "         enable: toby linger on   ·   ",
-                    "silence: add \"daemon.linger-disabled\" to settings.suppress_warnings"
-                )
-                .into(),
+                message: "linger is off; machines stop after your last login session ends; turn it on with: toby linger on"
+                    .into(),
             }],
             _ => Vec::new(),
         }
@@ -406,27 +402,31 @@ impl Machines {
             ));
         }
         let home = home.unwrap_or_else(|| self.config.defaults.home().to_string());
-        let home_rec = self.store.home(&home).map_err(|_| {
-            Error::new(
+        let home_rec = self.store.home(&home).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => Error::new(
                 ErrorKind::NotFound,
                 "home.not-found",
                 format!("there is no home {home}; create it with: toby home create {home}"),
-            )
+            ),
+            _ => Error::from(e),
         })?;
         if !home_rec.formatted {
             return Err(Error::new(
                 ErrorKind::Conflict,
                 "home.unformatted",
-                format!("home {home} was never formatted; remove it and create it again"),
+                format!(
+                    "home {home} is not formatted; recreate it with: toby home rm {home} && toby home create {home}"
+                ),
             ));
         }
         let root = root.or(home_rec.default_root).unwrap_or_else(|| "default".into());
-        self.store.root(&root).map_err(|_| {
-            Error::new(
+        self.store.root(&root).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => Error::new(
                 ErrorKind::NotFound,
                 "root.not-found",
                 format!("there is no root {root}; create it with: toby root create {root} --image default"),
-            )
+            ),
+            _ => Error::from(e),
         })?;
 
         let _lock = self.lock.lock().await;
@@ -490,7 +490,7 @@ impl Machines {
         {
             return Err(Error::new(
                 ErrorKind::Conflict,
-                "machine.pair-in-use",
+                "machine.not-services",
                 format!(
                     "home and root {home} belong to machine {id}, which does not run MCP server {server}"
                 ),
@@ -568,13 +568,12 @@ impl Machines {
             match observed.state {
                 "ready" => return Ok(()),
                 "failed" => {
-                    let error = observed.status.and_then(|s| s.error).unwrap_or_default();
+                    let error =
+                        observed.status.and_then(|s| s.error).map(|e| format!(": {e}")).unwrap_or_default();
                     return Err(Error::new(
                         ErrorKind::Internal,
                         "machine.failed",
-                        format!(
-                            "machine {id} failed to start: {error}\nstop it with: toby machine stop {id}"
-                        ),
+                        format!("machine {id} failed to start{error}; see: toby machine logs {id}"),
                     ));
                 }
                 "stopped" if tokio::time::Instant::now() > grace => {
@@ -590,7 +589,7 @@ impl Machines {
                 return Err(Error::new(
                     ErrorKind::Internal,
                     "machine.start-timeout",
-                    format!("machine {id} did not become ready in time"),
+                    format!("machine {id} did not become ready in time; see: toby machine logs {id}"),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -690,7 +689,9 @@ impl Machines {
                     return Err(Error::new(
                         ErrorKind::Conflict,
                         "machine.not-running",
-                        format!("machine {id} is {state}"),
+                        format!(
+                            "machine {id} is {state}; start it by its home and root with --home and --root"
+                        ),
                     ));
                 }
                 self.activity.lock().unwrap().insert(id.clone(), Instant::now());
@@ -783,8 +784,11 @@ impl Machines {
             }
             self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
         }
-        let host = std::fs::canonicalize(&req.host).map_err(|_| {
-            Error::new(ErrorKind::NotFound, "attach.missing", format!("{} does not exist", req.host))
+        let host = std::fs::canonicalize(&req.host).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => {
+                Error::new(ErrorKind::NotFound, "attach.missing", format!("{} does not exist", req.host))
+            }
+            _ => Error::new(ErrorKind::BadRequest, "attach.invalid-path", format!("{}: {e}", req.host)),
         })?;
         if !host.is_dir() {
             return Err(Error::new(
@@ -795,7 +799,13 @@ impl Machines {
         }
         let host = host
             .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::BadRequest, "attach.invalid-path", "the path is not UTF-8"))?
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::BadRequest,
+                    "attach.invalid-path",
+                    format!("{} is not UTF-8", host.display()),
+                )
+            })?
             .to_string();
         // Without a place, the directory's name under /toby/workspace; another
         // directory of the same name gets a numbered place (chosen below,
@@ -899,7 +909,7 @@ impl Machines {
         if state == "failed" {
             return Err(Error::new(
                 ErrorKind::Conflict,
-                "machine.failed",
+                "attach.machine-failed",
                 format!("machine {id} failed; stop it first with: toby machine stop {id}"),
             ));
         }
@@ -923,7 +933,7 @@ impl Machines {
                     Error::new(
                         ErrorKind::NotFound,
                         "attach.not-found",
-                        format!("{target} is not mounted in {id}"),
+                        format!("{target} is not mounted in machine {id}"),
                     )
                 })?;
             removed = Some(spec.attach.remove(pos));
@@ -965,7 +975,11 @@ impl Machines {
                 spec.attach.push(removed.clone());
                 Ok(())
             })?;
-            return Err(Error::new(ErrorKind::Conflict, "attach.busy", error));
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "attach.busy",
+                format!("{} is in use in machine {id}: {error}", removed.at),
+            ));
         }
         Ok(())
     }
@@ -1088,7 +1102,11 @@ impl Machines {
                 spec.forward.retain(|f| f.id != forward.id);
                 Ok(())
             })?;
-            return Err(Error::new(ErrorKind::Internal, "forward.failed", error));
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "forward.failed",
+                format!("forwarding {}: {error}", req.host),
+            ));
         }
         let status = status?;
         Ok(forward_info(&forward, status.forward.iter().find(|f| f.id == forward.id), true))
@@ -1247,7 +1265,7 @@ impl Machines {
                         .strip_prefix("warning[")
                         .and_then(|n| n.split_once("]: "))
                         .map(|(i, m)| (i.to_string(), m.to_string()))
-                        .unwrap_or(("tool".into(), note.clone()));
+                        .unwrap_or(("tool.note".into(), note.clone()));
                     warnings.push(Warning { id, message });
                 }
                 // The client's own settings (its terminal type) unless the

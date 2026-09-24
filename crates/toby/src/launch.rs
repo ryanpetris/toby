@@ -66,8 +66,7 @@ fn projects_dir(config: &GlobalConfig, home: &Path) -> PathBuf {
 
 /// Resolves a project path; `external` allows one outside `projects_dir`.
 fn resolve(path: &Path, projects_dir: &Path, external: bool) -> anyhow::Result<PathBuf> {
-    let host =
-        std::fs::canonicalize(path).with_context(|| format!("project {} does not exist", path.display()))?;
+    let host = std::fs::canonicalize(path).with_context(|| format!("project {}", path.display()))?;
     if !host.is_dir() {
         bail!("project {} is not a directory", host.display());
     }

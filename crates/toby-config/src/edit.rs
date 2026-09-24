@@ -6,7 +6,7 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use crate::global::GlobalConfig;
 
 fn parse(text: &str) -> Result<DocumentMut, String> {
-    text.parse::<DocumentMut>().map_err(|e| e.to_string())
+    text.parse::<DocumentMut>().map_err(|e| format!("the configuration is not valid TOML: {e}"))
 }
 
 /// Splits `a.b."c.d"` into its keys.
@@ -57,7 +57,7 @@ pub fn set(text: &str, key: &str, value: &str) -> Result<String, String> {
     }
     table.insert(last, Item::Value(value));
     let out = doc.to_string();
-    toml::from_str::<GlobalConfig>(&out).map_err(|e| e.message().to_string())?;
+    toml::from_str::<GlobalConfig>(&out).map_err(|e| format!("{key}: {}", e.message()))?;
     Ok(out)
 }
 

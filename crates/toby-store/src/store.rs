@@ -35,9 +35,16 @@ fn lock_with(path: &Path, arg: FlockArg) -> io::Result<DiskLock> {
     let f = File::open(path)?;
     let lock = Flock::lock(f, arg).map_err(|(_, e)| {
         if e == nix::errno::Errno::EWOULDBLOCK {
+            // Named as the user knows it: roots/<name>.qcow2, homes/<name>.qcow2.
+            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let what = match path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+                Some("roots") => format!("root {stem}"),
+                Some("homes") => format!("home {stem}"),
+                _ => path.display().to_string(),
+            };
             io::Error::new(
                 io::ErrorKind::ResourceBusy,
-                format!("{} is in use by a running machine", path.display()),
+                format!("{what} is in use by a running machine; see: toby machine ls"),
             )
         } else {
             io::Error::from(e)
@@ -148,7 +155,10 @@ impl Store {
     fn remove_image_locked(&self, id: &str) -> io::Result<()> {
         self.image(id)?;
         if let Some(root) = self.image_referenced(id)? {
-            return Err(io::Error::other(format!("image {id} is used by root {root}")));
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                format!("image {id} is used by root {root}; remove or rebase the root first"),
+            ));
         }
         let dir = self.paths.image_dir(id);
         let disk = dir.join("disk.qcow2");

@@ -54,7 +54,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let argv = a
                 .command
                 .into_iter()
-                .map(|s| s.into_string().map_err(|s| anyhow::anyhow!("argument is not UTF-8: {s:?}")))
+                .map(|s| s.into_string().map_err(|s| anyhow::anyhow!("argument {s:?} is not UTF-8")))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             runtime()?.block_on(client::run_session(&a.machine, argv, identity(a.as_root), a.cwd))
         }
@@ -130,7 +130,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 fn collect_versions(versions: &std::path::Path) -> anyhow::Result<ExitCode> {
     let c = toby_daemon::versions::collect_system(versions)?;
     for v in &c.removed {
-        println!("removed version {v}");
+        println!("Removed version {v}");
     }
     for (v, e) in &c.failed {
         eprintln!("toby: version {v} could not be removed: {e}");

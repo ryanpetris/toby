@@ -401,10 +401,7 @@ pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         while !runtime.fs_sock().exists() {
             if let Ok(Some(status)) = fs.try_wait() {
-                bail!(
-                    "the file share exited during start ({status}); see {}",
-                    runtime.dir.join("fs.err.log").display()
-                );
+                bail!("the file share exited during start ({status}); see: toby machine logs {machine}");
             }
             if tokio::time::Instant::now() >= deadline {
                 bail!("the file share did not start");

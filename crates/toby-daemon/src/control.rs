@@ -16,6 +16,20 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Control {
     stream: UnixStream,
+    /// The machine's ID, for messages.
+    machine: String,
+}
+
+fn machine_id(runtime: &MachineRuntime) -> String {
+    runtime.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn no_answer(runtime: &MachineRuntime) -> io::Error {
+    let id = machine_id(runtime);
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("machine {id} did not answer; see: toby machine logs {id}"),
+    )
 }
 
 fn unexpected(r: Response) -> io::Error {
@@ -29,14 +43,12 @@ impl Control {
             frame::send(&mut stream, &Request::Hello(machine::Hello { versions: SUPPORTED.to_vec() }))
                 .await?;
             match frame::recv::<Response, _>(&mut stream).await? {
-                Response::Welcome(_) => Ok(Control { stream }),
+                Response::Welcome(_) => Ok(Control { stream, machine: machine_id(runtime) }),
                 Response::Failed(f) => Err(io::Error::other(f.error)),
                 other => Err(unexpected(other)),
             }
         };
-        tokio::time::timeout(CONNECT_TIMEOUT, hello)
-            .await
-            .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "the machine did not answer")))
+        tokio::time::timeout(CONNECT_TIMEOUT, hello).await.unwrap_or_else(|_| Err(no_answer(runtime)))
     }
 
     pub async fn call(&mut self, req: Request) -> io::Result<Response> {
@@ -47,7 +59,10 @@ impl Control {
         match tokio::time::timeout(CALL_TIMEOUT, exchange).await {
             Ok(Ok(Response::Failed(f))) => Err(io::Error::other(f.error)),
             Ok(r) => r,
-            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "the machine did not answer")),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("machine {id} did not answer; see: toby machine logs {id}", id = self.machine),
+            )),
         }
     }
 

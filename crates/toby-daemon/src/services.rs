@@ -245,7 +245,7 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<(String, u16), 
     while toby_machine::link::dial_local(&runtime.vsock(), port).await.is_err() {
         if tokio::time::Instant::now() > deadline {
             let _ = d.machines.kill_session(&id, None).await;
-            return Err(format!("{name} does not listen on port {port}; see toby mcp logs {name}"));
+            return Err(format!("{name} does not listen on port {port}; see: toby mcp logs {name}"));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

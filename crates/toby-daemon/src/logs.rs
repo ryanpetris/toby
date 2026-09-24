@@ -118,7 +118,7 @@ pub async fn mcp(d: Arc<Daemon>, name: String, mut socket: WebSocket) {
     let pair = crate::services::pair_name(&name);
     let Some(spec) = d.machines.records().into_iter().find(|s| s.home.as_deref() == Some(pair.as_str()))
     else {
-        let _ = send(&mut socket, format!("{name} has no services machine")).await;
+        let _ = send(&mut socket, format!("MCP server {name} has not started yet")).await;
         return;
     };
     let log = toby_guest::helper::serve::LOG;

@@ -65,14 +65,16 @@ impl Api {
         match self.config.daemon.backend {
             Backend::SystemdUser => {
                 let systemd = toby_svc::systemd::SystemdUser::connect().await.map_err(|e| {
-                    anyhow::anyhow!("{e}; to run Toby without it, set daemon.backend = \"direct\"")
+                    anyhow::anyhow!("{e}; to run without it: toby config set daemon.backend direct")
                 })?;
                 // Units installed after the user instance started are read
                 // on a reload.
                 if systemd.state("tobyd.socket").await? == "not-found" {
                     systemd.reload().await.context("reloading the systemd user instance")?;
                     if systemd.state("tobyd.socket").await? == "not-found" {
-                        bail!("tobyd.socket is not installed for your systemd user instance");
+                        bail!(
+                            "tobyd.socket is not installed; install the Toby package, or run: toby config set daemon.backend direct"
+                        );
                     }
                 }
                 systemd.start("tobyd.socket").await.context("starting tobyd.socket")?;
@@ -148,7 +150,9 @@ impl Api {
                 Err(_) => anyhow::anyhow!("tobyd: {status}: {}", String::from_utf8_lossy(&bytes)),
             });
         }
-        serde_json::from_slice(&bytes).with_context(|| format!("unexpected answer from tobyd for {path}"))
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!("unexpected answer from tobyd for {path}; restart it with: toby daemon restart")
+        })
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
@@ -184,7 +188,12 @@ impl Api {
     pub async fn stream(&self, path: &str, mut f: impl FnMut(&[u8])) -> anyhow::Result<()> {
         let resp = self.send(Method::GET, path, None).await?;
         if resp.status() != StatusCode::OK {
-            bail!("tobyd: {}", resp.status());
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+            return Err(match serde_json::from_slice::<toby_api::ApiError>(&bytes) {
+                Ok(e) => Failure(e).into(),
+                Err(_) => anyhow::anyhow!("tobyd: {status}"),
+            });
         }
         let mut body = resp.into_body();
         while let Some(frame) = body.frame().await {

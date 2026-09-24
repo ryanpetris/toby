@@ -814,7 +814,8 @@ async fn wait_ready(runtime: &MachineRuntime, supervisor: &mut tokio::process::C
                     return Ok(());
                 }
                 State::Failed => {
-                    return Err(err(format!("the builder machine failed: {}", st.error.unwrap_or_default())));
+                    let why = st.error.map(|e| format!(": {e}")).unwrap_or_default();
+                    return Err(err(format!("the builder machine failed{why}")));
                 }
                 _ => {}
             }

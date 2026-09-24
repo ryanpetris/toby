@@ -11,8 +11,8 @@ use crate::cli::{BuilderCommand, HomeCommand, ImageCommand, RootCommand};
 use crate::table::{age, print};
 
 fn absolute(p: &Path) -> anyhow::Result<String> {
-    let p = std::fs::canonicalize(p).with_context(|| format!("{} does not exist", p.display()))?;
-    p.to_str().map(str::to_string).context("the path is not UTF-8")
+    let p = std::fs::canonicalize(p).with_context(|| p.display().to_string())?;
+    p.to_str().map(str::to_string).with_context(|| format!("{} is not UTF-8", p.display()))
 }
 
 async fn build(api: &Api, source: Source) -> anyhow::Result<()> {

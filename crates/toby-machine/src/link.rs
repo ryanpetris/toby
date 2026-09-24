@@ -56,7 +56,7 @@ pub async fn open_relay(vsock: &Path, header: &HostHeader) -> io::Result<(UnixSt
     frame::write_bytes(&mut s, &header.encode()?).await?;
     let reply: Reply = tokio::time::timeout(CONNECT_TIMEOUT, frame::recv(&mut s))
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay did not answer"))??;
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the guest did not answer"))??;
     Ok((s, reply))
 }
 
@@ -115,7 +115,7 @@ impl RelayControl {
             match result {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => last = Some(io::Error::from(e)),
-                Err(_) => last = Some(io::Error::new(io::ErrorKind::TimedOut, "relay did not answer")),
+                Err(_) => last = Some(io::Error::new(io::ErrorKind::TimedOut, "the guest did not answer")),
             }
             *conn = None;
         }

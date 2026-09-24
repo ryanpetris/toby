@@ -377,7 +377,7 @@ async fn prepare(State(d): Shared, Json(req): Json<api::Prepare>) -> ApiResult<a
     };
     for name in servers {
         let server = config.mcp.get(&name).filter(|s| s.own_machine()).ok_or_else(|| {
-            bad("mcp.unknown", format!("{name} is not an MCP server with a machine of its own"))
+            bad("mcp.no-machine", format!("{name} is not an MCP server with a machine of its own"))
         })?;
         if let Some(wanted) = &server.image {
             match crate::builder::wanted_image(wanted, &config_dir)? {
@@ -411,7 +411,7 @@ async fn build_status(State(d): Shared, Path(id): Path<String>) -> ApiResult<api
     let b = d
         .builds
         .get(&id)
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "build.not-found", "no such build"))?;
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "build.not-found", format!("no build {id}")))?;
     Ok(Json(b.status()))
 }
 
@@ -436,7 +436,7 @@ async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response
     let b = d
         .builds
         .get(&id)
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "build.not-found", "no such build"))?;
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "build.not-found", format!("no build {id}")))?;
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
         let mut changed = b.subscribe();
@@ -531,7 +531,7 @@ async fn rebase_root(
                     Error::new(
                         ErrorKind::Conflict,
                         "root.up-to-date",
-                        "the root already uses the newest image of its source",
+                        format!("root {name} already uses the newest image of its source"),
                     )
                 })?
                 .id

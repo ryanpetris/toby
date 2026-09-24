@@ -233,7 +233,7 @@ impl Proxy {
                         eprintln!("mcp {name}: {e}");
                         return text(
                             StatusCode::BAD_GATEWAY,
-                            format!("{name} could not be started; see toby mcp logs {name}"),
+                            format!("{name} could not be started; see: toby mcp logs {name}"),
                         );
                     }
                 };

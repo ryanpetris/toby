@@ -24,7 +24,7 @@ pub fn resolve(value: &str, config_dir: &Path, home: &Path) -> io::Result<String
             let path =
                 if arg.starts_with('~') { crate::paths::expand(home, arg) } else { config_dir.join(arg) };
             std::fs::read_to_string(&path)
-                .map_err(|e| io::Error::new(e.kind(), format!("{{file:{arg}}}: {e}")))?
+                .map_err(|e| io::Error::new(e.kind(), format!("{{file:{arg}}}: {}: {e}", path.display())))?
                 .trim()
                 .to_string()
         } else {

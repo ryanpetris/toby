@@ -164,7 +164,9 @@ impl Machine {
         match self.relay.call(&req).await? {
             relay::Response::Spawned(_) => {}
             relay::Response::Failed(f) => return Err(io::Error::other(printable(f.error.as_bytes()))),
-            other => return Err(io::Error::other(format!("unexpected relay response {other:?}"))),
+            other => {
+                return Err(io::Error::other(format!("unexpected reply from the guest: {}", variant(&other))));
+            }
         }
 
         let header = HostHeader::SessionAttach(toby_proto::stream::SessionAttach { session_id: id });
@@ -261,8 +263,7 @@ impl Machine {
     /// §10.4). Callers hold `booting`. Fails only if nothing could be
     /// reconciled; single attachments report their own errors.
     async fn reconcile(&self) -> Result<(), String> {
-        let spec =
-            MachineSpec::load(&self.config.desired).map_err(|e| format!("reading the desired state: {e}"))?;
+        let spec = MachineSpec::load(&self.config.desired).map_err(|e| format!("reading {e}"))?;
         let mut fs = FsControl::connect(&self.config.runtime.fs_control_sock())
             .await
             .map_err(|e| format!("file sharing is not available: {e}"))?;
@@ -333,9 +334,10 @@ impl Machine {
         if !forward_errors.is_empty() || !self.stale_listeners.lock().unwrap().is_empty() {
             self.retry.store(true, std::sync::atomic::Ordering::Release);
         }
-        let capability_error = [forward::MODELS, forward::SANDBOX]
-            .iter()
-            .find_map(|id| forward_errors.get(*id).map(|e| format!("capability {id}: {e}")));
+        let capability_error = [forward::MODELS, forward::SANDBOX].iter().find_map(|id| {
+            let what = if *id == forward::MODELS { "models proxy" } else { "Toby's MCP server" };
+            forward_errors.get(*id).map(|e| format!("{what}: {e}"))
+        });
         let forwards = forward::statuses(&spec.forward, &forward_errors);
         self.update_status(|s| {
             s.attach = entries;
@@ -429,7 +431,7 @@ impl Machine {
         match self.relay.call(&req).await {
             Ok(relay::Response::Done(_)) => Ok(()),
             Ok(relay::Response::Failed(f)) => Err(printable(f.error.as_bytes())),
-            Ok(other) => Err(format!("unexpected relay response {other:?}")),
+            Ok(other) => Err(format!("unexpected reply from the guest: {}", variant(&other))),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -803,7 +805,9 @@ impl Machine {
                         Response::failed("the relay returned an invalid session ID")
                     }
                     relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
-                    other => Response::failed(format!("unexpected relay response {other:?}")),
+                    other => {
+                        Response::failed(format!("unexpected reply from the guest: {}", variant(&other)))
+                    }
                 }
             }
             Request::Sessions(_) => {
@@ -832,7 +836,9 @@ impl Machine {
                         Response::SessionList(machine::SessionList { sessions })
                     }
                     relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
-                    other => Response::failed(format!("unexpected relay response {other:?}")),
+                    other => {
+                        Response::failed(format!("unexpected reply from the guest: {}", variant(&other)))
+                    }
                 }
             }
             Request::Kill(k) => {
@@ -840,7 +846,9 @@ impl Machine {
                 match self.relay.call(&r).await? {
                     relay::Response::Done(_) => Response::Done(machine::Done {}),
                     relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
-                    other => Response::failed(format!("unexpected relay response {other:?}")),
+                    other => {
+                        Response::failed(format!("unexpected reply from the guest: {}", variant(&other)))
+                    }
                 }
             }
             Request::Status(_) => {
@@ -943,6 +951,11 @@ fn printable(bytes: &[u8]) -> String {
         .chars()
         .map(|c| if c.is_control() && c != '\n' && c != '\t' { '\u{fffd}' } else { c })
         .collect()
+}
+
+/// The name of a reply's kind, without what the guest put in it.
+fn variant(reply: &impl std::fmt::Debug) -> String {
+    format!("{reply:?}").split(['(', ' ', '{']).next().unwrap_or_default().to_string()
 }
 
 #[cfg(test)]

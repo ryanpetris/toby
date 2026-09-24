@@ -23,9 +23,8 @@ async fn machine_for(api: &Api, sel: &MachineSelector) -> anyhow::Result<String>
 
 pub async fn mount(args: MountArgs) -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;
-    let host = std::fs::canonicalize(&args.path)
-        .with_context(|| format!("{} does not exist", args.path.display()))?;
-    let host = host.to_str().context("the path is not UTF-8")?.to_string();
+    let host = std::fs::canonicalize(&args.path).with_context(|| args.path.display().to_string())?;
+    let host = host.to_str().with_context(|| format!("{} is not UTF-8", host.display()))?.to_string();
     let machine = machine_for(&api, &args.machine).await?;
     let req = toby_api::AddAttachment {
         host,
