@@ -95,7 +95,14 @@ impl Api {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
-        let stream = UnixStream::connect(&self.sock).await.context("connecting to tobyd")?;
+        // A daemon that is restarting comes back (plan §3.2).
+        let stream = match UnixStream::connect(&self.sock).await {
+            Ok(s) => s,
+            Err(_) => {
+                self.start_daemon().await?;
+                UnixStream::connect(&self.sock).await.context("connecting to tobyd")?
+            }
+        };
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(conn);
         let mut req = Request::builder().method(method).uri(path).header("host", "tobyd");

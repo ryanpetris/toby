@@ -14,7 +14,8 @@ async fn machine_for(api: &Api, sel: &MachineSelector) -> anyhow::Result<String>
     if let Some(id) = &sel.machine {
         return Ok(id.clone());
     }
-    let req = toby_api::EnsureMachine { home: sel.home.clone(), root: sel.root.clone(), ephemeral: false };
+    let req =
+        toby_api::EnsureMachine { home: sel.home.clone(), root: sel.root.clone(), ..Default::default() };
     let ensured: toby_api::Ensured = api.post("/v1/machines/ensure", &req).await?;
     api.warn(&ensured.warnings);
     Ok(ensured.machine.id)

@@ -27,6 +27,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// A guest helper may take up to two minutes (plan §9.6).
 const APPLY_TIMEOUT: Duration = Duration::from_secs(150);
 const IDLE_CHECK: Duration = Duration::from_secs(30);
+/// How long a requested start counts as running before its processes show.
+const START_GRACE: Duration = Duration::from_secs(30);
 
 /// Guest ends of the capabilities (plan §11.6).
 pub const MODELS_LISTEN: &str = "127.0.0.1:41100";
@@ -56,13 +58,14 @@ impl Error {
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
-        let kind = match e.kind() {
-            io::ErrorKind::NotFound => ErrorKind::NotFound,
-            io::ErrorKind::InvalidInput => ErrorKind::BadRequest,
-            io::ErrorKind::AlreadyExists | io::ErrorKind::ResourceBusy => ErrorKind::Conflict,
-            _ => ErrorKind::Internal,
+        let (kind, code) = match e.kind() {
+            io::ErrorKind::NotFound => (ErrorKind::NotFound, "not-found"),
+            io::ErrorKind::InvalidInput => (ErrorKind::BadRequest, "invalid"),
+            io::ErrorKind::AlreadyExists => (ErrorKind::Conflict, "exists"),
+            io::ErrorKind::ResourceBusy => (ErrorKind::Conflict, "in-use"),
+            _ => (ErrorKind::Internal, "error"),
         };
-        Error::new(kind, "error", e.to_string())
+        Error::new(kind, code, e.to_string())
     }
 }
 
@@ -89,6 +92,8 @@ pub struct Machines {
     /// When each machine last had a session, was started or was first seen.
     activity: Mutex<HashMap<String, Instant>>,
     started: Mutex<HashMap<String, Instant>>,
+    /// Machines asked to start whose processes may not be visible yet.
+    starting: Mutex<HashMap<String, Instant>>,
     linger_warned: AtomicBool,
 }
 
@@ -156,6 +161,7 @@ impl Machines {
             machine_locks: Mutex::default(),
             activity: Mutex::default(),
             started: Mutex::default(),
+            starting: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
     }
@@ -211,7 +217,19 @@ impl Machines {
     }
 
     async fn running(&self, id: &str) -> bool {
-        self.observe(id).await.state != "stopped"
+        // A start just requested counts, before its processes show.
+        let starting = self.starting.lock().unwrap().get(id).is_some_and(|t| t.elapsed() < START_GRACE);
+        starting || self.observe(id).await.state != "stopped"
+    }
+
+    /// Appends to the machine's lifecycle log.
+    fn history(&self, id: &str, event: &str) {
+        use std::io::Write;
+        let line = format!("{{\"time\":{},\"event\":\"{event}\"}}\n", toby_store::records::now());
+        let path = self.paths.machine_state_dir(id).join("history.jsonl");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
+        }
     }
 
     pub async fn info(&self, spec: &MachineSpec) -> MachineInfo {
@@ -285,12 +303,8 @@ impl Machines {
     }
 
     /// The machine for a home and root, started if needed (plan §8.2).
-    pub async fn ensure(
-        &self,
-        home: Option<String>,
-        root: Option<String>,
-        ephemeral: bool,
-    ) -> Result<MachineSpec> {
+    pub async fn ensure(&self, req: toby_api::EnsureMachine) -> Result<MachineSpec> {
+        let toby_api::EnsureMachine { home, root, ephemeral, cpus, memory } = req;
         let home = home.unwrap_or_else(|| self.config.defaults.home().to_string());
         let home_rec = self.store.home(&home).map_err(|_| {
             Error::new(
@@ -359,8 +373,13 @@ impl Machines {
             },
         };
         let id = template.id.clone();
+        // A machine being stopped is started again once it has stopped.
+        if self.observe(&id).await.state == "stopping" {
+            self.wait_stopped(&id).await;
+        }
         if self.running(&id).await {
             drop(_lock);
+            self.activity.lock().unwrap().insert(id.clone(), Instant::now());
             self.wait_ready(&id).await?;
             return Ok(template);
         }
@@ -379,11 +398,22 @@ impl Machines {
             toby_proxy::ensure_token(&self.paths, &id)?;
             spec.capabilities.sandbox_socket = Some(SANDBOX_SOCKET.into());
             spec.ephemeral = ephemeral;
+            if let Some(cpus) = cpus {
+                spec.resources.cpus = cpus;
+            }
+            if let Some(memory) = memory {
+                spec.resources.memory = memory;
+            }
             spec.generation += 1;
             spec.store(&path)?;
             spec
         };
-        self.supervisor.start(&spec.id).await?;
+        self.starting.lock().unwrap().insert(spec.id.clone(), Instant::now());
+        self.history(&spec.id, "start");
+        if let Err(e) = self.supervisor.start(&spec.id).await {
+            self.starting.lock().unwrap().remove(&spec.id);
+            return Err(e.into());
+        }
         let now = Instant::now();
         self.started.lock().unwrap().insert(spec.id.clone(), now);
         self.activity.lock().unwrap().insert(spec.id.clone(), now);
@@ -395,6 +425,12 @@ impl Machines {
 
     /// Waits until a starting machine is ready.
     async fn wait_ready(&self, id: &str) -> Result<()> {
+        let result = self.wait_ready_inner(id).await;
+        self.starting.lock().unwrap().remove(id);
+        result
+    }
+
+    async fn wait_ready_inner(&self, id: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         let grace = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -406,7 +442,9 @@ impl Machines {
                     return Err(Error::new(
                         ErrorKind::Internal,
                         "machine.failed",
-                        format!("machine {id} failed to start: {error}"),
+                        format!(
+                            "machine {id} failed to start: {error}\nstop it with: toby machine stop {id}"
+                        ),
                     ));
                 }
                 "stopped" if tokio::time::Instant::now() > grace => {
@@ -432,21 +470,32 @@ impl Machines {
     /// Powers the machine off, stopping its processes if the guest does not.
     pub async fn stop(&self, id: &str) -> Result<()> {
         self.record(id)?;
-        let runtime = self.runtime(id);
-        if let Ok(mut c) = Control::connect(&runtime).await {
+        self.request_stop(id, "stop").await;
+        if !self.wait_stopped(id).await {
+            self.supervisor.kill(id, &self.runtime(id)).await?;
+        }
+        self.forget(id);
+        Ok(())
+    }
+
+    /// Asks the guest to power off.
+    async fn request_stop(&self, id: &str, event: &str) {
+        self.history(id, event);
+        if let Ok(mut c) = Control::connect(&self.runtime(id)).await {
             let _ = c.stop().await;
         }
+    }
+
+    /// Waits until the machine's processes are gone; false on timeout.
+    async fn wait_stopped(&self, id: &str) -> bool {
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
         while tokio::time::Instant::now() < deadline {
-            if !self.running(id).await {
-                self.forget(id);
-                return Ok(());
+            if self.observe(id).await.state == "stopped" {
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        self.supervisor.kill(id, &runtime).await?;
-        self.forget(id);
-        Ok(())
+        false
     }
 
     fn forget(&self, id: &str) {
@@ -468,14 +517,19 @@ impl Machines {
                 }
                 Ok(spec)
             }
-            None => self.ensure(target.home.clone(), target.root.clone(), false).await,
+            None => {
+                let req = toby_api::EnsureMachine {
+                    home: target.home.clone(),
+                    root: target.root.clone(),
+                    ..Default::default()
+                };
+                self.ensure(req).await
+            }
         }
     }
 
     // Attachments
 
-    /// Changes the desired state under its lock and returns the new
-    /// generation.
     /// The lock that serializes writes of a machine's desired state.
     fn lock_desired(&self, id: &str) -> io::Result<Flock<std::fs::File>> {
         let path = self.paths.machine_desired(id);
@@ -490,6 +544,8 @@ impl Machines {
         Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))
     }
 
+    /// Changes the desired state under its lock and returns the new
+    /// generation.
     fn update_desired(&self, id: &str, f: impl FnOnce(&mut MachineSpec) -> Result<()>) -> Result<u64> {
         let path = self.paths.machine_desired(id);
         let _lock = self.lock_desired(id)?;
@@ -861,9 +917,24 @@ impl Machines {
 
     /// Stops machines that had no sessions and nothing pinned for the idle
     /// timeout (plan §8.3). Detached sessions count as activity.
+    /// Removes records of stopped machines whose home or root no longer
+    /// exists: that pair can never run again.
+    async fn remove_stale(&self) {
+        for spec in self.records() {
+            let home_gone = spec.home.as_ref().is_some_and(|h| self.store.home(h).is_err());
+            let root_gone = matches!(&spec.root, RootSpec::Named(r) if self.store.root(r).is_err());
+            if (home_gone || root_gone) && !self.running(&spec.id).await {
+                eprintln!("removing machine {}: its home or root no longer exists", spec.id);
+                let _ = std::fs::remove_dir_all(self.paths.machine_state_dir(&spec.id));
+                let _ = std::fs::remove_dir_all(self.runtime(&spec.id).dir);
+            }
+        }
+    }
+
     pub async fn idle_loop(self: std::sync::Arc<Self>, timeout: Duration) {
         loop {
             tokio::time::sleep(IDLE_CHECK).await;
+            self.remove_stale().await;
             for spec in self.records() {
                 if self.observe(&spec.id).await.state != "ready" {
                     continue;
@@ -879,11 +950,28 @@ impl Machines {
                 let last = *self.activity.lock().unwrap().entry(spec.id.clone()).or_insert(now);
                 if busy || pinned {
                     self.activity.lock().unwrap().insert(spec.id.clone(), now);
-                } else if now.duration_since(last) >= timeout {
-                    eprintln!("stopping idle machine {}", spec.id);
-                    if let Err(e) = self.stop(&spec.id).await {
-                        eprintln!("stopping machine {}: {}", spec.id, e.message);
+                    continue;
+                }
+                if now.duration_since(last) < timeout {
+                    continue;
+                }
+                // Decide under the start lock, so a command joining the
+                // machine meanwhile keeps it (it records activity first).
+                let decided = {
+                    let _lock = self.lock.lock().await;
+                    let last = self.activity.lock().unwrap().get(&spec.id).copied().unwrap_or(now);
+                    let idle = Instant::now().duration_since(last) >= timeout;
+                    if idle {
+                        eprintln!("stopping idle machine {}", spec.id);
+                        self.request_stop(&spec.id, "idle-stop").await;
                     }
+                    idle
+                };
+                if decided {
+                    if !self.wait_stopped(&spec.id).await {
+                        let _ = self.supervisor.kill(&spec.id, &self.runtime(&spec.id)).await;
+                    }
+                    self.forget(&spec.id);
                 }
             }
         }

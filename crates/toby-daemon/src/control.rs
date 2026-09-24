@@ -10,6 +10,7 @@ use toby_proto::types::{SUPPORTED, SessionInfo, SpawnSpec};
 use tokio::net::UnixStream;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Control {
     stream: UnixStream,
@@ -21,13 +22,19 @@ fn unexpected(r: Response) -> io::Error {
 
 impl Control {
     pub async fn connect(runtime: &MachineRuntime) -> io::Result<Control> {
-        let mut stream = UnixStream::connect(runtime.control_sock()).await?;
-        frame::send(&mut stream, &Request::Hello(machine::Hello { versions: SUPPORTED.to_vec() })).await?;
-        match frame::recv::<Response, _>(&mut stream).await? {
-            Response::Welcome(_) => Ok(Control { stream }),
-            Response::Failed(f) => Err(io::Error::other(f.error)),
-            other => Err(unexpected(other)),
-        }
+        let hello = async {
+            let mut stream = UnixStream::connect(runtime.control_sock()).await?;
+            frame::send(&mut stream, &Request::Hello(machine::Hello { versions: SUPPORTED.to_vec() }))
+                .await?;
+            match frame::recv::<Response, _>(&mut stream).await? {
+                Response::Welcome(_) => Ok(Control { stream }),
+                Response::Failed(f) => Err(io::Error::other(f.error)),
+                other => Err(unexpected(other)),
+            }
+        };
+        tokio::time::timeout(CONNECT_TIMEOUT, hello)
+            .await
+            .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "the machine did not answer")))
     }
 
     pub async fn call(&mut self, req: Request) -> io::Result<Response> {

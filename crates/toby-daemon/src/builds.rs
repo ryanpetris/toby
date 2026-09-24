@@ -77,9 +77,12 @@ impl Build {
     }
 }
 
+/// How long a finished build's output stays in memory; its log stays.
+const KEEP_FINISHED: std::time::Duration = std::time::Duration::from_secs(3600);
+
 #[derive(Default)]
 pub struct Builds {
-    builds: Mutex<HashMap<String, Arc<Build>>>,
+    builds: Arc<Mutex<HashMap<String, Arc<Build>>>>,
 }
 
 impl Builds {
@@ -103,8 +106,9 @@ impl Builds {
             inner: Mutex::new(Inner { output: Vec::new(), state: "running", error: None, image: None }),
             changed: watch::channel(0).0,
         });
-        self.builds.lock().unwrap().insert(id, build.clone());
+        self.builds.lock().unwrap().insert(id.clone(), build.clone());
         let b = build.clone();
+        let builds = self.builds.clone();
         tokio::spawn(async move {
             let mut out = |bytes: &[u8], _stderr: bool| {
                 let _ = file.write_all(bytes);
@@ -115,6 +119,8 @@ impl Builds {
                 out(format!("toby: {e}\n").as_bytes(), true);
             }
             b.finish(result);
+            tokio::time::sleep(KEEP_FINISHED).await;
+            builds.lock().unwrap().remove(&id);
         });
         Ok(build)
     }

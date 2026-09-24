@@ -23,6 +23,9 @@ trait Unit {
     fn active_state(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn load_state(&self) -> zbus::Result<String>;
+    /// The unit's pending job, `(0, "/")` when there is none.
+    #[zbus(property)]
+    fn job(&self) -> zbus::Result<(u32, OwnedObjectPath)>;
 }
 
 #[zbus::proxy(
@@ -33,6 +36,8 @@ trait Unit {
 trait Login {
     fn get_user(&self, uid: u32) -> zbus::Result<OwnedObjectPath>;
     fn set_user_linger(&self, uid: u32, enable: bool, interactive: bool) -> zbus::Result<()>;
+    #[zbus(property)]
+    fn kill_user_processes(&self) -> zbus::Result<bool>;
 }
 
 #[zbus::proxy(interface = "org.freedesktop.login1.User", default_service = "org.freedesktop.login1")]
@@ -79,15 +84,30 @@ impl SystemdUser {
         self.manager().await?.restart_unit(unit, "replace").await.map(drop).map_err(err)
     }
 
+    async fn unit(&self, unit: &str) -> io::Result<UnitProxy<'_>> {
+        let path = self.manager().await?.load_unit(unit).await.map_err(err)?;
+        UnitProxy::builder(&self.bus).path(path).map_err(err)?.build().await.map_err(err)
+    }
+
     /// The unit's active state (`active`, `inactive`, `failed`, …), or
     /// `not-found` when no such unit file exists.
     pub async fn state(&self, unit: &str) -> io::Result<String> {
-        let path = self.manager().await?.load_unit(unit).await.map_err(err)?;
-        let proxy = UnitProxy::builder(&self.bus).path(path).map_err(err)?.build().await.map_err(err)?;
+        let proxy = self.unit(unit).await?;
         if proxy.load_state().await.map_err(err)? == "not-found" {
             return Ok("not-found".into());
         }
         proxy.active_state().await.map_err(err)
+    }
+
+    /// Whether the unit runs or has a job queued (a start waiting for its
+    /// dependencies still shows as inactive).
+    pub async fn busy(&self, unit: &str) -> io::Result<bool> {
+        let proxy = self.unit(unit).await?;
+        let state = proxy.active_state().await.map_err(err)?;
+        if matches!(state.as_str(), "active" | "activating" | "deactivating" | "reloading") {
+            return Ok(true);
+        }
+        Ok(proxy.job().await.map_err(err)?.0 != 0)
     }
 }
 
@@ -97,6 +117,12 @@ pub async fn linger(uid: u32) -> io::Result<bool> {
     let path = LoginProxy::new(&bus).await.map_err(err)?.get_user(uid).await.map_err(err)?;
     let user = LoginUserProxy::builder(&bus).path(path).map_err(err)?.build().await.map_err(err)?;
     user.linger().await.map_err(err)
+}
+
+/// Whether logind ends a user's processes when the user logs out.
+pub async fn kill_user_processes() -> io::Result<bool> {
+    let bus = zbus::Connection::system().await.map_err(err)?;
+    LoginProxy::new(&bus).await.map_err(err)?.kill_user_processes().await.map_err(err)
 }
 
 pub async fn set_linger(uid: u32, enable: bool) -> io::Result<()> {

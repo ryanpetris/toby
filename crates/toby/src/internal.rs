@@ -180,6 +180,24 @@ fn machine_config(host: &Host) -> anyhow::Result<toby_machine::Config> {
 pub fn daemon() -> anyhow::Result<()> {
     let (config, paths) = load_config()?;
     let listeners = toby_svc::activation::take_listen_fds();
+    // One daemon at a time, whoever started it; a daemon that is shutting
+    // down gets a few seconds to let go.
+    let mut lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(paths.runtime.join("tobyd.lock"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let _one = loop {
+        match nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => break lock,
+            Err((f, _)) if std::time::Instant::now() < deadline => {
+                lock_file = f;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => bail!("tobyd is already running"),
+        }
+    };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
         // The socket systemd passed, or one of our own that we remove again.
@@ -197,11 +215,15 @@ pub fn daemon() -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(&sock);
                 let l = tokio::net::UnixListener::bind(&sock)?;
                 std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-                (l, Some(sock))
+                let id = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&sock)?);
+                (l, Some((sock, id)))
             }
         };
         let result = toby_daemon::run(config, paths, listener, toby_svc::notify::ready).await;
-        if let Some(sock) = own {
+        // Only our own socket: a successor may have bound a new one.
+        if let Some((sock, id)) = own
+            && std::fs::metadata(&sock).is_ok_and(|m| std::os::unix::fs::MetadataExt::ino(&m) == id)
+        {
             let _ = std::fs::remove_file(sock);
         }
         result?;
@@ -282,6 +304,16 @@ pub fn supervise(machine: &str, log_dir: Option<&Path>) -> anyhow::Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
     let host = Host::load(machine)?;
+    // One supervisor per machine: a second one would take over its files.
+    let _one = nix::fcntl::Flock::lock(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(host.runtime.dir.join("supervisor.lock"))?,
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .map_err(|_| anyhow::anyhow!("machine {machine} is already running"))?;
     let exe = std::env::current_exe()?;
     let config = machine_config(&host)?;
     // Held (shared) until the machine has stopped, so nothing removes its

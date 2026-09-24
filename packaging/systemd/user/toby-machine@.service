@@ -1,6 +1,6 @@
 [Unit]
 Description=Toby machine %i host process
-PartOf=toby-vm@%i.service
+BindsTo=toby-vm@%i.service
 After=toby-vm@%i.service
 
 [Service]

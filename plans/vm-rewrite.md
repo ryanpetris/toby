@@ -498,7 +498,8 @@ boundary (they live in the Linux implementation).
 - Launch against (H, R) with a running machine for (H, R): join it.
 - H or R is in use by a different running pair: fail with a message naming
   the running machine (`toby machine stop <id>` or choose another
-  home/root). No waiting by default; `--wait` waits until it stops.
+  home/root). No waiting by default; `--wait` waits until it stops (not
+  implemented yet).
 - `--ephemeral`: adds a throwaway layer over R for this machine's lifetime
   (still requires R not to be in use by another machine).
 
@@ -777,11 +778,11 @@ did the move.)
    attachments stay until `toby unmount` or machine stop.
 6. Mount points Toby created for removed attachments (marked with the
    `trusted.toby.mount-point` extended attribute when created) are left
-   empty with mode 0555, so the user's writes fail instead of landing in the
-   root or home (root can still write there). A directory that existed
-   before keeps its owner and mode. The helper finds mounts by the decoded mountinfo fields of the
-   canonical mount point and changes the directory through a descriptor
-   opened without following links.
+   empty with mode 0555, so the user's writes fail instead of landing in
+   the root or home (root can still write there). A directory that existed
+   before keeps its owner and mode. The helper finds mounts by the decoded
+   mountinfo fields of the canonical mount point and changes the directory
+   through a descriptor opened without following links.
 7. A reboot of the guest (a new FUSE session) or a start of `toby-fs` never
    fails because an attached host directory has disappeared: that
    attachment is dropped and reported as failed by the reconciler.
@@ -1020,7 +1021,7 @@ TimeoutStopSec=45
 
 # toby-machine@.service
 [Unit]
-PartOf=toby-vm@%i.service
+BindsTo=toby-vm@%i.service              # also stops when the VM exits on its own
 After=toby-vm@%i.service
 [Service]
 Type=notify

@@ -34,7 +34,8 @@ A machine with no sessions and nothing mounted with `--persist` or
 `tobyd` keeps track of machines, builds images and starts and stops
 machines. Commands start it when it is not running. Restarting it does not
 affect running machines or sessions: session output and input go directly
-to the machine.
+to the machine. Image builds and home formatting in progress end with the
+daemon and must be run again.
 
 ```sh
 toby daemon status

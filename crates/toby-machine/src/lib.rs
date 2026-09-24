@@ -652,16 +652,27 @@ impl Machine {
                     relay::Response::Spawned(s) => {
                         Response::Spawned(machine::Spawned { session_id: s.session_id })
                     }
-                    relay::Response::Failed(f) => Response::failed(f.error),
+                    relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
                     other => Response::failed(format!("unexpected relay response {other:?}")),
                 }
             }
             Request::Sessions(_) => {
                 match self.relay.call(&relay::Request::Sessions(relay::Sessions {})).await? {
                     relay::Response::SessionList(l) => {
-                        Response::SessionList(machine::SessionList { sessions: l.sessions })
+                        // The list comes from the guest: only well-formed IDs,
+                        // and names safe to print.
+                        let sessions = l
+                            .sessions
+                            .into_iter()
+                            .filter(|s| !s.id.is_empty() && s.id.bytes().all(|b| b.is_ascii_alphanumeric()))
+                            .map(|mut s| {
+                                s.argv0 = printable(s.argv0.as_bytes());
+                                s
+                            })
+                            .collect();
+                        Response::SessionList(machine::SessionList { sessions })
                     }
-                    relay::Response::Failed(f) => Response::failed(f.error),
+                    relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
                     other => Response::failed(format!("unexpected relay response {other:?}")),
                 }
             }
@@ -669,7 +680,7 @@ impl Machine {
                 let r = relay::Request::Kill(relay::Kill { session_id: k.session_id, signal: k.signal });
                 match self.relay.call(&r).await? {
                     relay::Response::Done(_) => Response::Done(machine::Done {}),
-                    relay::Response::Failed(f) => Response::failed(f.error),
+                    relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
                     other => Response::failed(format!("unexpected relay response {other:?}")),
                 }
             }

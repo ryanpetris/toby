@@ -26,6 +26,7 @@ pub async fn machine(cmd: MachineCommand) -> anyhow::Result<ExitCode> {
                         m.id,
                         m.home.unwrap_or_default(),
                         m.root,
+                        m.image.unwrap_or_default(),
                         m.state,
                         if running { m.sessions.to_string() } else { String::new() },
                         m.attachments.len().to_string(),
@@ -34,7 +35,10 @@ pub async fn machine(cmd: MachineCommand) -> anyhow::Result<ExitCode> {
                     ]
                 })
                 .collect();
-            print(["MACHINE", "HOME", "ROOT", "STATE", "SESSIONS", "MOUNTS", "UPTIME", "IDLE"], rows);
+            print(
+                ["MACHINE", "HOME", "ROOT", "IMAGE", "STATE", "SESSIONS", "MOUNTS", "UPTIME", "IDLE"],
+                rows,
+            );
         }
         MachineCommand::Stop { id, all } => {
             let api = Api::connect().await?;
@@ -96,25 +100,9 @@ pub async fn machine(cmd: MachineCommand) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Whether logind ends a user's processes at logout.
-fn kill_user_processes() -> bool {
-    let mut value = false;
-    let mut files = vec![std::path::PathBuf::from("/etc/systemd/logind.conf")];
-    for dir in ["/usr/lib/systemd/logind.conf.d", "/etc/systemd/logind.conf.d"] {
-        if let Ok(d) = std::fs::read_dir(dir) {
-            let mut v: Vec<_> = d.flatten().map(|e| e.path()).collect();
-            v.sort();
-            files.extend(v);
-        }
-    }
-    for f in files {
-        for line in std::fs::read_to_string(f).unwrap_or_default().lines() {
-            if let Some(v) = line.trim().strip_prefix("KillUserProcesses=") {
-                value = matches!(v.trim(), "yes" | "true" | "1" | "on");
-            }
-        }
-    }
-    value
+/// Whether logind ends a user's processes at logout, as logind reports it.
+async fn kill_user_processes() -> Option<bool> {
+    toby_svc::systemd::kill_user_processes().await.ok()
 }
 
 pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
@@ -150,7 +138,11 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
                 },
                 Backend::Direct => println!(
                     "machines survive logout only when logind has KillUserProcesses=no (it is {})",
-                    if kill_user_processes() { "yes" } else { "no" }
+                    match kill_user_processes().await {
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                        None => "unknown",
+                    }
                 ),
             }
         }
@@ -342,7 +334,7 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
         }
         Backend::Direct => {
             r.ok("back end direct");
-            if kill_user_processes() {
+            if kill_user_processes().await == Some(true) {
                 r.warn("logind has KillUserProcesses=yes: machines stop when you log out");
             }
         }

@@ -105,7 +105,10 @@ async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo>> {
 }
 
 async fn ensure(State(d): Shared, Json(req): Json<api::EnsureMachine>) -> ApiResult<api::Ensured> {
-    let spec = d.machines.ensure(req.home, req.root, req.ephemeral).await?;
+    if req.memory.as_deref().is_some_and(|m| toby_config::machine::parse_size(m).is_none()) {
+        return Err(bad("machine.invalid-memory", "memory must be a size such as 8G"));
+    }
+    let spec = d.machines.ensure(req).await?;
     let warnings = d.machines.warnings().await;
     Ok(Json(api::Ensured { machine: d.machines.info(&spec).await, warnings }))
 }

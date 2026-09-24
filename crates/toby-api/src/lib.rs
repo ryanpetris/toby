@@ -99,6 +99,12 @@ pub struct EnsureMachine {
     pub root: Option<String>,
     #[serde(default)]
     pub ephemeral: bool,
+    /// Resources for a machine that is started (default: plan §14.5).
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    /// Memory such as `8G`.
+    #[serde(default)]
+    pub memory: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

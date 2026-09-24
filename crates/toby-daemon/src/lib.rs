@@ -18,6 +18,46 @@ use toby_config::paths::Paths;
 /// How often the direct back end's runtime directory is touched, so
 /// age-based cleanup of `/tmp` leaves it alone (plan §6.1).
 const TOUCH_INTERVAL: Duration = Duration::from_secs(3600);
+/// How long requests in flight may finish after a stop is requested.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Build logs older than this are removed when the daemon starts.
+const BUILD_LOG_AGE: Duration = Duration::from_secs(30 * 86400);
+
+/// Accepts only connections from processes of this user (plan §17).
+struct OwnUser(tokio::net::UnixListener);
+
+impl axum::serve::Listener for OwnUser {
+    type Io = tokio::net::UnixStream;
+    type Addr = tokio::net::unix::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let uid = nix::unistd::getuid().as_raw();
+        loop {
+            match self.0.accept().await {
+                Ok((s, addr)) if s.peer_cred().is_ok_and(|c| c.uid() == uid) => return (s, addr),
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+fn prune_build_logs(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|a| a > BUILD_LOG_AGE));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
 
 /// Serves the API on `listener` until SIGTERM or SIGINT.
 pub async fn run(
@@ -47,10 +87,13 @@ pub async fn run(
             }
         });
     }
+    prune_build_logs(&paths.state.join("builds"));
     let daemon = Arc::new(server::Daemon { machines, builder, builds: Default::default() });
     on_ready();
 
-    let shutdown = async {
+    let stopping = Arc::new(tokio::sync::Notify::new());
+    let on_stop = stopping.clone();
+    let shutdown = async move {
         use tokio::signal::unix::{SignalKind, signal};
         let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
         else {
@@ -60,8 +103,14 @@ pub async fn run(
             _ = term.recv() => {}
             _ = int.recv() => {}
         }
+        on_stop.notify_one();
     };
-    axum::serve(listener, server::router(daemon)).with_graceful_shutdown(shutdown).await
+    let serve = axum::serve(OwnUser(listener), server::router(daemon)).with_graceful_shutdown(shutdown);
+    // Long requests (build logs, starts) are cut off after a grace period.
+    tokio::select! {
+        r = serve => r,
+        _ = async { stopping.notified().await; tokio::time::sleep(SHUTDOWN_GRACE).await } => Ok(()),
+    }
 }
 
 /// Updates the access and modification times of a directory tree.

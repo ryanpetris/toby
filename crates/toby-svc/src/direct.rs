@@ -25,7 +25,8 @@ pub fn open_log(path: &Path) -> io::Result<File> {
 /// the process that started it and has no controlling terminal.
 pub fn spawn_detached(mut cmd: Command, log: &Path) -> io::Result<u32> {
     let out = open_log(log)?;
-    cmd.stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
+    // Keep no directory of the starting shell busy.
+    cmd.current_dir("/").stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
     // SAFETY: setsid is async-signal-safe.
     unsafe {
         cmd.pre_exec(|| nix::unistd::setsid().map(drop).map_err(io::Error::from));
