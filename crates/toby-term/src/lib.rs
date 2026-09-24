@@ -68,7 +68,7 @@ pub struct Modes {
     keyboard_pushes: u32,
     /// Insert mode (`CSI 4 h`).
     insert: bool,
-    /// G0 is not ASCII, or G1 is invoked (`SO`).
+    /// Character sets were designated or invoked.
     charset: bool,
     state: ParseState,
     params: Vec<u8>,
@@ -92,19 +92,22 @@ impl Modes {
                 ParseState::Ground => match b {
                     0x1b => self.state = ParseState::Escape,
                     0x0e => self.charset = true,
-                    0x0f => self.charset = false,
                     _ => {}
                 },
                 ParseState::Escape => {
                     self.state = match b {
                         b'[' => ParseState::Csi,
-                        b'(' => ParseState::Charset,
+                        b'(' | b')' | b'*' | b'+' => ParseState::Charset,
+                        b'n' | b'o' => {
+                            self.charset = true;
+                            ParseState::Ground
+                        }
                         _ => ParseState::Ground,
                     };
                     self.params.clear();
                 }
                 ParseState::Charset => {
-                    self.charset = b != b'B';
+                    self.charset |= b != b'B';
                     self.state = ParseState::Ground;
                 }
                 ParseState::Csi => {
@@ -172,7 +175,7 @@ impl Modes {
             out.extend(b"\x1b[4l");
         }
         if self.charset {
-            out.extend(b"\x1b(B\x0f");
+            out.extend(b"\x1b(B\x1b)B\x1b*B\x1b+B\x0f");
         }
         out.extend(b"\x1b[0m");
         out
@@ -233,6 +236,29 @@ fn kitty_key(input: &[u8]) -> Option<(usize, u32, u32, u32)> {
     Some((end + 3, code, mods, event))
 }
 
+/// Where an escape sequence the input does not finish starts: a control
+/// sequence without its final byte, or a string without its terminator
+/// (up to a size).
+fn unfinished(input: &[u8]) -> Option<usize> {
+    const MAX_HELD: usize = 64 << 10;
+    let start = input.iter().rposition(|b| *b == 0x1b)?;
+    let rest = &input[start + 1..];
+    match rest.first() {
+        Some(b'[') => rest[1..].iter().all(|b| (0x20..=0x3f).contains(b)).then_some(start),
+        Some(b']' | b'P' | b'_') => {
+            (!rest.contains(&0x07) && input.len() - start < MAX_HELD).then_some(start)
+        }
+        _ => None,
+    }
+    .or_else(|| {
+        // A string whose text holds escapes: from its own start.
+        let open = input.windows(2).rposition(|w| w[0] == 0x1b && matches!(w[1], b']' | b'P' | b'_'))?;
+        let tail = &input[open..];
+        let closed = tail.contains(&0x07) || tail.windows(2).any(|w| w == b"\x1b\\");
+        (!closed && tail.len() < MAX_HELD).then_some(open)
+    })
+}
+
 /// Keys that are modifiers alone in the kitty keyboard protocol.
 const KITTY_MODIFIERS: std::ops::RangeInclusive<u32> = 57441..=57452;
 
@@ -254,11 +280,8 @@ impl DetachFilter {
     pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, Option<Command>) {
         let mut input =
             std::mem::take(&mut self.held).into_iter().chain(input.iter().copied()).collect::<Vec<u8>>();
-        // A control sequence cut by the read waits for its end.
-        if let Some(start) = input.iter().rposition(|b| *b == 0x1b)
-            && input[start + 1..].first() == Some(&b'[')
-            && input[start + 2..].iter().all(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
-        {
+        // A sequence cut by the read waits for its end.
+        if let Some(start) = unfinished(&input) {
             self.held = input.split_off(start);
         }
         let input = &input[..];
@@ -784,7 +807,7 @@ impl Attached {
     /// open.
     fn screen(&mut self, out: &[u8]) -> io::Result<()> {
         if let Some(c) = &self.comp {
-            self.overlay.store(c.overlay_open(), std::sync::atomic::Ordering::Release);
+            self.overlay.store(c.takes_input(), std::sync::atomic::Ordering::Release);
         }
         write_out(out, false)
     }
@@ -948,9 +971,10 @@ mod tests {
     fn origin_insert_sync_and_charsets_are_turned_off() {
         assert_eq!(
             restore(&[b"\x1b[?6h\x1b[?2026h\x1b[4h\x1b(0"]),
-            "\x1b[?2026l\x1b[?6l\x1b[4l\x1b(B\x0f\x1b[0m"
+            "\x1b[?2026l\x1b[?6l\x1b[4l\x1b(B\x1b)B\x1b*B\x1b+B\x0f\x1b[0m"
         );
-        assert_eq!(restore(&[b"\x0e\x1b[4h\x1b[4l\x0f"]), "\x1b[0m");
+        assert_eq!(restore(&[b"\x1b[4h\x1b[4l"]), "\x1b[0m");
+        assert!(restore(&[b"\x1b(0\x0e\x0f"]).contains("\x1b(B"), "G0 stays line drawing after SO and SI");
     }
 
     #[test]

@@ -282,6 +282,8 @@ struct Scan {
     gl: u8,
     /// The terminal may have lost the scroll region.
     region_lost: bool,
+    /// The session is in a synchronized update.
+    sync: bool,
     /// Where in the output soft resets ended.
     soft_resets: Vec<usize>,
 }
@@ -497,8 +499,14 @@ impl Scan {
                 out.push(fin);
                 return;
             }
-            (Some(b'?'), false, b'h' | b'l') if n.iter().flatten().any(|m| matches!(m, 47 | 1047 | 1049)) => {
-                self.region_lost = true;
+            (Some(b'?'), false, b'h' | b'l') => {
+                for m in n.iter().flatten() {
+                    match m {
+                        47 | 1047 | 1049 => self.region_lost = true,
+                        2026 => self.sync = fin == b'h',
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
@@ -572,8 +580,10 @@ fn at_most(mut lines: Vec<String>, n: usize, cols: usize) -> Vec<String> {
 struct Saved {
     cursor: alacritty_terminal::grid::Cursor<Cell>,
     mode: TermMode,
-    /// The cell under the cursor, when its line waits to wrap.
+    /// The character to write again when the line waits to wrap.
     wrap_cell: Option<Cell>,
+    /// That character is wide and ends in the last column.
+    wrap_wide: bool,
 }
 
 /// The session's screen with a status line and overlays on the terminal.
@@ -771,13 +781,16 @@ impl Compositor {
         self.overlay.is_some()
     }
 
+    /// Whether input goes through `key`: the overlay is on the screen, or a
+    /// paste that began under it goes on.
+    pub fn takes_input(&self) -> bool {
+        self.overlay.is_some() || self.pasting
+    }
+
     /// Input read while the overlay is open: the bytes for the terminal, a
     /// decision if one was made, and input for the session (the terminal's
     /// replies, pastes, or everything when the overlay has closed meanwhile).
     pub fn key(&mut self, input: &[u8]) -> (Vec<u8>, Option<Decision>, Vec<u8>) {
-        let Some(id) = self.shown.clone().filter(|_| self.overlay.is_some()) else {
-            return (Vec::new(), None, input.to_vec());
-        };
         // A paste spread over reads goes to the session to its end.
         if self.pasting {
             match input.windows(6).position(|w| w == b"\x1b[201~") {
@@ -789,6 +802,9 @@ impl Compositor {
                 None => return (Vec::new(), None, input.to_vec()),
             }
         }
+        let Some(id) = self.shown.clone().filter(|_| self.overlay.is_some()) else {
+            return (Vec::new(), None, input.to_vec());
+        };
         let (keys, session) = split_input(input);
         if session.windows(6).any(|w| w == b"\x1b[200~") && !session.windows(6).any(|w| w == b"\x1b[201~") {
             self.pasting = true;
@@ -833,7 +849,12 @@ impl Compositor {
         }
         self.emit(&mut out, restore);
         self.screen.feed(restore);
-        let saved = self.save();
+        // The cursor where it is, in plain text, whatever the session left.
+        let mut saved = self.save();
+        saved.cursor.template = Cell::default();
+        saved.cursor.charsets = Default::default();
+        saved.mode.remove(TermMode::INSERT | TermMode::ORIGIN);
+        self.scan.gl = 0;
         let rows = self.rows;
         self.emit(&mut out, format!("\x1b[r\x1b[{rows};1H\x1b[0m\x1b[2K").as_bytes());
         self.scan.top = 1;
@@ -860,10 +881,18 @@ impl Compositor {
     fn save_from(&self, mirror: bool) -> Saved {
         let from = if mirror { &self.mirror } else { &self.screen };
         let cursor = from.term.grid().cursor.clone();
-        let wrap_cell = cursor
-            .input_needs_wrap
-            .then(|| from.cell(cursor.point.line.0 as usize, cursor.point.column.0).clone());
-        Saved { cursor, mode: *from.term.mode(), wrap_cell }
+        let (row, col) = (cursor.point.line.0 as usize, cursor.point.column.0);
+        let mut wrap_wide = false;
+        let wrap_cell = cursor.input_needs_wrap.then(|| {
+            let cell = from.cell(row, col);
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) && col > 0 {
+                wrap_wide = true;
+                from.cell(row, col - 1).clone()
+            } else {
+                cell.clone()
+            }
+        });
+        Saved { cursor, mode: *from.term.mode(), wrap_cell, wrap_wide }
     }
 
     /// Makes the terminal write plain text anywhere: no insert or origin
@@ -893,14 +922,18 @@ impl Compositor {
             s.push_str("\x1b[?6h");
         }
         match &saved.wrap_cell {
-            // Writing the last cell again leaves the line waiting to wrap.
-            Some(cell) if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) => {
-                s.push_str(&at(row, col));
+            // Writing the last character again leaves the line waiting to
+            // wrap (a wide one from the column before).
+            Some(cell) => {
+                let wide = saved.cursor.point.column.0 > 0
+                    && cell.flags.contains(Flags::WIDE_CHAR)
+                    && saved.wrap_wide;
+                s.push_str(&at(row, if wide { col - 1 } else { col }));
                 s.push_str(&sgr(cell));
                 s.push_str(&link(cell));
                 s.push(cell.c);
             }
-            _ => s.push_str(&at(row, col)),
+            None => s.push_str(&at(row, col)),
         }
         s.push_str(&sgr(&saved.cursor.template));
         s.push_str(&link(&saved.cursor.template));
@@ -990,18 +1023,18 @@ impl Compositor {
             self.emit(out, format!("\x1b[{rows};1H\x1b#5{BAR_STYLE}{bar}\x1b[0m").as_bytes());
         }
         if let Some((top, left, lines)) = lines {
+            // A synchronized update the session left open would keep the
+            // terminal from showing the overlay.
+            if self.scan.sync {
+                self.emit(out, b"\x1b[?2026l");
+                self.scan.sync = false;
+            }
+            // Written whole every time: the session may have written the
+            // same text in other colors.
             for (i, line) in lines.iter().enumerate() {
-                let row = usize::from(top) - 1 + i;
-                let have: String = (0..width(line))
-                    .map(|c| self.mirror.cell(row, usize::from(left) - 1 + c))
-                    .filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER))
-                    .map(|c| c.c)
-                    .collect();
-                if have != *line {
-                    let r = top + i as u16;
-                    let style = if i == 0 { OVERLAY_TITLE } else { OVERLAY_STYLE };
-                    self.emit(out, format!("\x1b[{r};{left}H\x1b#5{style}{line}\x1b[0m").as_bytes());
-                }
+                let r = top + i as u16;
+                let style = if i == 0 { OVERLAY_TITLE } else { OVERLAY_STYLE };
+                self.emit(out, format!("\x1b[{r};{left}H\x1b#5{style}{line}\x1b[0m").as_bytes());
             }
             self.overlay = Some((top, left, lines));
         }
