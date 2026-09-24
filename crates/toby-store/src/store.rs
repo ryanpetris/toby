@@ -254,7 +254,7 @@ impl Store {
             return Err(e);
         }
         if had_disk {
-            std::fs::remove_file(&old)?;
+            let _ = std::fs::remove_file(&old);
         }
         Ok(rec)
     }
@@ -275,6 +275,10 @@ impl Store {
         if disk.exists() {
             let _lock = lock_disk(&disk)?;
             std::fs::remove_file(&disk)?;
+        }
+        // What an interrupted reset or rebase left.
+        for leftover in ["qcow2.old", "qcow2.new"] {
+            let _ = std::fs::remove_file(disk.with_extension(leftover));
         }
         std::fs::remove_file(self.root_record_path(name))
     }

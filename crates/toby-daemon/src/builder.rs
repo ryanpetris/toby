@@ -153,8 +153,11 @@ impl Builder {
             else {
                 continue;
             };
-            // The lock file stays: a build may be waiting on it.
-            if let Ok(_lock) = Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            // The lock file stays: a build may be waiting on it. The disk
+            // itself stays locked while a builder machine uses it.
+            if let Ok(_lock) = Flock::lock(file, FlockArg::LockExclusiveNonblock)
+                && let Ok(_in_use) = toby_store::store::lock_disk(&path)
+            {
                 std::fs::remove_file(&path)?;
                 removed.push(path);
             }

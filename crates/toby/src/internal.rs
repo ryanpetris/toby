@@ -199,11 +199,11 @@ pub fn supervise(machine: &str) -> anyhow::Result<()> {
     let config = machine_config(&host)?;
     // Held (shared) until the machine has stopped, so nothing removes its
     // state while it runs, even if the process that started it is gone.
-    let _state = nix::fcntl::Flock::lock(
-        std::fs::File::open(host.paths.machine_state_dir(machine))?,
-        nix::fcntl::FlockArg::LockSharedNonblock,
-    )
-    .map_err(|(_, e)| e)?;
+    let state_dir = host.paths.machine_state_dir(machine);
+    let _state =
+        nix::fcntl::Flock::lock(std::fs::File::open(&state_dir)?, nix::fcntl::FlockArg::LockSharedNonblock)
+            .map_err(|(_, e)| e)
+            .with_context(|| format!("locking {}", state_dir.display()))?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let runtime = host.runtime.clone();
 
