@@ -1,0 +1,287 @@
+//! Runs sessions in-process and drives them over their sockets.
+
+use std::time::Duration;
+
+use toby_guest::paths::{GuestPaths, session_files};
+use toby_guest::record::{self, UserInfo};
+use toby_guest::session;
+use toby_proto::frame;
+use toby_proto::session::{ClientFrame, Hello, Resize, ServerFrame, Signal, State, Stdin};
+use toby_proto::types::{ExitStatus, Identity, SpawnSpec, TtySize};
+use tokio::net::UnixStream;
+
+struct Env {
+    _dir: tempfile::TempDir,
+    paths: GuestPaths,
+}
+
+fn env() -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = GuestPaths::at(dir.path());
+    std::fs::create_dir_all(paths.root()).unwrap();
+    let user = UserInfo {
+        name: std::env::var("USER").unwrap_or_else(|_| "user".into()),
+        uid: nix::unistd::getuid().as_raw(),
+        gid: nix::unistd::getgid().as_raw(),
+        home: dir.path().display().to_string(),
+        shell: "/bin/sh".into(),
+    };
+    record::write(&paths.user_file(), &user).unwrap();
+    Env { _dir: dir, paths }
+}
+
+fn spec(id: &str, argv: &[&str], tty: bool, keep: bool) -> SpawnSpec {
+    SpawnSpec {
+        session_id: id.into(),
+        argv: argv.iter().map(|s| s.to_string()).collect(),
+        env: vec![("TOBY_TEST".into(), "1".into())],
+        cwd: None,
+        identity: Identity::User,
+        tty: tty.then_some(TtySize { rows: 24, cols: 80 }),
+        keep_after_exit: keep,
+    }
+}
+
+async fn start(env: &Env, spec: SpawnSpec) -> tokio::task::JoinHandle<std::io::Result<()>> {
+    session::prepare(&env.paths, &spec).unwrap();
+    let paths = env.paths.clone();
+    let id = spec.session_id.clone();
+    let task = tokio::spawn(async move { session::run(paths, &id).await });
+    let sock = env
+        .paths
+        .session_dir(&spec.session_id)
+        .join(session_files::SOCKET);
+    for _ in 0..200 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    task
+}
+
+async fn attach(env: &Env, id: &str, replay: bool) -> UnixStream {
+    let sock = env.paths.session_dir(id).join(session_files::SOCKET);
+    let mut s = UnixStream::connect(sock).await.unwrap();
+    let hello = ClientFrame::Hello(Hello {
+        versions: vec![1],
+        rows: 0,
+        cols: 0,
+        want_replay: replay,
+    });
+    frame::send(&mut s, &hello).await.unwrap();
+    s
+}
+
+async fn next(s: &mut UnixStream) -> ServerFrame {
+    tokio::time::timeout(Duration::from_secs(10), frame::recv(s))
+        .await
+        .expect("frame in time")
+        .unwrap()
+}
+
+/// Reads frames until the exit, collecting stdout, stderr and replay bytes.
+async fn collect(s: &mut UnixStream) -> (String, String, ExitStatus) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    loop {
+        match next(s).await {
+            ServerFrame::Stdout(o) => out.extend(o.bytes),
+            ServerFrame::Replay(r) => out.extend(r.bytes),
+            ServerFrame::Stderr(e) => err.extend(e.bytes),
+            ServerFrame::Exit(e) => {
+                return (
+                    String::from_utf8_lossy(&out).into(),
+                    String::from_utf8_lossy(&err).into(),
+                    e.status,
+                );
+            }
+            ServerFrame::Welcome(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+async fn read_until(s: &mut UnixStream, needle: &str) -> String {
+    let mut out = Vec::new();
+    loop {
+        match next(s).await {
+            ServerFrame::Stdout(o) => out.extend(o.bytes),
+            ServerFrame::Replay(r) => out.extend(r.bytes),
+            ServerFrame::Welcome(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let text = String::from_utf8_lossy(&out).to_string();
+        if text.contains(needle) {
+            return text;
+        }
+    }
+}
+
+#[tokio::test]
+async fn pipes_carry_stdout_stderr_and_exit_code() {
+    let env = env();
+    let task = start(
+        &env,
+        spec(
+            "p1",
+            &[
+                "sh",
+                "-c",
+                "read x; echo out; echo err >&2; echo $TOBY_TEST; exit 3",
+            ],
+            false,
+            true,
+        ),
+    )
+    .await;
+    let mut s = attach(&env, "p1", false).await;
+    frame::send(
+        &mut s,
+        &ClientFrame::Stdin(Stdin {
+            bytes: b"go\n".to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    let (out, err, status) = collect(&mut s).await;
+    assert_eq!(out, "out\n1\n");
+    assert_eq!(err, "err\n");
+    assert_eq!(status, ExitStatus::Code(3));
+    task.await.unwrap().unwrap();
+    assert!(!env.paths.session_dir("p1").exists());
+}
+
+#[tokio::test]
+async fn tty_sessions_get_a_terminal_and_input() {
+    let env = env();
+    let task = start(
+        &env,
+        spec("t1", &["sh", "-c", "stty size; read x; echo got:$x"], true, false),
+    )
+    .await;
+    let mut s = attach(&env, "t1", true).await;
+    read_until(&mut s, "24 80").await;
+    frame::send(
+        &mut s,
+        &ClientFrame::Stdin(Stdin {
+            bytes: b"hi\n".to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    let (out, _, status) = collect(&mut s).await;
+    assert!(out.contains("got:hi"), "{out:?}");
+    assert_eq!(status, ExitStatus::Code(0));
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn resize_reaches_the_terminal() {
+    let env = env();
+    let _task = start(
+        &env,
+        spec("r1", &["sh", "-c", "read x; stty size; read y"], true, false),
+    )
+    .await;
+    let mut s = attach(&env, "r1", false).await;
+    assert!(matches!(next(&mut s).await, ServerFrame::Welcome(_)));
+    frame::send(&mut s, &ClientFrame::Resize(Resize { rows: 40, cols: 132 }))
+        .await
+        .unwrap();
+    frame::send(
+        &mut s,
+        &ClientFrame::Stdin(Stdin {
+            bytes: b"\n".to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    read_until(&mut s, "40 132").await;
+    frame::send(
+        &mut s,
+        &ClientFrame::Stdin(Stdin {
+            bytes: b"\n".to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn newest_attach_wins_and_replays_output() {
+    let env = env();
+    let task = start(&env, spec("n1", &["cat"], true, false)).await;
+    let mut a = attach(&env, "n1", false).await;
+    frame::send(
+        &mut a,
+        &ClientFrame::Stdin(Stdin {
+            bytes: b"first\n".to_vec(),
+        }),
+    )
+    .await
+    .unwrap();
+    read_until(&mut a, "first").await;
+
+    let mut b = attach(&env, "n1", true).await;
+    let seen = read_until(&mut b, "first").await;
+    assert!(seen.contains("first"));
+    loop {
+        match next(&mut a).await {
+            ServerFrame::Detached(_) => break,
+            ServerFrame::Stdout(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    frame::send(
+        &mut b,
+        &ClientFrame::Signal(Signal {
+            signal: libc::SIGTERM,
+        }),
+    )
+    .await
+    .unwrap();
+    let (_, _, status) = collect(&mut b).await;
+    assert_eq!(status, ExitStatus::Signal(libc::SIGTERM));
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn exit_is_kept_until_collected() {
+    let env = env();
+    let task = start(&env, spec("k1", &["sh", "-c", "echo done; exit 7"], false, true)).await;
+    let exit_file = env.paths.session_dir("k1").join(session_files::EXIT);
+    for _ in 0..500 {
+        if exit_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(exit_file.exists());
+
+    let mut s = attach(&env, "k1", true).await;
+    match next(&mut s).await {
+        ServerFrame::Welcome(w) => assert_eq!(w.state, State::Exited(ExitStatus::Code(7))),
+        other => panic!("unexpected {other:?}"),
+    }
+    let (out, _, status) = collect(&mut s).await;
+    assert_eq!(out, "done\n");
+    assert_eq!(status, ExitStatus::Code(7));
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn unsupported_version_is_refused() {
+    let env = env();
+    let _task = start(&env, spec("v1", &["sleep", "5"], false, false)).await;
+    let sock = env.paths.session_dir("v1").join(session_files::SOCKET);
+    let mut s = UnixStream::connect(sock).await.unwrap();
+    let hello = ClientFrame::Hello(Hello {
+        versions: vec![99],
+        rows: 0,
+        cols: 0,
+        want_replay: false,
+    });
+    frame::send(&mut s, &hello).await.unwrap();
+    assert!(matches!(next(&mut s).await, ServerFrame::Refused(_)));
+}

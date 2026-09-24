@@ -24,6 +24,10 @@ fn main() -> ExitCode {
     }
 }
 
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread().enable_all().build()?)
+}
+
 fn run(cli: Cli) -> anyhow::Result<()> {
     let name = match cli.command {
         Command::Run { .. } => "run",
@@ -54,8 +58,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             InternalCommand::Net { .. } => "internal net",
         },
         Command::Guest(cmd) => match cmd {
-            GuestCommand::Relay => "guest relay",
-            GuestCommand::Session { .. } => "guest session",
+            GuestCommand::Relay => {
+                return Ok(
+                    runtime()?.block_on(toby_guest::relay::run(toby_guest::paths::GuestPaths::from_env()))?
+                );
+            }
+            GuestCommand::Session { id } => {
+                return Ok(runtime()?.block_on(toby_guest::session::run(
+                    toby_guest::paths::GuestPaths::from_env(),
+                    &id,
+                ))?);
+            }
             GuestCommand::Connect { .. } => "guest connect",
             GuestCommand::Helper { .. } => "guest helper",
         },

@@ -67,8 +67,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["internal", "fs", "--machine", "m1"],
     &["internal", "vm", "--machine", "m1"],
     &["internal", "net", "--machine", "m1"],
-    &["guest", "relay"],
-    &["guest", "session", "--id", "s1"],
     &["guest", "connect", "mcp/toby"],
     &["guest", "helper", "net-up", "--addr", "10.0.2.15/24"],
     &["claude", "--home", "work", "--yolo", "--", "--continue"],
@@ -95,8 +93,6 @@ fn every_subcommand_runs() {
 fn multicall_names_dispatch() {
     let dir = tempdir();
     for (name, args) in [
-        ("toby-relay", &[][..]),
-        ("toby-session", &["--id", "s1"][..]),
         ("toby-connect", &["mcp/toby"][..]),
         ("toby-helper", &["links"][..]),
         ("tobyd", &[][..]),
