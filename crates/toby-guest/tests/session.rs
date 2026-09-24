@@ -300,3 +300,28 @@ async fn a_missing_command_fails_the_start() {
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert!(!env.paths.session_dir("f1").exists());
 }
+
+#[tokio::test]
+async fn a_stalled_client_does_not_block_a_takeover() {
+    let env = env();
+    let task = start(&env, spec_on_attach("s1", &["sh", "-c", "yes"])).await;
+    // The first client attaches and never reads.
+    let _stalled = attach(&env, "s1", false).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut second = attach(&env, "s1", false).await;
+    let welcome = tokio::time::timeout(Duration::from_secs(5), frame::recv::<ServerFrame, _>(&mut second))
+        .await
+        .expect("the second client is welcomed")
+        .unwrap();
+    assert!(matches!(welcome, ServerFrame::Welcome(_)), "{welcome:?}");
+
+    frame::send(&mut second, &ClientFrame::Signal(Signal { signal: libc::SIGKILL })).await.unwrap();
+    loop {
+        if let ServerFrame::Exit(e) = next(&mut second).await {
+            assert_eq!(e.status, ExitStatus::Signal(libc::SIGKILL));
+            break;
+        }
+    }
+    task.await.unwrap().unwrap();
+}

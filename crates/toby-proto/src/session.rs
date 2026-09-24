@@ -73,6 +73,12 @@ pub struct Welcome {
     /// are no longer buffered.
     #[serde(default)]
     pub lost: u64,
+    /// Standard input bytes the session has received from clients so far.
+    #[serde(default)]
+    pub input: u64,
+    /// Whether a client has closed standard input.
+    #[serde(default)]
+    pub input_closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

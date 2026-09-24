@@ -365,6 +365,9 @@ pub async fn attach(
         tty: welcome.tty,
         offset: welcome.offset,
         lost: welcome.lost,
+        input: welcome.input,
+        input_closed: welcome.input_closed,
+        sent: Arc::new(Sent::default()),
         modes: Modes::default(),
         data: Arc::new(tokio::sync::Mutex::new(data_rx)),
         events: events_rx,
@@ -386,6 +389,11 @@ struct Attached {
     offset: u64,
     /// Output bytes that were lost across reconnections.
     lost: u64,
+    /// Standard input the session had received when this client attached.
+    input: u64,
+    input_closed: bool,
+    /// Standard input this client has sent.
+    sent: Arc<Sent>,
     modes: Modes,
     data: Arc<tokio::sync::Mutex<mpsc::Receiver<Data>>>,
     events: mpsc::Receiver<Event>,
@@ -401,7 +409,7 @@ impl Attached {
         loop {
             let (mut rd, wr) = conn.into_split();
             let (ctl_tx, ctl_rx) = mpsc::channel::<ClientFrame>(16);
-            let writer = tokio::spawn(write_frames(wr, ctl_rx, self.data.clone()));
+            let writer = tokio::spawn(write_frames(wr, ctl_rx, self.data.clone(), self.sent.clone()));
             let (frames_tx, mut frames) = mpsc::channel::<io::Result<ServerFrame>>(64);
             let reader = tokio::spawn(async move {
                 loop {
@@ -503,6 +511,13 @@ impl Attached {
             }
             let Ok(mut c) = connect().await else { continue };
             let Ok(w) = hello(&mut c, false, Some(self.offset)).await else { continue };
+            // Input is not resent: without a terminal, any input that did not
+            // arrive makes the command's result unreliable.
+            let sent = self.input + self.sent.bytes.load(std::sync::atomic::Ordering::Acquire);
+            let closed = self.input_closed || self.sent.closed.load(std::sync::atomic::Ordering::Acquire);
+            if !self.tty && (w.input != sent || w.input_closed != closed) {
+                return Err(io::Error::other("standard input was lost while reconnecting"));
+            }
             self.offset = w.offset;
             self.lost += w.lost;
             if w.lost > 0 && self.interactive {
@@ -524,11 +539,19 @@ enum Pumped {
     Lost(io::Error),
 }
 
+/// Standard input written to the session connection.
+#[derive(Default)]
+struct Sent {
+    bytes: std::sync::atomic::AtomicU64,
+    closed: std::sync::atomic::AtomicBool,
+}
+
 /// Sends control frames ahead of queued input.
 async fn write_frames(
     mut wr: tokio::net::unix::OwnedWriteHalf,
     mut ctl: mpsc::Receiver<ClientFrame>,
     data: Arc<tokio::sync::Mutex<mpsc::Receiver<Data>>>,
+    sent: Arc<Sent>,
 ) {
     let mut data = data.lock().await;
     let mut data_open = true;
@@ -548,18 +571,21 @@ async fn write_frames(
                 }
             },
         };
-        if let ClientFrame::Stdin(session::Stdin { bytes }) = &f
-            && bytes.len() > MAX_CHUNK
-        {
-            for c in bytes.chunks(MAX_CHUNK) {
-                if frame::send(&mut wr, &ClientFrame::Stdin(session::Stdin { bytes: c.to_vec() }))
-                    .await
-                    .is_err()
-                {
-                    return;
+        match &f {
+            ClientFrame::Stdin(session::Stdin { bytes }) => {
+                // Counted as sent before writing: a byte that may be in
+                // flight must not look delivered after a reconnect.
+                sent.bytes.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::AcqRel);
+                for c in bytes.chunks(MAX_CHUNK) {
+                    let chunk = ClientFrame::Stdin(session::Stdin { bytes: c.to_vec() });
+                    if frame::send(&mut wr, &chunk).await.is_err() {
+                        return;
+                    }
                 }
+                continue;
             }
-            continue;
+            ClientFrame::CloseStdin(_) => sent.closed.store(true, std::sync::atomic::Ordering::Release),
+            _ => {}
         }
         if frame::send(&mut wr, &f).await.is_err() {
             return;

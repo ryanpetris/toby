@@ -116,7 +116,7 @@ Session frames:
 
 | Type | Frame |
 | --- | --- |
-| 64 | `Welcome { version, state, tty, offset, lost }`; `state` is `running` or the exit status |
+| 64 | `Welcome { version, state, tty, offset, lost, input, input_closed }`; `state` is `running` or the exit status; `input` counts standard input bytes the session has received and `input_closed` says whether it was closed |
 | 65 | `Replay { bytes, stderr }`: recent output (up to 1 MiB) after the welcome, if requested; `stderr` marks standard-error output of sessions without a terminal |
 | 66 | `Stdout { bytes }` |
 | 67 | `Stderr { bytes }` (sessions without a terminal) |
@@ -132,7 +132,10 @@ bytes that were no longer buffered. Without `resume_from`, `want_replay`
 selects the whole buffer or nothing.
 
 A client of a session with a terminal that stops reading for 30 seconds is
-disconnected; for a session without a terminal, output waits for the client.
+disconnected; for a session without a terminal, output waits for the client
+(other clients can still attach). Input is not resent after a reconnection; a
+client compares `input` and `input_closed` with what it sent to tell whether
+input was lost.
 
 One client is attached at a time; a new attachment detaches the previous one.
 A command that cannot be started (for a session that starts on attach) writes

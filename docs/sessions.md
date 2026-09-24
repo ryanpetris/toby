@@ -14,7 +14,8 @@ toby shell [--as-root] [--machine ID]
 - `toby exec` runs a command and exits with its exit status (128 plus the
   signal number when a signal ended it, 127 when it cannot be started).
   Standard input, output and error are passed through separately, and the
-  command starts only once Toby is attached to it, so no output is lost.
+  command starts only once Toby is attached to it, so it produces no output
+  before Toby reads it.
   When both standard input and output are terminals the command gets a
   terminal of the same size; otherwise interrupt, termination, hangup and
   quit signals sent to `toby` are passed on to the command. If writing the
@@ -44,7 +45,9 @@ guest processes restart), Toby reattaches automatically for up to 30 seconds
 and continues the output where it stopped. If more than 1 MiB of output was
 produced in the meantime, the part that is no longer buffered is lost:
 `toby exec` without a terminal then fails with an error, and a terminal
-session shows a notice.
+session shows a notice. Input that was in transit is not resent, so
+`toby exec` without a terminal also fails if any of its input may have been
+lost.
 
 When an attachment ends, Toby turns off terminal modes the session left on
 (alternate screen, bracketed paste, mouse reporting, hidden cursor, keyboard

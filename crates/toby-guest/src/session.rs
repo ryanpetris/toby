@@ -113,8 +113,6 @@ struct Child {
 }
 
 enum Event {
-    Output(Vec<u8>, bool),
-    OutputEnd,
     Exited(ExitStatus),
     Accepted(UnixStream),
     Frame(u64, ClientFrame),
@@ -122,11 +120,24 @@ enum Event {
     Terminate,
 }
 
+/// Output of the command, on its own channel so the session only takes it
+/// when the attached client can accept it.
+enum Out {
+    Data(Vec<u8>, bool),
+    End,
+}
+
+/// Standard input received from clients, reported to reconnecting clients
+/// so they can tell whether input was lost.
+#[derive(Default)]
+struct InputStats {
+    bytes: std::sync::atomic::AtomicU64,
+    closed: std::sync::atomic::AtomicBool,
+}
+
 struct Client {
     generation: u64,
     welcomed: bool,
-    /// Whether the session has a terminal.
-    tty: bool,
     tx: mpsc::Sender<Outgoing>,
     /// Tells the writer to send `Detached` ahead of any queued output.
     detach: Option<oneshot::Sender<String>>,
@@ -221,6 +232,7 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     let tty = spec.tty.is_some();
 
     let (events_tx, mut events) = mpsc::channel::<Event>(64);
+    let (output_tx, mut output) = mpsc::channel::<Out>(16);
     let (input_tx, input_rx) = mpsc::channel::<Input>(64);
     let mut input_rx = Some(input_rx);
 
@@ -228,7 +240,8 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     // by exiting before its socket exists.
     let mut child: Option<Child> = None;
     if !spec.start_on_attach {
-        child = Some(start_child(&spec, &account, events_tx.clone(), input_rx.take().expect("unused"))?);
+        let rx = input_rx.take().expect("unused");
+        child = Some(start_child(&spec, &account, events_tx.clone(), output_tx.clone(), rx)?);
     }
 
     let sock_path = dir.join(session_files::SOCKET);
@@ -277,12 +290,14 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
 
     let mut replay = Replay::default();
     let current = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stats = Arc::new(InputStats::default());
     let mut client: Option<Client> = None;
     let mut generation = 0u64;
     let mut exit: Option<ExitStatus> = None;
     let mut output_done = false;
     let mut drain_deadline: Option<tokio::time::Instant> = None;
     let mut keep_deadline: Option<tokio::time::Instant> = None;
+    let mut stall_deadline: Option<tokio::time::Instant> = None;
 
     loop {
         // Once the child has exited and its output is drained (or the drain
@@ -310,163 +325,190 @@ async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
             }
         }
 
-        let timeout = if drained {
-            keep_deadline
-        } else if exit.is_some() {
-            drain_deadline
-        } else {
-            None
-        };
-        let event = match timeout {
-            Some(t) => match tokio::time::timeout_at(t, events.recv()).await {
-                Ok(e) => e,
-                Err(_) => continue,
+        // Output is taken only while the attached client can accept it, so
+        // a slow client holds the command back without stalling the session.
+        // A terminal session's client that stays full is disconnected; it
+        // can reattach and resume.
+        let client_full = client.as_ref().is_some_and(|c| c.welcomed && c.tx.capacity() == 0);
+        if !client_full {
+            stall_deadline = None;
+        } else if tty && stall_deadline.is_none() {
+            stall_deadline = Some(now + CLIENT_STALL);
+        }
+        let deadline = [
+            if drained {
+                keep_deadline
+            } else if exit.is_some() {
+                drain_deadline
+            } else {
+                None
             },
-            None => events.recv().await,
-        };
-        let Some(event) = event else { break };
+            stall_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
 
-        match event {
-            Event::Output(bytes, stderr) => {
-                replay.push(&bytes, stderr);
-                if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
-                    let mut ok = true;
-                    for chunk in bytes.chunks(MAX_CHUNK) {
-                        let bytes = chunk.to_vec();
+        tokio::select! {
+            e = events.recv() => {
+                let Some(event) = e else { break };
+                match event {
+                    Event::Exited(status) => {
+                        exit = Some(status);
+                        drain_deadline = Some(tokio::time::Instant::now() + DRAIN_AFTER_EXIT);
+                    }
+                    Event::Accepted(stream) => {
+                        if let Some(mut old) = client.take()
+                            && let Some(d) = old.detach.take()
+                        {
+                            let _ = d.send("attached elsewhere".into());
+                        }
+                        generation += 1;
+                        current.store(generation, std::sync::atomic::Ordering::Release);
+                        client = Some(start_client(
+                            stream,
+                            generation,
+                            current.clone(),
+                            stats.clone(),
+                            events_tx.clone(),
+                            input_tx.clone(),
+                        ));
+                        set_attached(dir, &mut rec, true);
+                    }
+                    Event::Frame(generation_of, frame) => {
+                        let Some(c) = client.as_mut().filter(|c| c.generation == generation_of) else {
+                            continue;
+                        };
+                        match frame {
+                            ClientFrame::Hello(hello) if !c.welcomed => {
+                                let Some(version) = types::negotiate(&hello.versions) else {
+                                    let refused = session::Refused { error: "unsupported version".into() };
+                                    let _ = queue(c, ServerFrame::Refused(refused)).await;
+                                    drop_client(&mut client, dir, &mut rec);
+                                    continue;
+                                };
+                                if hello.rows > 0
+                                    && hello.cols > 0
+                                    && let Some(ch) = &child
+                                {
+                                    resize(ch, TtySize { rows: hello.rows, cols: hello.cols });
+                                }
+                                let state = match rec.info.exit {
+                                    Some(s) => State::Exited(s),
+                                    None => State::Running,
+                                };
+                                c.welcomed = true;
+                                let (offset, lost) = match (hello.resume_from, hello.want_replay) {
+                                    (Some(from), _) => replay.resume_point(from),
+                                    (None, true) => (replay.start, 0),
+                                    (None, false) => (replay.end(), 0),
+                                };
+                                let welcome = session::Welcome {
+                                    version,
+                                    state,
+                                    tty,
+                                    offset,
+                                    lost,
+                                    input: stats.bytes.load(std::sync::atomic::Ordering::Acquire),
+                                    input_closed: stats.closed.load(std::sync::atomic::Ordering::Acquire),
+                                };
+                                let mut ok = queue(c, ServerFrame::Welcome(welcome)).await;
+                                for f in replay.frames_from(offset) {
+                                    ok = ok && queue(c, f).await;
+                                }
+                                if !ok {
+                                    drop_client(&mut client, dir, &mut rec);
+                                    continue;
+                                }
+                                if let Some(rx) = input_rx.take() {
+                                    let mut spec = spec.clone();
+                                    if let (Some(size), true) = (spec.tty.as_mut(), hello.rows > 0 && hello.cols > 0) {
+                                        *size = TtySize { rows: hello.rows, cols: hello.cols };
+                                    }
+                                    match start_child(&spec, &account, events_tx.clone(), output_tx.clone(), rx) {
+                                        Ok(ch) => {
+                                            rec.child_pgid = ch.pgid;
+                                            record::write(&dir.join(session_files::RECORD), &rec)?;
+                                            child = Some(ch);
+                                        }
+                                        Err(e) => {
+                                            let msg = format!("toby: cannot start {}: {e}\r\n", spec.argv[0]);
+                                            replay.push(msg.as_bytes(), !tty);
+                                            let bytes = msg.into_bytes();
+                                            let f = if tty {
+                                                ServerFrame::Stdout(session::Stdout { bytes })
+                                            } else {
+                                                ServerFrame::Stderr(session::Stderr { bytes })
+                                            };
+                                            let _ = queue(c, f).await;
+                                            exit = Some(ExitStatus::Code(CANNOT_START));
+                                            output_done = true;
+                                        }
+                                    }
+                                }
+                            }
+                            ClientFrame::Resize(r) => {
+                                if let Some(ch) = &child {
+                                    resize(ch, TtySize { rows: r.rows, cols: r.cols });
+                                }
+                            }
+                            ClientFrame::Signal(s) => {
+                                if exit.is_none()
+                                    && let (Some(ch), Ok(sig)) = (&child, NixSignal::try_from(s.signal))
+                                {
+                                    let _ = killpg(Pid::from_raw(ch.pgid), sig);
+                                }
+                            }
+                            // Input goes straight to the child's input task.
+                            ClientFrame::Hello(_) | ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
+                        }
+                    }
+                    Event::ClientGone(generation_of) => {
+                        if client.as_ref().is_some_and(|c| c.generation == generation_of) {
+                            drop_client(&mut client, dir, &mut rec);
+                        }
+                    }
+                    Event::Terminate => match (&child, exit) {
+                        (Some(ch), None) => {
+                            let _ = killpg(Pid::from_raw(ch.pgid), NixSignal::SIGHUP);
+                        }
+                        _ => break,
+                    },
+                }
+            }
+            o = output.recv(), if !output_done && !client_full => match o {
+                Some(Out::Data(bytes, stderr)) => {
+                    replay.push(&bytes, stderr);
+                    if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
                         let frame = if stderr {
                             ServerFrame::Stderr(session::Stderr { bytes })
                         } else {
                             ServerFrame::Stdout(session::Stdout { bytes })
                         };
-                        ok = ok && queue(c, frame).await;
-                    }
-                    if !ok {
-                        drop_client(&mut client, dir, &mut rec);
-                    }
-                }
-            }
-            Event::OutputEnd => output_done = true,
-            Event::Exited(status) => {
-                exit = Some(status);
-                drain_deadline = Some(tokio::time::Instant::now() + DRAIN_AFTER_EXIT);
-            }
-            Event::Accepted(stream) => {
-                if let Some(mut old) = client.take()
-                    && let Some(d) = old.detach.take()
-                {
-                    let _ = d.send("attached elsewhere".into());
-                }
-                generation += 1;
-                current.store(generation, std::sync::atomic::Ordering::Release);
-                client = Some(start_client(
-                    stream,
-                    generation,
-                    tty,
-                    current.clone(),
-                    events_tx.clone(),
-                    input_tx.clone(),
-                ));
-                set_attached(dir, &mut rec, true);
-            }
-            Event::Frame(generation_of, frame) => {
-                let Some(c) = client.as_mut().filter(|c| c.generation == generation_of) else {
-                    continue;
-                };
-                match frame {
-                    ClientFrame::Hello(hello) if !c.welcomed => {
-                        let Some(version) = types::negotiate(&hello.versions) else {
-                            let _ = queue(
-                                c,
-                                ServerFrame::Refused(session::Refused {
-                                    error: "unsupported version".into(),
-                                }),
-                            )
-                            .await;
+                        if c.tx.try_send(Outgoing::Frame(frame)).is_err() {
                             drop_client(&mut client, dir, &mut rec);
-                            continue;
-                        };
-                        if hello.rows > 0
-                            && hello.cols > 0
-                            && let Some(ch) = &child
-                        {
-                            resize(ch, TtySize { rows: hello.rows, cols: hello.cols });
-                        }
-                        let state = match rec.info.exit {
-                            Some(s) => State::Exited(s),
-                            None => State::Running,
-                        };
-                        c.welcomed = true;
-                        let (offset, lost) = match (hello.resume_from, hello.want_replay) {
-                            (Some(from), _) => replay.resume_point(from),
-                            (None, true) => (replay.start, 0),
-                            (None, false) => (replay.end(), 0),
-                        };
-                        let welcome = session::Welcome { version, state, tty, offset, lost };
-                        let mut ok = queue(c, ServerFrame::Welcome(welcome)).await;
-                        for f in replay.frames_from(offset) {
-                            ok = ok && queue(c, f).await;
-                        }
-                        if !ok {
-                            drop_client(&mut client, dir, &mut rec);
-                            continue;
-                        }
-                        if let Some(rx) = input_rx.take() {
-                            let mut spec = spec.clone();
-                            if let (Some(size), true) = (spec.tty.as_mut(), hello.rows > 0 && hello.cols > 0)
-                            {
-                                *size = TtySize { rows: hello.rows, cols: hello.cols };
-                            }
-                            match start_child(&spec, &account, events_tx.clone(), rx) {
-                                Ok(ch) => {
-                                    rec.child_pgid = ch.pgid;
-                                    record::write(&dir.join(session_files::RECORD), &rec)?;
-                                    child = Some(ch);
-                                }
-                                Err(e) => {
-                                    let msg = format!("toby: cannot start {}: {e}\r\n", spec.argv[0]);
-                                    replay.push(msg.as_bytes(), !tty);
-                                    let f = if tty {
-                                        ServerFrame::Stdout(session::Stdout { bytes: msg.into_bytes() })
-                                    } else {
-                                        ServerFrame::Stderr(session::Stderr { bytes: msg.into_bytes() })
-                                    };
-                                    let _ = queue(c, f).await;
-                                    exit = Some(ExitStatus::Code(CANNOT_START));
-                                    output_done = true;
-                                }
-                            }
                         }
                     }
-                    ClientFrame::Resize(r) => {
-                        if let Some(ch) = &child {
-                            resize(ch, TtySize { rows: r.rows, cols: r.cols });
-                        }
-                    }
-                    ClientFrame::Signal(s) => {
-                        if exit.is_none()
-                            && let (Some(ch), Ok(sig)) = (&child, NixSignal::try_from(s.signal))
-                        {
-                            let _ = killpg(Pid::from_raw(ch.pgid), sig);
-                        }
-                    }
-                    // Input goes straight to the child's input task.
-                    ClientFrame::Hello(_) | ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
                 }
-            }
-            Event::ClientGone(generation_of) => {
-                if client.as_ref().is_some_and(|c| c.generation == generation_of) {
+                Some(Out::End) | None => output_done = true,
+            },
+            _ = sleep_until(deadline) => {
+                if stall_deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
+                    stall_deadline = None;
                     drop_client(&mut client, dir, &mut rec);
                 }
             }
-            Event::Terminate => match (&child, exit) {
-                (Some(ch), None) => {
-                    let _ = killpg(Pid::from_raw(ch.pgid), NixSignal::SIGHUP);
-                }
-                _ => break,
-            },
         }
     }
     Ok(())
+}
+
+/// Sleeps until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
 }
 
 fn drop_client(client: &mut Option<Client>, dir: &Path, rec: &mut SessionRecord) {
@@ -481,16 +523,9 @@ fn set_attached(dir: &Path, rec: &mut SessionRecord, attached: bool) {
     }
 }
 
-/// Queues a frame for the client. A client of a session with a terminal
-/// that stops reading is dropped after a while (it can reattach and resume);
-/// for a session without one, output waits for the client, holding the
-/// command back, so none is lost.
+/// Queues a frame for the client, giving up on a client that does not read.
 async fn queue(c: &Client, frame: ServerFrame) -> bool {
-    if c.tty {
-        c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL).await.is_ok()
-    } else {
-        c.tx.send(Outgoing::Frame(frame)).await.is_ok()
-    }
+    c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL).await.is_ok()
 }
 
 /// Sends the exit to a welcomed client and waits until it has been written.
@@ -508,8 +543,8 @@ async fn deliver_exit(c: &Client, status: ExitStatus) -> bool {
 fn start_client(
     stream: UnixStream,
     generation: u64,
-    tty: bool,
     current: Arc<std::sync::atomic::AtomicU64>,
+    stats: Arc<InputStats>,
     events: mpsc::Sender<Event>,
     input: mpsc::Sender<Input>,
 ) -> Client {
@@ -563,9 +598,11 @@ fn start_client(
             let attached = current.load(std::sync::atomic::Ordering::Acquire) == generation;
             match f {
                 ClientFrame::Stdin(d) if hello_seen && attached => {
+                    stats.bytes.fetch_add(d.bytes.len() as u64, std::sync::atomic::Ordering::AcqRel);
                     let _ = input.send(Input::Data(d.bytes)).await;
                 }
                 ClientFrame::CloseStdin(_) if hello_seen && attached => {
+                    stats.closed.store(true, std::sync::atomic::Ordering::Release);
                     let _ = input.send(Input::Close).await;
                 }
                 ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
@@ -579,7 +616,7 @@ fn start_client(
         }
     });
 
-    Client { generation, welcomed: false, tty, tx, detach: Some(detach_tx) }
+    Client { generation, welcomed: false, tx, detach: Some(detach_tx) }
 }
 
 fn resize(child: &Child, size: TtySize) {
@@ -644,6 +681,7 @@ fn start_child(
     spec: &SpawnSpec,
     account: &Account,
     events: mpsc::Sender<Event>,
+    output: mpsc::Sender<Out>,
     mut input: mpsc::Receiver<Input>,
 ) -> io::Result<Child> {
     let env = environment(spec, account);
@@ -710,7 +748,7 @@ fn start_child(
     match &master {
         Some(m) => {
             let reader = m.clone();
-            let tx = events.clone();
+            let tx = output.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
                 loop {
@@ -722,14 +760,14 @@ fn start_child(
                     {
                         Ok(Ok(0)) | Ok(Err(_)) => break,
                         Ok(Ok(n)) => {
-                            if tx.send(Event::Output(buf[..n].to_vec(), false)).await.is_err() {
+                            if tx.send(Out::Data(buf[..n].to_vec(), false)).await.is_err() {
                                 return;
                             }
                         }
                         Err(_would_block) => continue,
                     }
                 }
-                let _ = tx.send(Event::OutputEnd).await;
+                let _ = tx.send(Out::End).await;
             });
             let writer = m.clone();
             tokio::spawn(async move {
@@ -747,12 +785,12 @@ fn start_child(
         None => {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
-            let tx = events.clone();
+            let tx = output.clone();
             tokio::spawn(async move {
                 let out = pump(stdout, false, tx.clone());
                 let err = pump(stderr, true, tx.clone());
                 tokio::join!(out, err);
-                let _ = tx.send(Event::OutputEnd).await;
+                let _ = tx.send(Out::End).await;
             });
             let mut stdin = child.stdin.take();
             tokio::spawn(async move {
@@ -784,14 +822,14 @@ fn start_child(
     Ok(Child { pgid, master })
 }
 
-async fn pump<R: tokio::io::AsyncRead + Unpin>(r: Option<R>, stderr: bool, tx: mpsc::Sender<Event>) {
+async fn pump<R: tokio::io::AsyncRead + Unpin>(r: Option<R>, stderr: bool, tx: mpsc::Sender<Out>) {
     let Some(mut r) = r else { return };
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         match r.read(&mut buf).await {
             Ok(0) | Err(_) => return,
             Ok(n) => {
-                if tx.send(Event::Output(buf[..n].to_vec(), stderr)).await.is_err() {
+                if tx.send(Out::Data(buf[..n].to_vec(), stderr)).await.is_err() {
                     return;
                 }
             }
