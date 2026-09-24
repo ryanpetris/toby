@@ -3,12 +3,11 @@
 Status: design agreed in discussion (2026-09-23/24). M0 spikes done; results in
 `plans/m0-spikes.md`, and this plan reflects them.
 
-This plan replaces the current Go/Bubblewrap/OCI implementation with a Rust
-implementation that runs development tools inside KVM virtual machines. The
-existing code is deleted and the repository is restarted as a Rust
-workspace. Nothing from the old design is kept for compatibility; the pre-1.0
-rules in `AGENTS.md` still apply (no shims, no dual paths, delete replaced
-behavior completely).
+This plan describes Toby as a Rust implementation that runs development
+tools inside KVM virtual machines, replacing the previous Go/Bubblewrap/OCI
+implementation (removed in M1). Nothing from the previous design is kept for
+compatibility; the pre-1.0 rules in `AGENTS.md` apply (no shims, no dual
+paths, replaced behavior removed completely).
 
 Items marked **VERIFY** are assumptions still to confirm: aarch64 firmware in M11, and the
 macOS items when that back end is designed. Two M0 items are still to be
@@ -54,9 +53,9 @@ session protocol (M2) and logout behavior of both back ends (M5).
 - Live migration, snapshots.
 - Migration from existing Toby installations. The new Toby does not read,
   convert, clean up, or even detect old config files, volumes, images or
-  sockets from the current implementation.
+  sockets from the previous implementation.
 
-### Explicitly dropped from the current Toby
+### Explicitly dropped from the previous implementation
 
 Bubblewrap and everything built for it (run overlays, descriptor-rooted
 publication, rootfs snapshots), host-side OCI unpacking (umoci), host
@@ -167,7 +166,7 @@ are subcommands, not separate executables:
 | Component | Invocation | Where |
 | --- | --- | --- |
 | CLI | `toby …` (user-facing commands, §20) | host |
-| `tobyd` | `toby daemon` | host |
+| `tobyd` | `toby internal daemon` (multi-call name `tobyd`) | host |
 | `toby-proxy` | `toby internal proxy` | host |
 | `toby-machine` | `toby internal machine --machine <id>` (`--supervise` in direct mode) | host |
 | `toby-fs` | `toby internal fs --machine <id>` | host |
@@ -265,7 +264,10 @@ systemd and sudo; Toby's own binary is never installed into an image.
 ## 5. Repository reset
 
 Milestone 1 deletes everything except `LICENSE`, `CLAUDE.md` (still points
-at `AGENTS.md`) and git history, then creates:
+at `AGENTS.md`), `plans/`, the logos in `docs/` and the project's own
+`.toby/Dockerfile` (its project configuration becomes `.toby/config.toml`), and
+git history, then creates the layout below. The `packaging/` directories are
+filled by the milestones that need them.
 
 ```text
 Cargo.toml                    (workspace)
@@ -939,7 +941,7 @@ WantedBy=sockets.target
 # tobyd.service
 [Service]
 Type=notify
-ExecStart=/usr/lib/toby/current/toby daemon
+ExecStart=/usr/lib/toby/current/toby internal daemon
 Restart=on-failure
 
 # toby-proxy.socket / toby-proxy.service  (same pattern, %t/toby/proxy.sock,
@@ -1162,7 +1164,7 @@ Toby stores no secrets of its own. The secrets that exist are:
 | Git credentials and signing keys | the host's normal git setup; used only by Toby MCP host actions on the host |
 | Tool logins (Claude/Codex OAuth tokens, etc.) | created by the tools themselves inside the home disk; Toby never handles them |
 
-Substitutions (carried over from current Toby) work in model headers and
+Substitutions (kept from the previous implementation) work in model headers and
 MCP URLs, headers, command arguments and environment values:
 
 - `{file:path}`: trimmed file contents (relative to the config directory,
@@ -1204,7 +1206,7 @@ config is loaded only when `settings.autoload_project_config = true`
 enable configured MCP servers or forwards; when a project config exists but
 is not loaded, Toby emits `project.autoload-disabled`.
 
-Config format is TOML throughout (pre-1.0 format change from YAML; no
+Config format is TOML throughout (the previous implementation used YAML; no
 compatibility with the old files). Unknown fields are errors.
 
 ### 14.4 Home and root records
@@ -1240,7 +1242,7 @@ source = { dockerfile = "/home/user/src/toby/.toby/Dockerfile" }
 | Session exit record kept | 1 h |
 | Session replay buffer | 1 MiB |
 
-### 14.6 Behavior carried over from current Toby
+### 14.6 Behavior kept from the previous implementation
 
 These existing features keep their meaning in the new design:
 
@@ -1716,8 +1718,8 @@ Hypervisor loads it with `--firmware` or `--kernel` on aarch64).
 ```text
 toby <tool> [--home H] [--root R] [--project PATH]… [--ephemeral] [--attach|--new] [--yolo] [--install] [--upgrade] [-- args…]
 toby run -f <launch.toml>        # named launch file (§14.6)
-toby exec [--root] [--home H --root R] [--cwd DIR] -- CMD…
-toby shell [--root] [--home H --root R]
+toby exec [--as-root] [--home H --root R] [--cwd DIR] -- CMD…
+toby shell [--as-root] [--home H --root R]
 
 toby sessions ls | kill <id>
 toby attach [<session>]           # reattach a session (tmux-style)
@@ -1816,7 +1818,7 @@ user-visible behavior; acceptance criteria demonstrated.
    Debian 13 genericcloud from an `imago`-created overlay; OEM-string
    credentials inject a unit that starts.
 2. Boot adaptation by hand on two trees (a Debian tree from mkosi
-   `Format=directory` and the current Arch `.toby/Dockerfile` image): distro
+   `Format=directory` and the project's Arch `.toby/Dockerfile` image): distro
    kernel + dracut initramfs with the `99toby` module boot the exported
    ext4 root directly; the hook's `/run/systemd/system` units start.
    mkosi runs as root inside a VM with its tools tree and caches on a
@@ -1865,7 +1867,8 @@ families, home formatting jobs, roots and homes with reset/rebase, boot
 helpers (net-up, user-setup, home-mount, links), custom image requirements
 documented.
 Acceptance: bootstrap from the pinned cloud image produces the default
-image; the current Arch `.toby/Dockerfile` builds and boots unchanged;
+image; the project's own `.toby/Dockerfile` (a plain Arch Linux container
+build with nothing Toby-specific) builds and boots unchanged;
 machine boots with the home mounted as the user; network egress works; root
 reset returns to image state; home persists across roots.
 
@@ -1947,9 +1950,10 @@ indicators, error message review, aarch64 enablement.
   and cached; tests for boot, exec, attach, forwards, reset, upgrades.
 - Terminal tests: scripted PTY sessions with expected screen snapshots
   (using the same emulator library as the compositor).
-- CI: GitHub-hosted `ubuntu-latest` runners, which provide `/dev/kvm`
-  (owned by group `kvm`, mode 0660; KVM jobs grant the runner user access
-  before running tests).
+- CI: GitHub-hosted `ubuntu-latest` runners provide `/dev/kvm` (owned by
+  group `kvm`, mode 0660, the runner user not in the group). KVM jobs must
+  first grant the runner user access to the device and fail when it is
+  missing.
 
 ---
 

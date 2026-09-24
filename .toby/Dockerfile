@@ -2,28 +2,23 @@ FROM archlinux:base-devel
 
 RUN pacman -Syu --noconfirm \
     bash \
-    bubblewrap \
-    buildah \
     ca-certificates \
     curl \
-    docker \
-    docker-buildx \
     git \
     github-cli \
     gnupg \
-    go \
     gzip \
     jq \
     make \
+    musl \
     nodejs \
     npm \
     openssh \
-    protobuf \
     python \
+    qemu-img \
+    rustup \
     tar \
     unzip \
     xdg-utils \
     zstd \
     && pacman -Scc --noconfirm
-
-ENV CGO_ENABLED=0

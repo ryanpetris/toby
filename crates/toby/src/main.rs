@@ -46,12 +46,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Builder(_) => "builder",
         Command::Mcp(_) => "mcp",
         Command::Approvals(_) => "approvals",
-        Command::Daemon { .. } => "daemon",
+        Command::Daemon(_) => "daemon",
         Command::Linger { .. } => "linger",
         Command::Config(_) => "config",
         Command::Doctor => "doctor",
         Command::Web => "web",
         Command::Internal(cmd) => match cmd {
+            InternalCommand::Daemon => "internal daemon",
             InternalCommand::Proxy => "internal proxy",
             InternalCommand::Machine {
                 machine,
@@ -78,7 +79,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             GuestCommand::Helper { .. } => "guest helper",
         },
         Command::Tool(argv) => {
-            ToolArgs::try_parse_from(&argv[1..]).map_err(|e| anyhow::anyhow!("{e}"))?;
+            ToolArgs::try_parse_from(&argv[1..]).unwrap_or_else(|e| e.exit());
             "<tool>"
         }
     };

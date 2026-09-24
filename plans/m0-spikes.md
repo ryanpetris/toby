@@ -53,7 +53,7 @@ to a bare ext4 disk (serial `out`), and booted directly with
 | Tree | Build | Adaptation | Export | Result |
 | --- | --- | --- | --- | --- |
 | Debian 13 via mkosi `Format=directory` (422 MiB) | 38 s cold, 1.7 s incremental | 5.5 s | 1.7 s | boots; `99toby` unit ran |
-| current Arch `.toby/Dockerfile` via `buildah build --layers` (2.0 GiB) | 33 s | 13 s (pacman: kernel, dracut) | 6.4 s | boots; `99toby` unit ran |
+| the project's Arch `.toby/Dockerfile` via `buildah build --layers` (2.0 GiB) | 33 s | 13 s (pacman: kernel, dracut) | 6.4 s | boots; `99toby` unit ran |
 | Fedora 43 via mkosi with `--tools-tree=default` (297 MiB) | 88 s cold | — | — | tree built with kernel 7.2.7 |
 
 - The dracut pre-pivot hook wrote units into `/run/systemd/system` and a

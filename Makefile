@@ -1,6 +1,6 @@
 MUSL_TARGET ?= x86_64-unknown-linux-musl
 
-.PHONY: all check fmt fmt-check lint test deny build static
+.PHONY: all check fmt fmt-check lint test deny build static static-test
 
 all: check
 
@@ -27,3 +27,7 @@ build:
 # Fully static release binary; needs a musl C compiler (x86_64-linux-musl-gcc).
 static:
 	cargo build --release --locked --target $(MUSL_TARGET) -p toby
+
+# Runs the binary's tests against the static build.
+static-test:
+	cargo test --release --locked --target $(MUSL_TARGET) -p toby

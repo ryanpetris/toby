@@ -2,13 +2,15 @@
   <img src="docs/logo.png" alt="Toby" width="280">
 </p>
 
-Toby runs development tools such as Claude Code, Codex and OpenCode inside KVM
-virtual machines. Each machine boots its image's own kernel and systemd, runs
-tools as an ordinary user with a private home disk, and sees only the project
-directories you attach. Credentials and approval decisions stay on the host.
+Toby is a tool for running development tools such as Claude Code, Codex and
+OpenCode inside KVM virtual machines. Each machine is to boot its image's own
+kernel and systemd, run tools as an ordinary user with a private home disk, and
+see only the project directories you attach, while credentials and approval
+decisions stay on the host.
 
-Toby is being rewritten; this branch does not run tools yet. The design and
-milestones are in [`plans/vm-rewrite.md`](plans/vm-rewrite.md).
+Toby is under development and cannot run tools yet; most commands report that
+they are not implemented. The design and milestones are in
+[`plans/vm-rewrite.md`](plans/vm-rewrite.md).
 
 ## Requirements
 

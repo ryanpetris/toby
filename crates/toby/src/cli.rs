@@ -66,11 +66,9 @@ pub enum Command {
     Mcp(McpCommand),
     /// List or decide approvals
     Approvals(ApprovalsArgs),
-    /// Run or manage the Toby daemon
-    Daemon {
-        #[command(subcommand)]
-        command: Option<DaemonCommand>,
-    },
+    /// Manage the Toby daemon
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
     /// Keep machines running after logout
     Linger { state: OnOff },
     /// Read or change configuration
@@ -345,6 +343,8 @@ pub enum ConfigCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum InternalCommand {
+    /// The per-user control plane (tobyd)
+    Daemon,
     /// Models and remote MCP proxy
     Proxy,
     /// Per-machine host process
@@ -394,7 +394,7 @@ pub enum GuestCommand {
 
 /// Options of `toby <tool>`.
 #[derive(Debug, Parser)]
-#[command(no_binary_name = true)]
+#[command(no_binary_name = true, bin_name = "toby <tool>")]
 pub struct ToolArgs {
     #[command(flatten)]
     pub machine: MachineSelector,
@@ -427,7 +427,7 @@ pub struct ToolArgs {
 /// Maps an `argv[0]` basename to the subcommand words it stands for.
 pub fn multicall(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
-        "tobyd" => &["daemon"],
+        "tobyd" => &["internal", "daemon"],
         "toby-relay" => &["guest", "relay"],
         "toby-session" => &["guest", "session"],
         "toby-connect" => &["guest", "connect"],
@@ -476,7 +476,10 @@ mod tests {
             expand_multicall(os(&["/run/toby/bin/toby-connect", "mcp/toby"])),
             os(&["toby", "guest", "connect", "mcp/toby"])
         );
-        assert_eq!(expand_multicall(os(&["tobyd"])), os(&["toby", "daemon"]));
+        assert_eq!(
+            expand_multicall(os(&["tobyd"])),
+            os(&["toby", "internal", "daemon"])
+        );
         assert_eq!(expand_multicall(os(&["toby", "doctor"])), os(&["toby", "doctor"]));
     }
 
@@ -493,8 +496,9 @@ mod tests {
     }
 
     #[test]
-    fn daemon_without_subcommand_runs_the_daemon() {
-        let cli = Cli::try_parse_from(os(&["toby", "daemon"])).unwrap();
-        assert!(matches!(cli.command, Command::Daemon { command: None }));
+    fn daemon_requires_a_subcommand() {
+        assert!(Cli::try_parse_from(os(&["toby", "daemon"])).is_err());
+        let cli = Cli::try_parse_from(os(&["toby", "internal", "daemon"])).unwrap();
+        assert!(matches!(cli.command, Command::Internal(InternalCommand::Daemon)));
     }
 }

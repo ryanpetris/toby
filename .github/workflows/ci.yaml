@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -41,8 +44,8 @@ jobs:
           bin=target/x86_64-unknown-linux-musl/release/toby
           file "$bin" | tee /dev/stderr | grep -q 'static'
           "$bin" --version
-      - name: Report KVM availability
-        run: ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+      - name: Test the static binary
+        run: make static-test
       - uses: actions/upload-artifact@v4
         with:
           name: toby-x86_64-linux-musl

@@ -54,7 +54,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["mcp", "restart", "github"],
     &["approvals"],
     &["approvals", "a1", "approve"],
-    &["daemon"],
     &["daemon", "status"],
     &["daemon", "logs", "-f"],
     &["linger", "on"],
@@ -62,6 +61,7 @@ const INVOCATIONS: &[&[&str]] = &[
     &["config", "set", "daemon.backend", "direct"],
     &["doctor"],
     &["web"],
+    &["internal", "daemon"],
     &["internal", "proxy"],
     &["internal", "machine", "--machine", "m1", "--supervise"],
     &["guest", "connect", "mcp/toby"],
@@ -101,6 +101,19 @@ fn multicall_names_dispatch() {
         assert_stub(cmd, name);
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn tool_help_and_errors_come_from_the_parser() {
+    let out = Command::new(BIN).args(["claude", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Usage: toby <tool>"));
+
+    let out = Command::new(BIN)
+        .args(["claude", "--no-such-flag"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]
