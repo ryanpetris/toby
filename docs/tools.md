@@ -155,7 +155,10 @@ Toby fetches and pushes through a private repository of its own, over
 `https` and `ssh` only, to the URL the approval shows, and writes the
 fetched objects and the remote-tracking branches back into the project.
 Hooks in the project do not run. Projects mounted read-only allow only
-pushes.
+pushes. The project's objects are linked into that repository, or copied
+when the project is on another file system than Toby's state directory,
+which makes each fetch and push of a large project on another file system
+slower.
 
 Actions that need approval wait until you decide. A notice appears in the
 attached session; answer with:

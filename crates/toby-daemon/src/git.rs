@@ -39,6 +39,9 @@ const OVERRIDES: &[&str] = &[
     "submodule.recurse=false",
     "fetch.recurseSubmodules=false",
     "push.recurseSubmodules=no",
+    "gc.auto=0",
+    "maintenance.auto=false",
+    "fetch.writeCommitGraph=false",
 ];
 
 pub struct Remote {
@@ -348,6 +351,7 @@ fn url(u: &str) -> Result<&str, String> {
         !host.is_empty() && !host.contains('/') && !path.starts_with("//") && !path.is_empty()
     });
     let ok = !u.starts_with('-')
+        && !u.contains("::")
         && !u.chars().any(|c| c.is_control() || c.is_whitespace())
         && (u.starts_with("https://") || u.starts_with("ssh://") || scp);
     if ok { Ok(u) } else { Err(format!("the remote URL {u:?} is not an https or ssh URL")) }
@@ -462,7 +466,8 @@ impl Repo {
         packs.sort_by_key(|p| p.extension().is_some_and(|x| x == "idx"));
         for p in packs {
             let name = p.file_name().and_then(|n| n.to_str()).ok_or("invalid pack name")?.to_string();
-            if read_file(objects.as_fd(), &format!("pack/{name}")).is_ok_and(|f| f.is_some()) {
+            // Only packs the fetch made.
+            if private.taken.contains(&name) {
                 continue;
             }
             let mut data = std::fs::File::open(&p).map_err(|e| e.to_string())?;
@@ -514,6 +519,8 @@ fn output(o: &Output) -> String {
 /// A private bare repository with the project's objects.
 struct Private {
     dir: tempfile::TempDir,
+    /// The project's packs, taken in.
+    taken: std::collections::HashSet<String>,
 }
 
 /// Puts the open file `f` at `dest`: a hard link to it, or a copy on
@@ -536,7 +543,7 @@ impl Private {
     async fn new(repo: &Repo, scratch: &Path) -> Result<Private, String> {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let dir = tempfile::Builder::new().prefix("git-").tempdir_in(scratch).map_err(|e| e.to_string())?;
-        let p = Private { dir };
+        let mut p = Private { dir, taken: Default::default() };
         let format = format!("--object-format={}", repo.object_format);
         let out = p.run(&["init", "-q", "--bare", &format]).await?;
         if !out.status.success() {
@@ -549,7 +556,7 @@ impl Private {
     /// Links the project's packs and loose objects in, each file opened
     /// beneath the objects directory without following links. Nothing else
     /// (such as `info/alternates`) is taken.
-    fn take_objects(&self, repo: &Repo) -> io::Result<()> {
+    fn take_objects(&mut self, repo: &Repo) -> io::Result<()> {
         let objects = open_dir(repo.common.as_fd(), "objects")?;
         let dest = self.dir.path().join("objects");
         let list = |dir: &OwnedFd| -> io::Result<Vec<(String, bool)>> {
@@ -566,6 +573,7 @@ impl Private {
                 }
                 if let Some(mut f) = open_file(pack.as_fd(), &name)? {
                     take(&mut f, &dest.join("pack").join(&name))?;
+                    self.taken.insert(name);
                 }
             }
         }
