@@ -1,0 +1,11 @@
+[package]
+name = "toby-config"
+description = "Configuration and manifest parsing, path resolution and secret substitution."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

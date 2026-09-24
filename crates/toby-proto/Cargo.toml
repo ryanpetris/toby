@@ -1,0 +1,11 @@
+[package]
+name = "toby-proto"
+description = "Wire formats shared by Toby processes: stream headers, relay control, the session protocol and machine control."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

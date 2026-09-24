@@ -1,5 +1,17 @@
 # Instructions for agents working on Toby
 
+## Workspace
+
+- Toby is a Rust workspace (edition 2024, toolchain pinned in `rust-toolchain.toml`) that builds a
+  single binary, `toby`, from `crates/toby`. Every component is a subcommand of it; the other
+  crates under `crates/` are libraries split by responsibility. `plans/vm-rewrite.md` describes the
+  design and milestones.
+- Before committing, run the checks that apply: `make fmt-check`, `make lint`, `make test` and
+  `make deny`. `make static` builds the static musl binary used on hosts and in guests.
+- Integration tests that boot virtual machines run only with `TOBY_TEST_KVM=1`.
+- Adding or changing a dependency must keep `cargo deny check` passing; review the license of any
+  new dependency before adding it.
+
 ## Commits and pushes
 
 - Commit often, after each working increment. Small commits, plain messages.

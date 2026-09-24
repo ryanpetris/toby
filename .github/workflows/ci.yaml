@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: make fmt-check
+      - name: Clippy
+        run: make lint
+      - name: Test
+        run: make test
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl C compiler
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build static binary
+        run: make static
+      - name: Check binary
+        run: |
+          bin=target/x86_64-unknown-linux-musl/release/toby
+          file "$bin" | tee /dev/stderr | grep -q 'static'
+          "$bin" --version
+      - name: Report KVM availability
+        run: ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toby-x86_64-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/toby

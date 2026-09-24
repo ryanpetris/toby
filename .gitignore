@@ -6,15 +6,8 @@
 *~
 .DS_Store
 
-# Go build and test artifacts
-/toby
-/bin/
-/dist/
-/internal/gen/
-*.test
-*.out
-coverage.out
-*.coverprofile
+# Build output
+/target/
 
 # AI coding tool state and config directories
 .claude/

@@ -1,0 +1,20 @@
+# Upstream release tags of the programs bundled with Toby packages.
+# Packaging downloads the release artifacts for these tags over HTTPS and checks
+# them against the checksums or signatures the release publishes, when it does.
+
+[cloud-hypervisor]
+tag = "v53.0"
+url = "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/{tag}/{asset}"
+assets = { x86_64 = "cloud-hypervisor-static", aarch64 = "cloud-hypervisor-static-aarch64" }
+license = "Apache-2.0 AND BSD-3-Clause"
+
+[edk2]
+tag = "ch-97eeb7b09"
+url = "https://github.com/cloud-hypervisor/edk2/releases/download/{tag}/{asset}"
+assets = { x86_64 = "CLOUDHV.fd", aarch64 = "CLOUDHV_EFI.fd" }
+license = "BSD-2-Clause-Patent"
+
+[mkosi]
+tag = "v27"
+url = "https://github.com/systemd/mkosi/archive/refs/tags/{tag}.tar.gz"
+license = "LGPL-2.1-or-later"

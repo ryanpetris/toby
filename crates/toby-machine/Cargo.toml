@@ -1,0 +1,11 @@
+[package]
+name = "toby-machine"
+description = "The per-machine host process that owns listeners and splices streams."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
