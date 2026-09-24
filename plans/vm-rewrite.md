@@ -1178,7 +1178,7 @@ instructions = ["~/AGENTS.md", "~/instructions/*.md"]
 "~/notes" = "allow"
 
 [permissions.actions]
-"git.commit" = "ask"
+"git.fetch" = "ask"
 "git.push" = "always-ask"
 
 [models.anthropic]
@@ -1672,10 +1672,11 @@ through a forward. Network access for services machines is outbound only
 
 Built-in MCP server in `tobyd`, reached with `toby-connect mcp/toby`:
 
-- `git_status`, `git_commit`, `git_fetch`, `git_push`, `git_rebase`,
-  `git_tag`: run on the host with host credentials in the host path of the
-  attachment that contains the guest working directory (mapping guest path
-  → attachment → host path; refuse paths outside attachments).
+- `git_fetch`, `git_push`: fetch a configured remote's branches or push a
+  branch with host credentials, for the repository of the attachment that
+  contains the guest path (mapping guest path → attachment → host path;
+  refuse paths and repositories outside the attachment). Committing,
+  rebasing and tagging happen in the machine, which has the repository.
 - `forward_request{port, direction}`: asks the user to approve a new
   forward.
 - `session_info`.
@@ -1683,11 +1684,14 @@ Built-in MCP server in `tobyd`, reached with `toby-connect mcp/toby`:
 Actions that need approval create an approval record and block until
 decided or timed out.
 
-The guest writes the repository, so git runs with hooks and fsmonitor off,
-`https`/`ssh` transports only, configured remotes only, a resolved path
-that stays in the attachment, and only when a guest-writable repository
-config sets nothing beyond an allowlist of keys. A machine reaches only
-the MCP servers of the tools started in it; services machines get no
+The guest writes the repository, so git never runs in it: its config and
+hooks can run commands. Each fetch or push uses a private bare repository
+with a host-written config that reads the project's objects through an
+alternate, over `https`/`ssh` only, to the URL shown in the approval;
+`tobyd` reads the project's config, HEAD and refs and writes back packs
+and remote-tracking refs itself, resolving paths beneath the pinned
+repository directory without following links. A machine reaches only the
+MCP servers of the tools started in it; services machines get no
 capabilities.
 
 ### 16.5 Approvals

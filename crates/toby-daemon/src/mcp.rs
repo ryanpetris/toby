@@ -1,8 +1,10 @@
 //! The Toby MCP server (plan §16.4), reached from a machine with
-//! `toby-connect mcp/toby`: git host actions in the repository behind the
-//! attachment that holds a path, forward requests and session information.
+//! `toby-connect mcp/toby`: git fetch and push with the host's credentials
+//! for the repository of the project that holds a path, forward requests and
+//! session information.
 //! Actions are allowed, denied or asked for as `[permissions.actions]` says.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +29,7 @@ const PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Default policy of each action when the configuration names none.
 fn default_policy(action: &str) -> ActionPolicy {
     match action {
-        "git.status" | "session.info" => ActionPolicy::Allow,
+        "session.info" => ActionPolicy::Allow,
         "git.push" => ActionPolicy::AlwaysAsk,
         _ => ActionPolicy::Ask,
     }
@@ -41,36 +43,17 @@ fn tools() -> Value {
                "inputSchema": {"type": "object", "properties": props, "required": required}})
     };
     json!([
-        tool("git_status", "Show the git status of a project on the host", json!({"path": path}), &["path"]),
-        tool(
-            "git_commit",
-            "Commit on the host (asks the user)",
-            json!({"path": path, "message": {"type": "string"}, "all": {"type": "boolean"}}),
-            &["path", "message"]
-        ),
         tool(
             "git_fetch",
-            "Fetch a configured remote on the host with the host's credentials (asks the user)",
+            "Fetch the branches of a configured remote with the host's credentials (asks the user)",
             json!({"path": path, "remote": {"type": "string"}}),
             &["path"]
         ),
         tool(
             "git_push",
-            "Push a branch to a configured remote on the host with the host's credentials (asks the user)",
+            "Push a branch to a configured remote with the host's credentials (asks the user)",
             json!({"path": path, "remote": {"type": "string"}, "branch": {"type": "string"}}),
             &["path"]
-        ),
-        tool(
-            "git_rebase",
-            "Rebase on the host (asks the user)",
-            json!({"path": path, "onto": {"type": "string"}}),
-            &["path", "onto"]
-        ),
-        tool(
-            "git_tag",
-            "Create a tag on the host (asks the user)",
-            json!({"path": path, "name": {"type": "string"}, "message": {"type": "string"}}),
-            &["path", "name"]
         ),
         tool(
             "forward_request",
@@ -88,15 +71,6 @@ fn text(s: impl Into<String>, error: bool) -> Value {
 
 fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
-}
-
-/// The first line of a message, shortened, for a summary.
-fn headline(s: &str) -> String {
-    let line = s.lines().next().unwrap_or_default();
-    match line.char_indices().nth(72) {
-        Some((i, _)) => format!("{}…", &line[..i]),
-        None => line.to_string(),
-    }
 }
 
 pub struct Server {
@@ -128,28 +102,6 @@ impl Server {
             Ok(true) => Ok(()),
             Ok(false) => Err(format!("the user did not approve {action}")),
             Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Runs a git action once it is permitted.
-    async fn git(
-        &self,
-        repo: &git::Repo,
-        action: &str,
-        summary: String,
-        detail: String,
-        args: &[String],
-    ) -> Value {
-        if let Err(e) = self.permitted(action, summary, detail).await {
-            return text(e, true);
-        }
-        match repo.run(args).await {
-            Ok(o) => {
-                let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-                s.push_str(&String::from_utf8_lossy(&o.stderr));
-                text(s, !o.status.success())
-            }
-            Err(e) => text(e, true),
         }
     }
 
@@ -200,65 +152,46 @@ impl Server {
 
     async fn call_git(&self, spec: &MachineSpec, action: &str, args: &Value) -> Result<Value, String> {
         let path = arg(args, "path").ok_or("path is required")?;
-        let repo = git::open(spec, path)?;
-        let at = repo.work_tree.display().to_string();
-        if repo.read_only && !matches!(action, "status" | "push") {
-            return Err(format!("{path} is mounted read-only"));
-        }
-        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        Ok(match action {
-            "status" => {
-                let argv = owned(&["status", "--short", "--branch", "--ignore-submodules=all"]);
-                self.git(&repo, "git.status", format!("git status in {at}"), String::new(), &argv).await
-            }
+        let machines = &self.daemon.machines;
+        let roots: Vec<PathBuf> = machines
+            .records()
+            .iter()
+            .flat_map(|m| m.attach.iter())
+            .filter_map(|a| std::fs::canonicalize(&a.host).ok())
+            .collect();
+        let repo = git::open(spec, &roots, path)?;
+        let remote = repo.remote(arg(args, "remote").map(git::name).transpose()?)?;
+        let at = repo.work_tree.display();
+        let scratch = machines.paths.state.join("git");
+        let result = match action {
             "fetch" => {
-                let remote = repo.remote(arg(args, "remote").map(git::name).transpose()?)?;
-                let summary = format!("git fetch {} ({}) in {at}", remote.name, remote.url());
-                let argv = owned(&["fetch", "--no-recurse-submodules", &remote.name]);
-                self.git(&repo, "git.fetch", summary, String::new(), &argv).await
-            }
-            "commit" => {
-                let msg = arg(args, "message").ok_or("message is required")?;
-                let all = args.get("all").and_then(Value::as_bool) == Some(true);
-                let summary =
-                    format!("git commit{} in {at}: {}", if all { " --all" } else { "" }, headline(msg));
-                let mut argv = owned(&["commit"]);
-                if all {
-                    argv.push("--all".into());
+                if repo.read_only {
+                    return Err(format!("{path} is mounted read-only"));
                 }
-                argv.extend(["-m".to_string(), msg.to_string()]);
-                self.git(&repo, "git.commit", summary, msg.to_string(), &argv).await
+                let summary = format!("git fetch {} ({}) into {at}", remote.name, remote.url());
+                self.permitted("git.fetch", summary, String::new()).await?;
+                repo.fetch(&scratch, remote).await
             }
             "push" => {
-                let remote = repo.remote(arg(args, "remote").map(git::name).transpose()?)?;
                 let branch = match arg(args, "branch") {
                     Some(b) => git::name(b)?.to_string(),
-                    None => repo.branch().await?,
+                    None => repo.branch()?,
                 };
-                let summary =
-                    format!("git push {} ({}) branch {branch} in {at}", remote.name, remote.push_url());
-                let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-                let argv = owned(&["push", "--no-recurse-submodules", &remote.name, &refspec]);
-                self.git(&repo, "git.push", summary, String::new(), &argv).await
+                let id = repo.resolve(&format!("refs/heads/{branch}"))?;
+                let summary = format!(
+                    "git push {branch} ({}) to {} ({}) from {at}",
+                    &id[..12],
+                    remote.name,
+                    remote.push_url()
+                );
+                self.permitted("git.push", summary, String::new()).await?;
+                repo.push(&scratch, remote, &branch, &id).await
             }
-            "rebase" => {
-                let onto = git::revision(arg(args, "onto").ok_or("onto is required")?)?;
-                let argv = owned(&["rebase", onto]);
-                self.git(&repo, "git.rebase", format!("git rebase {onto} in {at}"), String::new(), &argv)
-                    .await
-            }
-            "tag" => {
-                let tag = git::name(arg(args, "name").ok_or("name is required")?)?;
-                let mut argv = owned(&["tag"]);
-                let mut detail = String::new();
-                if let Some(m) = arg(args, "message") {
-                    argv.extend(["-a".into(), "-m".into(), m.into()]);
-                    detail = m.to_string();
-                }
-                argv.extend(["--".into(), tag.into()]);
-                self.git(&repo, "git.tag", format!("git tag {tag} in {at}"), detail, &argv).await
-            }
-            other => text(format!("unknown tool git_{other}"), true),
+            other => return Err(format!("unknown tool git_{other}")),
+        };
+        Ok(match result {
+            Ok(log) => text(log, false),
+            Err(log) => text(log, true),
         })
     }
 
@@ -378,8 +311,12 @@ impl Server {
                 drop(permit);
             });
         };
-        // Requests still running end with the connection.
-        tasks.abort_all();
+        // Requests already received are answered; the writer ends with them,
+        // or at once when the connection broke.
+        match &result {
+            Ok(()) => while tasks.join_next().await.is_some() {},
+            Err(_) => tasks.abort_all(),
+        }
         drop(tx);
         let _ = writer.await;
         result
@@ -393,14 +330,7 @@ mod tests {
     #[test]
     fn push_always_asks_by_default() {
         assert_eq!(default_policy("git.push"), ActionPolicy::AlwaysAsk);
-        assert_eq!(default_policy("git.status"), ActionPolicy::Allow);
         assert_eq!(default_policy("git.fetch"), ActionPolicy::Ask);
-        assert_eq!(default_policy("git.commit"), ActionPolicy::Ask);
-    }
-
-    #[test]
-    fn summaries_show_one_short_line() {
-        assert_eq!(headline("fix it\n\nbody"), "fix it");
-        assert_eq!(headline(&"x".repeat(100)).chars().count(), 73);
+        assert_eq!(default_policy("session.info"), ActionPolicy::Allow);
     }
 }

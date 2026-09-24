@@ -144,19 +144,18 @@ toby mcp restart github
 
 ## Toby's MCP server and approvals
 
-Toby's own MCP server lets a tool act on the host: `git_status`,
-`git_fetch`, `git_commit`, `git_push`, `git_rebase` and `git_tag` run with
-your git configuration and credentials in the repository of the mounted
-project that holds the path; `forward_request` asks for a port forward
-while the machine's sessions run, and `session_info` describes the
-machine.
+Toby's own MCP server lets a tool use your git credentials:
+`git_fetch` fetches the branches of a remote configured in the project's
+repository, and `git_push` pushes a branch to it. `forward_request` asks
+for a port forward while the machine's sessions run, and `session_info`
+describes the machine.
 
-The machine can write the project's repository, so these actions run git
-without the repository's hooks, fetch and push only over `https` and `ssh`
-to remotes already configured, and refuse a repository inside the project
-whose `.git/config` sets anything beyond remotes, branches, `user.name`,
-`user.email` and basic `core` settings; the error names the key to
-remove. Projects mounted read-only allow only status and push.
+The machine can write the project's repository, so git never runs in it:
+Toby fetches and pushes through a private repository of its own, over
+`https` and `ssh` only, to the URL the approval shows, and writes the
+fetched objects and the remote-tracking branches back into the project.
+Hooks in the project do not run. Projects mounted read-only allow only
+pushes.
 
 Actions that need approval wait until you decide. A notice appears in the
 attached session; answer with:
@@ -172,13 +171,12 @@ server; tools started afterwards connect again.
 
 `[permissions.actions]` sets the policy per action: `allow`, `deny`,
 `ask` (skipped when a tool in the machine runs with `--yolo`), or
-`always-ask`. The actions are `git.status`, `git.fetch`, `git.commit`,
-`git.push`, `git.rebase`, `git.tag`, `forward` and `session.info`. Without
-configuration, status and session information are allowed, push always
-asks, and the others ask.
+`always-ask`. The actions are `git.fetch`, `git.push`, `forward` and
+`session.info`. Without configuration, session information is allowed,
+push always asks, and the others ask.
 
 ```toml
 [permissions.actions]
-"git.commit" = "allow"
+"git.fetch" = "allow"
 "git.push" = "always-ask"
 ```

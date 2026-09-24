@@ -59,9 +59,11 @@ pub async fn approvals(args: ApprovalsArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Text from a guest, without control characters other than newlines.
+/// Text from a guest, without control characters other than newlines or
+/// characters that reorder or hide text.
 fn clean(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
+    let invisible = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}');
+    s.chars().map(|c| if (c.is_control() && c != '\n') || invisible(c) { ' ' } else { c }).collect()
 }
 
 /// Prints a notice for approvals the machine asks for while a session is
@@ -122,10 +124,15 @@ pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {
         }
         McpCommand::Logs { name, follow } => {
             // The server's own output, kept in its services machine's home.
-            let Some(m) = services(&name) else { bail!("{name} has no services machine") };
+            if services(&name).is_none() {
+                bail!("{name} has no services machine");
+            }
             let log = toby_guest::helper::serve::LOG;
             let tail = if follow { "tail -n 200 -F" } else { "tail -n 200" };
-            let sel = crate::cli::MachineSelector { machine: Some(m.id), home: None, root: None };
+            // By home and root, so a stopped machine starts.
+            let pair = format!("mcp-{name}");
+            let sel =
+                crate::cli::MachineSelector { machine: None, home: Some(pair.clone()), root: Some(pair) };
             let argv = vec!["sh".into(), "-c".into(), format!("{tail} \"$HOME/{log}\"")];
             return crate::client::run_session(&sel, argv, toby_proto::types::Identity::User, None).await;
         }

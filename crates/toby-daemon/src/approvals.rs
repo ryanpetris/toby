@@ -34,10 +34,17 @@ const KEEP_DECIDED: usize = 50;
 /// Pending approvals one machine may have.
 const MAX_PENDING: usize = 8;
 
-/// Guest text for a terminal: control characters become spaces, and a
-/// summary is one line.
+/// Characters that reorder or hide text without showing themselves.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}')
+}
+
+/// Guest text for a terminal: control and invisible formatting characters
+/// become spaces, and a summary is one line.
 fn clean(s: &str, one_line: bool) -> String {
-    s.chars().map(|c| if c.is_control() && (one_line || c != '\n') { ' ' } else { c }).collect()
+    s.chars()
+        .map(|c| if (c.is_control() && (one_line || c != '\n')) || invisible(c) { ' ' } else { c })
+        .collect()
 }
 
 pub struct Approvals {
@@ -244,7 +251,7 @@ mod tests {
     async fn undecided_approvals_expire() {
         let dir = tempfile::tempdir().unwrap();
         let ap = Approvals::new(dir.path().to_path_buf());
-        let a = ap.create("m1", "git.commit", "commit".into(), String::new(), Duration::ZERO).unwrap();
+        let a = ap.create("m1", "git.fetch", "fetch".into(), String::new(), Duration::ZERO).unwrap();
         assert!(!ap.wait(&a.id).await.unwrap());
         assert_eq!(ap.list().unwrap()[0].status, "expired");
         assert!(ap.decide(&a.id, true, "cli").is_err());
@@ -255,15 +262,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ap = Approvals::new(dir.path().to_path_buf());
         let a = ap
-            .create("m1", "git.tag", "tag\x1b[2K\nx".into(), "a\nb\x07".into(), Duration::from_secs(60))
+            .create(
+                "m1",
+                "git.push",
+                "push\x1b[2K\nx\u{202e}y".into(),
+                "a\nb\x07".into(),
+                Duration::from_secs(60),
+            )
             .unwrap();
-        assert_eq!(a.summary, "tag [2K x");
+        assert_eq!(a.summary, "push [2K x y");
         assert_eq!(a.detail, "a\nb ");
         ap.expire_all();
         assert!(ap.decide(&a.id, true, "cli").is_err());
         for _ in 0..MAX_PENDING {
-            ap.create("m2", "git.tag", String::new(), String::new(), Duration::from_secs(60)).unwrap();
+            ap.create("m2", "git.fetch", String::new(), String::new(), Duration::from_secs(60)).unwrap();
         }
-        assert!(ap.create("m2", "git.tag", String::new(), String::new(), Duration::from_secs(60)).is_err());
+        assert!(ap.create("m2", "git.fetch", String::new(), String::new(), Duration::from_secs(60)).is_err());
     }
 }

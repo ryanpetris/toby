@@ -119,16 +119,7 @@ pub enum ActionPolicy {
 }
 
 /// The Toby MCP host actions `[permissions.actions]` can name.
-pub const ACTIONS: &[&str] = &[
-    "git.status",
-    "git.fetch",
-    "git.commit",
-    "git.push",
-    "git.rebase",
-    "git.tag",
-    "forward",
-    "session.info",
-];
+pub const ACTIONS: &[&str] = &["git.fetch", "git.push", "forward", "session.info"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
