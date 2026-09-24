@@ -180,7 +180,7 @@ fallback is not needed.
 - Resize, signals and full-screen programs over the session protocol were not
   tested here; they are part of M2's acceptance criteria.
 
-## 7. logind and lingering — not exercised; confirmed in M5
+## 7. logind and lingering — not exercised; to be confirmed in M5
 
 - The test host has `KillUserProcesses=no` and `Linger=no`; the user manager
   runs as `user@<uid>.service` in a `manager` session.

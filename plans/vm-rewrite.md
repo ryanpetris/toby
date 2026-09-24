@@ -12,9 +12,9 @@ behavior completely).
 
 Items marked **VERIFY** are assumptions still to confirm: the static musl
 `mimalloc` build and CI KVM runners in M1, aarch64 firmware in M11, and the
-macOS items when that back end is designed. Two M0 items are confirmed by
-later acceptance tests: full-screen terminal behavior over the session
-protocol (M2) and logout behavior of both back ends (M5).
+macOS items when that back end is designed. Two M0 items are still to be
+confirmed by later acceptance tests: full-screen terminal behavior over the
+session protocol (M2) and logout behavior of both back ends (M5).
 
 ---
 
@@ -809,7 +809,8 @@ passt --vhost-user -s <rt>/net.sock -f -4 -a 10.0.2.15 -n 24 -g 10.0.2.2 \
   (a `127.0.0.53` stub works and follows host network changes; any other
   address is fixed for the machine's lifetime). With no IPv4 nameserver the
   machine fails to start with an error naming the problem; `[network]
-  dns_host` in the global config overrides the choice.
+  dns_host` in the global config overrides the choice and must be an IPv4
+  address.
 - passt keeps running after the VMM disconnects; it is stopped with its
   machine (unit relationships or the direct supervisor), tracked by PID
   (it re-executes under another name, e.g. `passt.avx2`). A stale
@@ -1368,7 +1369,9 @@ image, so the first build needs a different starting point:
      --cache-directory=/cache/mkosi/cache --tools-tree=default build`
      (`bin/mkosi` is a shell wrapper that finds Python itself; the tools tree
      provides the package manager for non-Debian targets). The tree is
-     `/cache/mkosi/out/<build-id>`; it is removed after export, because mkosi
+     `/cache/mkosi/out/<build-id>`; it is removed after export, and any
+     output left in `/cache/mkosi/out` by an interrupted build (everything
+     except `mkosi.tools*`) is removed before a build starts, because mkosi
      skips a build whose output already exists. Everything stays on the
      cache disk, so nothing is copied across devices. Toby's overrides always
      win over the user's `mkosi.conf` for format, architecture, output and
@@ -1806,7 +1809,7 @@ Unicode; review anything else.
 Each milestone ends with: fmt, clippy, tests, deny passing; docs for
 user-visible behavior; acceptance criteria demonstrated.
 
-### M0: Spikes (throwaway code, answers every VERIFY)
+### M0: Spikes (throwaway code for the VERIFY items)
 
 1. Builder boot: Cloud Hypervisor with bundled firmware boots
    Debian 13 genericcloud from an `imago`-created overlay; OEM-string
@@ -1828,7 +1831,9 @@ user-visible behavior; acceptance criteria demonstrated.
    and survive with linger; direct mode behavior under tmux with
    `KillUserProcesses=no`.
 
-Exit: a written go/no-go per item; plan updated for any fallback.
+Exit: a written go/no-go per item; plan updated for any fallback. Items 6
+(terminal behavior over the session protocol) and 7 (logout) could not be
+exercised by the spikes; M2 and M5 acceptance cover them.
 
 ### M1: Repository reset
 
