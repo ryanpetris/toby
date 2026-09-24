@@ -13,11 +13,12 @@ publish = false
 anyhow = "1.0.104"
 ciborium = "0.2.2"
 clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
 fuse-backend-rs = { version = "0.14.0", default-features = false, features = ["vhost-user-fs"] }
 imago = "0.2.5"
 libc = "0.2"
 mimalloc = "0.1.52"
-nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "pthread", "signal", "socket", "term", "user"] }
+nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "pthread", "resource", "signal", "socket", "term", "user"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_bytes = "0.11.19"
 tempfile = "3"
@@ -26,6 +27,12 @@ tokio = { version = "1.53.1", features = ["full"] }
 tokio-vsock = "0.7.2"
 toml = "1.1.6"
 ulid = "3.0.0"
+vhost = { version = "0.15", features = ["vhost-user-backend"] }
+vhost-user-backend = "0.21"
+virtio-bindings = "0.2"
+virtio-queue = "0.17"
+vm-memory = { version = "=0.17.1", features = ["backend-mmap", "backend-atomic"] }
+vmm-sys-util = "0.15"
 
 toby-api = { path = "crates/toby-api" }
 toby-config = { path = "crates/toby-config" }

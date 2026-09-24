@@ -1,6 +1,7 @@
 //! The single Toby binary: the CLI and every host and guest component.
 
 mod cli;
+mod internal;
 
 use std::process::ExitCode;
 
@@ -52,10 +53,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Web => "web",
         Command::Internal(cmd) => match cmd {
             InternalCommand::Proxy => "internal proxy",
-            InternalCommand::Machine { .. } => "internal machine",
-            InternalCommand::Fs { .. } => "internal fs",
-            InternalCommand::Vm { .. } => "internal vm",
-            InternalCommand::Net { .. } => "internal net",
+            InternalCommand::Machine {
+                machine,
+                supervise: false,
+            } => return internal::machine(&machine),
+            InternalCommand::Machine { supervise: true, .. } => "internal machine --supervise",
+            InternalCommand::Fs { machine } => return internal::fs(&machine),
+            InternalCommand::Vm { machine } => return internal::vm(&machine),
+            InternalCommand::Net { machine } => return internal::net(&machine),
         },
         Command::Guest(cmd) => match cmd {
             GuestCommand::Relay => {
