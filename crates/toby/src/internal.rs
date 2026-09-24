@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use toby_config::global::GlobalConfig;
-use toby_config::machine::MachineSpec;
+use toby_config::machine::{MachineSpec, RootSpec};
 use toby_config::paths::{MachineRuntime, Paths};
 use toby_engine::cloud_hypervisor;
 use toby_engine::{Arch, BootSpec, DiskSpec, FileShareSpec, VmSpec};
@@ -32,6 +32,7 @@ pub fn load_config() -> anyhow::Result<(GlobalConfig, Paths)> {
     let home = toby_config::paths::home_dir()?;
     let config = GlobalConfig::load(&home.join(".config/toby/config.toml"))?;
     let paths = Paths::resolve(&config)?;
+    toby_config::paths::ensure_private_dir(&paths.runtime)?;
     Ok((config, paths))
 }
 
@@ -181,25 +182,164 @@ pub fn machine(machine: &str) -> anyhow::Result<()> {
         generation: host.spec.generation,
         runtime: host.runtime.clone(),
         runtime_version: current_runtime_version(&host.config.programs.versions()),
+        boot_helpers: boot_helpers(&host)?,
     };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(toby_machine::Machine::new(config, toby_svc::notify::ready).run())?;
     Ok(())
 }
 
+/// Guest units the bootstrap builder receives as systemd credentials: its
+/// stock cloud image has no Toby initramfs to write them.
+const FS_MOUNT_UNIT: &str = include_str!("../../../packaging/dracut/99toby/run-toby-fs.mount");
+const RELAY_UNIT: &str = include_str!("../../../packaging/dracut/99toby/toby-relay.service.in");
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(T[((n >> shift) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// SMBIOS OEM strings that give a stock image Toby's guest units.
+pub fn credential_units(version: &str) -> Vec<String> {
+    let cred = |name: &str, content: &str| {
+        format!(
+            "io.systemd.credential.binary:{name}={}",
+            base64(content.as_bytes())
+        )
+    };
+    vec![
+        cred("systemd.extra-unit.run-toby-fs.mount", FS_MOUNT_UNIT),
+        cred(
+            "systemd.extra-unit.toby-relay.service",
+            &RELAY_UNIT.replace("@VERSION@", version),
+        ),
+        cred(
+            "systemd.unit-dropin.multi-user.target~toby",
+            "[Unit]\nWants=toby-relay.service\n",
+        ),
+    ]
+}
+
+/// The disk a throwaway root layer is created over, if the machine has one.
+pub fn layer_base(host: &Host) -> anyhow::Result<Option<PathBuf>> {
+    Ok(match &host.spec.root {
+        RootSpec::Named(name) if host.spec.ephemeral => Some(host.paths.root_disk(name)),
+        RootSpec::Named(_) => None,
+        RootSpec::Image { image } => Some(host.paths.image_dir(image).join("disk.qcow2")),
+        RootSpec::CloudImage { cloud_image } => Some(cloud_image.clone()),
+    })
+}
+
+/// The boot helpers for the machine (plan §9.6), as guest command lines.
+pub fn boot_helpers(host: &Host) -> anyhow::Result<Vec<Vec<String>>> {
+    let version = current_runtime_version(&host.config.programs.versions());
+    let toby = format!("/run/toby/fs/versions/{version}/toby");
+    let helper = |args: &[&str]| -> Vec<String> {
+        [toby.as_str(), "guest", "helper"]
+            .iter()
+            .chain(args)
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let store = toby_store::Store::new(host.paths.clone());
+
+    let hostname = host.spec.home.clone().unwrap_or_else(|| "toby".into());
+    let addr = format!("{GUEST_ADDR}/{GUEST_PREFIX}");
+    let mut out = vec![helper(&[
+        "net-up",
+        "--addr",
+        &addr,
+        "--gw",
+        GATEWAY,
+        "--dns",
+        DNS_FORWARDER,
+        "--hostname",
+        &hostname,
+    ])];
+    if let Some(name) = &host.spec.home {
+        let home = store.home(name)?;
+        if !home.formatted {
+            bail!("home {name} has not been formatted");
+        }
+        let uid = home.uid.to_string();
+        let mut setup = vec!["user-setup", "--name", &home.username, "--uid", &uid];
+        if let Some(shell) = &home.shell {
+            setup.extend(["--shell", shell]);
+        }
+        if home.sudo {
+            setup.push("--sudo");
+        }
+        out.push(helper(&setup));
+        let at = format!("/home/{}", home.username);
+        out.push(helper(&[
+            "home-mount",
+            "--device",
+            "/dev/disk/by-id/virtio-home",
+            "--at",
+            &at,
+            "--uid",
+            &uid,
+            "--gid",
+            &uid,
+        ]));
+    }
+    out.push(helper(&[
+        "links",
+        "--target",
+        "/run/toby/fs/versions/current/toby",
+    ]));
+    for a in &host.spec.attach {
+        let src = format!("/run/toby/fs/projects/{}", a.id);
+        let mut args = vec!["attach", "--src", &src, "--at", &a.at];
+        if a.read_only {
+            args.push("--ro");
+        }
+        out.push(helper(&args));
+    }
+    Ok(out)
+}
+
 /// Builds the machine's VM description from its desired state.
 pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
-    let image = host.paths.image_dir(&host.spec.boot.image);
     let version = current_runtime_version(&host.config.programs.versions());
-    let cmdline = format!(
-        "root=/dev/disk/by-id/virtio-root rw console=hvc0 quiet toby.machine={} toby.version={version}",
-        host.spec.id
-    );
+    let mut oem_strings = Vec::new();
+    let boot = match (&host.spec.root, &host.spec.boot.image) {
+        (RootSpec::CloudImage { .. }, _) => {
+            oem_strings = credential_units(&version);
+            BootSpec::Firmware {
+                path: host.config.programs.firmware(),
+            }
+        }
+        (_, Some(image)) => {
+            let dir = host.paths.image_dir(image);
+            BootSpec::Kernel {
+                kernel: dir.join("vmlinuz"),
+                initramfs: dir.join("initramfs.img"),
+                cmdline: format!(
+                    "root=/dev/disk/by-id/virtio-root rw console=hvc0 quiet toby.machine={} toby.version={version}",
+                    host.spec.id
+                ),
+            }
+        }
+        (_, None) => bail!("machine {} names no boot image", host.spec.id),
+    };
 
-    let root = if host.spec.ephemeral {
-        host.runtime.ephemeral_disk()
-    } else {
-        host.paths.root_disk(&host.spec.root)
+    let root = match (&host.spec.root, layer_base(host)?) {
+        (_, Some(_)) => host.paths.layer_disk(&host.spec.id),
+        (RootSpec::Named(name), None) => host.paths.root_disk(name),
+        _ => unreachable!("only named roots have no layer"),
     };
     let mut disks = vec![DiskSpec {
         path: root,
@@ -207,12 +347,19 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
         read_only: false,
         backing_allowed: true,
     }];
-    let home = host.paths.home_disk(&host.spec.home);
-    if home.exists() {
+    if let Some(home) = &host.spec.home {
         disks.push(DiskSpec {
-            path: home,
+            path: host.paths.home_disk(home),
             serial: "home".into(),
             read_only: false,
+            backing_allowed: false,
+        });
+    }
+    for d in &host.spec.disk {
+        disks.push(DiskSpec {
+            path: d.path.clone(),
+            serial: d.serial.clone(),
+            read_only: d.read_only,
             backing_allowed: false,
         });
     }
@@ -221,11 +368,7 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
         arch: Arch::host(),
         cpus: host.spec.resources.cpus,
         memory_bytes: host.spec.memory_bytes()?,
-        boot: BootSpec::Kernel {
-            kernel: image.join("vmlinuz"),
-            initramfs: image.join("initramfs.img"),
-            cmdline,
-        },
+        boot,
         disks,
         share: Some(FileShareSpec {
             socket: host.runtime.fs_sock(),
@@ -235,26 +378,46 @@ pub fn vm_spec(host: &Host) -> anyhow::Result<VmSpec> {
         vsock_socket: host.runtime.vsock(),
         console_log: host.runtime.console_log(),
         api_socket: host.runtime.ch_api(),
-        oem_strings: Vec::new(),
+        oem_strings,
     })
+}
+
+/// Creates the machine's throwaway root layer afresh.
+pub fn create_layer(host: &Host) -> anyhow::Result<()> {
+    let Some(base) = layer_base(host)? else {
+        return Ok(());
+    };
+    if !base.is_file() {
+        bail!("{} is missing", base.display());
+    }
+    let layer = host.paths.layer_disk(&host.spec.id);
+    let _ = std::fs::remove_file(&layer);
+    let rt = tokio::runtime::Builder::new_current_thread().build()?;
+    rt.block_on(toby_store::qcow2::create(
+        &layer,
+        toby_store::store::IMAGE_SIZE,
+        Some(&base),
+    ))
+    .with_context(|| format!("creating {}", layer.display()))?;
+    Ok(())
 }
 
 /// `toby internal vm`: replaces itself with Cloud Hypervisor for the machine.
 pub fn vm(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;
+    create_layer(&host)?;
     let spec = vm_spec(&host)?;
-    if let BootSpec::Kernel {
-        kernel, initramfs, ..
-    } = &spec.boot
-    {
-        for f in [kernel, initramfs] {
-            if !f.is_file() {
-                bail!("{} is missing", f.display());
-            }
-        }
+    let mut files: Vec<&Path> = spec.disks.iter().map(|d| d.path.as_path()).collect();
+    match &spec.boot {
+        BootSpec::Kernel {
+            kernel, initramfs, ..
+        } => files.extend([kernel.as_path(), initramfs.as_path()]),
+        BootSpec::Firmware { path } => files.push(path),
     }
-    if !spec.disks[0].path.is_file() {
-        bail!("root disk {} is missing", spec.disks[0].path.display());
+    for f in files {
+        if !f.is_file() {
+            bail!("{} is missing", f.display());
+        }
     }
     let _ = std::fs::remove_file(host.runtime.ch_api());
     let _ = std::fs::remove_file(host.runtime.vsock());
@@ -279,6 +442,25 @@ mod tests {
         );
         assert_eq!(first_ipv4_nameserver("nameserver ::1\n"), None);
         assert_eq!(first_ipv4_nameserver(""), None);
+    }
+
+    #[test]
+    fn base64_matches_the_standard_alphabet() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"[Unit]\nWants=x\n"), "W1VuaXRdCldhbnRzPXgK");
+    }
+
+    #[test]
+    fn credential_units_carry_the_version() {
+        let units = credential_units("1.2.3");
+        assert_eq!(units.len(), 3);
+        assert!(units.iter().all(|u| !u.contains(',')));
+        let relay = units[1].split_once('=').unwrap().1;
+        assert!(units[1].starts_with("io.systemd.credential.binary:systemd.extra-unit.toby-relay.service="));
+        assert!(relay.len() > 40);
     }
 
     #[test]

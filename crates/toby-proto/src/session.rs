@@ -67,6 +67,9 @@ pub struct Welcome {
 pub struct Replay {
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
+    /// Output the session wrote to standard error (sessions without a terminal).
+    #[serde(default)]
+    pub stderr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -48,7 +48,6 @@ const INVOCATIONS: &[&[&str]] = &[
     &["internal", "proxy"],
     &["internal", "machine", "--machine", "m1", "--supervise"],
     &["guest", "connect", "mcp/toby"],
-    &["guest", "helper", "net-up", "--addr", "10.0.2.15/24"],
     &["claude", "--home", "work", "--yolo", "--", "--continue"],
 ];
 
@@ -72,11 +71,7 @@ fn every_subcommand_runs() {
 #[test]
 fn multicall_names_dispatch() {
     let dir = tempdir();
-    for (name, args) in [
-        ("toby-connect", &["mcp/toby"][..]),
-        ("toby-helper", &["links"][..]),
-        ("tobyd", &[][..]),
-    ] {
+    for (name, args) in [("toby-connect", &["mcp/toby"][..]), ("tobyd", &[][..])] {
         let link = dir.join(name);
         std::os::unix::fs::symlink(BIN, &link).unwrap();
         let mut cmd = Command::new(&link);

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, GuestCommand, InternalCommand, SessionsCommand, ToolArgs};
+use cli::{Cli, Command, GuestCommand, HelperCommand, InternalCommand, SessionsCommand, ToolArgs};
 use toby_proto::types::Identity;
 
 #[global_allocator]
@@ -99,7 +99,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
             GuestCommand::Connect { .. } => "guest connect",
-            GuestCommand::Helper { .. } => "guest helper",
+            GuestCommand::Helper(cmd) => return helper(cmd).map(|()| ExitCode::SUCCESS),
         },
         Command::Tool(argv) => {
             ToolArgs::try_parse_from(&argv[1..]).unwrap_or_else(|e| e.exit());
@@ -107,4 +107,49 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
     };
     anyhow::bail!("`toby {name}` is not implemented yet")
+}
+
+fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
+    use toby_guest::helper;
+    let paths = toby_guest::paths::GuestPaths::from_env();
+    match cmd {
+        HelperCommand::NetUp {
+            addr,
+            gw,
+            dns,
+            hostname,
+        } => {
+            let (a, p) = addr
+                .split_once('/')
+                .ok_or_else(|| anyhow::anyhow!("--addr needs a prefix length"))?;
+            let opts = helper::NetUp {
+                addr: a.parse()?,
+                prefix: p.parse()?,
+                gateway: gw,
+                dns,
+                hostname,
+            };
+            helper::net_up(&opts, paths.root())?;
+        }
+        HelperCommand::UserSetup {
+            name,
+            uid,
+            shell,
+            sudo,
+        } => {
+            let u = helper::UserSetup {
+                name,
+                uid,
+                shell,
+                sudo,
+            };
+            helper::user_setup(&u, std::path::Path::new("/"), &paths.user_file())?;
+        }
+        HelperCommand::HomeMount { device, at, uid, gid } => {
+            helper::home_mount(&device, &at, uid, gid, std::path::Path::new("/etc/skel"))?;
+        }
+        HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
+        HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
+    }
+    Ok(())
 }

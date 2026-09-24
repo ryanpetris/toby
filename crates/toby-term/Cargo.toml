@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 crossterm.workspace = true
+libc.workspace = true
 toby-proto.workspace = true
 tokio.workspace = true
 

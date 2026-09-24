@@ -42,6 +42,35 @@ pub fn expand(home: &Path, p: &str) -> PathBuf {
     }
 }
 
+/// Creates `dir` with mode 0700 if missing, and refuses to use it unless it
+/// is a directory (not a symlink) owned by the current user that no one else
+/// can access. The direct back end's runtime directory lives in `/tmp`,
+/// where another user could create it first.
+pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    let uid = nix::unistd::getuid().as_raw();
+    if !meta.file_type().is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} must be a directory owned by you with mode 0700",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 impl Paths {
     /// Resolves every path for the current user.
     pub fn resolve(config: &GlobalConfig) -> io::Result<Paths> {
@@ -110,6 +139,11 @@ impl Paths {
         self.data.join("roots").join(format!("{name}.qcow2"))
     }
 
+    /// A machine's throwaway root layer, recreated at every start.
+    pub fn layer_disk(&self, machine: &str) -> PathBuf {
+        self.data.join("layers").join(format!("{machine}.qcow2"))
+    }
+
     pub fn home_disk(&self, name: &str) -> PathBuf {
         self.data.join("homes").join(format!("{name}.qcow2"))
     }
@@ -151,10 +185,6 @@ impl MachineRuntime {
     pub fn console_log(&self) -> PathBuf {
         self.dir.join("console.log")
     }
-    /// Root disk layer used when the machine is ephemeral.
-    pub fn ephemeral_disk(&self) -> PathBuf {
-        self.dir.join("ephemeral.qcow2")
-    }
 }
 
 #[cfg(test)]
@@ -178,6 +208,21 @@ mod tests {
             p.machine_runtime("m").vsock_listen(1024),
             PathBuf::from("/run/user/1/toby/machines/m/vsock.sock_1024")
         );
+    }
+
+    #[test]
+    fn private_dirs_are_checked() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let rt = dir.path().join("rt");
+        ensure_private_dir(&rt).unwrap();
+        ensure_private_dir(&rt).unwrap();
+        std::fs::set_permissions(&rt, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ensure_private_dir(&rt).is_err());
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&rt, &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
     }
 
     #[test]

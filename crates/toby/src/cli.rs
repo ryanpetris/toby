@@ -388,10 +388,61 @@ pub enum GuestCommand {
     /// Connect stdio to a Toby service
     Connect { target: String },
     /// Guest helper operation
-    Helper {
-        op: String,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<OsString>,
+    #[command(subcommand)]
+    Helper(HelperCommand),
+}
+
+/// Short-lived guest operations run as root by the machine's host process.
+#[derive(Debug, Subcommand)]
+pub enum HelperCommand {
+    /// Configure the network interface, route, hostname and resolver
+    NetUp {
+        /// Address with prefix length, e.g. 10.0.2.15/24
+        #[arg(long)]
+        addr: String,
+        #[arg(long)]
+        gw: std::net::Ipv4Addr,
+        #[arg(long)]
+        dns: std::net::Ipv4Addr,
+        #[arg(long)]
+        hostname: Option<String>,
+    },
+    /// Create the home's user in the root
+    UserSetup {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        uid: u32,
+        #[arg(long)]
+        shell: Option<String>,
+        /// Allow passwordless sudo
+        #[arg(long)]
+        sudo: bool,
+    },
+    /// Mount the home disk and prepare it on first use
+    HomeMount {
+        #[arg(long)]
+        device: PathBuf,
+        #[arg(long)]
+        at: PathBuf,
+        #[arg(long)]
+        uid: u32,
+        #[arg(long)]
+        gid: u32,
+    },
+    /// Create the /run/toby/bin links
+    Links {
+        #[arg(long)]
+        target: PathBuf,
+    },
+    /// Bind-mount an attached host directory
+    Attach {
+        #[arg(long)]
+        src: PathBuf,
+        #[arg(long)]
+        at: PathBuf,
+        #[arg(long)]
+        ro: bool,
     },
 }
 

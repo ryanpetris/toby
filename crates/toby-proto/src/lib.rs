@@ -39,6 +39,7 @@ mod tests {
                 identity: Identity::Root,
                 tty: Some(TtySize { rows: 24, cols: 80 }),
                 keep_after_exit: true,
+                start_on_attach: false,
             },
             version: Some("0.17.0".into()),
         }))

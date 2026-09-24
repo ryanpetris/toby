@@ -1,0 +1,10 @@
+[Unit]
+Description=Toby file share
+DefaultDependencies=no
+Before=local-fs.target
+
+[Mount]
+What=toby
+Where=/run/toby/fs
+Type=virtiofs
+Options=nosuid,nodev

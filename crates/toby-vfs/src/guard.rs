@@ -146,7 +146,8 @@ impl<F: FileSystem> FileSystem for Guard<F> {
     }
 
     fn destroy(&self) {
-        self.initialized.store(false, Ordering::Release);
+        // The session stays marked as used, so the next INIT (after a guest
+        // reboot) starts on a freshly built file system.
         self.current().destroy()
     }
 

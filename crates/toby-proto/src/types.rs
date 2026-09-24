@@ -78,6 +78,10 @@ pub struct SpawnSpec {
     pub tty: Option<TtySize>,
     #[serde(default)]
     pub keep_after_exit: bool,
+    /// Starts the process when the first client attaches, so no output is
+    /// produced before someone reads it.
+    #[serde(default)]
+    pub start_on_attach: bool,
 }
 
 /// How a session's process ended.

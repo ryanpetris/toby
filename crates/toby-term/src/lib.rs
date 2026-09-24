@@ -9,7 +9,7 @@ use std::time::Duration;
 use toby_proto::session::{self, ClientFrame, ServerFrame};
 use toby_proto::types::{ExitStatus, SUPPORTED};
 use toby_proto::{MAX_CHUNK, frame};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
@@ -205,29 +205,34 @@ enum Input {
     Bytes(Vec<u8>),
     Eof,
     Resize,
+    Signal(i32),
 }
 
-fn spawn_input(tty: bool) -> mpsc::Receiver<Input> {
+/// Reads standard input on a plain thread: a read blocked on the terminal
+/// must not keep the runtime from shutting down when the session ends.
+fn spawn_input(local_tty: bool, forward_signals: bool) -> mpsc::Receiver<Input> {
     let (tx, rx) = mpsc::channel(64);
     let stdin_tx = tx.clone();
-    tokio::spawn(async move {
-        let mut stdin = tokio::io::stdin();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdin = io::stdin().lock();
         let mut buf = vec![0u8; 16 * 1024];
         loop {
-            match stdin.read(&mut buf).await {
+            match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => {
-                    let _ = stdin_tx.send(Input::Eof).await;
+                    let _ = stdin_tx.blocking_send(Input::Eof);
                     return;
                 }
                 Ok(n) => {
-                    if stdin_tx.send(Input::Bytes(buf[..n].to_vec())).await.is_err() {
+                    if stdin_tx.blocking_send(Input::Bytes(buf[..n].to_vec())).is_err() {
                         return;
                     }
                 }
             }
         }
     });
-    if tty {
+    if local_tty {
+        let tx = tx.clone();
         tokio::spawn(async move {
             let Ok(mut winch) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
             else {
@@ -239,6 +244,25 @@ fn spawn_input(tty: bool) -> mpsc::Receiver<Input> {
                 }
             }
         });
+    }
+    if forward_signals {
+        use tokio::signal::unix::{SignalKind, signal};
+        for (kind, number) in [
+            (SignalKind::interrupt(), libc::SIGINT),
+            (SignalKind::terminate(), libc::SIGTERM),
+            (SignalKind::hangup(), libc::SIGHUP),
+            (SignalKind::quit(), libc::SIGQUIT),
+        ] {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = signal(kind) else { return };
+                while s.recv().await.is_some() {
+                    if tx.send(Input::Signal(number)).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
     }
     rx
 }
@@ -274,64 +298,66 @@ async fn nudge<S: Stream>(s: &mut S) -> io::Result<()> {
     Ok(())
 }
 
-fn write_out(bytes: &[u8], stderr: bool) {
+/// Writes session output; a failure here means the output was not delivered
+/// and ends the attachment with an error.
+fn write_out(bytes: &[u8], stderr: bool) -> io::Result<()> {
     if stderr {
         let mut e = io::stderr().lock();
-        let _ = e.write_all(bytes);
-        let _ = e.flush();
+        e.write_all(bytes)?;
+        e.flush()
     } else {
         let mut o = io::stdout().lock();
-        let _ = o.write_all(bytes);
-        let _ = o.flush();
+        o.write_all(bytes)?;
+        o.flush()
     }
 }
 
-/// Attaches the terminal to a session until it exits or detaches.
-///
-/// `redraw` asks a full-screen program to repaint after the replay (used when
-/// reattaching). A lost connection is re-established with `connect` for up to
-/// 30 seconds.
-pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Result<Outcome> {
-    let tty = io::stdin().is_terminal();
-    let mut input = spawn_input(tty);
-    let mut filter = DetachFilter::default();
+/// Whether this process's terminal can act as the session's terminal: both
+/// standard input and output must be terminals.
+pub fn local_tty() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal()
+}
 
+/// Attaches to a session until it exits or detaches.
+///
+/// With a local terminal (see [`local_tty`]) and a session that has one, the
+/// terminal is in raw mode for the attachment, the detach key works and size
+/// changes are forwarded. For a session without a terminal, interrupt,
+/// termination, hangup and quit signals received by this process are
+/// forwarded to the session. `redraw` asks a full-screen program to repaint
+/// after the replay (used when reattaching). A lost connection is
+/// re-established with `connect` for up to 30 seconds.
+pub async fn attach(connect: Connect, want_replay: bool, redraw: bool) -> io::Result<Outcome> {
+    let mut conn = connect().await?;
+    let welcome = hello(&mut conn, want_replay).await?;
+    let interactive = welcome.tty && local_tty();
+    let mut input = spawn_input(interactive, !welcome.tty);
+    let mut filter = DetachFilter::default();
     let mut modes = Modes::default();
-    let result = attach_inner(
-        connect,
-        want_replay,
-        redraw,
-        tty,
-        &mut input,
-        &mut filter,
-        &mut modes,
-    )
-    .await;
-    if tty && io::stdout().is_terminal() {
+
+    let raw = if interactive { RawMode::enable()? } else { None };
+    if redraw && interactive {
+        nudge(&mut conn).await?;
+    }
+    let result = run_attached(conn, connect, interactive, &mut input, &mut filter, &mut modes).await;
+    if interactive {
         let mut o = io::stdout().lock();
         let _ = o.write_all(&modes.restore_sequence());
         let _ = o.flush();
     }
+    drop(raw);
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn attach_inner(
+async fn run_attached(
+    mut conn: UnixStream,
     connect: Connect,
-    want_replay: bool,
-    redraw: bool,
-    tty: bool,
+    interactive: bool,
     input: &mut mpsc::Receiver<Input>,
     filter: &mut DetachFilter,
     modes: &mut Modes,
 ) -> io::Result<Outcome> {
-    let mut conn = connect().await?;
-    let welcome = hello(&mut conn, want_replay).await?;
-    let mut remote_tty = welcome.tty;
-    if redraw && remote_tty {
-        nudge(&mut conn).await?;
-    }
-
+    let mut input_open = true;
     loop {
         let (mut rd, mut wr) = conn.into_split();
         let (frames_tx, mut frames) = mpsc::channel::<io::Result<ServerFrame>>(64);
@@ -349,20 +375,26 @@ async fn attach_inner(
 
         let lost: io::Error = loop {
             tokio::select! {
-                f = frames.recv() => match f {
-                    Some(Ok(ServerFrame::Stdout(o))) => { modes.feed(&o.bytes); write_out(&o.bytes, false) }
-                    Some(Ok(ServerFrame::Replay(r))) => { modes.feed(&r.bytes); write_out(&r.bytes, false) }
-                    Some(Ok(ServerFrame::Stderr(e))) => write_out(&e.bytes, true),
-                    Some(Ok(ServerFrame::Exit(e))) => { reader.abort(); return Ok(Outcome::Exited(e.status)); }
-                    Some(Ok(ServerFrame::Detached(d))) => { reader.abort(); return Ok(Outcome::Replaced(d.reason)); }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => break e,
-                    None => break io::Error::new(io::ErrorKind::UnexpectedEof, "session connection closed"),
-                },
-                i = input.recv() => {
+                f = frames.recv() => {
+                    let written = match f {
+                        Some(Ok(ServerFrame::Stdout(o))) => { modes.feed(&o.bytes); write_out(&o.bytes, false) }
+                        Some(Ok(ServerFrame::Replay(r))) => { modes.feed(&r.bytes); write_out(&r.bytes, r.stderr) }
+                        Some(Ok(ServerFrame::Stderr(e))) => write_out(&e.bytes, true),
+                        Some(Ok(ServerFrame::Exit(e))) => { reader.abort(); return Ok(Outcome::Exited(e.status)); }
+                        Some(Ok(ServerFrame::Detached(d))) => { reader.abort(); return Ok(Outcome::Replaced(d.reason)); }
+                        Some(Ok(_)) => Ok(()),
+                        Some(Err(e)) => break e,
+                        None => break io::Error::new(io::ErrorKind::UnexpectedEof, "session connection closed"),
+                    };
+                    if let Err(e) = written {
+                        reader.abort();
+                        return Err(e);
+                    }
+                }
+                i = input.recv(), if input_open => {
                     let result = match i {
                         Some(Input::Bytes(b)) => {
-                            let (data, detach) = if tty { filter.feed(&b) } else { (b, false) };
+                            let (data, detach) = if interactive { filter.feed(&b) } else { (b, false) };
                             let mut r = Ok(());
                             for chunk in data.chunks(MAX_CHUNK) {
                                 r = frame::send(&mut wr, &ClientFrame::Stdin(session::Stdin { bytes: chunk.to_vec() })).await;
@@ -376,10 +408,14 @@ async fn attach_inner(
                         }
                         Some(Input::Eof) => frame::send(&mut wr, &ClientFrame::CloseStdin(session::CloseStdin {})).await,
                         Some(Input::Resize) => match size() {
-                            Some((rows, cols)) if remote_tty => frame::send(&mut wr, &ClientFrame::Resize(session::Resize { rows, cols })).await,
-                            _ => Ok(()),
+                            Some((rows, cols)) => frame::send(&mut wr, &ClientFrame::Resize(session::Resize { rows, cols })).await,
+                            None => Ok(()),
                         },
-                        None => Ok(()),
+                        Some(Input::Signal(n)) => frame::send(&mut wr, &ClientFrame::Signal(session::Signal { signal: n })).await,
+                        None => {
+                            input_open = false;
+                            Ok(())
+                        }
                     };
                     if let Err(e) = result {
                         break e.into();
@@ -398,11 +434,10 @@ async fn attach_inner(
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
             let Ok(mut c) = connect().await else { continue };
-            let Ok(w) = hello(&mut c, false).await else {
+            if hello(&mut c, false).await.is_err() {
                 continue;
-            };
-            remote_tty = w.tty;
-            if remote_tty {
+            }
+            if interactive {
                 let _ = nudge(&mut c).await;
             }
             break c;

@@ -18,7 +18,7 @@ fuse-backend-rs = { version = "0.14.0", default-features = false, features = ["v
 imago = "0.2.5"
 libc = "0.2"
 mimalloc = "0.1.52"
-nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "pthread", "resource", "signal", "socket", "term", "user"] }
+nix = { version = "0.31.3", features = ["fs", "hostname", "ioctl", "mount", "process", "pthread", "resource", "signal", "socket", "term", "user"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_bytes = "0.11.19"
 tempfile = "3"

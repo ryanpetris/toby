@@ -16,6 +16,10 @@ pub const RELAY_PORT: u32 = 1024;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Longest wait for the relay to answer a request (a spawn waits up to 10 s
+/// for the session to start).
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Opens a stream to `port` in the guest through the hybrid vsock socket.
 pub async fn connect_port(vsock: &Path, port: u32) -> io::Result<UnixStream> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
@@ -91,36 +95,29 @@ impl RelayControl {
         Ok(())
     }
 
-    /// Drops the current connection, e.g. after the relay announced a restart.
-    pub async fn reset(&self) {
-        *self.conn.lock().await = None;
-    }
-
-    /// Sends a request, reconnecting once if the channel broke.
+    /// Sends a request, reconnecting once if the channel broke or the relay
+    /// did not answer in time. Requests are safe to repeat: a repeated spawn
+    /// finds its session already started.
     pub async fn call(&self, req: &Request) -> io::Result<Response> {
         let mut conn = self.conn.lock().await;
-        for attempt in 0..2 {
+        let mut last = None;
+        for _ in 0..2 {
             if conn.is_none() {
                 *conn = Some(self.connect().await?);
             }
             let s = conn.as_mut().expect("connected");
-            let result = async {
+            let result = tokio::time::timeout(CALL_TIMEOUT, async {
                 frame::send(s, req).await?;
                 frame::recv::<Response, _>(s).await
-            }
+            })
             .await;
             match result {
-                Ok(r) => return Ok(r),
-                Err(e) if attempt == 0 => {
-                    *conn = None;
-                    let _ = e;
-                }
-                Err(e) => {
-                    *conn = None;
-                    return Err(e.into());
-                }
+                Ok(Ok(r)) => return Ok(r),
+                Ok(Err(e)) => last = Some(io::Error::from(e)),
+                Err(_) => last = Some(io::Error::new(io::ErrorKind::TimedOut, "relay did not answer")),
             }
+            *conn = None;
         }
-        unreachable!("the loop returns on its second attempt")
+        Err(last.expect("an attempt failed"))
     }
 }

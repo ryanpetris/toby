@@ -6,8 +6,9 @@ use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::pty::{Winsize, openpty};
@@ -33,6 +34,12 @@ pub const KEEP_AFTER_EXIT: Duration = Duration::from_secs(3600);
 /// How long output is drained after the child exits while other processes
 /// still hold the terminal open.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
+
+/// How long a client may take to accept queued output before it is dropped.
+const CLIENT_STALL: Duration = Duration::from_secs(30);
+
+/// Exit code reported when the command cannot be started, as shells do.
+const CANNOT_START: i32 = 127;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -66,7 +73,7 @@ fn resolve_account(paths: &GuestPaths, identity: Identity) -> io::Result<Account
             uid: 0,
             gid: 0,
             home: "/root".into(),
-            shell: if std::path::Path::new("/bin/bash").exists() {
+            shell: if Path::new("/bin/bash").exists() {
                 "/bin/bash"
             } else {
                 "/bin/sh"
@@ -106,11 +113,17 @@ fn environment(spec: &SpawnSpec, account: &Account) -> Vec<(String, String)> {
     env
 }
 
-enum ChildIo {
-    Pty(std::sync::Arc<AsyncFd<OwnedFd>>),
-    Pipes {
-        stdin: Option<tokio::process::ChildStdin>,
-    },
+/// Input for the child, written by its own task so a child that does not
+/// read never blocks the session.
+enum Input {
+    Data(Vec<u8>),
+    Close,
+}
+
+/// A running child.
+struct Child {
+    pgid: i32,
+    master: Option<Arc<AsyncFd<OwnedFd>>>,
 }
 
 enum Event {
@@ -127,6 +140,8 @@ struct Client {
     generation: u64,
     welcomed: bool,
     tx: mpsc::Sender<Outgoing>,
+    /// Tells the writer to send `Detached` ahead of any queued output.
+    detach: Option<oneshot::Sender<String>>,
 }
 
 enum Outgoing {
@@ -135,25 +150,86 @@ enum Outgoing {
     Flush(oneshot::Sender<()>),
 }
 
+/// Recent output, keeping which stream each piece came from.
+#[derive(Default)]
+struct Replay {
+    chunks: VecDeque<(bool, Vec<u8>)>,
+    len: usize,
+}
+
+impl Replay {
+    fn push(&mut self, bytes: &[u8], stderr: bool) {
+        match self.chunks.back_mut() {
+            Some((s, b)) if *s == stderr && b.len() + bytes.len() <= MAX_CHUNK => b.extend_from_slice(bytes),
+            _ => self.chunks.push_back((stderr, bytes.to_vec())),
+        }
+        self.len += bytes.len();
+        while self.len > REPLAY_BYTES {
+            let Some((_, front)) = self.chunks.front_mut() else {
+                break;
+            };
+            let excess = self.len - REPLAY_BYTES;
+            if front.len() <= excess {
+                self.len -= front.len();
+                self.chunks.pop_front();
+            } else {
+                front.drain(..excess);
+                self.len -= excess;
+            }
+        }
+    }
+
+    fn frames(&self) -> impl Iterator<Item = ServerFrame> + '_ {
+        self.chunks.iter().flat_map(|(stderr, b)| {
+            b.chunks(MAX_CHUNK).map(|c| {
+                ServerFrame::Replay(session::Replay {
+                    bytes: c.to_vec(),
+                    stderr: *stderr,
+                })
+            })
+        })
+    }
+}
+
 /// Runs the session with ID `id` until its exit has been collected.
 pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
     if !crate::paths::valid_id(id) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session ID"));
     }
     let dir = paths.session_dir(id);
+    let result = serve(&paths, &dir).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+async fn serve(paths: &GuestPaths, dir: &Path) -> io::Result<()> {
     let spec: SpawnSpec = record::read(&dir.join(session_files::SPEC))?;
     if spec.argv.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty command"));
     }
-    let account = resolve_account(&paths, spec.identity)?;
+    let account = resolve_account(paths, spec.identity)?;
+    let tty = spec.tty.is_some();
+
+    let (events_tx, mut events) = mpsc::channel::<Event>(64);
+    let (input_tx, input_rx) = mpsc::channel::<Input>(64);
+    let mut input_rx = Some(input_rx);
+
+    // A session that starts on its own reports a failed start to the relay
+    // by exiting before its socket exists.
+    let mut child: Option<Child> = None;
+    if !spec.start_on_attach {
+        child = Some(start_child(
+            &spec,
+            &account,
+            events_tx.clone(),
+            input_rx.take().expect("unused"),
+        )?);
+    }
 
     let sock_path = dir.join(session_files::SOCKET);
     let _ = std::fs::remove_file(&sock_path);
     let listener = UnixListener::bind(&sock_path)?;
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
-
-    let (events_tx, mut events) = mpsc::channel::<Event>(64);
-    let (mut child, io, pgid) = start_child(&spec, &account, events_tx.clone())?;
 
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -168,20 +244,10 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
             exit: None,
         },
         session_pid: std::process::id() as i32,
-        child_pgid: pgid,
+        child_pgid: child.as_ref().map(|c| c.pgid).unwrap_or(0),
     };
     record::write(&dir.join(session_files::RECORD), &rec)?;
 
-    {
-        let tx = events_tx.clone();
-        tokio::spawn(async move {
-            let status = match child.wait().await {
-                Ok(s) => exit_status(s),
-                Err(_) => ExitStatus::Code(255),
-            };
-            let _ = tx.send(Event::Exited(status)).await;
-        });
-    }
     {
         let tx = events_tx.clone();
         tokio::spawn(async move {
@@ -207,9 +273,7 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
         });
     }
 
-    let tty = spec.tty.is_some();
-    let mut io = io;
-    let mut replay: VecDeque<u8> = VecDeque::new();
+    let mut replay = Replay::default();
     let mut client: Option<Client> = None;
     let mut generation = 0u64;
     let mut exit: Option<ExitStatus> = None;
@@ -220,33 +284,29 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
     loop {
         // Once the child has exited and its output is drained (or the drain
         // timed out), deliver the exit.
-        if let Some(status) = exit {
-            let drained = output_done || drain_deadline.is_some_and(|d| tokio::time::Instant::now() >= d);
-            if drained {
-                if rec.info.exit.is_none() {
-                    rec.info.exit = Some(status);
-                    record::write(&dir.join(session_files::RECORD), &rec)?;
-                    record::write(&dir.join(session_files::EXIT), &status)?;
-                }
-                if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
-                    if deliver_exit(c, status).await {
-                        break;
-                    }
-                    client = None;
-                }
-                if !spec.keep_after_exit {
+        let now = tokio::time::Instant::now();
+        let drained = exit.is_some() && (output_done || drain_deadline.is_some_and(|d| now >= d));
+        if let (Some(status), true) = (exit, drained) {
+            if rec.info.exit.is_none() {
+                rec.info.exit = Some(status);
+                record::write(&dir.join(session_files::RECORD), &rec)?;
+                record::write(&dir.join(session_files::EXIT), &status)?;
+            }
+            if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
+                if deliver_exit(c, status).await {
                     break;
                 }
-                let deadline =
-                    *keep_deadline.get_or_insert_with(|| tokio::time::Instant::now() + KEEP_AFTER_EXIT);
-                if tokio::time::Instant::now() >= deadline {
-                    break;
-                }
+                drop_client(&mut client, dir, &mut rec);
+            }
+            if !spec.keep_after_exit {
+                break;
+            }
+            let deadline = *keep_deadline.get_or_insert_with(|| now + KEEP_AFTER_EXIT);
+            if now >= deadline {
+                break;
             }
         }
 
-        let now = tokio::time::Instant::now();
-        let drained = exit.is_some() && (output_done || drain_deadline.is_some_and(|d| now >= d));
         let timeout = if drained {
             keep_deadline
         } else if exit.is_some() {
@@ -265,22 +325,20 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
 
         match event {
             Event::Output(bytes, stderr) => {
-                push_replay(&mut replay, &bytes);
+                replay.push(&bytes, stderr);
                 if let Some(c) = client.as_ref().filter(|c| c.welcomed) {
+                    let mut ok = true;
                     for chunk in bytes.chunks(MAX_CHUNK) {
+                        let bytes = chunk.to_vec();
                         let frame = if stderr {
-                            ServerFrame::Stderr(session::Stderr {
-                                bytes: chunk.to_vec(),
-                            })
+                            ServerFrame::Stderr(session::Stderr { bytes })
                         } else {
-                            ServerFrame::Stdout(session::Stdout {
-                                bytes: chunk.to_vec(),
-                            })
+                            ServerFrame::Stdout(session::Stdout { bytes })
                         };
-                        if !queue(c, frame).await {
-                            client = None;
-                            break;
-                        }
+                        ok = ok && queue(c, frame).await;
+                    }
+                    if !ok {
+                        drop_client(&mut client, dir, &mut rec);
                     }
                 }
             }
@@ -288,21 +346,21 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
             Event::Exited(status) => {
                 exit = Some(status);
                 drain_deadline = Some(tokio::time::Instant::now() + DRAIN_AFTER_EXIT);
-                if let ChildIo::Pipes { stdin } = &mut io {
-                    stdin.take();
-                }
             }
             Event::Accepted(stream) => {
-                if let Some(old) = client.take() {
-                    let _ = old
-                        .tx
-                        .try_send(Outgoing::Frame(ServerFrame::Detached(session::Detached {
-                            reason: "attached elsewhere".into(),
-                        })));
+                if let Some(mut old) = client.take()
+                    && let Some(d) = old.detach.take()
+                {
+                    let _ = d.send("attached elsewhere".into());
                 }
                 generation += 1;
-                client = Some(start_client(stream, generation, events_tx.clone()));
-                set_attached(&dir, &mut rec, true);
+                client = Some(start_client(
+                    stream,
+                    generation,
+                    events_tx.clone(),
+                    input_tx.clone(),
+                ));
+                set_attached(dir, &mut rec, true);
             }
             Event::Frame(generation_of, frame) => {
                 let Some(c) = client.as_mut().filter(|c| c.generation == generation_of) else {
@@ -318,10 +376,21 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
                                 }),
                             )
                             .await;
-                            client = None;
-                            set_attached(&dir, &mut rec, false);
+                            drop_client(&mut client, dir, &mut rec);
                             continue;
                         };
+                        if hello.rows > 0
+                            && hello.cols > 0
+                            && let Some(ch) = &child
+                        {
+                            resize(
+                                ch,
+                                TtySize {
+                                    rows: hello.rows,
+                                    cols: hello.cols,
+                                },
+                            );
+                        }
                         let state = match rec.info.exit {
                             Some(s) => State::Exited(s),
                             None => State::Running,
@@ -330,80 +399,92 @@ pub async fn run(paths: GuestPaths, id: &str) -> io::Result<()> {
                         let mut ok =
                             queue(c, ServerFrame::Welcome(session::Welcome { version, state, tty })).await;
                         if ok && hello.want_replay {
-                            let (a, b) = replay.as_slices();
-                            let all: Vec<u8> = a.iter().chain(b.iter()).copied().collect();
-                            for chunk in all.chunks(MAX_CHUNK) {
-                                ok = ok
-                                    && queue(
-                                        c,
-                                        ServerFrame::Replay(session::Replay {
-                                            bytes: chunk.to_vec(),
-                                        }),
-                                    )
-                                    .await;
+                            for f in replay.frames() {
+                                ok = ok && queue(c, f).await;
                             }
                         }
                         if !ok {
-                            client = None;
-                            set_attached(&dir, &mut rec, false);
+                            drop_client(&mut client, dir, &mut rec);
                             continue;
                         }
-                        if hello.rows > 0 && hello.cols > 0 {
-                            resize(
-                                &io,
-                                TtySize {
+                        if let Some(rx) = input_rx.take() {
+                            let mut spec = spec.clone();
+                            if let (Some(size), true) = (spec.tty.as_mut(), hello.rows > 0 && hello.cols > 0)
+                            {
+                                *size = TtySize {
                                     rows: hello.rows,
                                     cols: hello.cols,
+                                };
+                            }
+                            match start_child(&spec, &account, events_tx.clone(), rx) {
+                                Ok(ch) => {
+                                    rec.child_pgid = ch.pgid;
+                                    record::write(&dir.join(session_files::RECORD), &rec)?;
+                                    child = Some(ch);
+                                }
+                                Err(e) => {
+                                    let msg = format!("toby: cannot start {}: {e}\r\n", spec.argv[0]);
+                                    replay.push(msg.as_bytes(), !tty);
+                                    let f = if tty {
+                                        ServerFrame::Stdout(session::Stdout {
+                                            bytes: msg.into_bytes(),
+                                        })
+                                    } else {
+                                        ServerFrame::Stderr(session::Stderr {
+                                            bytes: msg.into_bytes(),
+                                        })
+                                    };
+                                    let _ = queue(c, f).await;
+                                    exit = Some(ExitStatus::Code(CANNOT_START));
+                                    output_done = true;
+                                }
+                            }
+                        }
+                    }
+                    ClientFrame::Resize(r) => {
+                        if let Some(ch) = &child {
+                            resize(
+                                ch,
+                                TtySize {
+                                    rows: r.rows,
+                                    cols: r.cols,
                                 },
                             );
                         }
                     }
-                    ClientFrame::Hello(_) => {}
-                    _ if !c.welcomed => {}
-                    ClientFrame::Stdin(data) => write_input(&mut io, &data.bytes).await,
-                    ClientFrame::CloseStdin(_) => match &mut io {
-                        ChildIo::Pty(_) => write_input(&mut io, &[0x04]).await,
-                        ChildIo::Pipes { stdin } => {
-                            stdin.take();
-                        }
-                    },
-                    ClientFrame::Resize(r) => resize(
-                        &io,
-                        TtySize {
-                            rows: r.rows,
-                            cols: r.cols,
-                        },
-                    ),
                     ClientFrame::Signal(s) => {
                         if exit.is_none()
-                            && let Ok(sig) = NixSignal::try_from(s.signal)
+                            && let (Some(ch), Ok(sig)) = (&child, NixSignal::try_from(s.signal))
                         {
-                            let _ = killpg(Pid::from_raw(pgid), sig);
+                            let _ = killpg(Pid::from_raw(ch.pgid), sig);
                         }
                     }
+                    // Input goes straight to the child's input task.
+                    ClientFrame::Hello(_) | ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
                 }
             }
             Event::ClientGone(generation_of) => {
                 if client.as_ref().is_some_and(|c| c.generation == generation_of) {
-                    client = None;
-                    set_attached(&dir, &mut rec, false);
+                    drop_client(&mut client, dir, &mut rec);
                 }
             }
-            Event::Terminate => {
-                if exit.is_none() {
-                    let _ = killpg(Pid::from_raw(pgid), NixSignal::SIGHUP);
-                } else {
-                    break;
+            Event::Terminate => match (&child, exit) {
+                (Some(ch), None) => {
+                    let _ = killpg(Pid::from_raw(ch.pgid), NixSignal::SIGHUP);
                 }
-            }
+                _ => break,
+            },
         }
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
-fn set_attached(dir: &std::path::Path, rec: &mut SessionRecord, attached: bool) {
+fn drop_client(client: &mut Option<Client>, dir: &Path, rec: &mut SessionRecord) {
+    *client = None;
+    set_attached(dir, rec, false);
+}
+
+fn set_attached(dir: &Path, rec: &mut SessionRecord, attached: bool) {
     if rec.info.attached != attached {
         rec.info.attached = attached;
         let _ = record::write(&dir.join(session_files::RECORD), rec);
@@ -411,7 +492,7 @@ fn set_attached(dir: &std::path::Path, rec: &mut SessionRecord, attached: bool) 
 }
 
 async fn queue(c: &Client, frame: ServerFrame) -> bool {
-    c.tx.send_timeout(Outgoing::Frame(frame), Duration::from_secs(30))
+    c.tx.send_timeout(Outgoing::Frame(frame), CLIENT_STALL)
         .await
         .is_ok()
 }
@@ -425,52 +506,78 @@ async fn deliver_exit(c: &Client, status: ExitStatus) -> bool {
     if c.tx.send(Outgoing::Flush(done_tx)).await.is_err() {
         return false;
     }
-    tokio::time::timeout(Duration::from_secs(30), done_rx)
+    tokio::time::timeout(CLIENT_STALL, done_rx)
         .await
         .is_ok_and(|r| r.is_ok())
 }
 
-fn push_replay(replay: &mut VecDeque<u8>, bytes: &[u8]) {
-    replay.extend(bytes);
-    if replay.len() > REPLAY_BYTES {
-        let excess = replay.len() - REPLAY_BYTES;
-        replay.drain(..excess);
-    }
-}
-
-fn start_client(stream: UnixStream, generation: u64, events: mpsc::Sender<Event>) -> Client {
+fn start_client(
+    stream: UnixStream,
+    generation: u64,
+    events: mpsc::Sender<Event>,
+    input: mpsc::Sender<Input>,
+) -> Client {
     let (mut rd, mut wr) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<Outgoing>(1024);
+    let (detach_tx, mut detach_rx) = oneshot::channel::<String>();
 
     tokio::spawn(async move {
-        while let Some(out) = rx.recv().await {
-            match out {
-                Outgoing::Frame(frame) => {
-                    let detached = matches!(frame, ServerFrame::Detached(_) | ServerFrame::Refused(_));
-                    if frame::send(&mut wr, &frame).await.is_err() || detached {
+        // A dropped sender means the client is going away normally: finish
+        // writing what is queued. A sent reason preempts the queue.
+        let mut detach_pending = true;
+        loop {
+            tokio::select! {
+                biased;
+                reason = &mut detach_rx, if detach_pending => match reason {
+                    Ok(reason) => {
+                        let _ = frame::send(&mut wr, &ServerFrame::Detached(session::Detached { reason })).await;
                         break;
                     }
-                }
-                Outgoing::Flush(done) => {
-                    let _ = wr.flush().await;
-                    let _ = done.send(());
-                }
+                    Err(_) => detach_pending = false,
+                },
+                out = rx.recv() => match out {
+                    Some(Outgoing::Frame(f)) => {
+                        let last = matches!(f, ServerFrame::Refused(_));
+                        if frame::send(&mut wr, &f).await.is_err() || last {
+                            break;
+                        }
+                    }
+                    Some(Outgoing::Flush(done)) => {
+                        let _ = wr.flush().await;
+                        let _ = done.send(());
+                    }
+                    None => break,
+                },
             }
         }
         let _ = wr.shutdown().await;
     });
 
     tokio::spawn(async move {
+        let mut hello_seen = false;
         loop {
-            match frame::recv::<ClientFrame, _>(&mut rd).await {
-                Ok(f) => {
-                    if events.send(Event::Frame(generation, f)).await.is_err() {
-                        return;
-                    }
-                }
+            let f = match frame::recv::<ClientFrame, _>(&mut rd).await {
+                Ok(f) => f,
                 Err(_) => {
                     let _ = events.send(Event::ClientGone(generation)).await;
                     return;
+                }
+            };
+            match f {
+                ClientFrame::Stdin(d) if hello_seen => {
+                    if input.send(Input::Data(d.bytes)).await.is_err() {
+                        continue;
+                    }
+                }
+                ClientFrame::CloseStdin(_) if hello_seen => {
+                    let _ = input.send(Input::Close).await;
+                }
+                ClientFrame::Stdin(_) | ClientFrame::CloseStdin(_) => {}
+                other => {
+                    hello_seen |= matches!(other, ClientFrame::Hello(_));
+                    if events.send(Event::Frame(generation, other)).await.is_err() {
+                        return;
+                    }
                 }
             }
         }
@@ -480,11 +587,12 @@ fn start_client(stream: UnixStream, generation: u64, events: mpsc::Sender<Event>
         generation,
         welcomed: false,
         tx,
+        detach: Some(detach_tx),
     }
 }
 
-fn resize(io: &ChildIo, size: TtySize) {
-    if let ChildIo::Pty(master) = io {
+fn resize(child: &Child, size: TtySize) {
+    if let Some(master) = &child.master {
         let ws = Winsize {
             ws_row: size.rows,
             ws_col: size.cols,
@@ -502,28 +610,16 @@ fn resize(io: &ChildIo, size: TtySize) {
     }
 }
 
-async fn write_input(io: &mut ChildIo, mut data: &[u8]) {
-    match io {
-        ChildIo::Pty(master) => {
-            while !data.is_empty() {
-                let Ok(mut guard) = master.writable().await else {
-                    return;
-                };
-                match guard.try_io(|fd| nix::unistd::write(fd.get_ref(), data).map_err(io::Error::from)) {
-                    Ok(Ok(n)) => data = &data[n..],
-                    Ok(Err(_)) => return,
-                    Err(_would_block) => continue,
-                }
-            }
-        }
-        ChildIo::Pipes { stdin } => {
-            if let Some(s) = stdin
-                && s.write_all(data).await.is_err()
-            {
-                stdin.take();
-            }
+async fn write_pty(master: &AsyncFd<OwnedFd>, mut data: &[u8]) -> io::Result<()> {
+    while !data.is_empty() {
+        let mut guard = master.writable().await?;
+        match guard.try_io(|fd| nix::unistd::write(fd.get_ref(), data).map_err(io::Error::from)) {
+            Ok(Ok(n)) => data = &data[n..],
+            Ok(Err(e)) => return Err(e),
+            Err(_would_block) => continue,
         }
     }
+    Ok(())
 }
 
 fn exit_status(status: std::process::ExitStatus) -> ExitStatus {
@@ -542,31 +638,49 @@ fn set_nonblocking(fd: &OwnedFd) -> io::Result<()> {
     Ok(())
 }
 
-/// Starts the session's child and the tasks that read its output.
+/// Credentials to switch to in the child, resolved before the fork.
+struct Credentials {
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+    groups: Vec<libc::gid_t>,
+}
+
+fn credentials(account: &Account) -> io::Result<Option<Credentials>> {
+    if nix::unistd::geteuid().as_raw() == account.uid {
+        return Ok(None);
+    }
+    let name = CString::new(account.name.clone())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "user name contains NUL"))?;
+    let groups = nix::unistd::getgrouplist(&name, nix::unistd::Gid::from_raw(account.gid))
+        .map(|g| g.into_iter().map(|g| g.as_raw()).collect())
+        .unwrap_or_else(|_| vec![account.gid]);
+    Ok(Some(Credentials {
+        uid: account.uid,
+        gid: account.gid,
+        groups,
+    }))
+}
+
+/// Starts the session's child and the tasks that feed and read it.
 fn start_child(
     spec: &SpawnSpec,
     account: &Account,
     events: mpsc::Sender<Event>,
-) -> io::Result<(tokio::process::Child, ChildIo, i32)> {
+    mut input: mpsc::Receiver<Input>,
+) -> io::Result<Child> {
     let env = environment(spec, account);
     let cwd = spec.cwd.clone().unwrap_or_else(|| account.home.clone());
+    let cwd = CString::new(cwd)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
+    let creds = credentials(account)?;
 
     let mut cmd = tokio::process::Command::new(&spec.argv[0]);
     cmd.args(&spec.argv[1..])
         .env_clear()
         .envs(env)
-        .current_dir(&cwd)
         .kill_on_drop(false);
 
-    let drop_to = (nix::unistd::geteuid().as_raw() != account.uid)
-        .then(|| {
-            CString::new(account.name.clone())
-                .map(|name| (name, account.uid, account.gid))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "user name contains NUL"))
-        })
-        .transpose()?;
-
-    let (io, pty_master) = match spec.tty {
+    let master = match spec.tty {
         Some(size) => {
             let ws = Winsize {
                 ws_row: size.rows,
@@ -579,17 +693,16 @@ fn start_child(
                 .stdout(Stdio::from(pty.slave.try_clone()?))
                 .stderr(Stdio::from(pty.slave));
             set_nonblocking(&pty.master)?;
-            let master = std::sync::Arc::new(AsyncFd::new(pty.master)?);
-            (ChildIo::Pty(master.clone()), Some(master))
+            Some(Arc::new(AsyncFd::new(pty.master)?))
         }
         None => {
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            (ChildIo::Pipes { stdin: None }, None)
+            None
         }
     };
-    let with_tty = pty_master.is_some();
+    let with_tty = master.is_some();
 
     // SAFETY: the closure only makes async-signal-safe system calls on data
     // prepared before the fork.
@@ -601,13 +714,16 @@ fn start_child(
             if with_tty && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if let Some((name, uid, gid)) = &drop_to {
-                if libc::initgroups(name.as_ptr(), *gid) < 0 && libc::setgroups(1, gid) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::setgid(*gid) < 0 || libc::setuid(*uid) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            if let Some(c) = &creds
+                && (libc::setgroups(c.groups.len(), c.groups.as_ptr()) < 0
+                    || libc::setgid(c.gid) < 0
+                    || libc::setuid(c.uid) < 0)
+            {
+                return Err(io::Error::last_os_error());
+            }
+            // After dropping privileges, so the directory is checked as the user.
+            if libc::chdir(cwd.as_ptr()) < 0 {
+                return Err(io::Error::last_os_error());
             }
             Ok(())
         });
@@ -617,10 +733,10 @@ fn start_child(
     drop(cmd);
     let pgid = child.id().map(|p| p as i32).unwrap_or(0);
 
-    let io = match (io, pty_master) {
-        (ChildIo::Pty(_), Some(master)) => {
+    match &master {
+        Some(m) => {
+            let reader = m.clone();
             let tx = events.clone();
-            let reader = master.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
                 loop {
@@ -641,10 +757,20 @@ fn start_child(
                 }
                 let _ = tx.send(Event::OutputEnd).await;
             });
-            ChildIo::Pty(master)
+            let writer = m.clone();
+            tokio::spawn(async move {
+                while let Some(i) = input.recv().await {
+                    let data = match i {
+                        Input::Data(d) => d,
+                        Input::Close => vec![0x04],
+                    };
+                    if write_pty(&writer, &data).await.is_err() {
+                        break;
+                    }
+                }
+            });
         }
-        _ => {
-            let stdin = child.stdin.take();
+        None => {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let tx = events.clone();
@@ -654,11 +780,34 @@ fn start_child(
                 tokio::join!(out, err);
                 let _ = tx.send(Event::OutputEnd).await;
             });
-            ChildIo::Pipes { stdin }
+            let mut stdin = child.stdin.take();
+            tokio::spawn(async move {
+                while let Some(i) = input.recv().await {
+                    match i {
+                        Input::Data(d) => {
+                            if let Some(s) = stdin.as_mut()
+                                && s.write_all(&d).await.is_err()
+                            {
+                                stdin = None;
+                            }
+                        }
+                        Input::Close => stdin = None,
+                    }
+                }
+            });
         }
-    };
+    }
 
-    Ok((child, io, pgid))
+    let tx = events;
+    tokio::spawn(async move {
+        let status = match child.wait().await {
+            Ok(s) => exit_status(s),
+            Err(_) => ExitStatus::Code(255),
+        };
+        let _ = tx.send(Event::Exited(status)).await;
+    });
+
+    Ok(Child { pgid, master })
 }
 
 async fn pump<R: tokio::io::AsyncRead + Unpin>(r: Option<R>, stderr: bool, tx: mpsc::Sender<Event>) {
@@ -673,5 +822,49 @@ async fn pump<R: tokio::io::AsyncRead + Unpin>(r: Option<R>, stderr: bool, tx: m
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_keeps_streams_and_is_bounded() {
+        let mut r = Replay::default();
+        r.push(b"out1 ", false);
+        r.push(b"out2 ", false);
+        r.push(b"err", true);
+        let frames: Vec<_> = r.frames().collect();
+        assert_eq!(
+            frames,
+            vec![
+                ServerFrame::Replay(session::Replay {
+                    bytes: b"out1 out2 ".to_vec(),
+                    stderr: false
+                }),
+                ServerFrame::Replay(session::Replay {
+                    bytes: b"err".to_vec(),
+                    stderr: true
+                }),
+            ]
+        );
+
+        let mut r = Replay::default();
+        for _ in 0..3 {
+            r.push(&vec![b'x'; REPLAY_BYTES / 2 + 1], false);
+        }
+        assert_eq!(r.len, REPLAY_BYTES);
+        let total: usize = r
+            .frames()
+            .map(|f| {
+                if let ServerFrame::Replay(p) = f {
+                    p.bytes.len()
+                } else {
+                    0
+                }
+            })
+            .sum();
+        assert_eq!(total, REPLAY_BYTES);
     }
 }

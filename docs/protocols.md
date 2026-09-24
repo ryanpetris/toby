@@ -52,6 +52,11 @@ Headers the relay sends to the host:
 | 16 | `RelayHello { version, proto_versions, boot_id }` | the relay started |
 | 17 | `Accepted { listener_id }` | a guest listener accepted a connection |
 
+Any guest process can open these connections, so `toby internal machine`
+treats a `RelayHello` only as a prompt to query the relay over its control
+channel, and splices an `Accepted` connection only to a host target
+registered for that listener (by a forward), refusing unknown listeners.
+
 Replies:
 
 | Type | Reply |
@@ -83,7 +88,10 @@ Response types: 64 `Done`, 65 `Spawned`, 66 `SessionList`, 67
 
 A spawn `spec` holds the session ID, `argv`, extra environment, working
 directory, identity (`user` or `root`), terminal size (absent for a session
-without a terminal) and whether the exit is kept for a later client. `version`
+without a terminal), whether the exit is kept for a later client, and whether
+the command starts only when the first client attaches (so none of its output
+precedes a reader). Repeating a spawn with the same spec is harmless; a
+different spec with an existing session ID fails. `version`
 names the runtime version whose binary runs the session
 (`/run/toby/fs/versions/<version>/toby`). The relay starts it with
 `systemd-run --scope`, so sessions live in their own scope units and survive
@@ -109,7 +117,7 @@ Session frames:
 | Type | Frame |
 | --- | --- |
 | 64 | `Welcome { version, state, tty }`; `state` is `running` or the exit status |
-| 65 | `Replay { bytes }`: recent output (up to 1 MiB) after the welcome, if requested |
+| 65 | `Replay { bytes, stderr }`: recent output (up to 1 MiB) after the welcome, if requested; `stderr` marks standard-error output of sessions without a terminal |
 | 66 | `Stdout { bytes }` |
 | 67 | `Stderr { bytes }` (sessions without a terminal) |
 | 68 | `Exit { status }` |
@@ -117,6 +125,8 @@ Session frames:
 | 70 | `Refused { error }` |
 
 One client is attached at a time; a new attachment detaches the previous one.
+A command that cannot be started (for a session that starts on attach) writes
+the error to the client and exits with status 127.
 When a session with a kept exit ends while no client is attached, it waits up
 to an hour for a client to collect the exit.
 

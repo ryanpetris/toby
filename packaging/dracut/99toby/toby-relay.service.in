@@ -1,0 +1,9 @@
+[Unit]
+Description=Toby relay
+Requires=run-toby-fs.mount
+After=run-toby-fs.mount
+
+[Service]
+ExecStart=/run/toby/fs/versions/@VERSION@/toby guest relay
+Restart=always
+RestartSec=1

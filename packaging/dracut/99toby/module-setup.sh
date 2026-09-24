@@ -14,5 +14,7 @@ installkernel() {
 }
 
 install() {
+    inst_simple "$moddir/run-toby-fs.mount" /usr/lib/toby/run-toby-fs.mount
+    inst_simple "$moddir/toby-relay.service.in" /usr/lib/toby/toby-relay.service.in
     inst_hook pre-pivot 90 "$moddir/toby-units.sh"
 }

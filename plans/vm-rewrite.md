@@ -1043,13 +1043,14 @@ Framed CBOR, same frame format as §11.3. The stable middle (`toby-machine`,
 | Frame | Direction | Meaning |
 | --- | --- | --- |
 | `Hello{versions, rows, cols, want_replay}` | client → session | attach |
-| `Welcome{version, state}` | session → client | accepted |
-| `Replay{bytes}` | session → client | recent output from the ring buffer |
+| `Welcome{version, state, tty}` | session → client | accepted |
+| `Replay{bytes, stderr}` | session → client | recent output from the ring buffer, keeping standard error apart |
 | `Stdin{bytes}` / `CloseStdin` | client → session | input |
 | `Stdout{bytes}` / `Stderr{bytes}` | session → client | output (stderr only without a tty) |
 | `Resize{rows, cols}` | client → session | window size |
 | `Signal{n}` | client → session | deliver to the session's process group |
 | `Exit{code or signal}` | session → client | process ended |
+| `Refused{error}` | session → client | attach refused (for example an unsupported version) |
 | `Detached{reason}` | session → client | another client attached |
 
 ### 13.2 `toby-session` behavior

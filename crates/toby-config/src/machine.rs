@@ -16,12 +16,19 @@ pub struct MachineSpec {
     pub schema: u32,
     pub generation: u64,
     pub id: String,
-    pub home: String,
-    pub root: String,
+    /// Home disk; builder machines have none.
+    #[serde(default)]
+    pub home: Option<String>,
+    pub root: RootSpec,
+    /// Adds a throwaway layer over a named root.
     #[serde(default)]
     pub ephemeral: bool,
     pub resources: Resources,
+    #[serde(default)]
     pub boot: Boot,
+    /// Extra disks (builder cache and output disks).
+    #[serde(default)]
+    pub disk: Vec<Disk>,
     #[serde(default)]
     pub attach: Vec<Attach>,
     #[serde(default)]
@@ -38,11 +45,35 @@ pub struct Resources {
     pub memory: String,
 }
 
+/// The machine's root disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RootSpec {
+    /// A persistent root, `roots/<name>.qcow2`.
+    Named(String),
+    /// A throwaway layer over an image's disk (builder machines).
+    Image { image: String },
+    /// A throwaway layer over a stock cloud image booted with firmware (the
+    /// bootstrap builder).
+    CloudImage { cloud_image: std::path::PathBuf },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Boot {
-    /// Image whose kernel and initramfs boot this machine.
-    pub image: String,
+    /// Image whose kernel and initramfs boot this machine; unset for a cloud
+    /// image, which boots its own bootloader.
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Disk {
+    pub path: std::path::PathBuf,
+    /// The guest sees `/dev/disk/by-id/virtio-<serial>`.
+    pub serial: String,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +127,11 @@ pub fn parse_size(s: &str) -> Option<u64> {
 }
 
 impl MachineSpec {
+    /// Whether the root is a throwaway layer created at start and deleted at stop.
+    pub fn has_layer(&self) -> bool {
+        self.ephemeral || !matches!(self.root, RootSpec::Named(_))
+    }
+
     pub fn memory_bytes(&self) -> io::Result<u64> {
         parse_size(&self.resources.memory).ok_or_else(|| {
             io::Error::new(
@@ -148,6 +184,9 @@ pub struct MachineStatus {
     pub boot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Guest boot for which the boot helpers last completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers_boot_id: Option<String>,
 }
 
 impl MachineStatus {
@@ -224,6 +263,30 @@ models_listen = "127.0.0.1:41100"
         let path = dir.path().join("m/machine.toml");
         spec.store(&path).unwrap();
         assert_eq!(MachineSpec::load(&path).unwrap(), spec);
+    }
+
+    #[test]
+    fn root_forms() {
+        for (text, root) in [
+            ("root = \"work\"", RootSpec::Named("work".into())),
+            (
+                "root = { image = \"01J\" }",
+                RootSpec::Image { image: "01J".into() },
+            ),
+            (
+                "root = { cloud_image = \"/c.qcow2\" }",
+                RootSpec::CloudImage {
+                    cloud_image: "/c.qcow2".into(),
+                },
+            ),
+        ] {
+            let doc = format!(
+                "schema = 1\ngeneration = 1\nid = \"m\"\n{text}\n[resources]\ncpus = 1\nmemory = \"1G\"\n"
+            );
+            let spec: MachineSpec = toml::from_str(&doc).unwrap();
+            assert_eq!(spec.root, root);
+            assert_eq!(spec.home, None);
+        }
     }
 
     #[test]

@@ -30,6 +30,13 @@ fn env() -> Env {
     Env { _dir: dir, paths }
 }
 
+fn spec_on_attach(id: &str, argv: &[&str]) -> SpawnSpec {
+    SpawnSpec {
+        start_on_attach: true,
+        ..spec(id, argv, false, true)
+    }
+}
+
 fn spec(id: &str, argv: &[&str], tty: bool, keep: bool) -> SpawnSpec {
     SpawnSpec {
         session_id: id.into(),
@@ -39,6 +46,7 @@ fn spec(id: &str, argv: &[&str], tty: bool, keep: bool) -> SpawnSpec {
         identity: Identity::User,
         tty: tty.then_some(TtySize { rows: 24, cols: 80 }),
         keep_after_exit: keep,
+        start_on_attach: false,
     }
 }
 
@@ -284,4 +292,88 @@ async fn unsupported_version_is_refused() {
     });
     frame::send(&mut s, &hello).await.unwrap();
     assert!(matches!(next(&mut s).await, ServerFrame::Refused(_)));
+}
+
+#[tokio::test]
+async fn start_on_attach_streams_everything() {
+    let env = env();
+    // More output than the replay buffer holds, written before anything else.
+    let task = start(
+        &env,
+        spec_on_attach("a1", &["sh", "-c", "head -c 3000000 /dev/zero; echo tail >&2"]),
+    )
+    .await;
+    let mut s = attach(&env, "a1", true).await;
+    let mut out = 0usize;
+    let mut err = Vec::new();
+    loop {
+        match next(&mut s).await {
+            ServerFrame::Stdout(o) => out += o.bytes.len(),
+            ServerFrame::Stderr(e) => err.extend(e.bytes),
+            ServerFrame::Replay(r) => panic!("unexpected replay of {} bytes", r.bytes.len()),
+            ServerFrame::Welcome(_) => {}
+            ServerFrame::Exit(e) => {
+                assert_eq!(e.status, ExitStatus::Code(0));
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(out, 3_000_000);
+    assert_eq!(err, b"tail\n");
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_command_that_cannot_start_exits_127() {
+    let env = env();
+    let task = start(&env, spec_on_attach("m1", &["/no/such/command"])).await;
+    let mut s = attach(&env, "m1", false).await;
+    let (_, err, status) = collect(&mut s).await;
+    assert_eq!(status, ExitStatus::Code(127));
+    assert!(err.contains("cannot start /no/such/command"), "{err:?}");
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn replay_keeps_stderr_apart() {
+    let env = env();
+    let task = start(
+        &env,
+        spec("e1", &["sh", "-c", "echo out; echo err >&2; exit 0"], false, true),
+    )
+    .await;
+    let exit_file = env.paths.session_dir("e1").join(session_files::EXIT);
+    for _ in 0..500 {
+        if exit_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut s = attach(&env, "e1", true).await;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    loop {
+        match next(&mut s).await {
+            ServerFrame::Replay(r) if r.stderr => err.extend(r.bytes),
+            ServerFrame::Replay(r) => out.extend(r.bytes),
+            ServerFrame::Welcome(_) => {}
+            ServerFrame::Exit(_) => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(out, b"out\n");
+    assert_eq!(err, b"err\n");
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_missing_command_fails_the_start() {
+    let env = env();
+    let spec = spec("f1", &["/no/such/command"], false, false);
+    toby_guest::session::prepare(&env.paths, &spec).unwrap();
+    let err = toby_guest::session::run(env.paths.clone(), "f1")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert!(!env.paths.session_dir("f1").exists());
 }

@@ -12,9 +12,13 @@ toby shell [--as-root] [--machine ID]
 ```
 
 - `toby exec` runs a command and exits with its exit status (128 plus the
-  signal number when a signal ended it). Standard input, output and error are
-  passed through; when both standard input and output are terminals the
-  command gets a terminal of the same size.
+  signal number when a signal ended it, 127 when it cannot be started).
+  Standard input, output and error are passed through separately, and the
+  command starts only once Toby is attached to it, so no output is lost.
+  When both standard input and output are terminals the command gets a
+  terminal of the same size; otherwise interrupt, termination, hangup and
+  quit signals sent to `toby` are passed on to the command. If writing the
+  command's output fails on the host, `toby` exits with an error.
 - `toby shell` opens a login shell.
 - `--as-root` runs as root in the guest instead of the home's user.
 - `--machine` selects a running machine by ID. Without it, Toby uses the only
@@ -28,7 +32,7 @@ Press `Ctrl-\` and then `d` to detach; the session keeps running. Press
 ```sh
 toby sessions ls          # sessions in every running machine
 toby attach [SESSION]     # reattach; without an ID, the only detached session
-toby sessions kill ID     # send SIGTERM to the session
+toby sessions kill ID     # hang up and terminate the session; kill it after 3 seconds
 ```
 
 Reattaching prints the session's recent output (up to 1 MiB) and then asks

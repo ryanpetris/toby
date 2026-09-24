@@ -1,7 +1,6 @@
 //! Session commands: `toby exec`, `toby shell`, `toby attach` and
 //! `toby sessions`, talking to a machine's host process.
 
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -125,15 +124,12 @@ async fn attach_terminal(
     replay: bool,
     redraw: bool,
 ) -> anyhow::Result<ExitCode> {
-    let outcome = {
-        let _raw = toby_term::RawMode::enable()?;
-        toby_term::attach(
-            connector(runtime.session_sock(), session_id.to_string()),
-            replay,
-            redraw,
-        )
-        .await
-    };
+    let outcome = toby_term::attach(
+        connector(runtime.session_sock(), session_id.to_string()),
+        replay,
+        redraw,
+    )
+    .await;
     Ok(match outcome? {
         Outcome::Exited(status) => exit_code(status),
         Outcome::Replaced(reason) => {
@@ -158,7 +154,7 @@ pub async fn run_session(
     let (_, runtime) = select(&paths, sel).await?;
     let mut control = Control::connect(&runtime).await?;
 
-    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let tty = toby_term::local_tty();
     let mut env = Vec::new();
     if tty && let Ok(term) = std::env::var("TERM") {
         env.push(("TERM".to_string(), term));
@@ -174,6 +170,7 @@ pub async fn run_session(
             TtySize { rows, cols }
         }),
         keep_after_exit: true,
+        start_on_attach: true,
     };
     let id = match control.call(Request::Spawn(machine::Spawn { spec })).await? {
         Response::Spawned(s) => s.session_id,
@@ -247,21 +244,38 @@ pub async fn list() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `toby sessions kill <id>`.
+/// `toby sessions kill <id>`: hangup and terminate, then kill if the
+/// session is still running after a grace period (interactive shells ignore
+/// SIGTERM).
 pub async fn kill(id: &str) -> anyhow::Result<ExitCode> {
     let (_, paths) = load_config()?;
     for (_, runtime) in running_machines(&paths).await {
         let Ok(mut c) = Control::connect(&runtime).await else {
             continue;
         };
-        if c.sessions().await?.iter().any(|s| s.id == id) {
+        if !c.sessions().await?.iter().any(|s| s.id == id) {
+            continue;
+        }
+        let running = |list: &[SessionInfo]| list.iter().any(|s| s.id == id && s.exit.is_none());
+        for signal in [libc::SIGHUP, libc::SIGTERM] {
             c.call(Request::Kill(machine::Kill {
                 session_id: id.to_string(),
-                signal: libc::SIGTERM,
+                signal,
             }))
             .await?;
-            return Ok(ExitCode::SUCCESS);
         }
+        for _ in 0..30 {
+            if !running(&c.sessions().await?) {
+                return Ok(ExitCode::SUCCESS);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        c.call(Request::Kill(machine::Kill {
+            session_id: id.to_string(),
+            signal: libc::SIGKILL,
+        }))
+        .await?;
+        return Ok(ExitCode::SUCCESS);
     }
     bail!("no session {id}")
 }

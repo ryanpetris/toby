@@ -1043,6 +1043,7 @@ dependencies = [
  "toby-guest",
  "toby-machine",
  "toby-proto",
+ "toby-store",
  "toby-svc",
  "toby-term",
  "toby-vfs",
@@ -1135,8 +1136,12 @@ name = "toby-store"
 version = "0.17.0"
 dependencies = [
  "imago",
+ "nix 0.31.3",
+ "serde",
  "tempfile",
+ "toby-config",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -1151,6 +1156,7 @@ name = "toby-term"
 version = "0.17.0"
 dependencies = [
  "crossterm",
+ "libc",
  "toby-proto",
  "tokio",
 ]

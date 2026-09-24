@@ -15,7 +15,7 @@ use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 use toby_proto::relay::{self, Request, Response};
 use toby_proto::stream::{Accepted, GuestHeader, HostHeader, RelayHello, Reply};
-use toby_proto::types::{self, Endpoint, SessionInfo};
+use toby_proto::types::{self, Endpoint, SessionInfo, SpawnSpec};
 use toby_proto::{Message, frame};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
@@ -186,7 +186,28 @@ impl Relay {
             }
             None => self.exe.clone(),
         };
-        let dir = session::prepare(&self.paths, &spec)?;
+        let dir = self.paths.session_dir(&id);
+        let sock = dir.join(session_files::SOCKET);
+
+        // A spawn repeated after a lost reply finds its session already there.
+        if dir.exists() {
+            let existing: SpawnSpec = record::read(&dir.join(session_files::SPEC))?;
+            if existing != spec {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("session {id} exists"),
+                ));
+            }
+            let deadline = tokio::time::Instant::now() + SPAWN_TIMEOUT;
+            while !sock.exists() {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            return Ok(id);
+        }
+        session::prepare(&self.paths, &spec)?;
 
         let mut cmd = match self.launcher {
             Launcher::SystemdScope => {
@@ -202,12 +223,33 @@ impl Relay {
         cmd.args(["guest", "session", "--id", &id])
             .env("TOBY_GUEST_ROOT", self.paths.root())
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null());
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
         let mut child = cmd.spawn().inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&dir);
         })?;
 
-        let sock = dir.join(session_files::SOCKET);
+        // The session's own errors go to the relay's log and, if it fails to
+        // start, into the reply.
+        let errors = Arc::new(Mutex::new(Vec::<u8>::new()));
+        if let Some(mut stderr) = child.stderr.take() {
+            let errors = errors.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                    let mut e = errors.lock().unwrap();
+                    if e.len() < 4096 {
+                        e.extend_from_slice(&buf[..n]);
+                    }
+                }
+            });
+        }
+
         let deadline = tokio::time::Instant::now() + SPAWN_TIMEOUT;
         loop {
             if sock.exists() {
@@ -215,11 +257,16 @@ impl Relay {
             }
             if let Ok(Some(status)) = child.try_wait() {
                 let _ = std::fs::remove_dir_all(&dir);
-                return Err(io::Error::other(format!(
-                    "session exited during start ({status})"
-                )));
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let text = String::from_utf8_lossy(&errors.lock().unwrap())
+                    .trim()
+                    .to_string();
+                let detail = if text.is_empty() { status.to_string() } else { text };
+                return Err(io::Error::other(format!("session could not start: {detail}")));
             }
             if tokio::time::Instant::now() >= deadline {
+                let _ = child.kill().await;
+                let _ = std::fs::remove_dir_all(&dir);
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "session did not start"));
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -232,6 +279,20 @@ impl Relay {
         Ok(id)
     }
 
+    /// Whether the session process named in `rec` still runs; records of
+    /// sessions that died abnormally are removed.
+    fn alive(&self, rec: &SessionRecord) -> bool {
+        let cmdline = std::fs::read(format!("/proc/{}/cmdline", rec.session_pid)).unwrap_or_default();
+        let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+        let ours = args
+            .windows(2)
+            .any(|w| w[0] == b"--id" && w[1] == rec.info.id.as_bytes());
+        if !ours {
+            let _ = std::fs::remove_dir_all(self.paths.session_dir(&rec.info.id));
+        }
+        ours
+    }
+
     fn sessions(&self) -> Vec<SessionInfo> {
         let Ok(entries) = std::fs::read_dir(self.paths.sessions()) else {
             return Vec::new();
@@ -239,6 +300,7 @@ impl Relay {
         let mut out: Vec<SessionInfo> = entries
             .flatten()
             .filter_map(|e| record::read::<SessionRecord>(&e.path().join(session_files::RECORD)).ok())
+            .filter(|r| self.alive(r))
             .map(|r| r.info)
             .collect();
         out.sort_by(|a, b| a.started.cmp(&b.started).then(a.id.cmp(&b.id)));
@@ -250,7 +312,9 @@ impl Relay {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session ID"));
         }
         record::read(&self.paths.session_dir(id).join(session_files::RECORD))
-            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no session {id}")))
+            .ok()
+            .filter(|r| self.alive(r))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no session {id}")))
     }
 
     fn kill(&self, id: &str, signal: i32) -> io::Result<()> {
@@ -259,6 +323,10 @@ impl Relay {
             return Ok(());
         }
         let sig = Signal::try_from(signal).map_err(io::Error::from)?;
+        if rec.child_pgid <= 1 {
+            // The command has not started yet (it starts on attach): end the session.
+            return kill(Pid::from_raw(rec.session_pid), Signal::SIGTERM).map_err(io::Error::from);
+        }
         killpg(Pid::from_raw(rec.child_pgid), sig).map_err(io::Error::from)
     }
 

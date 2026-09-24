@@ -292,6 +292,18 @@ fn a_new_session_keeps_mounts_and_full_options() {
 }
 
 #[test]
+fn a_session_after_destroy_starts_fresh() {
+    let f = fixture();
+    let fs = f.tree.filesystem();
+    // A guest reboot: the kernel unmounts (DESTROY) and mounts again (INIT).
+    fs.destroy();
+    let opts = fs.init(FsOptions::all()).unwrap();
+    assert!(opts.contains(FsOptions::MAX_PAGES), "{opts:?}");
+    walk(&*fs, &["projects", "p"]);
+    walk(&*fs, &["versions", "file"]);
+}
+
+#[test]
 fn unmounted_paths_disappear() {
     let f = fixture();
     let fs = f.tree.filesystem();

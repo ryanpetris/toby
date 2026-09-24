@@ -84,6 +84,7 @@ fn spec(id: &str, argv: &[&str]) -> SpawnSpec {
         identity: Identity::User,
         tty: None,
         keep_after_exit: true,
+        start_on_attach: false,
     }
 }
 
@@ -367,4 +368,58 @@ async fn guest_listeners_report_accepted_connections() {
     )
     .await;
     assert_eq!(resp, Response::Done(relay::Done {}));
+}
+
+#[tokio::test]
+async fn repeated_spawns_are_idempotent() {
+    let env = env();
+    let mut c = control(&env).await;
+    let spawn = relay::Spawn {
+        spec: spec("r1", &["sleep", "30"]),
+        version: None,
+    };
+    for _ in 0..2 {
+        let resp = call(&mut c, Request::Spawn(spawn.clone())).await;
+        assert_eq!(
+            resp,
+            Response::Spawned(relay::Spawned {
+                session_id: "r1".into()
+            })
+        );
+    }
+    let other = relay::Spawn {
+        spec: spec("r1", &["sleep", "31"]),
+        version: None,
+    };
+    assert!(matches!(
+        call(&mut c, Request::Spawn(other)).await,
+        Response::Failed(_)
+    ));
+    call(
+        &mut c,
+        Request::Kill(relay::Kill {
+            session_id: "r1".into(),
+            signal: libc::SIGKILL,
+        }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn failed_starts_report_the_reason() {
+    let env = env();
+    let mut c = control(&env).await;
+    let resp = call(
+        &mut c,
+        Request::Spawn(relay::Spawn {
+            spec: spec("x1", &["/no/such/command"]),
+            version: None,
+        }),
+    )
+    .await;
+    let Response::Failed(f) = resp else {
+        panic!("expected a failure, got {resp:?}")
+    };
+    assert!(f.error.contains("could not start"), "{}", f.error);
+    assert!(!env.dir.path().join("sessions/x1").exists());
 }
