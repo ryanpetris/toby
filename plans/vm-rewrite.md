@@ -1767,7 +1767,7 @@ GET    /v1/daemon                          version, backend, linger, paths
 GET    /v1/events                  (WS)    machine (with attachments and forwards), session, approval and build changes; resync
 
 GET    /v1/images                          list
-POST   /v1/images/prepare                  {default, mcp[], project, all, rebuild, pull} → build ids (§15.6)
+POST   /v1/images/prepare                  {default, mcp[], sources[], all, rebuild, pull} → build id (§15.6)
 POST   /v1/builds                          start build {source, arch, size} → build id
 GET    /v1/builds                          builds of the last hour
 GET    /v1/builds/{id}                     status

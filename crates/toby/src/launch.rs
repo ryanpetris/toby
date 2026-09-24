@@ -9,6 +9,9 @@ use toby_config::global::GlobalConfig;
 use toby_config::launch::{ImageConfig, Launch};
 use toby_config::paths::expand;
 
+/// An image configuration, and the directory its relative paths start in.
+pub type Image = (ImageConfig, PathBuf);
+
 /// A project attached at `/toby/workspace/<name>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
@@ -137,6 +140,41 @@ fn dir_name(p: &Path) -> anyhow::Result<String> {
         .and_then(|n| n.to_str())
         .map(str::to_string)
         .context("a project needs a UTF-8 directory name")
+}
+
+/// The image configured for the project at `path` (the current project
+/// without one): its configuration's, or `[defaults] image`, with the
+/// directory its relative paths start in.
+pub fn project_image(
+    config: &GlobalConfig,
+    config_dir: &Path,
+    home: &Path,
+    cwd: &Path,
+    path: Option<&Path>,
+) -> anyhow::Result<(Option<Image>, Vec<toby_api::Warning>)> {
+    let projects_dir = projects_dir(config, home);
+    let project = match path {
+        Some(p) => resolve(&flag_path(p, cwd, &projects_dir), &projects_dir, true)?,
+        None => resolve(&current_project(cwd, &projects_dir)?, &projects_dir, true)?,
+    };
+    let file = project.join(".toby/config.toml");
+    let mut warnings = Vec::new();
+    if file.exists() {
+        if config.settings.autoload_project_config {
+            if let Some(image) = Launch::load_project(&file)?.image {
+                return Ok((Some((image, project)), warnings));
+            }
+        } else {
+            warnings.push(toby_api::Warning {
+                id: "project.autoload-disabled".into(),
+                message: format!(
+                    "{} is not read; set settings.autoload_project_config to use it",
+                    file.display()
+                ),
+            });
+        }
+    }
+    Ok((config.defaults.image.clone().map(|i| (i, config_dir.to_path_buf())), warnings))
 }
 
 /// Works out a launch.

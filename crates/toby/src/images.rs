@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use toby_api::Source;
 
 use crate::api::{Api, segment};
@@ -27,12 +27,40 @@ async fn build(api: &Api, source: Source) -> anyhow::Result<()> {
 pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;
     match cmd {
-        ImageCommand::Prepare { all, default: _, mcp, project, rebuild, pull } => {
-            if mcp.is_some() || project.is_some() || pull {
-                bail!("preparing MCP and project images is not implemented yet");
+        ImageCommand::Prepare { all, default, mcp, project, rebuild, pull } => {
+            // Without a choice: the default image, every MCP server's, and
+            // the current project's.
+            let nothing = !all && !default && mcp.is_none() && project.is_none();
+            let mcp = if nothing { Some(Vec::new()) } else { mcp };
+            let mut sources = Vec::new();
+            if nothing || project.is_some() {
+                let config_dir =
+                    api.paths.global_config().parent().map(Path::to_path_buf).unwrap_or_default();
+                let home = toby_config::paths::home_dir()?;
+                let cwd = std::env::current_dir()?;
+                let path = project.flatten();
+                let found =
+                    crate::launch::project_image(&api.config, &config_dir, &home, &cwd, path.as_deref());
+                match found {
+                    Ok((image, warnings)) => {
+                        api.warn(&warnings);
+                        let source = match &image {
+                            Some((image, dir)) => crate::tool::api_source(image, dir)?,
+                            None => None,
+                        };
+                        match source {
+                            Some(Ok(s)) => sources.push(s),
+                            Some(Err(id)) => println!("The project uses image {id}"),
+                            None => {}
+                        }
+                    }
+                    // Outside a project, only an explicit --project fails.
+                    Err(_) if nothing => {}
+                    Err(e) => return Err(e),
+                }
             }
-            let started: toby_api::BuildStarted =
-                api.post("/v1/images/prepare", &toby_api::Prepare { all, rebuild }).await?;
+            let req = toby_api::Prepare { all, default, mcp, sources, rebuild, pull };
+            let started: toby_api::BuildStarted = api.post("/v1/images/prepare", &req).await?;
             let status = api.follow_build(&started.id).await?;
             if let Some(image) = status.image {
                 println!("Default image {image}");

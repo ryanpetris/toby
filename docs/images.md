@@ -40,8 +40,19 @@ machines and formats homes, so the first build or home creation builds it
 first. `toby image prepare --default` builds it when it is missing or
 when the bundled configuration or Toby's boot adaptation has changed, and
 does nothing otherwise; `--rebuild` forces a rebuild.
-`toby image prepare --all` also rebuilds the source of every root whose
-image is out of date.
+
+`toby image prepare` builds what the configuration will need, skipping
+images that are up to date:
+
+| Option | Builds |
+| --- | --- |
+| (none) | the default image, every MCP server's image, and the current project's |
+| `--default` | the default image |
+| `--mcp [NAME…]` | the images of MCP servers that run in machines of their own (`[mcp.<name>].image`), or of the named ones |
+| `--project [PATH]` | the image of the current project, or of PATH: its `.toby/config.toml` (when `settings.autoload_project_config` is set) or `[defaults] image` |
+| `--all` | all of the above for every MCP server, and the source of every root |
+| `--rebuild` | also images that are up to date |
+| `--pull` | also images from registries and Dockerfiles, fetching their base images again |
 
 The very first default image needs a builder that does not exist yet, so
 Toby starts from the Debian 13 cloud image instead:

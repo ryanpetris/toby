@@ -1,12 +1,13 @@
 #!/bin/sh
 # Builds a Toby image inside a builder machine (as root).
 #
-# usage: build.sh BUILD-ID KIND [ARGS...]
+# usage: build.sh BUILD-ID [--pull] KIND [ARGS...]
 #   default                     the bundled default image configuration
 #   mkosi DIR                   an mkosi configuration (DIR inside /build/context)
 #   dockerfile FILE             a Dockerfile (FILE inside /build/context)
 #   registry REF [AUTHFILE]     a registry image
 #   archive FILE                an OCI archive (FILE inside /build/context)
+# --pull fetches a Dockerfile's base images again.
 #
 # Needs: the cache disk (serial "cache"), the output disk (serial "out"),
 # /build/context (the context attachment, if any) and /build/boot (the
@@ -15,8 +16,14 @@
 
 set -eu
 id=$1
-kind=$2
-shift 2
+shift
+pull=missing
+if [ "$1" = --pull ]; then
+    pull=always
+    shift
+fi
+kind=$1
+shift
 
 here=$(dirname "$0")
 boot=/build/boot
@@ -94,7 +101,7 @@ case $kind in
         ;;
     dockerfile)
         log "Building the Dockerfile"
-        buildah build --layers --network host -f "/build/context/$1" -t toby/build /build/context
+        buildah build --layers --pull="$pull" --network host -f "/build/context/$1" -t toby/build /build/context
         from_image toby/build
         ;;
     registry)

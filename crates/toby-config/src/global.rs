@@ -72,6 +72,14 @@ pub struct McpServer {
     /// http: headers added by the proxy.
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// http without a url: the port `command` listens on in its machine.
+    pub port: Option<u16>,
+    /// The image of the server's own machine (default: the default image).
+    pub image: Option<crate::launch::ImageConfig>,
+    /// Ports of the host's 127.0.0.1 the server's own machine reaches at the
+    /// same port of its 127.0.0.1.
+    #[serde(default)]
+    pub host_ports: Vec<u16>,
 }
 
 fn uses_substitutions(s: &str) -> bool {
@@ -79,6 +87,15 @@ fn uses_substitutions(s: &str) -> bool {
 }
 
 impl McpServer {
+    /// Whether the server runs in a services machine of its own: an
+    /// isolated stdio server, or an HTTP server Toby runs.
+    pub fn own_machine(&self) -> bool {
+        match self.kind {
+            McpKind::Stdio => self.placement() == Placement::Isolated,
+            McpKind::Http => self.url.is_none(),
+        }
+    }
+
     /// Where a stdio server runs.
     pub fn placement(&self) -> Placement {
         self.placement.unwrap_or_else(|| {
@@ -106,7 +123,20 @@ impl McpServer {
                     "mcp.{name}: a server that runs in the tool's machine cannot use secrets; use placement = \"isolated\""
                 ))
             }
-            McpKind::Http if self.url.is_none() => Err(format!("mcp.{name}: an http server needs a url")),
+            McpKind::Http if self.url.is_some() && (!self.command.is_empty() || self.port.is_some()) => {
+                Err(format!("mcp.{name}: an http server has a url, or a command and the port it listens on"))
+            }
+            McpKind::Http if self.url.is_none() && (self.command.is_empty() || self.port.is_none()) => Err(
+                format!("mcp.{name}: an http server needs a url, or a command and the port it listens on"),
+            ),
+            McpKind::Stdio if self.port.is_some() || self.url.is_some() => {
+                Err(format!("mcp.{name}: a stdio server has no url or port"))
+            }
+            _ if !self.own_machine() && (self.image.is_some() || !self.host_ports.is_empty()) => {
+                Err(format!(
+                    "mcp.{name}: only a server in its own machine (isolated, or http with a command) has an image or host ports"
+                ))
+            }
             _ => Ok(()),
         }
     }

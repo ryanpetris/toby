@@ -1,5 +1,6 @@
 //! `toby machine`, `toby daemon`, `toby linger` and `toby doctor`.
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::ExitCode;
@@ -268,8 +269,22 @@ pub async fn web() -> anyhow::Result<ExitCode> {
     let api = Api::connect().await?;
     let token: toby_api::WebToken = api.post("/v1/web/token", &()).await?;
     println!("{}", token.url);
+    // The browser gets a private file that goes on to the link, so the
+    // link is not on a command line other users can read.
+    let page = api.paths.runtime.join("web-login.html");
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=\"0;url={}\">",
+        token.url.replace('&', "&amp;").replace('"', "&quot;")
+    );
+    let _ = std::fs::remove_file(&page);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&page)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, html.as_bytes()))?;
     let _ = std::process::Command::new("xdg-open")
-        .arg(&token.url)
+        .arg(&page)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

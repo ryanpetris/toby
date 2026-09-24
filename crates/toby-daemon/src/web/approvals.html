@@ -8,7 +8,7 @@
   <td>{{ a.created | age }}</td>
   <td class="state-{{ a.status }}">{{ a.status }}</td>
   <td>{% if a.status == "pending" %}
-    <button class="go" data-url="/v1/approvals/{{ a.id }}" data-body='{"decision":"approve"}'>Approve</button>
+    <button class="go" data-url="/v1/approvals/{{ a.id }}" data-body='{"decision":"approve"}' data-confirm="Approve {{ a.kind }} for machine {{ a.machine }}?">Approve</button>
     <button class="stop" data-url="/v1/approvals/{{ a.id }}" data-body='{"decision":"deny"}'>Deny</button>
   {% endif %}</td>
 </tr>

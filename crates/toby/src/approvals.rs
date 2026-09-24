@@ -170,6 +170,7 @@ pub async fn mcp(cmd: McpCommand) -> anyhow::Result<ExitCode> {
                     toby_config::global::McpKind::Http => "http",
                 };
                 let placement = match (s.kind, s.placement()) {
+                    (toby_config::global::McpKind::Http, _) if s.own_machine() => "isolated",
                     (toby_config::global::McpKind::Http, _) => "proxy",
                     (_, toby_config::global::Placement::Machine) => "machine",
                     (_, toby_config::global::Placement::Isolated) => "isolated",

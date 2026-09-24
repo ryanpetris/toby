@@ -40,8 +40,9 @@ function editing() {
   for (const el of main.querySelectorAll("input, textarea")) {
     if (el.type === "checkbox" ? el.checked !== el.defaultChecked : el.value !== el.defaultValue) return true;
   }
-  for (const o of main.querySelectorAll("option")) {
-    if (o.selected !== o.defaultSelected) return true;
+  for (const s of main.querySelectorAll("select")) {
+    const initial = Math.max(0, [...s.options].findIndex((o) => o.defaultSelected));
+    if (s.selectedIndex !== initial) return true;
   }
   return false;
 }
@@ -55,8 +56,18 @@ async function refresh(force) {
   }
   pending = false;
   const res = await fetch(location.pathname + location.search, { headers: authorized({ "x-toby-part": "main" }) });
-  if (res.status === 401 || res.ok) document.querySelector("main").innerHTML = await res.text();
+  if (res.status === 401 || res.ok) {
+    document.querySelector("main").innerHTML = await res.text();
+    changed = Date.now();
+  }
+  return res.status !== 401;
 }
+
+// Clicks just after the page changed, or came to the front, are not meant
+// for what is now under the pointer.
+let changed = 0;
+window.addEventListener("focus", () => { changed = Date.now(); });
+const settled = () => Date.now() - changed > 500;
 
 document.addEventListener("focusout", () => setTimeout(() => { if (pending && !editing()) refresh(); }, 0));
 
@@ -81,6 +92,7 @@ async function call(method, url, body) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest("button[data-url]");
   if (!b || b.form) return;
+  if (!settled()) return;
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
   b.disabled = true;
   call(b.dataset.method || "POST", b.dataset.url, b.dataset.body ? JSON.parse(b.dataset.body) : undefined)
@@ -137,17 +149,20 @@ async function stream(pre) {
   }
 }
 
-// Changes are missed while the socket is closed, so a new one refreshes.
-function events(again) {
+// Changes before the socket opened are not reported, so an open refreshes;
+// a page that is no longer logged in says so and stops.
+function events() {
   let timer = null;
   const ws = socket("/v1/events");
   const soon = () => {
     clearTimeout(timer);
     timer = setTimeout(refresh, 300);
   };
-  ws.onopen = () => { if (again) soon(); };
+  ws.onopen = soon;
   ws.onmessage = soon;
-  ws.onclose = () => setTimeout(() => events(true), 3000);
+  ws.onclose = async () => {
+    if (await refresh(true)) setTimeout(events, 3000);
+  };
 }
 
 (async () => {

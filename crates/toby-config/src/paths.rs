@@ -122,6 +122,11 @@ impl Paths {
     }
 
     /// tobyd's endpoint for guest capability requests.
+    /// tobyd's API.
+    pub fn api_sock(&self) -> PathBuf {
+        self.runtime.join("tobyd.sock")
+    }
+
     pub fn capability_sock(&self) -> PathBuf {
         self.runtime.join("capability.sock")
     }

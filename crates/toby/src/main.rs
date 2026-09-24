@@ -161,8 +161,9 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
             helper::patch::patch_file(&helper::patch::expand_home(&path, &home), &content, format, mode)?;
         }
-        HelperCommand::Build { id, kind, args } => {
-            let args: Vec<String> = [id, kind].into_iter().chain(args).collect();
+        HelperCommand::Build { id, pull, kind, args } => {
+            let pull = pull.then(|| "--pull".to_string());
+            let args: Vec<String> = [id].into_iter().chain(pull).chain([kind]).chain(args).collect();
             helper::build::exec_script(&paths.root().join("build"), "build.sh", &args)?;
         }
         HelperCommand::Provision => {

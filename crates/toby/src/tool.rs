@@ -37,6 +37,29 @@ fn absolute(dir: &Path, p: &str) -> anyhow::Result<String> {
     p.to_str().map(str::to_string).context("the path is not UTF-8")
 }
 
+/// An image configuration as the API names it: none for the default image,
+/// an image ID, or a source; relative paths start in `dir`.
+pub fn api_source(
+    image: &ImageConfig,
+    dir: &Path,
+) -> anyhow::Result<Option<Result<toby_api::Source, String>>> {
+    Ok(match image {
+        ImageConfig::Named(n) if n == "default" => None,
+        ImageConfig::Named(id) => Some(Err(id.clone())),
+        ImageConfig::Mkosi { mkosi } => Some(Ok(toby_api::Source::Mkosi { path: absolute(dir, mkosi)? })),
+        ImageConfig::Dockerfile { dockerfile, context } => Some(Ok(toby_api::Source::Dockerfile {
+            path: absolute(dir, dockerfile)?,
+            context: absolute(dir, context.as_deref().unwrap_or("."))?,
+        })),
+        ImageConfig::Registry { registry } => {
+            Some(Ok(toby_api::Source::Registry { reference: registry.clone() }))
+        }
+        ImageConfig::Archive { archive } => {
+            Some(Ok(toby_api::Source::Archive { path: absolute(dir, archive)? }))
+        }
+    })
+}
+
 /// Creates the root if it does not exist, from the launch's image or the
 /// default one (built first when needed).
 async fn ensure_root(
@@ -50,23 +73,7 @@ async fn ensure_root(
     }
     let source = match image {
         None => None,
-        Some((ImageConfig::Named(n), _)) if n == "default" => None,
-        Some((ImageConfig::Named(id), _)) => Some(Err(id.clone())),
-        Some((ImageConfig::Mkosi { mkosi }, dir)) => {
-            Some(Ok(toby_api::Source::Mkosi { path: absolute(dir, mkosi)? }))
-        }
-        Some((ImageConfig::Dockerfile { dockerfile, context }, dir)) => {
-            Some(Ok(toby_api::Source::Dockerfile {
-                path: absolute(dir, dockerfile)?,
-                context: absolute(dir, context.as_deref().unwrap_or("."))?,
-            }))
-        }
-        Some((ImageConfig::Registry { registry }, _)) => {
-            Some(Ok(toby_api::Source::Registry { reference: registry.clone() }))
-        }
-        Some((ImageConfig::Archive { archive }, dir)) => {
-            Some(Ok(toby_api::Source::Archive { path: absolute(dir, archive)? }))
-        }
+        Some((image, dir)) => api_source(image, dir)?,
     };
     let image = match source {
         None => {

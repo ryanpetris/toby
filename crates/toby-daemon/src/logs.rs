@@ -173,8 +173,17 @@ pub async fn mcp(d: Arc<Daemon>, name: String, mut socket: WebSocket) {
             };
             if gone {
                 follow.abort();
-                if let Ok(mut c) = crate::control::Control::connect(&runtime).await {
-                    let _ = c.kill(&id, libc_sigkill()).await;
+                // Its spawn may still be on the way: the session can appear
+                // just after.
+                for _ in 0..10 {
+                    let killed = match crate::control::Control::connect(&runtime).await {
+                        Ok(mut c) => c.kill(&id, libc_sigkill()).await.is_ok(),
+                        Err(_) => false,
+                    };
+                    if killed || d.machines.observe(&spec.id).await.state != "ready" {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 return;
             }

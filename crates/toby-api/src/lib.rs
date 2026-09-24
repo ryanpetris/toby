@@ -255,10 +255,25 @@ pub struct StartBuild {
 /// `POST /v1/images/prepare` (plan §15.6).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Prepare {
+    /// The default image, every MCP server's and every root's source.
     #[serde(default)]
     pub all: bool,
+    /// The default image (also when nothing else is asked for).
+    #[serde(default)]
+    pub default: bool,
+    /// Images of these MCP servers' own machines; empty: of every one.
+    #[serde(default)]
+    pub mcp: Option<Vec<String>>,
+    /// Other sources, such as a project's.
+    #[serde(default)]
+    pub sources: Vec<Source>,
+    /// Build even if up to date.
     #[serde(default)]
     pub rebuild: bool,
+    /// Rebuild images from registries and Dockerfiles, pulling their bases
+    /// again.
+    #[serde(default)]
+    pub pull: bool,
 }
 
 /// `POST /v1/bootstrap`.
@@ -345,8 +360,19 @@ pub struct Decide {
 /// Text from a guest, without control characters other than newlines or
 /// characters that reorder or hide text.
 pub fn clean_text(s: &str) -> String {
-    let invisible = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{00ad}' | '\u{180e}');
+    let invisible = |c: char| {
+        matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{00ad}' | '\u{180e}'
+            | '\u{034f}' | '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}' | '\u{3164}' | '\u{ffa0}'
+            | '\u{fe00}'..='\u{fe0f}' | '\u{e0000}'..='\u{e007f}' | '\u{e0100}'..='\u{e01ef}')
+    };
     s.chars().map(|c| if (c.is_control() && c != '\n') || invisible(c) { ' ' } else { c }).collect()
+}
+
+/// `POST /v1/mcp/{name}/endpoint`: where an HTTP MCP server Toby runs
+/// listens on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct McpEndpoint {
+    pub url: String,
 }
 
 /// `POST /v1/web/token`: a one-time login URL for the web UI.

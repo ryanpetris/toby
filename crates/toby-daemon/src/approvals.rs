@@ -107,7 +107,14 @@ impl Approvals {
             }
         }
         all.sort_by(|a, b| {
-            (a.status != "pending").cmp(&(b.status != "pending")).then(b.created.cmp(&a.created))
+            // Pending ones in the order they came, so a new one does not
+            // move the others; decided ones newest first.
+            let pending = |x: &Approval| x.status == "pending";
+            pending(b).cmp(&pending(a)).then(if pending(a) {
+                a.created.cmp(&b.created)
+            } else {
+                b.created.cmp(&a.created)
+            })
         });
         Ok(all)
     }

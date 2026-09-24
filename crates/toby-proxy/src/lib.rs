@@ -160,7 +160,11 @@ impl Proxy {
         let url = match server.url.as_deref().map(resolve) {
             Some(Ok(u)) => u,
             Some(Err(e)) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.url: {e}")),
-            None => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name} has no url")),
+            // A server Toby runs in a machine of its own.
+            None => match self.endpoint(&name).await {
+                Ok(u) => u,
+                Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+            },
         };
         let upstream = format!("{}{tail}", url.trim_end_matches('/'));
         let mut headers = Vec::new();
@@ -174,6 +178,25 @@ impl Proxy {
             req.headers_mut().remove(*h);
         }
         self.forward(&name, req, &upstream, headers).await
+    }
+
+    /// Asks tobyd where an HTTP MCP server it runs listens, starting it.
+    async fn endpoint(&self, name: &str) -> Result<String, String> {
+        let stream = UnixStream::connect(self.paths.api_sock()).await.map_err(|e| format!("tobyd: {e}"))?;
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|e| e.to_string())?;
+        tokio::spawn(conn);
+        let req = Request::post(format!("/v1/mcp/{name}/endpoint"))
+            .header(hyper::header::HOST, "localhost")
+            .body(http_body_util::Empty::<Bytes>::new())
+            .map_err(|e| e.to_string())?;
+        let res = sender.send_request(req).await.map_err(|e| e.to_string())?;
+        let ok = res.status().is_success();
+        let body = res.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        let field = if ok { "url" } else { "message" };
+        let text = v.get(field).and_then(|u| u.as_str()).unwrap_or("tobyd gave no answer").to_string();
+        if ok { Ok(text) } else { Err(text) }
     }
 
     async fn models(&self, machine: &str, mut req: Request<Incoming>) -> Response<Body> {

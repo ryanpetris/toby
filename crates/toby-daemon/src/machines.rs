@@ -298,14 +298,9 @@ impl Machines {
         let observed = self.observe(&spec.id).await;
         let mut sessions = 0;
         if observed.state == "ready"
-            && let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await
+            && let Some(list) = self.sessions_of(&spec.id).await
         {
-            sessions = tokio::time::timeout(LIST_TIMEOUT, c.sessions())
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .map(|l| l.iter().filter(|s| s.exit.is_none()).count())
-                .unwrap_or(0);
+            sessions = list.iter().filter(|s| s.exit.is_none()).count();
         }
         let now = Instant::now();
         let running = observed.state != "stopped";
@@ -342,11 +337,14 @@ impl Machines {
     }
 
     pub async fn list(&self) -> Vec<MachineInfo> {
-        let mut out = Vec::new();
-        for spec in self.records() {
-            out.push(self.info(&spec).await);
-        }
-        out
+        let records = self.records();
+        futures_util::future::join_all(records.iter().map(|spec| self.info(spec))).await
+    }
+
+    /// The sessions of machine `id`, if it answers soon.
+    async fn sessions_of(&self, id: &str) -> Option<Vec<SessionInfo>> {
+        let list = async { Control::connect(&self.runtime(id)).await?.sessions().await };
+        tokio::time::timeout(LIST_TIMEOUT, list).await.ok()?.ok()
     }
 
     /// The linger warning, once per daemon lifetime (plan §12.2).
@@ -1375,16 +1373,15 @@ impl Machines {
 
     /// Sessions of every running machine, with the machine's ID.
     pub async fn sessions(&self) -> Vec<(String, SessionInfo)> {
-        let mut out = Vec::new();
-        for spec in self.records() {
-            let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { continue };
-            // A machine that does not answer soon is left out.
-            let list = tokio::time::timeout(LIST_TIMEOUT, c.sessions()).await.ok().and_then(|r| r.ok());
-            for s in list.unwrap_or_default() {
-                out.push((spec.id.clone(), s));
-            }
-        }
-        out
+        // A machine that does not answer soon is left out.
+        let records = self.records();
+        let lists =
+            futures_util::future::join_all(records.iter().map(|spec| self.sessions_of(&spec.id))).await;
+        records
+            .iter()
+            .zip(lists)
+            .flat_map(|(spec, list)| list.unwrap_or_default().into_iter().map(|s| (spec.id.clone(), s)))
+            .collect()
     }
 
     /// Sends a signal to a session, or ends it: hangup and terminate, then

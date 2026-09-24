@@ -87,6 +87,7 @@ fn bad(code: &'static str, message: impl Into<String>) -> Error {
         collect_versions,
         mcp_servers,
         mcp_logs,
+        mcp_endpoint,
         approvals,
         decide,
         events,
@@ -109,6 +110,7 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/machines/{id}/logs", get(machine_logs))
         .route("/v1/mcp", get(mcp_servers))
         .route("/v1/mcp/{name}/logs", get(mcp_logs))
+        .route("/v1/mcp/{name}/endpoint", post(mcp_endpoint))
         .route("/v1/machines/{id}/attachments", post(add_attachment))
         .route("/v1/machines/{id}/attachments/{aid}", delete(remove_attachment))
         .route("/v1/machines/{id}/forwards", post(add_forward))
@@ -363,9 +365,33 @@ async fn start_build(State(d): Shared, Json(req): Json<api::StartBuild>) -> ApiR
 
 #[utoipa::path(post, path = "/v1/images/prepare", tag = "images", request_body = api::Prepare, responses((status = 200, body = api::BuildStarted), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
 async fn prepare(State(d): Shared, Json(req): Json<api::Prepare>) -> ApiResult<api::BuildStarted> {
+    let config = d.machines.current_config();
+    let config_dir = d.machines.paths.global_config().parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut sources: Vec<ImageSource> = req.sources.into_iter().map(source).collect();
+    let servers: Vec<String> = match (&req.mcp, req.all) {
+        (Some(names), false) if !names.is_empty() => names.clone(),
+        (Some(_), _) | (None, true) => {
+            config.mcp.iter().filter(|(_, s)| s.own_machine()).map(|(n, _)| n.clone()).collect()
+        }
+        (None, false) => Vec::new(),
+    };
+    for name in servers {
+        let server = config.mcp.get(&name).filter(|s| s.own_machine()).ok_or_else(|| {
+            bad("mcp.unknown", format!("{name} is not an MCP server with a machine of its own"))
+        })?;
+        if let Some(wanted) = &server.image {
+            match crate::builder::wanted_image(wanted, &config_dir)? {
+                crate::builder::Wanted::Source(s) if !sources.contains(&s) => sources.push(s),
+                _ => {}
+            }
+        }
+    }
+    // The default image is always prepared: builders boot it.
+    let opts =
+        crate::builder::PrepareOptions { roots: req.all, sources, rebuild: req.rebuild, pull: req.pull };
     let builder = d.builder.clone();
     let b = d.builds.start(builder.paths.state.join("builds"), "prepare", move |out| {
-        Box::pin(async move { builder.prepare(req.all, req.rebuild, out).await.map(|r| Some(r.id)) })
+        Box::pin(async move { builder.prepare(opts, out).await.map(|r| Some(r.id)) })
     })?;
     Ok(started(b))
 }
@@ -607,6 +633,7 @@ pub(crate) async fn mcp_servers(State(d): Shared) -> ApiResult<Vec<api::McpInfo>
             }
             .into(),
             placement: match (s.kind, s.placement()) {
+                (McpKind::Http, _) if s.own_machine() => "isolated",
                 (McpKind::Http, _) => "proxy",
                 (_, Placement::Machine) => "machine",
                 (_, Placement::Isolated) => "isolated",
@@ -617,6 +644,16 @@ pub(crate) async fn mcp_servers(State(d): Shared) -> ApiResult<Vec<api::McpInfo>
         });
     }
     Ok(Json(out))
+}
+
+/// Starts an HTTP MCP server Toby runs, if needed, and says where it
+/// listens (for the proxy).
+#[utoipa::path(post, path = "/v1/mcp/{name}/endpoint", tag = "mcp", params(("name" = String, Path)), responses((status = 200, body = api::McpEndpoint), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
+async fn mcp_endpoint(State(d): Shared, Path(name): Path<String>) -> ApiResult<api::McpEndpoint> {
+    let url = crate::services::http_endpoint(d, &name)
+        .await
+        .map_err(|e| Error::new(ErrorKind::Conflict, "mcp.unavailable", e))?;
+    Ok(Json(api::McpEndpoint { url }))
 }
 
 #[utoipa::path(get, path = "/v1/mcp/{name}/logs", tag = "mcp", params(("name" = String, Path)), responses((status = 101, description = "A WebSocket of log lines"), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]

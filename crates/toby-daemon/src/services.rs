@@ -43,8 +43,9 @@ fn server_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
     LOCKS.lock().unwrap().entry(name.into()).or_default().clone()
 }
 
-/// Makes sure the services machine for `name` exists and runs.
-async fn ensure_machine(d: &Daemon, name: &str) -> Result<String, String> {
+/// Makes sure the services machine for `name` exists and runs: its root
+/// from the server's image, and its forwards to the host's ports.
+async fn ensure_machine(d: &Daemon, name: &str, server: &McpServer) -> Result<String, String> {
     let lock = server_lock(name);
     let _lock = lock.lock().await;
     let pair = pair_name(name);
@@ -64,12 +65,18 @@ async fn ensure_machine(d: &Daemon, name: &str) -> Result<String, String> {
             .map_err(|e| format!("preparing the home of {name}: {e}"))?;
     }
     if store.root(&pair).is_err() {
+        let config_dir =
+            d.machines.paths.global_config().parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let wanted = match &server.image {
+            Some(i) => {
+                crate::builder::wanted_image(i, &config_dir).map_err(|e| format!("mcp.{name}.image: {e}"))?
+            }
+            None => crate::builder::Wanted::Source(toby_store::records::ImageSource::Default),
+        };
         let image = d
             .builder
-            .default_image()
-            .ok()
-            .flatten()
-            .ok_or("there is no current default image; build it with: toby image prepare --default")?;
+            .image_for(&wanted)
+            .map_err(|e| format!("{e}; build it with: toby image prepare --mcp {name}"))?;
         store.create_root(&pair, &image.id).await.map_err(|e| e.to_string())?;
     }
     let req = toby_api::EnsureMachine {
@@ -81,11 +88,31 @@ async fn ensure_machine(d: &Daemon, name: &str) -> Result<String, String> {
     };
     let spec = d.machines.ensure_for(req, Some(name)).await.map_err(|e| e.message)?;
     d.machines.set_idle_timeout(&spec.id, SERVICES_IDLE).map_err(|e| e.message)?;
+    // host_ports as they are configured now: kept while the machine exists.
+    let wanted: Vec<String> = server.host_ports.iter().map(|p| format!("127.0.0.1:{p}")).collect();
+    for f in spec.forward.iter().filter(|f| f.persist && !wanted.contains(&f.host)) {
+        let _ = d.machines.remove_forward(&spec.id, &f.id).await;
+    }
+    for addr in wanted.iter().filter(|a| !spec.forward.iter().any(|f| f.persist && &&f.host == a)) {
+        let fwd = toby_api::AddForward {
+            direction: "guest-to-host".into(),
+            host: addr.clone(),
+            guest: addr.clone(),
+            pinned: false,
+            persist: true,
+        };
+        d.machines
+            .add_forward(&spec.id, fwd, None)
+            .await
+            .map_err(|e| format!("mcp.{name}.host_ports: {}", e.message))?;
+    }
     Ok(spec.id)
 }
 
-/// Starts the server for one connection in its services machine.
-async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Splice, String> {
+/// A server's command and environment, with substitutions resolved.
+type Command = (Vec<String>, Vec<(String, String)>);
+
+fn command(d: &Daemon, name: &str, server: &McpServer) -> Result<Command, String> {
     let config_dir = d.machines.paths.global_config().parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let home = toby_config::paths::home_dir().map_err(|e| e.to_string())?;
     let mut env = Vec::new();
@@ -100,7 +127,13 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
             toby_config::subst::resolve(c, &config_dir, &home).map_err(|e| format!("mcp.{name}: {e}"))?,
         );
     }
-    let machine = ensure_machine(d, name).await?;
+    Ok((command, env))
+}
+
+/// Starts the server for one connection in its services machine.
+async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Splice, String> {
+    let (command, env) = command(d, name, server)?;
+    let machine = ensure_machine(d, name, server).await?;
 
     // The server runs as the services machine's user, who can write /tmp.
     let socket = format!("/tmp/toby-mcp-{}.sock", toby_config::new_id().to_lowercase());
@@ -130,6 +163,146 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
     let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
     c.spawn(spec).await.map_err(|e| format!("starting {name}: {e}"))?;
     Ok(Splice { machine, target: Endpoint::Unix { path: socket } })
+}
+
+/// An HTTP MCP server Toby runs: its session, and the host port forwarded
+/// to it.
+struct Running {
+    machine: String,
+    session: String,
+    port: u16,
+    used: std::time::Instant,
+}
+
+static HTTP_SERVERS: LazyLock<Mutex<HashMap<String, Running>>> = LazyLock::new(Default::default);
+
+/// How long a local HTTP server may take to listen.
+const LISTEN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Whether something holds a connection to `port` open: an HTTP server
+/// waits for the request, while a forward with nothing behind it closes.
+async fn listening(port: u16) -> bool {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut s) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else { return false };
+    let mut b = [0u8; 1];
+    tokio::time::timeout(Duration::from_millis(300), s.read(&mut b)).await.is_err()
+}
+
+fn signal(s: nix::sys::signal::Signal) -> i32 {
+    s as i32
+}
+
+/// The host address of HTTP MCP server `name`, which runs in its services
+/// machine (plan §16.3): started when first asked for, and stopped after
+/// five minutes without being asked.
+pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<String, String> {
+    use nix::sys::signal::Signal;
+    let config = d.machines.current_config();
+    let server = config
+        .mcp
+        .get(name)
+        .filter(|s| s.kind == McpKind::Http && s.own_machine())
+        .ok_or_else(|| format!("{name} is not an HTTP MCP server Toby runs"))?;
+    server.check(name)?;
+    // Not the machine's lock, which ensure_machine takes.
+    let lock = server_lock(&format!("http {name}"));
+    let _lock = lock.lock().await;
+    let known =
+        HTTP_SERVERS.lock().unwrap().get(name).map(|r| (r.machine.clone(), r.session.clone(), r.port));
+    if let Some((machine, session, port)) = known {
+        let alive = match Control::connect(&d.machines.runtime(&machine)).await {
+            Ok(mut c) => {
+                c.sessions().await.is_ok_and(|l| l.iter().any(|s| s.id == session && s.exit.is_none()))
+            }
+            Err(_) => false,
+        };
+        if alive {
+            if let Some(r) = HTTP_SERVERS.lock().unwrap().get_mut(name) {
+                r.used = std::time::Instant::now();
+            }
+            return Ok(format!("http://127.0.0.1:{port}"));
+        }
+        HTTP_SERVERS.lock().unwrap().remove(name);
+    }
+
+    let (command, env) = command(&d, name, server)?;
+    let machine = ensure_machine(&d, name, server).await?;
+    // Its output goes where `toby mcp logs` reads.
+    let log = toby_guest::helper::serve::LOG;
+    let mut argv: Vec<String> = vec![
+        "sh".into(),
+        "-c".into(),
+        format!("mkdir -p \"$(dirname \"$HOME/{log}\")\" && exec \"$@\" >>\"$HOME/{log}\" 2>&1"),
+        "sh".into(),
+    ];
+    argv.extend(command);
+    let session = SpawnSpec {
+        session_id: toby_config::new_id(),
+        argv,
+        env,
+        cwd: None,
+        identity: Identity::User,
+        tty: None,
+        keep_after_exit: false,
+        start_on_attach: false,
+        tool: None,
+    };
+    let id = session.session_id.clone();
+    let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
+    c.spawn(session).await.map_err(|e| format!("starting {name}: {e}"))?;
+    // A free port of the host, forwarded while the server's session runs.
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map_err(|e| e.to_string())?
+        .port();
+    let guest_port = server.port.unwrap_or_default();
+    let fwd = toby_api::AddForward {
+        direction: "host-to-guest".into(),
+        host: format!("127.0.0.1:{port}"),
+        guest: format!("127.0.0.1:{guest_port}"),
+        pinned: false,
+        persist: false,
+    };
+    if let Err(e) = d.machines.add_forward(&machine, fwd, Some(&id)).await {
+        let _ = c.kill(&id, signal(Signal::SIGKILL)).await;
+        return Err(format!("forwarding to {name}: {}", e.message));
+    }
+    let deadline = tokio::time::Instant::now() + LISTEN_TIMEOUT;
+    while !listening(port).await {
+        if tokio::time::Instant::now() > deadline {
+            let _ = c.kill(&id, signal(Signal::SIGKILL)).await;
+            return Err(format!("{name} does not listen on port {guest_port}; see toby mcp logs {name}"));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let running = Running { machine, session: id, port, used: std::time::Instant::now() };
+    HTTP_SERVERS.lock().unwrap().insert(name.to_string(), running);
+    tokio::spawn(stop_when_unused(d, name.to_string()));
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+/// Ends a local HTTP server's session when nothing has asked for it for the
+/// services machines' idle time; the machine then stops by itself.
+async fn stop_when_unused(d: Arc<Daemon>, name: String) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let lock = server_lock(&format!("http {name}"));
+        let _lock = lock.lock().await;
+        let stale = {
+            let mut servers = HTTP_SERVERS.lock().unwrap();
+            match servers.get(&name) {
+                Some(r) if r.used.elapsed() >= SERVICES_IDLE => servers.remove(&name),
+                Some(_) => None,
+                None => return,
+            }
+        };
+        if let Some(r) = stale {
+            if let Ok(mut c) = Control::connect(&d.machines.runtime(&r.machine)).await {
+                let _ = c.kill(&r.session, signal(nix::sys::signal::Signal::SIGTERM)).await;
+            }
+            return;
+        }
+    }
 }
 
 async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {

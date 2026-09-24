@@ -354,12 +354,25 @@ impl Builder {
     /// Builds an image from `source` (plan §15.3), bootstrapping the default
     /// image first if there is none.
     pub async fn build(&self, source: ImageSource, out: Output<'_>) -> io::Result<ImageRecord> {
+        self.build_pulling(source, false, out).await
+    }
+
+    /// Builds an image; `pull` fetches a Dockerfile's base images again.
+    pub async fn build_pulling(
+        &self,
+        source: ImageSource,
+        pull: bool,
+        out: Output<'_>,
+    ) -> io::Result<ImageRecord> {
         let fresh = self.any_default_image()?.is_none();
         let base = self.builder_image(&mut *out).await?;
         if fresh && source == ImageSource::Default {
             return Ok(base);
         }
-        let job = self.job_for(&source)?;
+        let mut job = self.job_for(&source)?;
+        if pull {
+            job.args.insert(0, "--pull".into());
+        }
         let source_hash = self.source_hash(&source)?;
         let root = RootSpec::Image { image: base.id.clone() };
         self.build_with(root, Some(base.id), source, job, source_hash, Vec::new(), out).await
@@ -590,26 +603,29 @@ impl Builder {
         self.build(ImageSource::Default, out).await
     }
 
-    /// `toby image prepare` (plan §15.6): the default image, and with `all`
-    /// the source of every root whose image is out of date. Returns the
-    /// default image.
-    pub async fn prepare(&self, all: bool, rebuild: bool, out: Output<'_>) -> io::Result<ImageRecord> {
-        let default = self.prepare_default(rebuild, &mut *out).await?;
-        if !all {
-            return Ok(default);
-        }
-        let mut sources: Vec<ImageSource> = Vec::new();
-        for root in self.store.roots()? {
-            let img = self.store.image(&root.image)?;
-            if img.source != ImageSource::Default && !sources.contains(&img.source) {
-                sources.push(img.source);
+    /// `toby image prepare` (plan §15.6): the default image, the given
+    /// sources and, with `roots`, the source of every root, each built when
+    /// it is out of date. Returns the default image.
+    pub async fn prepare(&self, opts: PrepareOptions, out: Output<'_>) -> io::Result<ImageRecord> {
+        let default = self.prepare_default(opts.rebuild, &mut *out).await?;
+        let mut sources = opts.sources;
+        if opts.roots {
+            for root in self.store.roots()? {
+                let img = self.store.image(&root.image)?;
+                if !sources.contains(&img.source) {
+                    sources.push(img.source);
+                }
             }
         }
+        sources.retain(|s| *s != ImageSource::Default);
         let mut failed = 0;
         for source in sources {
+            // Pulling again matters for what comes from a registry.
+            let pulls =
+                opts.pull && matches!(source, ImageSource::Registry { .. } | ImageSource::Dockerfile { .. });
             let result = match self.current_image(&source) {
-                Ok(Some(_)) if !rebuild => continue,
-                Ok(_) => self.build(source.clone(), &mut *out).await.map(drop),
+                Ok(Some(_)) if !opts.rebuild && !pulls => continue,
+                Ok(_) => self.build_pulling(source.clone(), pulls, &mut *out).await.map(drop),
                 Err(e) => Err(e),
             };
             if let Err(e) = result {
@@ -618,9 +634,24 @@ impl Builder {
             }
         }
         if failed > 0 {
-            return Err(err(format!("{failed} of the roots' images could not be built")));
+            return Err(err(format!("{failed} of the images could not be built")));
         }
         Ok(default)
+    }
+
+    /// The image a root is created with: a current image of `wanted`, or
+    /// the image it names.
+    pub fn image_for(&self, wanted: &Wanted) -> io::Result<ImageRecord> {
+        match wanted {
+            Wanted::Id(id) => self.store.image(id),
+            Wanted::Source(s) => self.current_image(s)?.ok_or_else(|| {
+                let what = match s {
+                    ImageSource::Default => "the default image".to_string(),
+                    other => format!("the image of {}", other.describe()),
+                };
+                io::Error::new(io::ErrorKind::NotFound, format!("{what} is not built or out of date"))
+            }),
+        }
     }
 
     /// Formats a new home's disk with ext4 in a builder machine.
@@ -641,6 +672,46 @@ impl Builder {
         home.formatted = true;
         self.store.update_home(&home)
     }
+}
+
+/// What `toby image prepare` builds.
+pub struct PrepareOptions {
+    /// Every root's source.
+    pub roots: bool,
+    pub sources: Vec<ImageSource>,
+    pub rebuild: bool,
+    pub pull: bool,
+}
+
+/// An image configuration (`[defaults] image`, `[mcp.<name>].image`): a
+/// source to build, or an image by ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wanted {
+    Source(ImageSource),
+    Id(String),
+}
+
+/// Reads an image configuration; relative paths start in `base`.
+pub fn wanted_image(image: &toby_config::launch::ImageConfig, base: &Path) -> io::Result<Wanted> {
+    use toby_config::launch::ImageConfig;
+    let home = toby_config::paths::home_dir()?;
+    let path = |p: &str| -> io::Result<PathBuf> {
+        let p = base.join(toby_config::paths::expand(&home, p));
+        std::fs::canonicalize(&p).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", p.display())))
+    };
+    Ok(match image {
+        ImageConfig::Named(n) if n == "default" => Wanted::Source(ImageSource::Default),
+        ImageConfig::Named(id) => Wanted::Id(id.clone()),
+        ImageConfig::Mkosi { mkosi } => Wanted::Source(ImageSource::Mkosi { path: path(mkosi)? }),
+        ImageConfig::Dockerfile { dockerfile, context } => Wanted::Source(ImageSource::Dockerfile {
+            path: path(dockerfile)?,
+            context: path(context.as_deref().unwrap_or("."))?,
+        }),
+        ImageConfig::Registry { registry } => {
+            Wanted::Source(ImageSource::Registry { reference: registry.clone() })
+        }
+        ImageConfig::Archive { archive } => Wanted::Source(ImageSource::Archive { path: path(archive)? }),
+    })
 }
 
 /// A build job: its arguments, the directory attached as the build context

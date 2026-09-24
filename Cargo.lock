@@ -1914,6 +1914,7 @@ version = "0.17.0"
 dependencies = [
  "axum",
  "bytes",
+ "futures-util",
  "http-body",
  "hyper",
  "hyper-util",
@@ -2015,6 +2016,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "nix 0.31.3",
+ "serde_json",
  "tempfile",
  "toby-config",
  "toby-proto",

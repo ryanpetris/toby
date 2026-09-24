@@ -453,7 +453,14 @@ pub enum HelperCommand {
         target: PathBuf,
     },
     /// Build an image (builder machines)
-    Build { id: String, kind: String, args: Vec<String> },
+    Build {
+        id: String,
+        /// Fetch a Dockerfile's base images again
+        #[arg(long)]
+        pull: bool,
+        kind: String,
+        args: Vec<String>,
+    },
     /// Install build tools into the bootstrap builder
     Provision,
     /// Format a new home disk

@@ -251,6 +251,24 @@ reaches only the servers listed for the tools started in it.
   in the tool's machine instead.
 - An `http` server is called through Toby's proxy, which adds its headers;
   the credentials stay on the host.
+- An `http` server with a `command` instead of a `url` is one Toby runs
+  in a machine of its own, started when a tool first calls it and stopped
+  after five minutes without calls; `port` is where it listens in that
+  machine.
+
+A server in a machine of its own runs from the default image, or from
+`image` (the same forms as a launch's `image`; build it with `toby image
+prepare --mcp NAME`). Its machine can reach ports of the host's
+127.0.0.1 listed in `host_ports`, at the same port of its own 127.0.0.1:
+
+```toml
+[mcp.search]
+kind = "http"
+command = ["search-server", "--listen", "127.0.0.1:8080"]
+port = 8080
+image = { dockerfile = "search/Dockerfile" }
+host_ports = [5432]                          # a database on the host
+```
 
 ```sh
 toby mcp ls
