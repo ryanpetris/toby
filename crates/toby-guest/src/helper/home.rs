@@ -44,7 +44,9 @@ fn top_mount(mountinfo: &str, path: &Path) -> Option<PathBuf> {
 }
 
 fn mount_at(path: &Path) -> Option<PathBuf> {
-    top_mount(&std::fs::read_to_string("/proc/self/mountinfo").ok()?, path)
+    // Lossy, so one line with an odd name cannot hide the others.
+    let info = std::fs::read("/proc/self/mountinfo").ok()?;
+    top_mount(&String::from_utf8_lossy(&info), path)
 }
 
 fn mounted_at(path: &Path) -> bool {

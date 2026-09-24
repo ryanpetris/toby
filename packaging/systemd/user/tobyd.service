@@ -1,0 +1,9 @@
+[Unit]
+Description=Toby control plane
+Requires=tobyd.socket
+After=tobyd.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/toby/versions/current/toby internal daemon
+Restart=on-failure

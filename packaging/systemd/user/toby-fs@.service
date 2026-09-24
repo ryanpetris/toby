@@ -1,0 +1,8 @@
+[Unit]
+Description=Toby file share for machine %i
+StopWhenUnneeded=yes
+
+[Service]
+Type=notify
+LimitNOFILE=1048576
+ExecStart=/usr/lib/toby/versions/current/toby internal fs --machine %i

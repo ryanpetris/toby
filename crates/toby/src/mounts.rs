@@ -61,6 +61,10 @@ pub async fn unmount(target: String, sel: MachineSelector) -> anyhow::Result<Exi
     let (machine, id) = match matches.as_slice() {
         [] => bail!("{target} is not mounted in any machine"),
         [one] => one.clone(),
+        _ if matches.iter().all(|(m, _)| *m == matches[0].0) => bail!(
+            "{target} is mounted more than once; choose one by ID: {}",
+            matches.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", ")
+        ),
         _ => bail!(
             "{target} is mounted in several machines; choose one with --machine: {}",
             matches.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(", ")

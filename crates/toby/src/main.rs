@@ -86,7 +86,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 return internal::supervise(&machine, log_dir.as_deref()).map(|()| ExitCode::SUCCESS);
             }
             InternalCommand::Fs { machine } => return internal::fs(&machine).map(|()| ExitCode::SUCCESS),
-            InternalCommand::Vm { machine } => return internal::vm(&machine).map(|()| ExitCode::SUCCESS),
+            InternalCommand::Vm { machine, stop: false } => {
+                return internal::vm(&machine).map(|()| ExitCode::SUCCESS);
+            }
+            InternalCommand::Vm { machine, stop: true } => {
+                return internal::vm_stop(&machine).map(|()| ExitCode::SUCCESS);
+            }
             InternalCommand::Net { machine } => return internal::net(&machine).map(|()| ExitCode::SUCCESS),
         },
         Command::Guest(cmd) => match cmd {

@@ -510,6 +510,16 @@ pub fn create_layer(host: &Host) -> anyhow::Result<()> {
 }
 
 /// `toby internal vm`: replaces itself with Cloud Hypervisor for the machine.
+/// `toby internal vm --stop`: presses the power button and waits for the
+/// guest, stopping the VM if it does not power off in time.
+pub fn vm_stop(machine: &str) -> anyhow::Result<()> {
+    let (_, paths) = load_config()?;
+    let api = cloud_hypervisor::Api::new(paths.machine_runtime(machine).ch_api());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    rt.block_on(toby_machine::power_off(api));
+    Ok(())
+}
+
 /// Locks the machine's disks: its root, home and writable extra disks
 /// exclusively, an image or cloud image it layers over shared (plan §6.2).
 fn disk_locks(host: &Host) -> anyhow::Result<Vec<toby_store::store::DiskLock>> {

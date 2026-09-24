@@ -133,7 +133,7 @@ impl Machine {
             relay::Request::Spawn(relay::Spawn { spec, version: Some(self.config.runtime_version.clone()) });
         match self.relay.call(&req).await? {
             relay::Response::Spawned(_) => {}
-            relay::Response::Failed(f) => return Err(io::Error::other(f.error)),
+            relay::Response::Failed(f) => return Err(io::Error::other(printable(f.error.as_bytes()))),
             other => return Err(io::Error::other(format!("unexpected relay response {other:?}"))),
         }
 
@@ -162,7 +162,9 @@ impl Machine {
                 session::ServerFrame::Exit(e) => {
                     return Ok((e.status, printable(&output)));
                 }
-                session::ServerFrame::Refused(r) => return Err(io::Error::other(r.error)),
+                session::ServerFrame::Refused(r) => {
+                    return Err(io::Error::other(printable(r.error.as_bytes())));
+                }
                 _ => {}
             }
         }

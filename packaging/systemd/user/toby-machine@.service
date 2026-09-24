@@ -1,0 +1,9 @@
+[Unit]
+Description=Toby machine %i host process
+PartOf=toby-vm@%i.service
+After=toby-vm@%i.service
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/toby/versions/current/toby internal machine --machine %i
+Restart=on-failure

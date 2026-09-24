@@ -121,7 +121,15 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
     let (config, paths) = load_config()?;
     let backend = config.daemon.backend;
     let sock = paths.runtime.join(toby_api::SOCKET);
-    let running = tokio::net::UnixStream::connect(&sock).await.is_ok();
+    // Connecting to the systemd socket would start the daemon, so ask for
+    // its unit's state there.
+    let running = match backend {
+        Backend::SystemdUser => {
+            let systemd = toby_svc::systemd::SystemdUser::connect().await?;
+            systemd.state("tobyd.service").await? == "active"
+        }
+        Backend::Direct => tokio::net::UnixStream::connect(&sock).await.is_ok(),
+    };
     match cmd {
         DaemonCommand::Status => {
             if !running {
@@ -180,10 +188,26 @@ pub async fn daemon(cmd: DaemonCommand) -> anyhow::Result<ExitCode> {
 }
 
 async fn stop_daemon(backend: Backend, running: bool, sock: &Path) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let wait = || async {
+        if tokio::time::Instant::now() > deadline {
+            bail!("tobyd did not stop");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        anyhow::Ok(())
+    };
     match backend {
         Backend::SystemdUser => {
             let systemd = toby_svc::systemd::SystemdUser::connect().await?;
             systemd.stop("tobyd.service").await?;
+            // The socket stays and starts a new daemon on the next request,
+            // so wait until this one is gone.
+            while !matches!(
+                systemd.state("tobyd.service").await?.as_str(),
+                "inactive" | "failed" | "not-found"
+            ) {
+                wait().await?;
+            }
         }
         Backend::Direct => {
             if !running {
@@ -195,15 +219,10 @@ async fn stop_daemon(backend: Backend, running: bool, sock: &Path) -> anyhow::Re
                 nix::unistd::Pid::from_raw(info.pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
             )?;
+            while tokio::net::UnixStream::connect(sock).await.is_ok() {
+                wait().await?;
+            }
         }
-    }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    // The systemd socket keeps accepting; only the direct daemon's socket goes away.
-    while backend == Backend::Direct && tokio::net::UnixStream::connect(sock).await.is_ok() {
-        if tokio::time::Instant::now() > deadline {
-            bail!("tobyd did not stop");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     Ok(())
 }
@@ -260,8 +279,9 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
     let ch = programs.cloud_hypervisor();
     if executable(&ch) {
         let version = std::process::Command::new(&ch).arg("--version").output().ok();
-        let version =
-            version.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let version = version
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().next().map(str::to_string))
+            .unwrap_or_default();
         r.ok(&format!("cloud-hypervisor: {} ({version})", ch.display()));
     } else {
         r.fail(&format!("cloud-hypervisor is missing: {}", ch.display()));

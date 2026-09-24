@@ -1,0 +1,7 @@
+[Unit]
+Description=Toby network for machine %i
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/toby/versions/current/toby internal net --machine %i

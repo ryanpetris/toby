@@ -1,0 +1,10 @@
+[Unit]
+Description=Toby control plane socket
+
+[Socket]
+ListenStream=%t/toby/tobyd.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

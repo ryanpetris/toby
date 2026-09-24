@@ -1,0 +1,14 @@
+[Unit]
+Description=Toby machine %i
+BindsTo=toby-fs@%i.service toby-net@%i.service
+After=toby-fs@%i.service toby-net@%i.service
+Wants=toby-machine@%i.service
+
+[Service]
+# Readiness is reported by toby-machine@%i.
+Type=exec
+ExecStart=/usr/lib/toby/versions/current/toby internal vm --machine %i
+# Power button first, so the guest shuts down cleanly.
+ExecStop=/usr/lib/toby/versions/current/toby internal vm --machine %i --stop
+KillMode=mixed
+TimeoutStopSec=45

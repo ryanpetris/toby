@@ -381,6 +381,9 @@ pub enum InternalCommand {
     Vm {
         #[arg(long)]
         machine: String,
+        /// Power the running VM off instead: power button, then stop it
+        #[arg(long)]
+        stop: bool,
     },
     /// Start the machine's network back end
     Net {

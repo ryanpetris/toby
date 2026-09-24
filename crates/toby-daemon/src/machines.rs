@@ -75,8 +75,11 @@ pub struct Machines {
     pub paths: Paths,
     pub store: Store,
     pub supervisor: Supervisor,
-    /// Serializes starting machines and changes to desired state.
+    /// Serializes starting machines.
     lock: tokio::sync::Mutex<()>,
+    /// Serializes attachment changes per machine, which can wait for the
+    /// guest.
+    machine_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// When each machine last had a session, was started or was first seen.
     activity: Mutex<HashMap<String, Instant>>,
     started: Mutex<HashMap<String, Instant>>,
@@ -144,10 +147,15 @@ impl Machines {
             store,
             supervisor,
             lock: tokio::sync::Mutex::new(()),
+            machine_locks: Mutex::default(),
             activity: Mutex::default(),
             started: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
+    }
+
+    fn machine_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.machine_locks.lock().unwrap().entry(id.to_string()).or_default().clone()
     }
 
     pub fn runtime(&self, id: &str) -> MachineRuntime {
@@ -253,10 +261,12 @@ impl Machines {
         match toby_svc::systemd::linger(uid).await {
             Ok(false) if !self.linger_warned.swap(true, Ordering::AcqRel) => vec![Warning {
                 id: "daemon.linger-disabled".into(),
-                message:
-                    "linger is off; machines and sessions stop shortly after your last login session ends.\n\
-                          enable: toby linger on"
-                        .into(),
+                message: concat!(
+                    "linger is off; machines and sessions stop shortly after your last login session ends.\n",
+                    "         enable: toby linger on   ·   ",
+                    "silence: add \"daemon.linger-disabled\" to settings.suppress_warnings"
+                )
+                .into(),
             }],
             _ => Vec::new(),
         }
@@ -345,7 +355,10 @@ impl Machines {
         spec.attach.retain(|a| a.persist);
         spec.ephemeral = ephemeral;
         spec.generation += 1;
-        spec.store(&self.paths.machine_desired(&spec.id))?;
+        {
+            let _file = self.lock_desired(&spec.id)?;
+            spec.store(&self.paths.machine_desired(&spec.id))?;
+        }
         self.supervisor.start(&spec.id).await?;
         let now = Instant::now();
         self.started.lock().unwrap().insert(spec.id.clone(), now);
@@ -438,14 +451,23 @@ impl Machines {
 
     /// Changes the desired state under its lock and returns the new
     /// generation.
-    fn update_desired(&self, id: &str, f: impl FnOnce(&mut MachineSpec) -> Result<()>) -> Result<u64> {
+    /// The lock that serializes writes of a machine's desired state.
+    fn lock_desired(&self, id: &str) -> io::Result<Flock<std::fs::File>> {
         let path = self.paths.machine_desired(id);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(path.with_extension("lock"))?;
-        let _lock = Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))?;
+        Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))
+    }
+
+    fn update_desired(&self, id: &str, f: impl FnOnce(&mut MachineSpec) -> Result<()>) -> Result<u64> {
+        let path = self.paths.machine_desired(id);
+        let _lock = self.lock_desired(id)?;
         let mut spec = MachineSpec::load(&path)?;
         f(&mut spec)?;
         spec.generation += 1;
@@ -464,10 +486,14 @@ impl Machines {
                 return Ok(s);
             }
             if tokio::time::Instant::now() > deadline {
+                let reason = MachineStatus::load(&runtime.status()).ok().and_then(|s| s.error);
                 return Err(Error::new(
                     ErrorKind::Internal,
                     "machine.apply-timeout",
-                    format!("machine {id} did not apply the change in time"),
+                    match reason {
+                        Some(r) => format!("machine {id} did not apply the change: {r}"),
+                        None => format!("machine {id} did not apply the change in time"),
+                    },
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -504,7 +530,8 @@ impl Machines {
             pinned: req.pinned || req.persist,
             persist: req.persist,
         };
-        let _lock = self.lock.lock().await;
+        let lock = self.machine_lock(id);
+        let _lock = lock.lock().await;
         let running = self.observe(id).await.state == "ready";
         if !running && !attach.persist {
             return Err(Error::new(
@@ -555,7 +582,8 @@ impl Machines {
     pub async fn remove_attachment(&self, id: &str, target: &str) -> Result<()> {
         self.record(id)?;
         let host = std::fs::canonicalize(target).ok();
-        let _lock = self.lock.lock().await;
+        let lock = self.machine_lock(id);
+        let _lock = lock.lock().await;
         let mut removed = None;
         let generation = self.update_desired(id, |spec| {
             let pos = spec

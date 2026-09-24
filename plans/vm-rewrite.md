@@ -1013,6 +1013,7 @@ Wants=toby-machine@%i.service
 [Service]
 Type=exec                       # readiness is reported by toby-machine@
 ExecStart=/usr/lib/toby/versions/current/toby internal vm --machine %i    # reads machine.toml, execs cloud-hypervisor
+ExecStop=/usr/lib/toby/versions/current/toby internal vm --machine %i --stop   # power button, then stop the VM
 KillMode=mixed
 TimeoutStopSec=45
 
@@ -1709,7 +1710,8 @@ GET    /v1/images                          list
 POST   /v1/images/prepare                  {default, mcp[], project, all, rebuild, pull} → build ids (§15.6)
 POST   /v1/builds                          start build {source, arch, size} → build id
 GET    /v1/builds/{id}                     status
-GET    /v1/builds/{id}/logs        (WS)    stream
+GET    /v1/builds/{id}/logs                output so far, then streamed until the build ends (chunked)
+POST   /v1/bootstrap                       {base} → build id (§15.2)
 DELETE /v1/images/{id}                     refuse if referenced
 POST   /v1/images/prune
 
@@ -1720,21 +1722,21 @@ POST   /v1/roots/{name}/rebase             {image}
 DELETE /v1/roots/{name}
 
 GET    /v1/homes                           list
-POST   /v1/homes                           create {name, username, uid, size}
+POST   /v1/homes                           create {name, username, uid} → build id of the format job
 DELETE /v1/homes/{name}
 
 GET    /v1/machines                        list
 POST   /v1/machines/ensure                 {home, root, ephemeral, resources} → machine (started)
 POST   /v1/machines/{id}/stop
 GET    /v1/machines/{id}/logs      (WS)
-POST   /v1/machines/{id}/attachments       {host, at, read_only, pinned}
+POST   /v1/machines/{id}/attachments       {host, at, read_only, pinned, persist}
 DELETE /v1/machines/{id}/attachments/{aid}
 POST   /v1/machines/{id}/forwards          {direction, host, guest, pinned}
 DELETE /v1/machines/{id}/forwards/{fid}
 
 POST   /v1/sessions                        {machine|home+root, tool|argv, identity, tty, cwd, attach} → {id, session_socket}
 GET    /v1/sessions                        list (all machines)
-POST   /v1/sessions/{id}/kill
+POST   /v1/sessions/{id}/kill              {signal}; without a signal: hangup, terminate, then kill
 GET    /v1/sessions/{id}/io        (WS)    web terminal (proxied through tobyd; not used by the CLI)
 
 GET    /v1/mcp                             configured servers and status
@@ -1747,6 +1749,13 @@ POST   /v1/web/token                       one-time URL for the web UI
 Long operations (machine start, tool install) return quickly with an
 operation ID and report progress through `/v1/events`; the CLI renders
 progress from events.
+
+M5 implements the API without `/v1/events`, the WebSocket endpoints and
+the OpenAPI document, which arrive with the web UI (M10). Until then
+`POST /v1/machines/ensure` and `POST /v1/sessions` return once the machine
+is ready, and builder jobs (builds, bootstrap, home formatting) return a
+build ID whose output streams from `/v1/builds/{id}/logs`. Errors are
+`{code, message}` with a stable code such as `machine.pair-in-use`.
 
 ---
 
