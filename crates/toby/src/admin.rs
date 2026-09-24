@@ -340,6 +340,33 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
         }
     }
     r.ok(&format!("runtime directory: {}", paths.runtime.display()));
+
+    // Substitutions are resolved when used; unresolved ones show up here
+    // first (plan §14.2).
+    let config_dir = paths.global_config().parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let home = toby_config::paths::home_dir()?;
+    let mut refs: Vec<(String, String)> = Vec::new();
+    for (name, p) in &config.models {
+        refs.extend(p.headers.iter().map(|(k, v)| (format!("models.{name}.headers.{k}"), v.clone())));
+    }
+    for (name, m) in &config.mcp {
+        refs.extend(m.env.iter().map(|(k, v)| (format!("mcp.{name}.env.{k}"), v.clone())));
+        refs.extend(m.headers.iter().map(|(k, v)| (format!("mcp.{name}.headers.{k}"), v.clone())));
+        refs.extend(m.url.iter().map(|v| (format!("mcp.{name}.url"), v.clone())));
+        if let Err(e) = m.check(name) {
+            r.fail(&e);
+        }
+    }
+    let mut unresolved = false;
+    for (key, value) in refs {
+        if let Err(e) = toby_config::subst::resolve(&value, &config_dir, &home) {
+            r.fail(&format!("{key}: {e}"));
+            unresolved = true;
+        }
+    }
+    if !unresolved {
+        r.ok("configuration references resolve");
+    }
     match Api::connect().await {
         Ok(api) => {
             let info: toby_api::DaemonInfo = api.get("/v1/daemon").await?;

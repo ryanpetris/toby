@@ -23,6 +23,10 @@ use toby_proto::service::ServiceHeader;
 use tokio::net::{UnixListener, UnixStream};
 
 type Body = BoxBody<Bytes, hyper::Error>;
+
+/// How long a connection may take to send a request's headers, including
+/// between requests on a kept-alive connection.
+const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Incoming>;
 
 /// Headers that belong to one connection and are never forwarded.
@@ -105,7 +109,14 @@ impl Proxy {
     async fn mcp(&self, rest: &str, mut req: Request<Incoming>) -> Response<Body> {
         let config = match GlobalConfig::load(&self.config_path) {
             Ok(c) => c,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("configuration: {e}")),
+            Err(e) => {
+                // The error quotes the file, which may hold secrets: host only.
+                eprintln!("configuration: {e}");
+                return text(
+                    StatusCode::BAD_GATEWAY,
+                    "the Toby configuration cannot be read; see the host's logs",
+                );
+            }
         };
         let Some((name, tail)) = split_path(&format!("/{rest}")).map(|(n, t)| (n.to_string(), t.to_string()))
         else {
@@ -139,8 +150,8 @@ impl Proxy {
     async fn models(&self, machine: &str, mut req: Request<Incoming>) -> Response<Body> {
         let token_file = self.paths.machine_state_dir(machine).join("models-token");
         let expected = match std::fs::read_to_string(&token_file) {
-            Ok(t) => t.trim().to_string(),
-            Err(_) => return text(StatusCode::UNAUTHORIZED, "this machine has no models token"),
+            Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+            _ => return text(StatusCode::UNAUTHORIZED, "this machine has no models token"),
         };
         if !presented_token(&req).is_some_and(|t| same(&t, &expected)) {
             return text(StatusCode::UNAUTHORIZED, "invalid models token");
@@ -148,7 +159,14 @@ impl Proxy {
         // Read on every request, so configuration changes apply at once.
         let config = match GlobalConfig::load(&self.config_path) {
             Ok(c) => c,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("configuration: {e}")),
+            Err(e) => {
+                // The error quotes the file, which may hold secrets: host only.
+                eprintln!("configuration: {e}");
+                return text(
+                    StatusCode::BAD_GATEWAY,
+                    "the Toby configuration cannot be read; see the host's logs",
+                );
+            }
         };
         let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
         let Some((name, tail)) = split_path(&pq) else {
@@ -227,15 +245,24 @@ impl Proxy {
             let machine = machine.clone();
             async move { Ok::<_, std::convert::Infallible>(this.handle(&machine, req).await) }
         });
-        let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(s), service).await;
+        let _ = hyper::server::conn::http1::Builder::new()
+            .timer(hyper_util::rt::TokioTimer::new())
+            .header_read_timeout(HEADER_TIMEOUT)
+            .serve_connection(TokioIo::new(s), service)
+            .await;
         Ok(())
     }
 
     /// Serves connections on `listener` until the process ends.
     pub async fn serve(self: Arc<Self>, listener: UnixListener) -> io::Result<()> {
         loop {
-            let (s, _) = listener.accept().await?;
-            tokio::spawn(self.clone().connection(s));
+            match listener.accept().await {
+                Ok((s, _)) => {
+                    tokio::spawn(self.clone().connection(s));
+                }
+                // Out of descriptors, for example: keep serving.
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
         }
     }
 }
@@ -245,7 +272,9 @@ pub fn ensure_token(paths: &Paths, machine: &str) -> io::Result<String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let path = paths.machine_state_dir(machine).join("models-token");
-    if let Ok(t) = std::fs::read_to_string(&path) {
+    if let Ok(t) = std::fs::read_to_string(&path)
+        && !t.trim().is_empty()
+    {
         return Ok(t.trim().to_string());
     }
     let mut random = [0u8; 24];
@@ -253,8 +282,15 @@ pub fn ensure_token(paths: &Paths, machine: &str) -> io::Result<String> {
     let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let token = format!("toby_{machine}_{hex}");
     std::fs::create_dir_all(paths.machine_state_dir(machine))?;
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
-    std::io::Write::write_all(&mut f, token.as_bytes())?;
+    // Written whole or not at all.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        std::io::Write::write_all(&mut f, token.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path)?;
     Ok(token)
 }
 

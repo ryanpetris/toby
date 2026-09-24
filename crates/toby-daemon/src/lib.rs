@@ -83,6 +83,17 @@ pub async fn run(
     if let Some(timeout) = idle {
         tokio::spawn(machines.clone().idle_loop(timeout));
     }
+    tokio::spawn(machines.clone().session_loop());
+    if backend == Backend::Direct {
+        // A proxy that died is started again.
+        let (machines, paths) = (machines.clone(), paths.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let _ = machines.supervisor.ensure_proxy(&paths).await;
+            }
+        });
+    }
     if backend == Backend::Direct {
         let runtime = paths.runtime.clone();
         tokio::spawn(async move {

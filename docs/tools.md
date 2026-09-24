@@ -19,9 +19,9 @@ while a session of the tool uses them.
 | Option | Effect |
 | --- | --- |
 | `--project PATH` | attach PATH instead of the current directory (repeatable; the first is the working directory) |
-| `--install` | install or update the tool, then exit |
+| `--install` | install the tool if needed (with `--upgrade`, update it), then exit |
 | `--upgrade` | run the tool's updater before starting it |
-| `--attach` | reattach a running session of the tool instead of starting one |
+| `--attach` | reattach a running session of the tool instead of starting one (`--new`, the default, starts one) |
 | `--yolo` | start the tool without its permission prompts (also `settings.yolo = true`) |
 | `--ephemeral` | run the machine on a throwaway layer over the root |
 
@@ -77,9 +77,10 @@ direction = "host-to-guest"
 port = 8123
 ```
 
-Templates are Jinja templates; they can use `models.url`,
-`models.token` (only when a provider is configured for the tool), `user`,
-`home` and `workspace`.
+Templates are Jinja templates; they can use `models.url` and
+`models.token` (only when a provider is configured for the tool), `user`
+and `home`; `env` values can also use `workspace`, the project's path in
+the machine.
 
 ## Models
 

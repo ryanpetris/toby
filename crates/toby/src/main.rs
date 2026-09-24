@@ -144,13 +144,9 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
             let code = rt.block_on(helper::serve::serve_stdio(&socket, &command))?;
             std::process::exit(code);
         }
-        HelperCommand::PatchFile { path, format, mode, content_hex } => {
-            let bytes = (0..content_hex.len())
-                .step_by(2)
-                .map(|i| content_hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
-                .collect::<Option<Vec<u8>>>()
-                .ok_or_else(|| anyhow::anyhow!("--content-hex is not hex"))?;
-            let content = String::from_utf8(bytes)?;
+        HelperCommand::PatchFile { path, format, mode } => {
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut content)?;
             let format = match format.as_str() {
                 "json" => toby_tools::Format::Json,
                 "toml" => toby_tools::Format::Toml,

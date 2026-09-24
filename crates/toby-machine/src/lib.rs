@@ -30,6 +30,8 @@ const MAX_PENDING_GUEST: usize = 32;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Longest time a boot helper may run.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
+/// Forwarded guest connections spliced at once.
+const MAX_SPLICES: usize = 512;
 /// Helper output kept for error messages.
 const HELPER_OUTPUT: usize = 4096;
 /// How long the guest gets to power off after the power button.
@@ -66,6 +68,13 @@ pub struct Machine {
     /// Attachments mounted in the guest, by ID.
     mounted: Mutex<BTreeMap<String, Attach>>,
     forwards: forward::Forwards,
+    /// Bounds forwarded connections spliced at once.
+    splices: Arc<tokio::sync::Semaphore>,
+    /// A relay hello arrived while a check was running.
+    hello_pending: std::sync::atomic::AtomicBool,
+    /// Guest listeners an earlier run of this process registered; removed
+    /// from the relay unless still wanted.
+    stale_listeners: Mutex<Vec<String>>,
 }
 
 fn bind(path: &Path) -> io::Result<UnixListener> {
@@ -96,6 +105,7 @@ impl Machine {
                 (a.id.clone(), attach)
             })
             .collect();
+        let stale_listeners = previous.forward.iter().map(|f| f.id.clone()).collect();
         let status = MachineStatus {
             // Nothing of the current desired state is applied yet.
             observed_generation: previous.observed_generation,
@@ -113,6 +123,9 @@ impl Machine {
             pending_guest: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_GUEST)),
             mounted: Mutex::new(mounted),
             forwards: Default::default(),
+            splices: Arc::new(tokio::sync::Semaphore::new(MAX_SPLICES)),
+            hello_pending: false.into(),
+            stale_listeners: Mutex::new(stale_listeners),
         })
     }
 
@@ -359,10 +372,12 @@ impl Machine {
         wanted: Vec<forward::GuestListener>,
     ) -> std::collections::HashMap<String, String> {
         let mut errors = std::collections::HashMap::new();
-        let stale: Vec<String> = {
+        let mut stale: Vec<String> = {
             let current = self.forwards.guest.lock().unwrap();
             current.keys().filter(|id| !wanted.iter().any(|w| &w.id == *id)).cloned().collect()
         };
+        let earlier: Vec<String> = std::mem::take(&mut *self.stale_listeners.lock().unwrap());
+        stale.extend(earlier.into_iter().filter(|id| !wanted.iter().any(|w| &w.id == id)));
         for id in stale {
             let _ =
                 self.relay.call(&relay::Request::Unlisten(relay::Unlisten { listener_id: id.clone() })).await;
@@ -418,9 +433,21 @@ impl Machine {
 
     /// Like `relay_up`, but does nothing while a check is already running:
     /// used for guest hellos, which any guest process can send.
-    async fn relay_up_if_idle(&self) {
+    async fn relay_up_if_idle(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
         if let Ok(_booting) = self.booting.try_lock() {
             self.check_relay().await;
+            return;
+        }
+        // A check is running; one more follows it, so a relay that restarted
+        // meanwhile gets its listeners again.
+        if !self.hello_pending.swap(true, Ordering::AcqRel) {
+            let this = self.clone();
+            tokio::spawn(async move {
+                let _booting = this.booting.lock().await;
+                this.hello_pending.store(false, Ordering::Release);
+                this.check_relay().await;
+            });
         }
     }
 
@@ -441,8 +468,9 @@ impl Machine {
                 });
                 return false;
             }
-            // A new boot has none of the previous boot's mounts.
+            // A new boot has none of the previous boot's mounts or listeners.
             self.mounted.lock().unwrap().clear();
+            self.forwards.guest.lock().unwrap().clear();
         }
         let mut error = None;
         if !done || !ready {
@@ -582,6 +610,10 @@ impl Machine {
                     return Ok(());
                 };
                 drop(_permit);
+                let Ok(_splice) = self.splices.clone().try_acquire_owned() else {
+                    frame::send(&mut s, &Reply::refused("too many connections")).await?;
+                    return Ok(());
+                };
                 match forward::connect_target(&target, &self.config.id).await {
                     Ok(mut host) => {
                         frame::send(&mut s, &Reply::ok()).await?;

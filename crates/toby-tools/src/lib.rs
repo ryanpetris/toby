@@ -59,10 +59,17 @@ pub struct Script {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
-    /// `anthropic` or `openai`: the API the tool speaks.
-    pub protocol: String,
+    /// The API the tool speaks.
+    pub protocol: Protocol,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Anthropic,
+    Openai,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,9 +208,40 @@ fn merge_value(base: &mut serde_json::Value, patch: serde_json::Value) {
     }
 }
 
+/// Merges `patch` into `base` key by key, keeping the base's comments,
+/// order and formatting.
+fn merge_toml_tables(base: &mut dyn toml_edit::TableLike, patch: &dyn toml_edit::TableLike) {
+    for (key, item) in patch.iter() {
+        let merged = match (base.get_mut(key), item) {
+            (Some(b), p) if b.is_table_like() && p.is_table_like() => {
+                merge_toml_tables(b.as_table_like_mut().expect("table"), p.as_table_like().expect("table"));
+                true
+            }
+            _ => false,
+        };
+        if !merged {
+            base.insert(key, item.clone());
+        }
+    }
+}
+
 /// The new content of a file: `content` merged into or replacing `existing`.
-/// Formats are JSON, TOML (merged as data) or text (always replaced).
+/// Formats are JSON, TOML or text (always replaced); merging keeps what the
+/// file already has, including a TOML file's comments and layout.
 pub fn patch(existing: Option<&str>, content: &str, format: Format, mode: Mode) -> Result<String, String> {
+    if format == Format::Toml {
+        let patch: toml_edit::DocumentMut =
+            content.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
+        return match (mode, existing.filter(|e| !e.trim().is_empty())) {
+            (Mode::Merge, Some(e)) => {
+                let mut base: toml_edit::DocumentMut =
+                    e.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
+                merge_toml_tables(base.as_table_mut(), patch.as_table());
+                Ok(base.to_string())
+            }
+            _ => Ok(patch.to_string()),
+        };
+    }
     let parse = |text: &str| -> Result<serde_json::Value, String> {
         match format {
             Format::Json => serde_json::from_str(text).map_err(|e| e.to_string()),
@@ -285,8 +323,17 @@ mod tests {
         assert_eq!(v, serde_json::json!({"a":1,"env":{"X":"1","Y":"2"}}));
         let replaced = patch(Some(r#"{"a":1}"#), r#"{"b":2}"#, Format::Json, Mode::Replace).unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&replaced).unwrap(), serde_json::json!({"b":2}));
-        let toml = patch(Some("x = 1\n[t]\na = 1\n"), "[t]\nb = 2\n", Format::Toml, Mode::Merge).unwrap();
-        assert!(toml.contains("x = 1") && toml.contains("a = 1") && toml.contains("b = 2"), "{toml}");
+        let toml = patch(
+            Some("# mine\nz = 1\nx = 1\n[t]\na = 1 # keep\n"),
+            "[t]\nb = 2\n[s.u]\nc = 3\n",
+            Format::Toml,
+            Mode::Merge,
+        )
+        .unwrap();
+        assert!(toml.starts_with("# mine\nz = 1\nx = 1\n"), "{toml}");
+        assert!(toml.contains("a = 1 # keep") && toml.contains("b = 2") && toml.contains("c = 3"), "{toml}");
+        let json = patch(Some(r#"{"z":1,"a":2}"#), r#"{"m":3}"#, Format::Json, Mode::Merge).unwrap();
+        assert!(json.find("\"z\"").unwrap() < json.find("\"a\"").unwrap(), "{json}");
         assert_eq!(patch(Some("old"), "new", Format::Text, Mode::Merge).unwrap(), "new");
         assert!(patch(Some("{"), "{}", Format::Json, Mode::Merge).is_err());
     }

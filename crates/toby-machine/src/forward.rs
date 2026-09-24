@@ -80,7 +80,15 @@ impl Forwards {
                     let target = tcp(&f.guest);
                     let vsock = vsock.clone();
                     let handle = tokio::spawn(async move {
-                        while let Ok((conn, _)) = listener.accept().await {
+                        loop {
+                            let conn = match listener.accept().await {
+                                Ok((conn, _)) => conn,
+                                // Out of descriptors, for example: keep listening.
+                                Err(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    continue;
+                                }
+                            };
                             let (vsock, target) = (vsock.clone(), target.clone());
                             tokio::spawn(async move {
                                 let _ = dial(&vsock, target, conn).await;
@@ -96,13 +104,6 @@ impl Forwards {
             }
         }
         errors
-    }
-
-    /// Stops every host listener.
-    pub fn close(&self) {
-        for (_, (_, handle)) in self.host.lock().unwrap().drain() {
-            handle.abort();
-        }
     }
 }
 

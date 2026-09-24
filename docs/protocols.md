@@ -55,7 +55,8 @@ Headers the relay sends to the host:
 Any guest process can open these connections, so `toby internal machine`
 treats a `RelayHello` only as a prompt to query the relay over its control
 channel, and splices an `Accepted` connection only to a host target
-registered for that listener (by a forward), refusing unknown listeners.
+registered for that listener (by a forward or a capability), refusing
+unknown listeners.
 
 Replies:
 

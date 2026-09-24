@@ -84,6 +84,18 @@ pub async fn run(
     env: Vec<(String, String)>,
     out: &mut (dyn FnMut(&[u8], bool) + Send),
 ) -> io::Result<ExitStatus> {
+    run_with_input(runtime, argv, identity, env, None, out).await
+}
+
+/// Like [`run`], with `input` as the command's stdin.
+pub async fn run_with_input(
+    runtime: &MachineRuntime,
+    argv: Vec<String>,
+    identity: Identity,
+    env: Vec<(String, String)>,
+    input: Option<Vec<u8>>,
+    out: &mut (dyn FnMut(&[u8], bool) + Send),
+) -> io::Result<ExitStatus> {
     let spec = SpawnSpec {
         session_id: toby_config::new_id(),
         argv,
@@ -107,6 +119,12 @@ pub async fn run(
         resume_from: None,
     });
     frame::send(&mut s, &hello).await?;
+    if let Some(input) = input {
+        for chunk in input.chunks(toby_proto::MAX_CHUNK) {
+            frame::send(&mut s, &ClientFrame::Stdin(session::Stdin { bytes: chunk.to_vec() })).await?;
+        }
+        frame::send(&mut s, &ClientFrame::CloseStdin(session::CloseStdin {})).await?;
+    }
     loop {
         match frame::recv::<ServerFrame, _>(&mut s).await? {
             ServerFrame::Stdout(o) => out(&o.bytes, false),

@@ -376,8 +376,14 @@ impl Relay {
                 let this = self.clone();
                 let id = l.listener_id.clone();
                 Box::pin(async move {
-                    while let Ok((s, _)) = listener.accept().await {
-                        tokio::spawn(this.clone().forward_accepted(id.clone(), Box::new(s)));
+                    loop {
+                        match listener.accept().await {
+                            Ok((s, _)) => {
+                                tokio::spawn(this.clone().forward_accepted(id.clone(), Box::new(s)));
+                            }
+                            // Out of descriptors, for example: keep listening.
+                            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                        }
                     }
                 })
             }
@@ -391,8 +397,14 @@ impl Relay {
                 let this = self.clone();
                 let id = l.listener_id.clone();
                 Box::pin(async move {
-                    while let Ok((s, _)) = listener.accept().await {
-                        tokio::spawn(this.clone().forward_accepted(id.clone(), Box::new(s)));
+                    loop {
+                        match listener.accept().await {
+                            Ok((s, _)) => {
+                                tokio::spawn(this.clone().forward_accepted(id.clone(), Box::new(s)));
+                            }
+                            // Out of descriptors, for example: keep listening.
+                            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                        }
                     }
                 })
             }

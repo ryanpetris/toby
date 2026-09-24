@@ -284,6 +284,8 @@ pub struct HomeInfo {
     pub name: String,
     pub username: String,
     pub uid: u32,
+    /// The root machines of this home use unless another is given.
+    pub default_root: Option<String>,
     pub formatted: bool,
     pub created: u64,
 }

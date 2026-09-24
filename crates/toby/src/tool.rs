@@ -54,15 +54,23 @@ pub async fn run(argv: Vec<OsString>) -> anyhow::Result<ExitCode> {
         .map(|a| a.to_str().map(str::to_string).context("arguments must be UTF-8"))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let api = Api::connect().await?;
+    // A mistyped command is not a tool: say so before any setup.
+    let tools_dir = api.paths.global_config().parent().map(|d| d.join("tools")).unwrap_or_default();
+    if !toby_tools::load(&tools_dir)?.contains_key(&name) {
+        anyhow::bail!("there is no command or tool {name:?}; see toby --help");
+    }
 
     let machine = match &args.machine.machine {
         Some(id) => id.clone(),
         None => {
             let home = args.machine.home.clone().unwrap_or_else(|| api.config.defaults.home().to_string());
             ensure_home(&api, &home).await?;
-            // Without --root, tobyd uses the home's default root or the root
-            // named default; the latter is created when missing.
-            ensure_root(&api, args.machine.root.as_deref().unwrap_or("default")).await?;
+            // The root tobyd will use: the given one, the home's default
+            // root, or the root named default.
+            let homes: Vec<toby_api::HomeInfo> = api.get("/v1/homes").await?;
+            let default_root = homes.into_iter().find(|h| h.name == home).and_then(|h| h.default_root);
+            let root = args.machine.root.clone().or(default_root).unwrap_or_else(|| "default".into());
+            ensure_root(&api, &root).await?;
             let req = toby_api::EnsureMachine {
                 home: Some(home),
                 root: args.machine.root.clone(),

@@ -104,6 +104,10 @@ pub struct Machines {
     starting: Mutex<HashMap<String, Instant>>,
     /// Machines asked to stop, until they are seen stopped.
     stopping: Mutex<HashMap<String, Instant>>,
+    /// Sessions being created: their attachments and forwards are kept.
+    creating: Mutex<std::collections::HashSet<String>>,
+    /// Serializes tool installs and file writes per machine (plan §16.1).
+    tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     linger_warned: AtomicBool,
 }
 
@@ -173,6 +177,8 @@ impl Machines {
             started: Mutex::default(),
             starting: Mutex::default(),
             stopping: Mutex::default(),
+            creating: Mutex::default(),
+            tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
     }
@@ -182,6 +188,11 @@ impl Machines {
     /// daemon started with if the file cannot be read.
     pub fn current_config(&self) -> GlobalConfig {
         GlobalConfig::load(&self.paths.global_config()).unwrap_or_else(|_| self.config.clone())
+    }
+
+    /// The lock that serializes tool operations in a machine.
+    pub fn tool_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.tool_locks.lock().unwrap().entry(id.to_string()).or_default().clone()
     }
 
     fn machine_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
@@ -648,7 +659,19 @@ impl Machines {
             .to_string();
         let at = match req.at {
             Some(at) => at,
-            None => default_guest_path(Path::new(&host))?,
+            None => {
+                // Another directory of the same name gets a numbered place.
+                let base = default_guest_path(Path::new(&host))?;
+                let current = self.record(id)?;
+                let taken = |p: &str| current.attach.iter().any(|a| a.at == p && a.host != host);
+                let mut at = base.clone();
+                let mut n = 2;
+                while taken(&at) {
+                    at = format!("{base}-{n}");
+                    n += 1;
+                }
+                at
+            }
         };
         check_guest_path(&at)?;
 
@@ -926,6 +949,15 @@ impl Machines {
 
     pub async fn remove_forward(&self, id: &str, fid: &str) -> Result<()> {
         self.record(id)?;
+        // Between starting and ready, nothing could confirm the removal.
+        let state = self.observe(id).await.state;
+        if state != "ready" && state != "stopped" {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "machine.busy",
+                format!("machine {id} is {state}; try again when it is ready"),
+            ));
+        }
         let lock = self.machine_lock(id);
         let _lock = lock.lock().await;
         let generation = self.update_desired(id, |spec| {
@@ -974,6 +1006,23 @@ impl Machines {
         let spec = self.select(&req.target).await?;
         let session_id = toby_config::new_id();
         let mut warnings = Vec::new();
+        // Until it runs, the session's items must not look abandoned.
+        self.creating.lock().unwrap().insert(session_id.clone());
+        let result = self.create_session_with(req, manifest, &spec, &session_id, &mut warnings).await;
+        self.creating.lock().unwrap().remove(&session_id);
+        result.map(|id| (spec, id, warnings))
+    }
+
+    async fn create_session_with(
+        &self,
+        req: toby_api::CreateSession,
+        manifest: Option<toby_tools::Manifest>,
+        spec: &MachineSpec,
+        session_id: &str,
+        warnings: &mut Vec<Warning>,
+    ) -> Result<String> {
+        let spec = spec.clone();
+        let session_id = session_id.to_string();
 
         let mut workspace = None;
         for a in req.attachments {
@@ -1000,7 +1049,15 @@ impl Machines {
                     }
                 }
                 let ws = workspace.as_deref().unwrap_or("");
-                crate::tools::launch(self, &spec, m, ws, &req.argv, req.yolo)?
+                let (argv, mut env) = crate::tools::launch(self, &spec, m, ws, &req.argv, req.yolo)?;
+                // The client's own settings (its terminal type) unless the
+                // tool sets them.
+                for (k, v) in req.env {
+                    if !env.iter().any(|(ek, _)| *ek == k) {
+                        env.push((k, v));
+                    }
+                }
+                (argv, env)
             }
             None => (req.argv, req.env),
         };
@@ -1017,7 +1074,7 @@ impl Machines {
         let mut c = Control::connect(&self.runtime(&spec.id)).await?;
         let id = c.spawn(session).await?;
         self.activity.lock().unwrap().insert(spec.id.clone(), Instant::now());
-        Ok((spec, id, warnings))
+        Ok(id)
     }
 
     /// Removes attachments and forwards whose sessions have all ended.
@@ -1029,9 +1086,10 @@ impl Machines {
         }
         let Ok(mut c) = Control::connect(&self.runtime(&spec.id)).await else { return };
         let Ok(sessions) = c.sessions().await else { return };
-        let live: Vec<String> = sessions.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect();
+        let mut live: Vec<String> = sessions.into_iter().filter(|s| s.exit.is_none()).map(|s| s.id).collect();
         let lock = self.machine_lock(&spec.id);
         let _lock = lock.lock().await;
+        live.extend(self.creating.lock().unwrap().iter().cloned());
         let _ = self.update_desired(&spec.id, |spec| {
             for a in &mut spec.attach {
                 a.sessions.retain(|s| live.contains(s));
@@ -1115,17 +1173,29 @@ impl Machines {
         }
     }
 
+    /// Releases what ended sessions held and removes stale records, whether
+    /// or not machines stop when idle.
+    pub async fn session_loop(self: std::sync::Arc<Self>) {
+        loop {
+            tokio::time::sleep(IDLE_CHECK).await;
+            self.remove_stale().await;
+            for spec in self.records() {
+                if self.observe(&spec.id).await.state == "ready" {
+                    self.release_session_items(&spec).await;
+                }
+            }
+        }
+    }
+
     /// Stops machines that had no sessions and nothing pinned for the idle
     /// timeout (plan §8.3). Detached sessions count as activity.
     pub async fn idle_loop(self: std::sync::Arc<Self>, timeout: Duration) {
         loop {
             tokio::time::sleep(IDLE_CHECK).await;
-            self.remove_stale().await;
             for spec in self.records() {
                 if self.observe(&spec.id).await.state != "ready" {
                     continue;
                 }
-                self.release_session_items(&spec).await;
                 let busy = match Control::connect(&self.runtime(&spec.id)).await {
                     Ok(mut c) => {
                         c.sessions().await.map(|l| l.iter().any(|s| s.exit.is_none())).unwrap_or(true)

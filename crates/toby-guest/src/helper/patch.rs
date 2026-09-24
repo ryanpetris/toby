@@ -18,6 +18,15 @@ pub fn expand_home(path: &str, home: &Path) -> PathBuf {
 /// Merges or writes `content` into `path` atomically, keeping an existing
 /// file's mode (new files are private).
 pub fn patch_file(path: &Path, content: &str, format: Format, mode: Mode) -> io::Result<()> {
+    // A linked file (a dotfiles checkout) is written where it lives.
+    let resolved;
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            resolved = std::fs::canonicalize(path)?;
+            resolved.as_path()
+        }
+        _ => path,
+    };
     let existing = match std::fs::read_to_string(path) {
         Ok(s) => Some(s),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -31,7 +40,8 @@ pub fn patch_file(path: &Path, content: &str, format: Format, mode: Mode) -> io:
     let dir = path.parent().ok_or_else(|| io::Error::other("no parent directory"))?;
     std::fs::create_dir_all(dir)?;
     let perm = std::fs::metadata(path).map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o600);
-    let tmp = dir.join(format!(".{}.toby-tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("file")));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.toby-tmp.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     {
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(perm).open(&tmp)?;

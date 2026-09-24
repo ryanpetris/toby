@@ -57,9 +57,20 @@ pub fn context(
     let provider = config.tools.get(&tool.tool.name).and_then(|t| t.models.clone());
     let models = match provider {
         Some(p) if tool.tool.models.is_some() => {
-            if !config.models.contains_key(&p) {
+            let Some(provider) = config.models.get(&p) else {
                 return Err(err(format!(
                     "tool {} uses model provider {p}, which is not configured",
+                    tool.tool.name
+                )));
+            };
+            let speaks = tool.tool.models.as_ref().map(|m| m.protocol);
+            let offers = match provider.protocol {
+                toby_config::global::Protocol::Anthropic => toby_tools::Protocol::Anthropic,
+                toby_config::global::Protocol::Openai => toby_tools::Protocol::Openai,
+            };
+            if speaks != Some(offers) {
+                return Err(err(format!(
+                    "tool {} speaks another API than model provider {p}",
                     tool.tool.name
                 )));
             }
@@ -208,7 +219,6 @@ pub async fn patch_file(
     format: toby_tools::Format,
     mode: toby_tools::Mode,
 ) -> io::Result<()> {
-    let hex: String = content.bytes().map(|b| format!("{b:02x}")).collect();
     let format = match format {
         toby_tools::Format::Json => "json",
         toby_tools::Format::Toml => "toml",
@@ -220,26 +230,18 @@ pub async fn patch_file(
     };
     let version = crate::builder::runtime_version(&machines.config.programs.versions());
     let toby = format!("/run/toby/fs/versions/{version}/toby");
-    let argv = [
-        &toby,
-        "guest",
-        "helper",
-        "patch-file",
-        "--path",
-        path,
-        "--format",
-        format,
-        "--mode",
-        mode,
-        "--content-hex",
-        &hex,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+    let argv = [&toby, "guest", "helper", "patch-file", "--path", path, "--format", format, "--mode", mode]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let mut errors = Vec::new();
     let mut collect = |b: &[u8], _: bool| errors.extend_from_slice(b);
-    if run_user(machines, spec, argv, &mut collect).await? != ExitStatus::Code(0) {
+    // The content goes on stdin, so its size is not bounded by a frame.
+    let runtime = machines.runtime(&spec.id);
+    let input = Some(content.as_bytes().to_vec());
+    let status =
+        control::run_with_input(&runtime, argv, Identity::User, Vec::new(), input, &mut collect).await?;
+    if status != ExitStatus::Code(0) {
         return Err(err(format!("writing {path}: {}", String::from_utf8_lossy(&errors).trim())));
     }
     Ok(())

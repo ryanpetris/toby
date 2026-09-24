@@ -158,6 +158,9 @@ async fn prepare_tool(
     let machines = d.machines.clone();
     let b = d.builds.start(d.builder.paths.state.join("builds"), "tool", move |out| {
         Box::pin(async move {
+            // One tool operation at a time per machine (plan §16.1).
+            let lock = machines.tool_lock(&spec.id);
+            let _lock = lock.lock().await;
             crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, out).await.map(|()| None)
         })
     })?;
@@ -423,6 +426,7 @@ async fn homes(State(d): Shared) -> ApiResult<Vec<api::HomeInfo>> {
             name: h.name,
             username: h.username,
             uid: h.uid,
+            default_root: h.default_root,
             formatted: h.formatted,
             created: h.created,
         })

@@ -481,11 +481,9 @@ pub enum HelperCommand {
         path: String,
         #[arg(long, value_parser = ["json", "toml", "text"])]
         format: String,
+        /// The content is read from stdin.
         #[arg(long, value_parser = ["merge", "replace"])]
         mode: String,
-        /// The content, hex-encoded
-        #[arg(long)]
-        content_hex: String,
     },
     /// Unmount an attached host directory
     Detach {
@@ -511,7 +509,7 @@ pub struct ToolArgs {
     /// Attach to an existing session of the tool
     #[arg(long, conflicts_with = "new")]
     pub attach: bool,
-    /// Start a new session even if one exists
+    /// Start a new session even if one exists (the default)
     #[arg(long)]
     pub new: bool,
     /// Skip tool permission prompts
