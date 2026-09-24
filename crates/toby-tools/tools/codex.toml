@@ -1,0 +1,23 @@
+[tool]
+name = "codex"
+requires = ["bash", "npm"]
+check = ["codex", "--version"]
+install = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex" }
+update = { script = "npm install -g --prefix \"$HOME/.local\" @openai/codex@latest" }
+launch = ["codex"]
+
+[tool.models]
+protocol = "openai"
+env = { OPENAI_BASE_URL = "{{ models.url }}/v1", OPENAI_API_KEY = "{{ models.token }}" }
+
+[tool.mcp]
+path = "~/.codex/config.toml"
+format = "toml"
+pointer = "/mcp_servers"
+entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
+
+# The login's callback on localhost reaches the guest.
+[[tool.forwards]]
+when = "login"
+direction = "host-to-guest"
+port = 1455

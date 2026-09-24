@@ -136,6 +136,22 @@ fn helper(cmd: HelperCommand) -> anyhow::Result<()> {
         HelperCommand::Links { target } => helper::links(&paths.root().join("bin"), &target)?,
         HelperCommand::Attach { src, at, ro } => helper::attach(&src, &at, ro)?,
         HelperCommand::Detach { src, at } => helper::detach(&src, &at)?,
+        HelperCommand::PatchFile { path, format, mode, content_hex } => {
+            let bytes = (0..content_hex.len())
+                .step_by(2)
+                .map(|i| content_hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| anyhow::anyhow!("--content-hex is not hex"))?;
+            let content = String::from_utf8(bytes)?;
+            let format = match format.as_str() {
+                "json" => toby_tools::Format::Json,
+                "toml" => toby_tools::Format::Toml,
+                _ => toby_tools::Format::Text,
+            };
+            let mode = if mode == "merge" { toby_tools::Mode::Merge } else { toby_tools::Mode::Replace };
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+            helper::patch::patch_file(&helper::patch::expand_home(&path, &home), &content, format, mode)?;
+        }
         HelperCommand::Build { id, kind, args } => {
             let args: Vec<String> = [id, kind].into_iter().chain(args).collect();
             helper::build::exec_script(&paths.root().join("build"), "build.sh", &args)?;

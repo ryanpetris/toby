@@ -1,0 +1,22 @@
+[tool]
+name = "claude"
+requires = ["bash", "curl"]
+check = ["claude", "--version"]
+install = { script = "curl -fsSL https://claude.ai/install.sh | bash" }
+update = { script = "claude update" }
+launch = ["claude"]
+
+[tool.models]
+protocol = "anthropic"
+env = { ANTHROPIC_BASE_URL = "{{ models.url }}", ANTHROPIC_AUTH_TOKEN = "{{ models.token }}" }
+
+[tool.mcp]
+path = "~/.claude.json"
+format = "json"
+pointer = "/mcpServers"
+entry = """{ "command": "{{ connect }}", "args": ["mcp/{{ name }}"] }"""
+
+[[tool.forwards]]
+when = "login"
+direction = "host-to-guest"
+port = 54545

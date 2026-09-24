@@ -649,8 +649,14 @@ impl Machine {
                     version: Some(self.config.runtime_version.clone()),
                 });
                 match self.relay.call(&r).await? {
-                    relay::Response::Spawned(s) => {
+                    relay::Response::Spawned(s)
+                        if !s.session_id.is_empty()
+                            && s.session_id.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+                    {
                         Response::Spawned(machine::Spawned { session_id: s.session_id })
+                    }
+                    relay::Response::Spawned(_) => {
+                        Response::failed("the relay returned an invalid session ID")
                     }
                     relay::Response::Failed(f) => Response::failed(printable(f.error.as_bytes())),
                     other => Response::failed(format!("unexpected relay response {other:?}")),

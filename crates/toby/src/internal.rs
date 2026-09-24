@@ -199,7 +199,7 @@ pub fn daemon() -> anyhow::Result<()> {
         }
     };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    rt.block_on(async move {
+    let result = rt.block_on(async move {
         // The socket systemd passed, or one of our own that we remove again.
         let (listener, own) = match listeners.into_iter().next() {
             Some(fd) => {
@@ -228,7 +228,11 @@ pub fn daemon() -> anyhow::Result<()> {
         }
         result?;
         anyhow::Ok(())
-    })
+    });
+    // Background work (a download, a build) must not hold the lock after
+    // the daemon has stopped serving.
+    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
 }
 
 /// `toby internal proxy`: the models proxy, on the socket systemd passed or

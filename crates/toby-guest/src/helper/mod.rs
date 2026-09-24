@@ -4,6 +4,7 @@
 pub mod build;
 pub mod home;
 pub mod net;
+pub mod patch;
 pub mod user;
 
 pub use home::{attach, detach, home_mount, links};

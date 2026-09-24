@@ -34,6 +34,7 @@ toby-proto.workspace = true
 toby-store.workspace = true
 toby-svc.workspace = true
 toby-term.workspace = true
+toby-tools.workspace = true
 toby-vfs.workspace = true
 tokio.workspace = true
 

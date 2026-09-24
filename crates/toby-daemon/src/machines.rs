@@ -94,6 +94,8 @@ pub struct Machines {
     started: Mutex<HashMap<String, Instant>>,
     /// Machines asked to start whose processes may not be visible yet.
     starting: Mutex<HashMap<String, Instant>>,
+    /// Machines asked to stop, until they are seen stopped.
+    stopping: Mutex<HashMap<String, Instant>>,
     linger_warned: AtomicBool,
 }
 
@@ -162,6 +164,7 @@ impl Machines {
             activity: Mutex::default(),
             started: Mutex::default(),
             starting: Mutex::default(),
+            stopping: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
     }
@@ -211,8 +214,12 @@ impl Machines {
             return Observed { state, status };
         }
         if self.supervisor.active(id, &runtime).await {
-            return Observed { state: "starting", status: None };
+            // Without its host process a machine is either coming up or
+            // going down; a stop was requested for the latter.
+            let state = if self.stopping.lock().unwrap().contains_key(id) { "stopping" } else { "starting" };
+            return Observed { state, status: None };
         }
+        self.stopping.lock().unwrap().remove(id);
         Observed { state: "stopped", status: None }
     }
 
@@ -375,11 +382,12 @@ impl Machines {
         let id = template.id.clone();
         // A machine being stopped is started again once it has stopped.
         if self.observe(&id).await.state == "stopping" {
-            self.wait_stopped(&id).await;
+            self.wait_stopped(&id, Instant::now()).await;
         }
         if self.running(&id).await {
-            drop(_lock);
+            // Recorded before letting go of the lock, so idle stop sees it.
             self.activity.lock().unwrap().insert(id.clone(), Instant::now());
+            drop(_lock);
             self.wait_ready(&id).await?;
             return Ok(template);
         }
@@ -409,6 +417,7 @@ impl Machines {
             spec
         };
         self.starting.lock().unwrap().insert(spec.id.clone(), Instant::now());
+        self.stopping.lock().unwrap().remove(&spec.id);
         self.history(&spec.id, "start");
         if let Err(e) = self.supervisor.start(&spec.id).await {
             self.starting.lock().unwrap().remove(&spec.id);
@@ -470,27 +479,34 @@ impl Machines {
     /// Powers the machine off, stopping its processes if the guest does not.
     pub async fn stop(&self, id: &str) -> Result<()> {
         self.record(id)?;
-        self.request_stop(id, "stop").await;
-        if !self.wait_stopped(id).await {
+        let asked = self.request_stop(id, "stop").await;
+        if !self.wait_stopped(id, asked).await {
             self.supervisor.kill(id, &self.runtime(id)).await?;
         }
         self.forget(id);
         Ok(())
     }
 
-    /// Asks the guest to power off.
-    async fn request_stop(&self, id: &str, event: &str) {
+    /// Asks the guest to power off; returns when that was asked.
+    async fn request_stop(&self, id: &str, event: &str) -> Instant {
+        let now = Instant::now();
         self.history(id, event);
+        self.stopping.lock().unwrap().insert(id.to_string(), now);
         if let Ok(mut c) = Control::connect(&self.runtime(id)).await {
             let _ = c.stop().await;
         }
+        now
     }
 
-    /// Waits until the machine's processes are gone; false on timeout.
-    async fn wait_stopped(&self, id: &str) -> bool {
+    /// Waits until the machine's processes are gone, or it was started
+    /// again after the stop `asked` (then there is nothing left to stop);
+    /// false on timeout.
+    async fn wait_stopped(&self, id: &str, asked: Instant) -> bool {
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
         while tokio::time::Instant::now() < deadline {
-            if self.observe(id).await.state == "stopped" {
+            let restarted = self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
+                || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked);
+            if restarted || self.observe(id).await.state == "stopped" {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -915,14 +931,13 @@ impl Machines {
 
     // Idle stop
 
-    /// Stops machines that had no sessions and nothing pinned for the idle
-    /// timeout (plan §8.3). Detached sessions count as activity.
     /// Removes records of stopped machines whose home or root no longer
     /// exists: that pair can never run again.
     async fn remove_stale(&self) {
         for spec in self.records() {
-            let home_gone = spec.home.as_ref().is_some_and(|h| self.store.home(h).is_err());
-            let root_gone = matches!(&spec.root, RootSpec::Named(r) if self.store.root(r).is_err());
+            let gone = |r: io::Result<()>| r.is_err_and(|e| e.kind() == io::ErrorKind::NotFound);
+            let home_gone = spec.home.as_ref().is_some_and(|h| gone(self.store.home(h).map(drop)));
+            let root_gone = matches!(&spec.root, RootSpec::Named(r) if gone(self.store.root(r).map(drop)));
             if (home_gone || root_gone) && !self.running(&spec.id).await {
                 eprintln!("removing machine {}: its home or root no longer exists", spec.id);
                 let _ = std::fs::remove_dir_all(self.paths.machine_state_dir(&spec.id));
@@ -931,6 +946,8 @@ impl Machines {
         }
     }
 
+    /// Stops machines that had no sessions and nothing pinned for the idle
+    /// timeout (plan §8.3). Detached sessions count as activity.
     pub async fn idle_loop(self: std::sync::Arc<Self>, timeout: Duration) {
         loop {
             tokio::time::sleep(IDLE_CHECK).await;
@@ -963,12 +980,13 @@ impl Machines {
                     let idle = Instant::now().duration_since(last) >= timeout;
                     if idle {
                         eprintln!("stopping idle machine {}", spec.id);
-                        self.request_stop(&spec.id, "idle-stop").await;
+                        Some(self.request_stop(&spec.id, "idle-stop").await)
+                    } else {
+                        None
                     }
-                    idle
                 };
-                if decided {
-                    if !self.wait_stopped(&spec.id).await {
+                if let Some(asked) = decided {
+                    if !self.wait_stopped(&spec.id, asked).await {
                         let _ = self.supervisor.kill(&spec.id, &self.runtime(&spec.id)).await;
                     }
                     self.forget(&spec.id);

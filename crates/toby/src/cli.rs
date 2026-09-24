@@ -467,6 +467,19 @@ pub enum HelperCommand {
         #[arg(long)]
         ro: bool,
     },
+    /// Merge or write a configuration file (as the user)
+    PatchFile {
+        /// Path; `~/` is the home
+        #[arg(long)]
+        path: String,
+        #[arg(long, value_parser = ["json", "toml", "text"])]
+        format: String,
+        #[arg(long, value_parser = ["merge", "replace"])]
+        mode: String,
+        /// The content, hex-encoded
+        #[arg(long)]
+        content_hex: String,
+    },
     /// Unmount an attached host directory
     Detach {
         #[arg(long)]

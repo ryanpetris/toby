@@ -1,0 +1,14 @@
+[tool]
+name = "opencode"
+requires = ["bash", "curl"]
+check = ["opencode", "--version"]
+install = { script = "curl -fsSL https://opencode.ai/install | bash" }
+update = { script = "opencode upgrade" }
+launch = ["opencode"]
+path = ["~/.opencode/bin"]
+
+[tool.mcp]
+path = "~/.config/opencode/opencode.json"
+format = "json"
+pointer = "/mcp"
+entry = """{ "type": "local", "command": ["{{ connect }}", "mcp/{{ name }}"] }"""

@@ -105,6 +105,9 @@ async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo>> {
 }
 
 async fn ensure(State(d): Shared, Json(req): Json<api::EnsureMachine>) -> ApiResult<api::Ensured> {
+    if req.cpus.is_some_and(|c| !(1..=256).contains(&c)) {
+        return Err(bad("machine.invalid-cpus", "cpus must be between 1 and 256"));
+    }
     if req.memory.as_deref().is_some_and(|m| toby_config::machine::parse_size(m).is_none()) {
         return Err(bad("machine.invalid-memory", "memory must be a size such as 8G"));
     }
