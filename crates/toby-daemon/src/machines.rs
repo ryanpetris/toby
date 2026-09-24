@@ -107,8 +107,7 @@ pub struct Machines {
     stopping: Mutex<HashMap<String, Instant>>,
     /// Sessions being created: their attachments and forwards are kept.
     creating: Mutex<std::collections::HashSet<String>>,
-    /// Sessions created recently, by the client's request ID.
-    created: Mutex<std::collections::VecDeque<(String, String, String)>>,
+
     /// Serializes tool installs and file writes per machine (plan §16.1).
     tool_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     linger_warned: AtomicBool,
@@ -181,7 +180,7 @@ impl Machines {
             starting: Mutex::default(),
             stopping: Mutex::default(),
             creating: Mutex::default(),
-            created: Mutex::default(),
+
             tool_locks: Mutex::default(),
             linger_warned: AtomicBool::new(false),
         }
@@ -510,7 +509,8 @@ impl Machines {
     /// Powers the machine off, stopping its processes if the guest does not.
     pub async fn stop(&self, id: &str) -> Result<()> {
         self.record(id)?;
-        let asked = self.request_stop(id, "stop").await;
+        // Stopped by force if it cannot be asked.
+        let asked = self.request_stop(id, "stop").await.unwrap_or_else(Instant::now);
         match self.wait_stopped(id, asked).await {
             Stopped::Restarted => return Ok(()),
             Stopped::TimedOut => self.supervisor.kill(id, &self.runtime(id)).await?,
@@ -520,25 +520,34 @@ impl Machines {
         Ok(())
     }
 
-    /// Asks the guest to power off; returns when that was asked.
-    async fn request_stop(&self, id: &str, event: &str) -> Instant {
+    /// Asks the guest to power off; returns when that was asked, or `None`
+    /// if the machine could not be asked (the stop is then not pending).
+    async fn request_stop(&self, id: &str, event: &str) -> Option<Instant> {
         let now = Instant::now();
         self.history(id, event);
         self.stopping.lock().unwrap().insert(id.to_string(), now);
-        if let Ok(mut c) = Control::connect(&self.runtime(id)).await {
-            let _ = c.stop().await;
+        let asked = match Control::connect(&self.runtime(id)).await {
+            Ok(mut c) => c.stop().await.is_ok(),
+            Err(_) => false,
+        };
+        if asked {
+            Some(now)
+        } else {
+            self.stopping.lock().unwrap().remove(id);
+            None
         }
-        now
     }
 
     /// Waits until the machine's processes are gone, or it was started
     /// again after the stop `asked` (then there is nothing left to stop).
     async fn wait_stopped(&self, id: &str, asked: Instant) -> Stopped {
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
+        let restarted = || {
+            self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
+                || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked)
+        };
         while tokio::time::Instant::now() < deadline {
-            let restarted = self.starting.lock().unwrap().get(id).is_some_and(|t| *t > asked)
-                || self.started.lock().unwrap().get(id).is_some_and(|t| *t > asked);
-            if restarted {
+            if restarted() {
                 return Stopped::Restarted;
             }
             if self.observe(id).await.state == "stopped" {
@@ -546,7 +555,8 @@ impl Machines {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        Stopped::TimedOut
+        // Checked again right before the caller would kill it.
+        if restarted() { Stopped::Restarted } else { Stopped::TimedOut }
     }
 
     fn forget(&self, id: &str) {
@@ -651,7 +661,7 @@ impl Machines {
             // has already asked the machine to stop (then this is refused).
             let _lock = self.lock.lock().await;
             let state = self.observe(id).await.state;
-            if state == "stopping" {
+            if state == "stopping" || self.stopping.lock().unwrap().contains_key(id) {
                 return Err(Error::new(
                     ErrorKind::Conflict,
                     "machine.busy",
@@ -1021,16 +1031,26 @@ impl Machines {
         if req.argv.is_empty() && req.tool.is_none() {
             return Err(Error::new(ErrorKind::BadRequest, "session.no-command", "no command given"));
         }
-        let request_id = req.request_id.clone();
-        if let Some(rid) = &request_id {
-            let found = self.created.lock().unwrap().iter().find(|(r, _, _)| r == rid).cloned();
-            if let Some((_, machine, session)) = found {
-                return Ok((self.record(&machine)?, session, Vec::new()));
+        // A client's request ID is the session's ID: the relay starts a
+        // session once per ID, so a request repeated after a lost reply, even
+        // to a restarted daemon, gets the same session.
+        let session_id = match &req.request_id {
+            Some(rid)
+                if !rid.is_empty() && rid.len() <= 64 && rid.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+            {
+                rid.clone()
             }
-        }
+            Some(_) => {
+                return Err(Error::new(
+                    ErrorKind::BadRequest,
+                    "session.invalid-request",
+                    "invalid request ID",
+                ));
+            }
+            None => toby_config::new_id(),
+        };
         let manifest = req.tool.as_deref().map(|t| self.manifest(t)).transpose()?;
         let spec = self.select(&req.target).await?;
-        let session_id = toby_config::new_id();
         let mut warnings = Vec::new();
         // Until it runs, the session's items must not look abandoned; the
         // guard also clears the mark if the request is abandoned.
@@ -1043,13 +1063,6 @@ impl Machines {
         self.creating.lock().unwrap().insert(session_id.clone());
         let _creating = Creating(self, session_id.clone());
         let id = self.create_session_with(req, manifest, &spec, &session_id, &mut warnings).await?;
-        if let Some(rid) = request_id {
-            let mut created = self.created.lock().unwrap();
-            created.push_back((rid, spec.id.clone(), id.clone()));
-            if created.len() > 256 {
-                created.pop_front();
-            }
-        }
         Ok((spec, id, warnings))
     }
 
@@ -1276,7 +1289,9 @@ impl Machines {
                     let idle = !pinned && !busy && Instant::now().duration_since(last) >= timeout;
                     if idle {
                         eprintln!("stopping idle machine {}", spec.id);
-                        Some(self.request_stop(&spec.id, "idle-stop").await)
+                        // Tried again at the next check if the machine could
+                        // not be asked.
+                        self.request_stop(&spec.id, "idle-stop").await
                     } else {
                         None
                     }

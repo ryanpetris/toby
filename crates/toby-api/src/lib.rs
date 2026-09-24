@@ -142,8 +142,9 @@ pub struct MachineSelector {
 pub struct CreateSession {
     #[serde(flatten)]
     pub target: MachineSelector,
-    /// Chosen by the client; a request repeated with the same ID (after a
-    /// lost connection) gets the session the first one created.
+    /// Chosen by the client (letters and digits, at most 64): it becomes the
+    /// session's ID, so a request repeated after a lost connection gets the
+    /// session the first one created.
     #[serde(default)]
     pub request_id: Option<String>,
     /// A tool to launch (plan §16.1); `argv` then holds extra arguments.
