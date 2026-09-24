@@ -353,9 +353,26 @@ impl Relay {
         if !valid_id(&l.listener_id) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid listener ID"));
         }
+        // Registering again (after the host process restarted) replaces the
+        // listener, which must let go of its address first.
+        let old = self.listeners.lock().unwrap().remove(&l.listener_id);
+        if let Some(old) = old {
+            old.abort();
+        }
         let accept: Pin<Box<dyn Future<Output = ()> + Send>> = match &l.bind {
             Endpoint::Tcp { addr } => {
-                let listener = TcpListener::bind(addr).await?;
+                // A replaced listener lets go of its address once its task
+                // has been dropped.
+                let mut tries = 0;
+                let listener = loop {
+                    match TcpListener::bind(addr).await {
+                        Err(e) if e.kind() == io::ErrorKind::AddrInUse && tries < 20 => {
+                            tries += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                        r => break r?,
+                    }
+                };
                 let this = self.clone();
                 let id = l.listener_id.clone();
                 Box::pin(async move {

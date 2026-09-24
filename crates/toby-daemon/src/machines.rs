@@ -329,7 +329,7 @@ impl Machines {
             }
         }
 
-        let mut spec = match records.into_iter().find(pair) {
+        let template = match records.into_iter().find(pair) {
             Some(spec) => spec,
             None => MachineSpec {
                 schema: machine::SCHEMA,
@@ -346,23 +346,32 @@ impl Machines {
                 capabilities: Default::default(),
             },
         };
-        if self.running(&spec.id).await {
+        let id = template.id.clone();
+        if self.running(&id).await {
             drop(_lock);
-            self.wait_ready(&spec.id).await?;
-            return Ok(spec);
+            self.wait_ready(&id).await?;
+            return Ok(template);
         }
-        // Only persistent attachments outlive a run of the machine.
-        spec.attach.retain(|a| a.persist);
-        spec.ephemeral = ephemeral;
-        spec.generation += 1;
-        {
-            let _file = self.lock_desired(&spec.id)?;
-            spec.store(&self.paths.machine_desired(&spec.id))?;
-        }
+        // Attachment edits for this machine wait until it has started; the
+        // desired state is read again under its file lock.
+        let machine_lock = self.machine_lock(&id);
+        let _machine = machine_lock.lock().await;
+        let spec = {
+            let _file = self.lock_desired(&id)?;
+            let path = self.paths.machine_desired(&id);
+            let mut spec = MachineSpec::load(&path).unwrap_or(template);
+            // Only persistent attachments outlive a run of the machine.
+            spec.attach.retain(|a| a.persist);
+            spec.ephemeral = ephemeral;
+            spec.generation += 1;
+            spec.store(&path)?;
+            spec
+        };
         self.supervisor.start(&spec.id).await?;
         let now = Instant::now();
         self.started.lock().unwrap().insert(spec.id.clone(), now);
         self.activity.lock().unwrap().insert(spec.id.clone(), now);
+        drop(_machine);
         drop(_lock);
         self.wait_ready(&spec.id).await?;
         Ok(spec)
@@ -584,6 +593,13 @@ impl Machines {
         // Between starting and ready the guest may still hold the mount, and
         // nothing could confirm the detach.
         let state = self.observe(id).await.state;
+        if state == "failed" {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "machine.failed",
+                format!("machine {id} failed; stop it first with: toby machine stop {id}"),
+            ));
+        }
         if state != "ready" && state != "stopped" {
             return Err(Error::new(
                 ErrorKind::Conflict,
