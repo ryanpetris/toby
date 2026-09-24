@@ -1,8 +1,0 @@
-
-  tilde:
-    path: ~/tilde-source/../raw
-tools:
-  opencode:
-    profile: personal
-  uv:
-  npm:

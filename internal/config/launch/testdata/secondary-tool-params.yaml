@@ -1,8 +1,0 @@
-
-projects:
-  foo:
-tools:
-  exec:
-    primary: true
-  npm:
-    params: ["test"]

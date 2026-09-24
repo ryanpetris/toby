@@ -948,6 +948,7 @@ Restart=on-failure
 StopWhenUnneeded=yes
 [Service]
 Type=notify
+LimitNOFILE=1048576
 ExecStart=/usr/lib/toby/current/toby internal fs --machine %i
 
 # toby-net@.service

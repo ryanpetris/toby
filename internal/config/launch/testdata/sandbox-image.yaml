@@ -1,8 +1,0 @@
-
-sandbox:
-  image: custom-node
-  pull: never
-projects:
-  demo:
-tools:
-  opencode:

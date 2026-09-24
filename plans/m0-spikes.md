@@ -139,7 +139,10 @@ the unprivileged host user.
 
 Benchmark (96k-file Linux checkout, guest with 4 vCPUs, `cache=auto`
 equivalent). Both back ends process each queue on one thread (virtiofsd's
-`--thread-pool-size` defaults to 0).
+`--thread-pool-size` defaults to 0). The firmware-boot columns ran in the
+Debian 13 cloud image (kernel 6.12); the direct-boot columns ran in the Arch
+test image built in spike 2 (kernel 7.2). Compare columns within the same
+guest.
 
 | Operation | Toby spike, firmware boot | virtiofsd 1.14, firmware boot | Toby spike, direct kernel boot | virtiofsd 1.14, direct kernel boot |
 | --- | --- | --- | --- | --- |

@@ -1,6 +1,0 @@
-
-    remote:
-      type: remote
-      transport: http
-      url: https://example.invalid/mcp
-      command: []

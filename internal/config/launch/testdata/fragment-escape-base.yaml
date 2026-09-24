@@ -1,7 +1,0 @@
-
-name: base
-sandbox:
-  image: base-image
-projects:
-  app:
-    path: src
