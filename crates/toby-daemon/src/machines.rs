@@ -111,6 +111,8 @@ pub struct Machines {
     creating: Mutex<std::collections::HashSet<String>>,
     /// Machines whose MCP connections are being checked.
     sweeping: Mutex<std::collections::HashSet<String>>,
+    /// Server sessions of MCP connections still starting.
+    pub connecting: Mutex<std::collections::HashSet<String>>,
     /// Serializes changes to the machines' `yolo-sessions` files.
     yolo_file: Mutex<()>,
     /// Serializes checking and adding forwards across machines.
@@ -208,6 +210,7 @@ impl Machines {
             stopping: Mutex::default(),
             creating: Mutex::default(),
             sweeping: Mutex::default(),
+            connecting: Mutex::default(),
             yolo_file: Mutex::default(),
             forwards_lock: Default::default(),
             models_cache: Default::default(),
@@ -1419,8 +1422,13 @@ impl Machines {
             }
             // Only what was seen gone is forgotten; a kill is confirmed by
             // the next sweep.
+            // A server still starting is not gone.
+            let starting = this.connecting.lock().unwrap().clone();
             let gone = |name: &str, session: &str| {
-                running.get(name).is_some_and(|l| l.as_ref().is_some_and(|l| !l.iter().any(|s| s == session)))
+                !starting.contains(session)
+                    && running
+                        .get(name)
+                        .is_some_and(|l| l.as_ref().is_some_and(|l| !l.iter().any(|s| s == session)))
             };
             let changes = spec.mcp_revoked.iter().any(|r| gone(&r.name, &r.session))
                 || spec.mcp_grants.iter().any(|g| g.connections.iter().any(|c| gone(&g.name, c)));

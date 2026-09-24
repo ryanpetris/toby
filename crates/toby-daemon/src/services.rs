@@ -309,6 +309,9 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
             // its server starts, and refused if the grant ended meanwhile.
             let session = toby_config::new_id();
             let granted = d.machines.granted_only(spec, name);
+            // Counted as running until its start ends one way or the other.
+            d.machines.connecting.lock().unwrap().insert(session.clone());
+            let _starting = Starting(d, session.clone());
             if granted && !d.machines.granted_connection(&spec.id, name, &session) {
                 return refused(format!("no tool of this machine uses the MCP server {name}"));
             }
@@ -334,6 +337,15 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
                 }
             }
         }
+    }
+}
+
+/// Ends a server session's start.
+struct Starting<'a>(&'a Daemon, String);
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        self.0.machines.connecting.lock().unwrap().remove(&self.1);
     }
 }
 
