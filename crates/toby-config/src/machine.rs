@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 /// Version of the `machine.toml` format.
 pub const SCHEMA: u32 = 1;
 
+// Fields these files do not know are ignored: tobyd and toby-machine can be
+// different versions while an upgrade is under way (plan §3.2), and a
+// newer writer's additions must not stop an older reader.
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MachineSpec {
     pub schema: u32,
     pub generation: u64,
@@ -53,7 +56,6 @@ pub struct MachineSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Resources {
     pub cpus: u32,
     /// Size with a `K`, `M`, `G` or `T` suffix, e.g. `"8G"`.
@@ -74,7 +76,6 @@ pub enum RootSpec {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Boot {
     /// Image whose kernel and initramfs boot this machine; unset for a cloud
     /// image, which boots its own bootloader.
@@ -82,7 +83,6 @@ pub struct Boot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Disk {
     pub path: std::path::PathBuf,
     /// The guest sees `/dev/disk/by-id/virtio-<serial>`.
@@ -92,7 +92,6 @@ pub struct Disk {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Attach {
     pub id: String,
     pub host: String,
@@ -119,7 +118,6 @@ pub enum Direction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Forward {
     pub id: String,
     pub direction: Direction,
@@ -140,7 +138,6 @@ pub struct Forward {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Capabilities {
     pub sandbox_socket: Option<String>,
     pub models_listen: Option<String>,
@@ -369,6 +366,12 @@ models_listen = "127.0.0.1:41100"
         assert_eq!(parse_size("4096"), Some(4096));
         assert_eq!(parse_size("x"), None);
         assert_eq!(parse_size("99999999999T"), None);
+    }
+
+    #[test]
+    fn fields_from_newer_writers_are_ignored() {
+        let text = EXAMPLE.replace("generation = 42", "generation = 42\nlater = [\"x\"]");
+        assert_eq!(toml::from_str::<MachineSpec>(&text).unwrap(), toml::from_str(EXAMPLE).unwrap());
     }
 
     #[test]
