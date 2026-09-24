@@ -347,7 +347,7 @@ impl Builder {
             idle_timeout: None,
             services: None,
             tools: Vec::new(),
-            mcp: Vec::new(),
+            mcp_grants: Vec::new(),
         }
     }
 

@@ -165,7 +165,10 @@ impl Machine {
             relay::Response::Spawned(_) => {}
             relay::Response::Failed(f) => return Err(io::Error::other(printable(f.error.as_bytes()))),
             other => {
-                return Err(io::Error::other(format!("unexpected reply from the guest: {}", variant(&other))));
+                return Err(io::Error::other(format!(
+                    "unexpected reply from the guest: {}",
+                    variant(&other)
+                )));
             }
         }
 

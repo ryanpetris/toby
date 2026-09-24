@@ -78,27 +78,24 @@ async fn ensure_root(
         None => None,
         Some((image, dir)) => api_source(image, dir)?,
     };
-    let image = match source {
-        None => {
+    let req = match source {
+        Some(Err(id)) => toby_api::CreateRoot { name: name.into(), image: id, source: None },
+        // The default image, or the source's, built only when out of date.
+        other => {
+            let source = other.and_then(Result::ok);
             let images: Vec<toby_api::ImageInfo> = api.get("/v1/images").await?;
-            if !images.iter().any(|i| i.current_default) {
-                eprintln!("==> Building the default image");
-                let started: toby_api::BuildStarted =
-                    api.post("/v1/images/prepare", &toby_api::Prepare::default()).await?;
+            if source.is_some() || !images.iter().any(|i| i.current_default) {
+                eprintln!("==> Preparing the image of root {name}");
+                let prepare =
+                    toby_api::Prepare { sources: source.clone().into_iter().collect(), ..Default::default() };
+                let started: toby_api::BuildStarted = api.post("/v1/images/prepare", &prepare).await?;
                 api.follow_build(&started.id).await?;
             }
-            "default".to_string()
-        }
-        Some(Err(id)) => id,
-        Some(Ok(source)) => {
-            eprintln!("==> Building the image of root {name}");
-            let started: toby_api::BuildStarted =
-                api.post("/v1/builds", &toby_api::StartBuild { source }).await?;
-            api.follow_build(&started.id).await?.image.context("the build produced no image")?
+            toby_api::CreateRoot { name: name.into(), image: "default".into(), source }
         }
     };
     eprintln!("==> Creating root {name}");
-    api.post("/v1/roots", &toby_api::CreateRoot { name: name.into(), image }).await
+    api.post("/v1/roots", &req).await
 }
 
 fn utf8(args: &[OsString]) -> anyhow::Result<Vec<String>> {
@@ -209,6 +206,7 @@ async fn launch(
         tools: extra,
         attachments,
         forwards: plan.forwards,
+        mcp: plan.mcp.clone(),
         argv: plan.params,
         env,
         cwd: plan.workdir,

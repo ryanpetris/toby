@@ -473,7 +473,7 @@ impl Machines {
                 idle_timeout: None,
                 services: None,
                 tools: Vec::new(),
-                mcp: Vec::new(),
+                mcp_grants: Vec::new(),
             },
         };
         let id = template.id.clone();
@@ -514,6 +514,7 @@ impl Machines {
             // Only persistent attachments and forwards outlive a run.
             spec.attach.retain(|a| a.persist);
             spec.forward.retain(|f| f.persist);
+            spec.mcp_grants.clear();
             if let Some(server) = services {
                 spec.services = Some(server.into());
             }
@@ -1224,6 +1225,7 @@ impl Machines {
         for f in req.forwards {
             self.add_forward(&spec.id, f, Some(&session_id)).await?;
         }
+        self.grant_mcp(&spec.id, &req.mcp, &session_id)?;
         let cwd = req.cwd.or(workspace.clone());
         let (argv, env) = match &manifest {
             Some(m) => {
@@ -1305,24 +1307,37 @@ impl Machines {
     }
 
     /// Lets the machine reach configured MCP servers a launch names.
-    pub fn enable_mcp(&self, id: &str, names: &[String]) -> Result<()> {
+    /// Checks that a launch names configured MCP servers.
+    pub fn check_mcp(&self, names: &[String]) -> Result<()> {
         let config = self.current_config();
         for name in names {
             if name == "toby" || !config.mcp.contains_key(name) {
                 return Err(Error::new(
                     ErrorKind::BadRequest,
                     "mcp.unknown",
-                    format!("there is no configured MCP server {name:?}"),
+                    format!("no MCP server {name} is configured"),
                 ));
             }
         }
-        if names.iter().all(|n| self.record(id).is_ok_and(|s| s.mcp.contains(n))) {
+        Ok(())
+    }
+
+    /// Lets the machine reach configured MCP servers a launch names, while
+    /// `session` runs.
+    fn grant_mcp(&self, id: &str, names: &[String], session: &str) -> Result<()> {
+        self.check_mcp(names)?;
+        if names.is_empty() {
             return Ok(());
         }
         self.update_desired(id, |s| {
             for n in names {
-                if !s.mcp.contains(n) {
-                    s.mcp.push(n.clone());
+                match s.mcp_grants.iter_mut().find(|g| &g.name == n) {
+                    Some(g) if !g.sessions.iter().any(|x| x == session) => g.sessions.push(session.into()),
+                    Some(_) => {}
+                    None => s.mcp_grants.push(toby_config::machine::McpGrant {
+                        name: n.clone(),
+                        sessions: vec![session.into()],
+                    }),
                 }
             }
             Ok(())
@@ -1330,12 +1345,10 @@ impl Machines {
         .map(drop)
     }
 
-    /// Whether a tool in the machine runs without its permission prompts:
-    /// `settings.yolo`, or a running session started with `--yolo`.
+    /// Whether a tool in the machine runs without its permission prompts: a
+    /// running session launched with yolo (`--yolo`, a launch file's or the
+    /// global `settings.yolo`, as the launch resolved them).
     pub async fn yolo(&self, machine: &str) -> bool {
-        if self.current_config().settings.yolo {
-            return true;
-        }
         let path = self.paths.machine_state_dir(machine).join("yolo-sessions");
         let ids = std::fs::read_to_string(&path).unwrap_or_default();
         if ids.trim().is_empty() {
@@ -1367,7 +1380,8 @@ impl Machines {
     /// Removes attachments and forwards whose sessions have all ended.
     async fn release_session_items(&self, spec: &MachineSpec) {
         let has_owned = spec.attach.iter().any(|a| !a.sessions.is_empty())
-            || spec.forward.iter().any(|f| !f.sessions.is_empty());
+            || spec.forward.iter().any(|f| !f.sessions.is_empty())
+            || !spec.mcp_grants.is_empty();
         if !has_owned {
             return;
         }
@@ -1391,6 +1405,10 @@ impl Machines {
             // Items that had sessions and have none left go, unless pinned.
             spec.attach.retain(|a| a.pinned || !a.sessions.is_empty() || a.persist);
             spec.forward.retain(|f| f.pinned || !f.sessions.is_empty() || f.persist);
+            for g in &mut spec.mcp_grants {
+                g.sessions.retain(|s| live.contains(s));
+            }
+            spec.mcp_grants.retain(|g| !g.sessions.is_empty());
             Ok(())
         });
     }

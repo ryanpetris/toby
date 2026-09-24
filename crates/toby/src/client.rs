@@ -119,6 +119,7 @@ pub async fn run_session(
         tools: Vec::new(),
         attachments: Vec::new(),
         forwards: Vec::new(),
+        mcp: Vec::new(),
         argv,
         env,
         cwd,

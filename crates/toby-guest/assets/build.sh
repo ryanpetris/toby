@@ -55,8 +55,10 @@ mountpoint -q /var/lib/containers || mount --bind /cache/containers /var/lib/con
 # header names the payload's offset, size and compression.
 unpack_arm64_kernel() {
     f=$1
+    # As much as tobyd takes from a build.
+    max=536870912
     if [ "$(od -An -tx1 -N2 "$f" | tr -d ' \n')" = 1f8b ]; then
-        gzip -dc "$f" > "$f.image"
+        gzip -dc "$f" | head -c "$max" > "$f.image"
         mv "$f.image" "$f"
     elif [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = zimg ]; then
         off=$(od -An -tu4 -j8 -N4 "$f" | tr -d ' ')
@@ -65,11 +67,12 @@ unpack_arm64_kernel() {
         case $comp in
             gzip) set -- gzip -dc ;;
             zstd*) set -- zstd -dc ;;
-            xz) set -- xz -dc ;;
+            xz|xzkern) set -- xz -dc ;;
+            lz4) set -- lz4 -dc ;;
             lzma) set -- xz --format=lzma -dc ;;
             *) echo "The kernel is compressed with $comp, which Toby cannot unpack" >&2; exit 1 ;;
         esac
-        tail -c +$((off + 1)) "$f" | head -c "$size" | "$@" > "$f.image"
+        tail -c +$((off + 1)) "$f" | head -c "$size" | "$@" | head -c "$max" > "$f.image"
         mv "$f.image" "$f"
     fi
 }

@@ -163,6 +163,9 @@ pub struct CreateSession {
     /// Forwards kept while the session runs.
     #[serde(default)]
     pub forwards: Vec<AddForward>,
+    /// Configured MCP servers the machine may reach while the session runs.
+    #[serde(default)]
+    pub mcp: Vec<String>,
     pub argv: Vec<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
@@ -307,6 +310,9 @@ pub struct CreateRoot {
     pub name: String,
     /// An image ID or `default`.
     pub image: String,
+    /// Instead of `image`: the current image of this source.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -443,6 +449,7 @@ mod tests {
             tools: Vec::new(),
             attachments: Vec::new(),
             forwards: Vec::new(),
+            mcp: Vec::new(),
             argv: vec!["bash".into()],
             env: Vec::new(),
             cwd: None,

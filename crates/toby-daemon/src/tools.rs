@@ -226,7 +226,8 @@ pub fn context(
     for p in &session.projects {
         permissions.entry(p.clone()).or_insert_with(|| "allow".into());
     }
-    let yolo = session.yolo || config.settings.yolo;
+    // The launch resolved --yolo, its launch file and settings.yolo.
+    let yolo = session.yolo;
     if yolo {
         permissions.insert("/".into(), "allow".into());
     }

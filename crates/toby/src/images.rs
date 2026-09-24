@@ -33,12 +33,12 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
             let nothing = !all && !default && mcp.is_none() && project.is_none();
             let mcp = if nothing { Some(Vec::new()) } else { mcp };
             let mut sources = Vec::new();
-            if nothing || project.is_some() {
+            if nothing || all || project.is_some() {
                 let config_dir =
                     api.paths.global_config().parent().map(Path::to_path_buf).unwrap_or_default();
                 let home = toby_config::paths::home_dir()?;
                 let cwd = std::env::current_dir()?;
-                let path = project.flatten();
+                let path = project.clone().flatten();
                 let found =
                     crate::launch::project_image(&api.config, &config_dir, &home, &cwd, path.as_deref());
                 match found {
@@ -55,7 +55,15 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
                         }
                     }
                     // Outside a project, only an explicit --project fails.
-                    Err(_) if nothing => {}
+                    Err(_) if project.is_none() => {
+                        let config_dir =
+                            api.paths.global_config().parent().map(Path::to_path_buf).unwrap_or_default();
+                        if let Some(image) = &api.config.defaults.image
+                            && let Some(Ok(s)) = crate::tool::api_source(image, &config_dir)?
+                        {
+                            sources.push(s);
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -121,7 +129,7 @@ pub async fn root(cmd: RootCommand) -> anyhow::Result<ExitCode> {
             print(["ROOT", "IMAGE", "CREATED", "NEWER IMAGE"], rows);
         }
         RootCommand::Create { name, image } => {
-            let () = api.post("/v1/roots", &toby_api::CreateRoot { name, image }).await?;
+            let () = api.post("/v1/roots", &toby_api::CreateRoot { name, image, source: None }).await?;
         }
         RootCommand::Reset { name } => api.post(&format!("/v1/roots/{}/reset", segment(&name)), &()).await?,
         RootCommand::Rebase { name, image } => {

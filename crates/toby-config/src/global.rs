@@ -423,15 +423,37 @@ impl GlobalConfig {
             return false;
         }
         name == "toby"
-            || spec.mcp.iter().any(|m| m == name)
+            || spec.mcp_grants.iter().any(|g| g.name == name)
             || spec.tools.iter().any(|t| self.tools.get(t).is_some_and(|t| t.mcp.iter().any(|m| m == name)))
     }
 
     /// Loads the configuration file; a missing file means defaults.
     pub fn load(path: &Path) -> io::Result<GlobalConfig> {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", path.display()))),
+            Ok(text) => {
+                let mut config: GlobalConfig = toml::from_str(&text).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", path.display()))
+                })?;
+                // `~` in program paths is the user's home.
+                if let Ok(home) = crate::paths::home_dir() {
+                    let p = &mut config.programs;
+                    for path in [
+                        &mut p.cloud_hypervisor,
+                        &mut p.firmware,
+                        &mut p.passt,
+                        &mut p.versions,
+                        &mut p.share,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if let Some(s) = path.to_str() {
+                            *path = crate::paths::expand(&home, s);
+                        }
+                    }
+                }
+                Ok(config)
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(GlobalConfig::default()),
             Err(e) => Err(e),
         }

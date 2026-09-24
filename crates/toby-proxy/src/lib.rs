@@ -56,6 +56,13 @@ pub struct Proxy {
 /// again, which also tells tobyd it is still in use.
 const ENDPOINT_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A configuration problem whose details (host files) stay in the host's
+/// log.
+fn hidden(detail: String) -> Response<Body> {
+    eprintln!("configuration: {detail}");
+    text(StatusCode::BAD_GATEWAY, "the Toby configuration cannot be used; see the host's logs")
+}
+
 fn text(status: StatusCode, msg: impl Into<String>) -> Response<Body> {
     let body = Full::new(Bytes::from(msg.into() + "\n")).map_err(|never| match never {}).boxed();
     let mut r = Response::new(body);
@@ -165,7 +172,7 @@ impl Proxy {
         let resolve = |v: &str| toby_config::subst::resolve(v, &config_dir, &self.home);
         let url = match server.url.as_deref().map(resolve) {
             Some(Ok(u)) => u,
-            Some(Err(e)) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.url: {e}")),
+            Some(Err(e)) => return hidden(format!("mcp.{name}.url: {e}")),
             // A server Toby runs in a machine of its own, reached through
             // that machine's relay.
             None => {
@@ -174,7 +181,7 @@ impl Proxy {
                     match resolve(v) {
                         Ok(v) => headers.push((k.clone(), v)),
                         Err(e) => {
-                            return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.headers.{k}: {e}"));
+                            return hidden(format!("mcp.{name}.headers.{k}: {e}"));
                         }
                     }
                 }
@@ -189,7 +196,7 @@ impl Proxy {
         for (k, v) in &server.headers {
             match resolve(v) {
                 Ok(v) => headers.push((k.clone(), v)),
-                Err(e) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.headers.{k}: {e}")),
+                Err(e) => return hidden(format!("mcp.{name}.headers.{k}: {e}")),
             }
         }
         for h in HOP_BY_HOP.iter().chain(&["authorization", "x-api-key"]) {
@@ -358,7 +365,7 @@ impl Proxy {
         for (k, v) in &provider.headers {
             match toby_config::subst::resolve(v, &config_dir, &self.home) {
                 Ok(v) => headers.push((k.clone(), v)),
-                Err(e) => return text(StatusCode::BAD_GATEWAY, format!("provider {name} header {k}: {e}")),
+                Err(e) => return hidden(format!("models.{name}.headers.{k}: {e}")),
             }
         }
         self.forward(name, req, &upstream, headers).await

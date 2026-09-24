@@ -50,9 +50,17 @@ pub struct MachineSpec {
     /// it may reach.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
-    /// Configured MCP servers a launch in the machine enabled.
+    /// Configured MCP servers launches in the machine enabled, while their
+    /// sessions run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp: Vec<String>,
+    pub mcp_grants: Vec<McpGrant>,
+}
+
+/// A configured MCP server the machine may reach for these sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpGrant {
+    pub name: String,
+    pub sessions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

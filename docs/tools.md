@@ -52,7 +52,7 @@ root = "work"
 image = { dockerfile = "Dockerfile", context = "." }   # for a root that does not exist yet
 workdir = "src"                   # in the primary project, or an absolute path
 forwards = [{ host = 3000 }]      # host 127.0.0.1:3000 to the same port in the machine
-mcp = ["github"]                  # configured MCP servers the tool gets
+mcp = ["github"]                  # configured MCP servers the tool gets, while the launch runs
 cpus = 4
 memory = "8G"
 
@@ -76,8 +76,11 @@ A project can carry `.toby/config.toml` with the same keys except `tool`,
 `tools`, `params` and `[settings]`; its project paths start in the project
 and must stay in `projects_dir`. Toby reads it only with
 `settings.autoload_project_config = true`, because a cloned repository
-could otherwise enable your MCP servers or open forwards. Options win over
-a launch file, which wins over the project configuration.
+could otherwise enable your MCP servers or open forwards; its image's
+files must be in `projects_dir` too. Options win over a launch file, which
+wins over the project configuration, which wins over
+`~/.config/toby/config.toml` (so a launch file's `yolo = false` turns off
+a global `settings.yolo`).
 
 ### Configuration
 
@@ -240,7 +243,8 @@ mcp = ["github", "docs"]
 
 Toby writes the servers a tool's `mcp` list names, and its own server
 `toby`, into the tool's configuration when it prepares the tool. A machine
-reaches only the servers listed for the tools started in it.
+reaches only the servers listed for the tools started in it, and those a
+launch names while its session runs.
 
 - A `stdio` server whose command or environment uses `{file:}` or `{env:}`
   runs isolated: in a small machine of its own (`toby mcp ls` shows it),

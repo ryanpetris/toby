@@ -300,7 +300,11 @@ async fn decide(d: &Daemon, spec: &MachineSpec, target: &str) -> CapResponse {
         (McpKind::Stdio, Placement::Machine) => refused(format!("{name} runs in the tool's machine")),
         (McpKind::Stdio, Placement::Isolated) => match start_isolated(d, name, server).await {
             Ok(splice) => CapResponse::Splice(splice),
-            Err(e) => refused(e),
+            // The reason can name host files: the host's log has it.
+            Err(e) => {
+                eprintln!("mcp {name}: {e}");
+                refused(format!("{name} could not be started; see: toby daemon logs"))
+            }
         },
     }
 }

@@ -224,7 +224,7 @@ async fn prepare_tool(
             return Err(bad("tool.invalid-project", format!("{p:?} is not a path")));
         }
     }
-    d.machines.enable_mcp(&spec.id, &req.mcp)?;
+    d.machines.check_mcp(&req.mcp)?;
     let machines = d.machines.clone();
     let b = d.builds.start(d.builder.paths.state.join("builds"), "tool", move |out| {
         Box::pin(async move {
@@ -503,7 +503,10 @@ fn resolve_image(d: &Daemon, image: &str) -> Result<String, Error> {
 
 #[utoipa::path(post, path = "/v1/roots", tag = "roots", request_body = api::CreateRoot, responses((status = 200, description = "Done", body = serde_json::Value, example = json!(null)), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
 async fn create_root(State(d): Shared, Json(req): Json<api::CreateRoot>) -> ApiResult<()> {
-    let image = resolve_image(&d, &req.image)?;
+    let image = match req.source {
+        Some(s) => d.builder.image_for(&crate::builder::Wanted::Source(source(s)))?.id,
+        None => resolve_image(&d, &req.image)?,
+    };
     d.builder.store.create_root(&req.name, &image).await?;
     Ok(Json(()))
 }

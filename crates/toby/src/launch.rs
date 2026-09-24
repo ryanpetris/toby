@@ -141,6 +141,42 @@ fn dir_name(p: &Path) -> anyhow::Result<String> {
         .context("a project needs a UTF-8 directory name")
 }
 
+/// Checks that the host paths a project's image names stay in
+/// `projects_dir` (plan §14.3): its build context is shared with the
+/// build.
+fn check_project_image(
+    image: &ImageConfig,
+    base: &Path,
+    home: &Path,
+    projects_dir: &Path,
+    external: bool,
+) -> anyhow::Result<()> {
+    if external {
+        return Ok(());
+    }
+    let paths: Vec<&str> = match image {
+        ImageConfig::Named(_) | ImageConfig::Registry { .. } => Vec::new(),
+        ImageConfig::Mkosi { mkosi } => vec![mkosi],
+        ImageConfig::Dockerfile { dockerfile, context } => {
+            vec![dockerfile, context.as_deref().unwrap_or(".")]
+        }
+        ImageConfig::Archive { archive } => vec![archive],
+    };
+    for p in paths {
+        // Resolved as the build resolves it.
+        let path = base.join(expand(home, p));
+        let host = std::fs::canonicalize(&path).with_context(|| path.display().to_string())?;
+        if !host.starts_with(projects_dir) {
+            bail!(
+                "the project's image uses {}, outside {}; set settings.allow_external_projects to use it",
+                host.display(),
+                projects_dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The image configured for the project at `path` (the current project
 /// without one): its configuration's, or `[defaults] image`, with the
 /// directory its relative paths start in.
@@ -161,6 +197,13 @@ pub fn project_image(
     if file.exists() {
         if config.settings.autoload_project_config {
             if let Some(image) = Launch::load_project(&file)?.image {
+                check_project_image(
+                    &image,
+                    &project,
+                    home,
+                    &projects_dir,
+                    config.settings.allow_external_projects,
+                )?;
                 return Ok((Some((image, project)), warnings));
             }
         } else {
@@ -262,6 +305,11 @@ pub fn plan(
     plan.params.extend(flags.args);
     plan.home = flags.home.or(launch.home).or(project.home);
     plan.root = flags.root.or(launch.root).or(project.root);
+    if launch.image.is_none()
+        && let Some(image) = &project.image
+    {
+        check_project_image(image, &primary, home, &projects_dir, external)?;
+    }
     plan.image = launch
         .image
         .map(|i| (i, launch_dir.clone()))
@@ -418,7 +466,17 @@ mod tests {
         assert_eq!(p.forwards.len(), 2);
         assert_eq!(p.forwards[1].guest, "127.0.0.1:80");
 
-        // A project's configuration cannot reach outside projects_dir.
+        // A project's configuration cannot reach outside projects_dir, with
+        // its image's build context or with its projects.
+        std::fs::write(
+            t.projects.join("app/.toby/config.toml"),
+            "image = { dockerfile = \"Dockerfile\", context = \"../..\" }\n",
+        )
+        .unwrap();
+        std::fs::write(t.projects.join("app/Dockerfile"), "FROM x\n").unwrap();
+        let flags = Flags { tool: Some("claude".into()), ..Default::default() };
+        let e = plan(&c, &t.home, &t.home, &t.projects.join("app"), None, flags).unwrap_err();
+        assert!(e.to_string().contains("outside"), "{e}");
         std::fs::write(
             t.projects.join("app/.toby/config.toml"),
             "[projects.x]\npath = \"../../elsewhere\"\n",

@@ -1,6 +1,6 @@
 //! `toby machine`, `toby daemon`, `toby linger` and `toby doctor`.
 
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::ExitCode;
@@ -474,13 +474,19 @@ pub fn config(cmd: crate::cli::ConfigCommand) -> anyhow::Result<ExitCode> {
         ConfigCommand::Set { key, value } => {
             let out = toby_config::edit::set(&text, &key, &value).map_err(anyhow::Error::msg)?;
             // A symlinked file (kept with other dotfiles) is written where it
-            // points, keeping its permissions.
+            // points. The file may hold credentials: it is written private,
+            // then given the old file's permissions, before it replaces it.
             let target = std::fs::canonicalize(&path).unwrap_or(path);
-            let mode = std::fs::metadata(&target).ok().map(|m| m.permissions());
-            toby_config::machine::write_atomic(&target, out.as_bytes())?;
-            if let Some(mode) = mode {
-                std::fs::set_permissions(&target, mode)?;
-            }
+            let mode = std::fs::metadata(&target).map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o600);
+            let dir = target.parent().context("the configuration file has no directory")?;
+            std::fs::create_dir_all(dir)?;
+            let tmp = dir.join(format!(".config.toml.{}", std::process::id()));
+            let _ = std::fs::remove_file(&tmp);
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+            std::io::Write::write_all(&mut f, out.as_bytes())?;
+            f.sync_all()?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+            std::fs::rename(&tmp, &target)?;
         }
     }
     Ok(ExitCode::SUCCESS)
