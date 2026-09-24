@@ -160,11 +160,23 @@ impl Proxy {
         let url = match server.url.as_deref().map(resolve) {
             Some(Ok(u)) => u,
             Some(Err(e)) => return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.url: {e}")),
-            // A server Toby runs in a machine of its own.
-            None => match self.endpoint(&name).await {
-                Ok(u) => u,
-                Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
-            },
+            // A server Toby runs in a machine of its own, reached through
+            // that machine's relay.
+            None => {
+                let mut headers = Vec::new();
+                for (k, v) in &server.headers {
+                    match resolve(v) {
+                        Ok(v) => headers.push((k.clone(), v)),
+                        Err(e) => {
+                            return text(StatusCode::BAD_GATEWAY, format!("mcp.{name}.headers.{k}: {e}"));
+                        }
+                    }
+                }
+                for h in HOP_BY_HOP.iter().chain(&["authorization", "x-api-key"]) {
+                    req.headers_mut().remove(*h);
+                }
+                return self.forward_local(&name, req, &tail, headers).await;
+            }
         };
         let upstream = format!("{}{tail}", url.trim_end_matches('/'));
         let mut headers = Vec::new();
@@ -180,8 +192,65 @@ impl Proxy {
         self.forward(&name, req, &upstream, headers).await
     }
 
+    /// Sends `req` to an HTTP MCP server Toby runs, at `path`.
+    async fn forward_local(
+        &self,
+        name: &str,
+        mut req: Request<Incoming>,
+        path: &str,
+        headers: Vec<(String, String)>,
+    ) -> Response<Body> {
+        let (machine, port) = match self.endpoint(name).await {
+            Ok(e) => e,
+            Err(e) => {
+                // tobyd's message may name host paths: host only.
+                eprintln!("mcp {name}: {e}");
+                return text(
+                    StatusCode::BAD_GATEWAY,
+                    format!("{name} could not be started; see toby mcp logs {name}"),
+                );
+            }
+        };
+        let runtime = self.paths.machine_runtime(&machine);
+        let stream = match dial(&runtime, port).await {
+            Ok(s) => s,
+            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+        };
+        let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
+            Ok(c) => c,
+            Err(e) => return text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+        };
+        tokio::spawn(conn);
+        for (k, v) in headers {
+            match (HeaderName::try_from(k.as_str()), HeaderValue::try_from(v)) {
+                (Ok(k), Ok(v)) => {
+                    req.headers_mut().insert(k, v);
+                }
+                _ => return text(StatusCode::BAD_GATEWAY, format!("{name}: header {k} is invalid")),
+            }
+        }
+        let path = if path.is_empty() { "/" } else { path };
+        match path.parse::<hyper::Uri>() {
+            Ok(u) => *req.uri_mut() = u,
+            Err(e) => return text(StatusCode::BAD_REQUEST, format!("{name}: {e}")),
+        }
+        if let Ok(host) = HeaderValue::try_from(format!("127.0.0.1:{port}")) {
+            req.headers_mut().insert(hyper::header::HOST, host);
+        }
+        *req.version_mut() = hyper::Version::HTTP_11;
+        match sender.send_request(req).await {
+            Ok(mut resp) => {
+                for h in HOP_BY_HOP {
+                    resp.headers_mut().remove(*h);
+                }
+                resp.map(|b| b.boxed())
+            }
+            Err(e) => text(StatusCode::BAD_GATEWAY, format!("{name}: {e}")),
+        }
+    }
+
     /// Asks tobyd where an HTTP MCP server it runs listens, starting it.
-    async fn endpoint(&self, name: &str) -> Result<String, String> {
+    async fn endpoint(&self, name: &str) -> Result<(String, u16), String> {
         let stream = UnixStream::connect(self.paths.api_sock()).await.map_err(|e| format!("tobyd: {e}"))?;
         let (mut sender, conn) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|e| e.to_string())?;
@@ -194,9 +263,23 @@ impl Proxy {
         let ok = res.status().is_success();
         let body = res.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
         let v: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-        let field = if ok { "url" } else { "message" };
-        let text = v.get(field).and_then(|u| u.as_str()).unwrap_or("tobyd gave no answer").to_string();
-        if ok { Ok(text) } else { Err(text) }
+        if !ok {
+            return Err(v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("tobyd gave no answer")
+                .to_string());
+        }
+        let machine = v.get("machine").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+        let port = v.get("port").and_then(|p| p.as_u64()).and_then(|p| u16::try_from(p).ok());
+        match port {
+            Some(port)
+                if !machine.is_empty() && machine.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+            {
+                Ok((machine, port))
+            }
+            _ => Err("tobyd gave no endpoint".into()),
+        }
     }
 
     async fn models(&self, machine: &str, mut req: Request<Incoming>) -> Response<Body> {
@@ -350,6 +433,16 @@ pub fn ensure_token(paths: &Paths, machine: &str) -> io::Result<String> {
     }
     std::fs::rename(&tmp, &path)?;
     Ok(token)
+}
+
+/// Opens a connection to `port` of a machine's 127.0.0.1 through its relay.
+async fn dial(runtime: &toby_config::paths::MachineRuntime, port: u16) -> io::Result<UnixStream> {
+    use toby_proto::stream::{Dial, HostHeader};
+    use toby_proto::types::Endpoint;
+    let header = HostHeader::Dial(Dial { target: Endpoint::Tcp { addr: format!("127.0.0.1:{port}") } });
+    let (s, reply) = toby_machine::link::open_relay(&runtime.vsock(), &header).await?;
+    reply.into_result().map_err(io::Error::other)?;
+    Ok(s)
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ publish.workspace = true
 utoipa.workspace = true
 axum.workspace = true
 futures-util.workspace = true
+toby-machine.workspace = true
 bytes.workspace = true
 http-body.workspace = true
 hyper-util.workspace = true

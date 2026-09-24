@@ -165,12 +165,10 @@ async fn start_isolated(d: &Daemon, name: &str, server: &McpServer) -> Result<Sp
     Ok(Splice { machine, target: Endpoint::Unix { path: socket } })
 }
 
-/// An HTTP MCP server Toby runs: its session, and the host port forwarded
-/// to it.
+/// An HTTP MCP server Toby runs, and when it was last asked for.
 struct Running {
     machine: String,
     session: String,
-    port: u16,
     used: std::time::Instant,
 }
 
@@ -179,24 +177,20 @@ static HTTP_SERVERS: LazyLock<Mutex<HashMap<String, Running>>> = LazyLock::new(D
 /// How long a local HTTP server may take to listen.
 const LISTEN_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Whether something holds a connection to `port` open: an HTTP server
-/// waits for the request, while a forward with nothing behind it closes.
-async fn listening(port: u16) -> bool {
-    use tokio::io::AsyncReadExt;
-    let Ok(mut s) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else { return false };
-    let mut b = [0u8; 1];
-    tokio::time::timeout(Duration::from_millis(300), s.read(&mut b)).await.is_err()
+/// Opens a connection to `port` of machine `machine`'s 127.0.0.1 through
+/// its relay; nothing listens on the host.
+pub async fn dial(runtime: &toby_config::paths::MachineRuntime, port: u16) -> io::Result<UnixStream> {
+    use toby_proto::stream::{Dial, HostHeader};
+    let header = HostHeader::Dial(Dial { target: Endpoint::Tcp { addr: format!("127.0.0.1:{port}") } });
+    let (s, reply) = toby_machine::link::open_relay(&runtime.vsock(), &header).await?;
+    reply.into_result().map_err(io::Error::other)?;
+    Ok(s)
 }
 
-fn signal(s: nix::sys::signal::Signal) -> i32 {
-    s as i32
-}
-
-/// The host address of HTTP MCP server `name`, which runs in its services
-/// machine (plan §16.3): started when first asked for, and stopped after
+/// Where HTTP MCP server `name` listens: its services machine and port
+/// (plan §16.3). It is started when first asked for, and stopped after
 /// five minutes without being asked.
-pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<String, String> {
-    use nix::sys::signal::Signal;
+pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<(String, u16), String> {
     let config = d.machines.current_config();
     let server = config
         .mcp
@@ -204,12 +198,12 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<String, String>
         .filter(|s| s.kind == McpKind::Http && s.own_machine())
         .ok_or_else(|| format!("{name} is not an HTTP MCP server Toby runs"))?;
     server.check(name)?;
+    let port = server.port.unwrap_or_default();
     // Not the machine's lock, which ensure_machine takes.
     let lock = server_lock(&format!("http {name}"));
     let _lock = lock.lock().await;
-    let known =
-        HTTP_SERVERS.lock().unwrap().get(name).map(|r| (r.machine.clone(), r.session.clone(), r.port));
-    if let Some((machine, session, port)) = known {
+    let known = HTTP_SERVERS.lock().unwrap().get(name).map(|r| (r.machine.clone(), r.session.clone()));
+    if let Some((machine, session)) = known {
         let alive = match Control::connect(&d.machines.runtime(&machine)).await {
             Ok(mut c) => {
                 c.sessions().await.is_ok_and(|l| l.iter().any(|s| s.id == session && s.exit.is_none()))
@@ -220,7 +214,7 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<String, String>
             if let Some(r) = HTTP_SERVERS.lock().unwrap().get_mut(name) {
                 r.used = std::time::Instant::now();
             }
-            return Ok(format!("http://127.0.0.1:{port}"));
+            return Ok((machine, port));
         }
         HTTP_SERVERS.lock().unwrap().remove(name);
     }
@@ -248,37 +242,21 @@ pub async fn http_endpoint(d: Arc<Daemon>, name: &str) -> Result<String, String>
         tool: None,
     };
     let id = session.session_id.clone();
-    let mut c = Control::connect(&d.machines.runtime(&machine)).await.map_err(|e| e.to_string())?;
+    let runtime = d.machines.runtime(&machine);
+    let mut c = Control::connect(&runtime).await.map_err(|e| e.to_string())?;
     c.spawn(session).await.map_err(|e| format!("starting {name}: {e}"))?;
-    // A free port of the host, forwarded while the server's session runs.
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .and_then(|l| l.local_addr())
-        .map_err(|e| e.to_string())?
-        .port();
-    let guest_port = server.port.unwrap_or_default();
-    let fwd = toby_api::AddForward {
-        direction: "host-to-guest".into(),
-        host: format!("127.0.0.1:{port}"),
-        guest: format!("127.0.0.1:{guest_port}"),
-        pinned: false,
-        persist: false,
-    };
-    if let Err(e) = d.machines.add_forward(&machine, fwd, Some(&id)).await {
-        let _ = c.kill(&id, signal(Signal::SIGKILL)).await;
-        return Err(format!("forwarding to {name}: {}", e.message));
-    }
     let deadline = tokio::time::Instant::now() + LISTEN_TIMEOUT;
-    while !listening(port).await {
+    while dial(&runtime, port).await.is_err() {
         if tokio::time::Instant::now() > deadline {
-            let _ = c.kill(&id, signal(Signal::SIGKILL)).await;
-            return Err(format!("{name} does not listen on port {guest_port}; see toby mcp logs {name}"));
+            let _ = d.machines.kill_session(&id, None).await;
+            return Err(format!("{name} does not listen on port {port}; see toby mcp logs {name}"));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let running = Running { machine, session: id, port, used: std::time::Instant::now() };
+    let running = Running { machine: machine.clone(), session: id, used: std::time::Instant::now() };
     HTTP_SERVERS.lock().unwrap().insert(name.to_string(), running);
     tokio::spawn(stop_when_unused(d, name.to_string()));
-    Ok(format!("http://127.0.0.1:{port}"))
+    Ok((machine, port))
 }
 
 /// Ends a local HTTP server's session when nothing has asked for it for the
@@ -297,9 +275,8 @@ async fn stop_when_unused(d: Arc<Daemon>, name: String) {
             }
         };
         if let Some(r) = stale {
-            if let Ok(mut c) = Control::connect(&d.machines.runtime(&r.machine)).await {
-                let _ = c.kill(&r.session, signal(nix::sys::signal::Signal::SIGTERM)).await;
-            }
+            // Hangup and terminate, then kill.
+            let _ = d.machines.kill_session(&r.session, None).await;
             return;
         }
     }

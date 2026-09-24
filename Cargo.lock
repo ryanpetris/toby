@@ -1928,6 +1928,7 @@ dependencies = [
  "toby-api",
  "toby-config",
  "toby-guest",
+ "toby-machine",
  "toby-proto",
  "toby-proxy",
  "toby-store",
@@ -2019,6 +2020,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toby-config",
+ "toby-machine",
  "toby-proto",
  "tokio",
 ]

@@ -650,10 +650,10 @@ pub(crate) async fn mcp_servers(State(d): Shared) -> ApiResult<Vec<api::McpInfo>
 /// listens (for the proxy).
 #[utoipa::path(post, path = "/v1/mcp/{name}/endpoint", tag = "mcp", params(("name" = String, Path)), responses((status = 200, body = api::McpEndpoint), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
 async fn mcp_endpoint(State(d): Shared, Path(name): Path<String>) -> ApiResult<api::McpEndpoint> {
-    let url = crate::services::http_endpoint(d, &name)
+    let (machine, port) = crate::services::http_endpoint(d, &name)
         .await
         .map_err(|e| Error::new(ErrorKind::Conflict, "mcp.unavailable", e))?;
-    Ok(Json(api::McpEndpoint { url }))
+    Ok(Json(api::McpEndpoint { machine, port }))
 }
 
 #[utoipa::path(get, path = "/v1/mcp/{name}/logs", tag = "mcp", params(("name" = String, Path)), responses((status = 101, description = "A WebSocket of log lines"), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]

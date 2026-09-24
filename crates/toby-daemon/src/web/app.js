@@ -63,10 +63,9 @@ async function refresh(force) {
   return res.status !== 401;
 }
 
-// Clicks just after the page changed, or came to the front, are not meant
-// for what is now under the pointer.
+// Clicks just after the page changed are not meant for what is now under
+// the pointer.
 let changed = 0;
-window.addEventListener("focus", () => { changed = Date.now(); });
 const settled = () => Date.now() - changed > 500;
 
 document.addEventListener("focusout", () => setTimeout(() => { if (pending && !editing()) refresh(); }, 0));
@@ -161,7 +160,9 @@ function events() {
   ws.onopen = soon;
   ws.onmessage = soon;
   ws.onclose = async () => {
-    if (await refresh(true)) setTimeout(events, 3000);
+    let loggedIn = true;
+    try { loggedIn = await refresh(true); } catch (_) {}
+    if (loggedIn) setTimeout(events, 3000);
   };
 }
 

@@ -21,9 +21,9 @@ web_port = 7474
 From another computer, forward the port over SSH (`ssh -L
 7474:127.0.0.1:7474 host`) and open the link with your local port.
 
-The login link is on the browser's command line while the browser starts,
-where other users of the computer can read it; on a shared computer, open
-the printed link yourself in a browser that is already running.
+`toby web` opens the link through a private file, so it is not on a
+command line. A browser that cannot read that file (a snap, say) shows an
+error; open the printed link instead.
 
 The pages use tobyd's API, which `GET /v1/openapi.json` describes, on the
 daemon's socket or, logged in, on the web UI's port.

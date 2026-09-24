@@ -121,12 +121,12 @@ impl Paths {
         self.runtime.join("proxy.sock")
     }
 
-    /// tobyd's endpoint for guest capability requests.
     /// tobyd's API.
     pub fn api_sock(&self) -> PathBuf {
         self.runtime.join("tobyd.sock")
     }
 
+    /// tobyd's endpoint for guest capability requests.
     pub fn capability_sock(&self) -> PathBuf {
         self.runtime.join("capability.sock")
     }

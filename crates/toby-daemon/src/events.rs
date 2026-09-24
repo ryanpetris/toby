@@ -13,9 +13,10 @@ use crate::server::Daemon;
 
 const INTERVAL: Duration = Duration::from_secs(2);
 
-/// How long a snapshot may take; a machine that does not answer sooner is
-/// asked again next time.
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a snapshot may take. A machine that does not answer costs at
+/// most its connect (10 s) and session list (5 s) limits, so events are
+/// late then, not lost.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Events {
     tx: broadcast::Sender<Event>,
@@ -47,13 +48,14 @@ type Snapshot = HashMap<(&'static str, String), (String, String, Option<String>)
 
 async fn snapshot(d: &Daemon) -> Option<Snapshot> {
     let mut s = Snapshot::new();
-    for m in d.machines.list().await {
+    let (machines, sessions) = tokio::join!(d.machines.list(), d.machines.sessions());
+    for m in machines {
         // Uptime and idle time change all the time.
         let rest =
             serde_json::to_string(&(&m.error, m.sessions, &m.attachments, &m.forwards)).unwrap_or_default();
         s.insert(("machine", m.id), (m.state, rest, None));
     }
-    for (machine, session) in d.machines.sessions().await {
+    for (machine, session) in sessions {
         let state = if session.exit.is_some() { "exited" } else { "running" };
         s.insert(("session", session.id), (state.into(), session.attached.to_string(), Some(machine)));
     }

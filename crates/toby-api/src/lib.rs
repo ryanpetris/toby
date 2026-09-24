@@ -369,10 +369,12 @@ pub fn clean_text(s: &str) -> String {
 }
 
 /// `POST /v1/mcp/{name}/endpoint`: where an HTTP MCP server Toby runs
-/// listens on the host.
+/// listens: a port of its machine's 127.0.0.1, reached through the
+/// machine's relay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct McpEndpoint {
-    pub url: String,
+    pub machine: String,
+    pub port: u16,
 }
 
 /// `POST /v1/web/token`: a one-time login URL for the web UI.
