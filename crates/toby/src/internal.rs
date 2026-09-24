@@ -116,8 +116,16 @@ pub fn net(machine: &str) -> anyhow::Result<()> {
     let host = Host::load(machine)?;
     let passt = match &host.config.programs.passt {
         Some(p) => p.clone(),
-        None => find_in_path("passt").context("passt is not installed")?,
+        None => find_in_path("passt").with_context(|| {
+            format!("passt is not installed; install passt {} or newer", toby_config::global::MIN_PASST)
+        })?,
     };
+    let out = std::process::Command::new(&passt)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running {}", passt.display()))?;
+    toby_config::global::check_passt_version(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| anyhow::anyhow!("{e} ({})", passt.display()))?;
     let dns_host = match host.config.network.dns_host {
         Some(a) => a,
         None => {

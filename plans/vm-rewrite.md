@@ -258,9 +258,9 @@ Rules:
     uses the version it was tested with.
 - **System-installed** (package dependency, not bundled; GPL):
   passt with vhost-user support. Found via config override or `PATH`;
-  version checked against the minimum, which is 2026_07_28 (the tested
-  release) until packaging (M11) establishes the oldest release providing
-  `--vhost-user`, `--dns-host` and `--no-map-gw` that passes the tests.
+  version checked against the minimum, 2025_01_21: the oldest release
+  providing `--vhost-user`, `--dns-host` and `--no-map-gw` (2024_11_27
+  lacks `--vhost-user`), tested by booting a machine with it.
 - Toby never downloads programs at runtime. A missing or too-old program
   produces an error naming it, the required version and the package to
   install; `toby doctor` lists everything.

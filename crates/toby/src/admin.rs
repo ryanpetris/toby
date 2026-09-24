@@ -344,8 +344,18 @@ pub async fn doctor() -> anyhow::Result<ExitCode> {
             .find(|p| p.is_file())
     });
     match passt {
-        Some(p) if executable(&p) => r.ok(&format!("passt: {}", p.display())),
-        _ => r.fail("passt is not installed"),
+        Some(p) if executable(&p) => {
+            let out = std::process::Command::new(&p).arg("--version").output();
+            let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            match toby_config::global::check_passt_version(&text) {
+                Ok(v) => r.ok(&format!("passt {v}: {}", p.display())),
+                Err(e) => r.fail(&format!("{e} ({})", p.display())),
+            }
+        }
+        _ => r.fail(&format!(
+            "passt is not installed; install passt {} or newer",
+            toby_config::global::MIN_PASST
+        )),
     }
     let current = programs.versions().join("current/toby");
     r.check(

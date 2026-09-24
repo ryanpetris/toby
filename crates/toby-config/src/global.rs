@@ -364,6 +364,25 @@ pub struct Network {
 
 /// Bundled program locations (plan §4).
 pub const BUNDLED_CLOUD_HYPERVISOR: &str = "/usr/lib/toby/cloud-hypervisor";
+/// The oldest passt with `--vhost-user`, `--dns-host` and `--no-map-gw`
+/// (plan §4).
+pub const MIN_PASST: &str = "2025_01_21";
+
+/// Checks a passt's `--version` output (`passt 2025_01_21.4f2c8e7`)
+/// against [`MIN_PASST`]; release names are dates, so they sort as text.
+pub fn check_passt_version(output: &str) -> Result<String, String> {
+    let version = output
+        .lines()
+        .find_map(|l| l.strip_prefix("passt "))
+        .map(str::trim)
+        .ok_or("passt does not say its version")?;
+    let date = version.split('.').next().unwrap_or_default();
+    let dated = date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'_');
+    if dated && date < MIN_PASST {
+        return Err(format!("passt {version} is older than {MIN_PASST}; install a newer passt"));
+    }
+    Ok(version.to_string())
+}
 pub const BUNDLED_VERSIONS: &str = "/usr/lib/toby/versions";
 pub const BUNDLED_SHARE: &str = "/usr/share/toby";
 
@@ -426,6 +445,21 @@ mod tests {
         assert_eq!(cfg.daemon.backend, Backend::Direct);
         assert_eq!(cfg.programs.passt, Some("/opt/passt".into()));
         assert_eq!(cfg.network.dns_host, Some("192.0.2.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn passt_versions() {
+        assert_eq!(
+            check_passt_version("passt 2026_07_28.f8df3f1\nCopyright Red Hat\n").unwrap(),
+            "2026_07_28.f8df3f1"
+        );
+        assert!(
+            check_passt_version("note\npasst 2024_11_27.c0fbc7e\n")
+                .unwrap_err()
+                .contains("older than 2025_01_21")
+        );
+        assert!(check_passt_version("passt 2025_01_21.4f2c8e7").is_ok());
+        assert!(check_passt_version("something else").is_err());
     }
 
     #[test]
