@@ -17,7 +17,7 @@ fn absolute(p: &Path) -> anyhow::Result<String> {
 
 async fn build(api: &Api, source: Source) -> anyhow::Result<()> {
     let started: toby_api::BuildStarted = api.post("/v1/builds", &toby_api::StartBuild { source }).await?;
-    let status = api.follow_build(&started.id).await?;
+    let status = api.follow_build(&started.id, "Building the image").await?;
     if let Some(image) = status.image {
         println!("Built image {image}");
     }
@@ -59,7 +59,7 @@ pub async fn image(cmd: ImageCommand) -> anyhow::Result<ExitCode> {
             }
             let req = toby_api::Prepare { all, default, mcp, sources, rebuild, pull };
             let started: toby_api::BuildStarted = api.post("/v1/images/prepare", &req).await?;
-            let status = api.follow_build(&started.id).await?;
+            let status = api.follow_build(&started.id, "Preparing images").await?;
             if let Some(image) = status.image {
                 println!("Default image {image}");
             }
@@ -153,8 +153,8 @@ pub async fn home(cmd: HomeCommand) -> anyhow::Result<ExitCode> {
             };
             let uid = uid.unwrap_or_else(|| nix::unistd::getuid().as_raw());
             let started: toby_api::BuildStarted =
-                api.post("/v1/homes", &toby_api::CreateHome { name, username, uid }).await?;
-            api.follow_build(&started.id).await?;
+                api.post("/v1/homes", &toby_api::CreateHome { name: name.clone(), username, uid }).await?;
+            api.follow_build(&started.id, &format!("Creating home {name}")).await?;
         }
         HomeCommand::Rm { name } => api.delete(&format!("/v1/homes/{}", segment(&name))).await?,
     }
@@ -178,7 +178,7 @@ pub async fn builder_cmd(cmd: BuilderCommand) -> anyhow::Result<ExitCode> {
             let base = base.map(|p| absolute(&p)).transpose()?;
             let started: toby_api::BuildStarted =
                 api.post("/v1/bootstrap", &toby_api::Bootstrap { base }).await?;
-            if let Some(image) = api.follow_build(&started.id).await?.image {
+            if let Some(image) = api.follow_build(&started.id, "Bootstrapping the builder").await?.image {
                 println!("Default image {image}");
             }
         }

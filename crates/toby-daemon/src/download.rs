@@ -21,9 +21,12 @@ pub fn text(url: &str) -> io::Result<String> {
     get(url)?.body_mut().read_to_string().map_err(|e| io::Error::other(format!("{url}: {e}")))
 }
 
-/// Downloads `url` to `path` and returns the SHA-512 of the content (hex).
-pub fn file(url: &str, path: &Path) -> io::Result<String> {
+/// Downloads `url` to `path`, telling `progress` the bytes so far and the
+/// size if known, and returns the SHA-512 of the content (hex).
+pub fn file(url: &str, path: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> io::Result<String> {
     let mut resp = get(url)?;
+    let total = resp.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    let mut done = 0u64;
     let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
     let mut f = std::fs::File::create(path)?;
     let mut h = Sha512::new();
@@ -35,6 +38,8 @@ pub fn file(url: &str, path: &Path) -> io::Result<String> {
         }
         h.update(&buf[..n]);
         f.write_all(&buf[..n])?;
+        done += n as u64;
+        progress(done, total);
     }
     f.sync_all()?;
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())

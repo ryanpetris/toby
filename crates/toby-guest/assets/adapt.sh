@@ -86,7 +86,7 @@ if [ -n "$missing" ]; then
         echo "The image lacks:$missing (it is marked dev.toby.adapted=manual)" >&2
         exit 1
     fi
-    echo "==> Installing:$missing"
+    printf '\036SUBSTEP %s\n' "Installing:$missing"
     case $family in
         apt)
             case $(uname -m) in aarch64) debarch=arm64 ;; *) debarch=amd64 ;; esac
@@ -133,7 +133,7 @@ fi
 mkdir -p "$tree/usr/lib/dracut/modules.d/99toby"
 cp /run/toby/fs/dracut/99toby/* "$tree/usr/lib/dracut/modules.d/99toby/"
 mkdir -p "$tree/boot"
-echo "==> Generating the initramfs for $kver"
+printf '\036SUBSTEP %s\n' "Generating the initramfs for $kver"
 in_tree dracut --quiet --no-hostonly --force --kver "$kver" --add toby --add-drivers "$drivers" /boot/toby-initramfs.img
 
 # systemd is init, whatever the image had there.

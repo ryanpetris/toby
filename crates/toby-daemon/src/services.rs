@@ -58,9 +58,8 @@ async fn ensure_machine(d: &Daemon, name: &str, server: &McpServer) -> Result<St
         }
     };
     if !formatted {
-        let mut sink = |_: &[u8], _: bool| {};
         d.builder
-            .format_home(&pair, &mut sink)
+            .format_home(&pair, &crate::progress::Steps::silent())
             .await
             .map_err(|e| format!("preparing the home of {name}: {e}"))?;
     }

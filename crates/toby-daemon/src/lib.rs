@@ -10,6 +10,7 @@ pub mod git;
 pub mod logs;
 pub mod machines;
 pub mod mcp;
+pub mod progress;
 pub mod server;
 pub mod services;
 pub mod supervisor;

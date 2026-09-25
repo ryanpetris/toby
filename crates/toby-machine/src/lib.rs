@@ -228,6 +228,7 @@ impl Machine {
     async fn run_boot_helpers(&self) -> Result<(), String> {
         for argv in &self.config.boot_helpers {
             let name = argv.get(3).map_or("helper", String::as_str);
+            self.update_status(|s| s.phase = Some(name.into()));
             self.helper(argv).await.map_err(|e| format!("{name}: {e}"))?;
         }
         Ok(())
@@ -506,10 +507,14 @@ impl Machine {
         }
         let mut error = None;
         if !done || !ready || !self.relisten().await {
+            if !ready {
+                self.update_status(|s| s.phase = Some("attach".into()));
+            }
             error = self.reconcile().await.err();
         }
         self.update_status(|s| {
             s.state = State::Ready;
+            s.phase = None;
             s.error = error;
             s.proto = Some(types::V1);
             // From the guest: kept only if it is a plausible version name.

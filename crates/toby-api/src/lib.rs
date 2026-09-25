@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use toby_proto::types::{Identity, SessionInfo, TtySize};
 
+pub mod progress;
+
 /// Path of the API socket below the runtime directory.
 pub const SOCKET: &str = "tobyd.sock";
 

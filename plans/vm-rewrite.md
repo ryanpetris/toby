@@ -1490,10 +1490,26 @@ image, so the first build needs a different starting point:
    version, adaptation version, config). Unfinished `images/*.tmp/` and
    builder machine directories that no running build holds (each build
    holds a lock on its own) are removed when the next build starts.
-6. Build logs stream to the CLI (`WebSocket /v1/builds/<id>/logs`).
+6. The build's progress streams to the CLI.
 
 The same builder machinery formats new home disks (`mkfs.ext4 -L
 toby-home`, §6.2).
+
+Progress: every job (builds, bootstrap, home formatting, tool
+preparation, machine starts via `POST /v1/machines/start`) reports a tree
+of steps, each with its output, counts (bytes downloaded) and warnings,
+as events streamed by `GET /v1/builds/{id}/events` (one JSON object a
+line). tobyd makes steps of its own work; a machine start's steps come
+from the `phase` `toby-machine` records while it boots; guest build
+scripts mark theirs with `\x1eSTEP name` and `\x1eSUBSTEP name` lines, and
+buildah's `STEP n/m:` and mkosi's `‣` lines become steps within them. The
+job's log (`GET /v1/builds/{id}/logs`) is the same in plain lines. The CLI
+shows everything between the command and the tool's start as one block,
+as `docker buildx` does: in a terminal, redrawn in place with each step's
+time and the last lines of output under the running step, folded when
+done, expanded when a step fails; elsewhere, or with
+`TOBY_PROGRESS=plain`, as plain lines; `TOBY_PROGRESS=quiet` shows only
+warnings and errors. A command with nothing to set up shows nothing.
 
 ### 15.4 Boot adaptation
 

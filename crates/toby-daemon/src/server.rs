@@ -57,6 +57,7 @@ fn bad(code: &'static str, message: impl Into<String>) -> Error {
         daemon_info,
         machines,
         ensure,
+        start_machine,
         stop,
         machine_logs,
         add_attachment,
@@ -75,6 +76,7 @@ fn bad(code: &'static str, message: impl Into<String>) -> Error {
         builds,
         build_status,
         build_logs,
+        build_events,
         bootstrap,
         roots,
         create_root,
@@ -106,6 +108,7 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/daemon", get(daemon_info))
         .route("/v1/machines", get(machines))
         .route("/v1/machines/ensure", post(ensure))
+        .route("/v1/machines/start", post(start_machine))
         .route("/v1/machines/{id}/stop", post(stop))
         .route("/v1/machines/{id}/logs", get(machine_logs))
         .route("/v1/mcp", get(mcp_servers))
@@ -124,6 +127,7 @@ pub fn router(daemon: Arc<Daemon>) -> axum::Router {
         .route("/v1/images/prepare", post(prepare))
         .route("/v1/builds/{id}", get(build_status))
         .route("/v1/builds/{id}/logs", get(build_logs))
+        .route("/v1/builds/{id}/events", get(build_events))
         .route("/v1/bootstrap", post(bootstrap))
         .route("/v1/roots", get(roots).post(create_root))
         .route("/v1/roots/{name}/reset", post(reset_root))
@@ -178,6 +182,26 @@ async fn ensure(State(d): Shared, Json(req): Json<api::EnsureMachine>) -> ApiRes
     Ok(Json(api::Ensured { machine: d.machines.info(&spec).await, warnings }))
 }
 
+/// Starts the machine of a home and root as a build, whose steps are the
+/// phases of the start; `POST /v1/machines/ensure` then finds it running.
+#[utoipa::path(post, path = "/v1/machines/start", tag = "machines", request_body = api::EnsureMachine, responses((status = 200, body = api::BuildStarted), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
+async fn start_machine(
+    State(d): Shared,
+    Json(req): Json<api::EnsureMachine>,
+) -> ApiResult<api::BuildStarted> {
+    let machines = d.machines.clone();
+    let b = d.builds.start(d.builder.paths.state.join("builds"), "machine", move |steps| {
+        Box::pin(async move {
+            machines
+                .ensure_with(req, None, &steps)
+                .await
+                .map(|_| None)
+                .map_err(|e| std::io::Error::other(e.message))
+        })
+    })?;
+    Ok(started(b))
+}
+
 #[utoipa::path(post, path = "/v1/machines/{id}/stop", tag = "machines", params(("id" = String, Path)), responses((status = 200, description = "Done", body = serde_json::Value, example = json!(null)), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
 async fn stop(State(d): Shared, Path(id): Path<String>) -> ApiResult<()> {
     d.machines.stop(&id).await.map(Json)
@@ -230,7 +254,15 @@ async fn prepare_tool(
         Box::pin(async move {
             // One tool operation at a time per machine (plan §16.1).
             let lock = machines.tool_lock(&spec.id);
-            let _lock = lock.lock().await;
+            let _lock = match lock.try_lock() {
+                Ok(l) => l,
+                Err(_) => {
+                    out.begin("Waiting for another tool preparation in this machine");
+                    let l = lock.lock().await;
+                    out.end();
+                    l
+                }
+            };
             let session = crate::tools::Session {
                 workspace: req.projects.first().cloned().unwrap_or_default(),
                 projects: req.projects,
@@ -238,7 +270,7 @@ async fn prepare_tool(
                 mcp: req.mcp,
                 extra: Vec::new(),
             };
-            crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, &session, out)
+            crate::tools::prepare(&machines, &spec, &manifest, req.upgrade, &session, &out)
                 .await
                 .map(|()| None)
         })
@@ -358,7 +390,7 @@ async fn start_build(State(d): Shared, Json(req): Json<api::StartBuild>) -> ApiR
     let source = source(req.source);
     let builder = d.builder.clone();
     let b = d.builds.start(builder.paths.state.join("builds"), "image", move |out| {
-        Box::pin(async move { builder.build(source, out).await.map(|r| Some(r.id)) })
+        Box::pin(async move { builder.build(source, &out).await.map(|r| Some(r.id)) })
     })?;
     Ok(started(b))
 }
@@ -391,7 +423,7 @@ async fn prepare(State(d): Shared, Json(req): Json<api::Prepare>) -> ApiResult<a
         crate::builder::PrepareOptions { roots: req.all, sources, rebuild: req.rebuild, pull: req.pull };
     let builder = d.builder.clone();
     let b = d.builds.start(builder.paths.state.join("builds"), "prepare", move |out| {
-        Box::pin(async move { builder.prepare(opts, out).await.map(|r| Some(r.id)) })
+        Box::pin(async move { builder.prepare(opts, &out).await.map(|r| Some(r.id)) })
     })?;
     Ok(started(b))
 }
@@ -401,7 +433,7 @@ async fn bootstrap(State(d): Shared, Json(req): Json<api::Bootstrap>) -> ApiResu
     let builder = d.builder.clone();
     let base = req.base.map(std::path::PathBuf::from);
     let b = d.builds.start(builder.paths.state.join("builds"), "bootstrap", move |out| {
-        Box::pin(async move { builder.bootstrap(base.as_deref(), out).await.map(|r| Some(r.id)) })
+        Box::pin(async move { builder.bootstrap(base.as_deref(), &out).await.map(|r| Some(r.id)) })
     })?;
     Ok(started(b))
 }
@@ -430,12 +462,29 @@ impl http_body::Body for ChannelBody {
     }
 }
 
-/// The build's output so far, then live until it finishes.
-#[utoipa::path(get, path = "/v1/builds/{id}/logs", tag = "images", params(("id" = String, Path)), responses((status = 200, description = "The output so far, then streamed until the build ends", content_type = "text/plain"), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
+/// The build's log so far, then live until it finishes.
+#[utoipa::path(get, path = "/v1/builds/{id}/logs", tag = "images", params(("id" = String, Path)), responses((status = 200, description = "The log so far, then streamed until the build ends", content_type = "text/plain"), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
 async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response, Error> {
+    follow_build_file(&d, &id, crate::builds::Build::output_from, "text/plain; charset=utf-8")
+}
+
+/// The build's progress events so far, then live until it finishes: one
+/// JSON object a line.
+#[utoipa::path(get, path = "/v1/builds/{id}/events", tag = "images", params(("id" = String, Path)), responses((status = 200, description = "Progress events, one a line, streamed until the build ends", body = api::progress::Event, content_type = "application/x-ndjson"), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
+async fn build_events(State(d): Shared, Path(id): Path<String>) -> Result<Response, Error> {
+    follow_build_file(&d, &id, crate::builds::Build::events_from, "application/x-ndjson")
+}
+
+/// Streams one of a build's files from its start until the build ends.
+fn follow_build_file(
+    d: &Daemon,
+    id: &str,
+    read: fn(&crate::builds::Build, u64) -> std::io::Result<Vec<u8>>,
+    content_type: &'static str,
+) -> Result<Response, Error> {
     let b = d
         .builds
-        .get(&id)
+        .get(id)
         .ok_or_else(|| Error::new(ErrorKind::NotFound, "build.not-found", format!("no build {id}")))?;
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
@@ -446,7 +495,7 @@ async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response
             // Finished is read first, so the last output is read after it.
             let done = b.finished();
             loop {
-                let Ok(bytes) = b.output_from(offset) else { return };
+                let Ok(bytes) = read(&b, offset) else { return };
                 if bytes.is_empty() {
                     break;
                 }
@@ -460,10 +509,7 @@ async fn build_logs(State(d): Shared, Path(id): Path<String>) -> Result<Response
             }
         }
     });
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        axum::body::Body::new(ChannelBody(rx)),
-    )
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], axum::body::Body::new(ChannelBody(rx)))
         .into_response())
 }
 
@@ -583,7 +629,7 @@ async fn create_home(State(d): Shared, Json(req): Json<api::CreateHome>) -> ApiR
     let name = req.name.clone();
     let b = d.builds.start(builder.paths.state.join("builds"), "home", move |out| {
         Box::pin(async move {
-            let result = builder.format_home(&name, out).await;
+            let result = builder.format_home(&name, &out).await;
             if result.is_err() {
                 let _ = builder.store.remove_home(&name);
             }

@@ -13,14 +13,11 @@ use crate::api::{Api, segment};
 use crate::cli::{LaunchArgs, RunArgs, ToolArgs};
 use crate::client::attach_terminal;
 use crate::launch::{Flags, Plan};
+use crate::progress::Display;
 
-/// Creates the home if it does not exist, for the current user.
-async fn ensure_home(api: &Api, name: &str) -> anyhow::Result<()> {
-    let homes: Vec<toby_api::HomeInfo> = api.get("/v1/homes").await?;
-    if homes.iter().any(|h| h.name == name) {
-        return Ok(());
-    }
-    eprintln!("==> Creating home {name}");
+/// Creates the home for the current user, as step `step`.
+async fn create_home(api: &Api, display: &mut Display, step: u32, name: &str) -> anyhow::Result<()> {
+    display.start(step);
     let uid = nix::unistd::getuid().as_raw();
     let username =
         nix::unistd::User::from_uid(nix::unistd::getuid())?.map(|u| u.name).with_context(|| {
@@ -30,7 +27,10 @@ async fn ensure_home(api: &Api, name: &str) -> anyhow::Result<()> {
         })?;
     let started: toby_api::BuildStarted =
         api.post("/v1/homes", &toby_api::CreateHome { name: name.into(), username, uid }).await?;
-    api.follow_build(&started.id).await.map(drop)
+    let mut job = display.job(Some(step));
+    api.follow(&started.id, display, &mut job).await?;
+    display.end(step);
+    Ok(())
 }
 
 fn absolute(dir: &Path, p: &str) -> anyhow::Result<String> {
@@ -63,17 +63,16 @@ pub fn api_source(
     })
 }
 
-/// Creates the root if it does not exist, from the launch's image or the
-/// default one (built first when needed).
-async fn ensure_root(
+/// Creates the root, as step `step`, from the launch's image or the default
+/// one, built first when it is out of date.
+async fn create_root(
     api: &Api,
+    display: &mut Display,
+    step: u32,
     name: &str,
     image: Option<&(ImageConfig, std::path::PathBuf)>,
 ) -> anyhow::Result<()> {
-    let roots: Vec<toby_api::RootInfo> = api.get("/v1/roots").await?;
-    if roots.iter().any(|r| r.name == name) {
-        return Ok(());
-    }
+    display.start(step);
     let source = match image {
         None => None,
         Some((image, dir)) => api_source(image, dir)?,
@@ -85,17 +84,18 @@ async fn ensure_root(
             let source = other.and_then(Result::ok);
             let images: Vec<toby_api::ImageInfo> = api.get("/v1/images").await?;
             if source.is_some() || !images.iter().any(|i| i.current_default) {
-                eprintln!("==> Preparing the image of root {name}");
                 let prepare =
                     toby_api::Prepare { sources: source.clone().into_iter().collect(), ..Default::default() };
                 let started: toby_api::BuildStarted = api.post("/v1/images/prepare", &prepare).await?;
-                api.follow_build(&started.id).await?;
+                let mut job = display.job(Some(step));
+                api.follow(&started.id, display, &mut job).await?;
             }
             toby_api::CreateRoot { name: name.into(), image: "default".into(), source }
         }
     };
-    eprintln!("==> Creating root {name}");
-    api.post("/v1/roots", &req).await
+    let () = api.post("/v1/roots", &req).await?;
+    display.end(step);
+    Ok(())
 }
 
 fn utf8(args: &[OsString]) -> anyhow::Result<Vec<String>> {
@@ -141,7 +141,6 @@ async fn launch(
     let home_dir = toby_config::paths::home_dir()?;
     let plan =
         crate::launch::plan(&api.config, &config_dir, &home_dir, &std::env::current_dir()?, file, flags)?;
-    api.warn(&plan.warnings);
     let find = |t: &str| {
         toby_tools::find(&tools, t)
             .map(|m| m.tool.name.clone())
@@ -150,38 +149,74 @@ async fn launch(
     let name = find(&plan.tool)?;
     let extra = plan.tools.iter().map(|t| find(t)).collect::<anyhow::Result<Vec<_>>>()?;
 
+    // Everything up to the tool's start is shown as steps; a launch with
+    // nothing to set up shows nothing.
+    let mut display = Display::new(format!("Setting up {name}"));
+    display.warnings(&api.config.settings, &plan.warnings);
+    let setup = async {
+        let (machine, running) = set_up(&api, &mut display, &plan, &name, &extra, machine, opts).await?;
+        anyhow::Ok(match running {
+            Some(s) => Some((s.session_socket, s.control_socket, s.session.id, machine, true)),
+            None if opts.install => None,
+            None => {
+                let created = create_session(&api, &plan, &name, extra, &machine).await?;
+                display.warnings(&api.config.settings, &created.warnings);
+                Some((created.session_socket, created.control_socket, created.id, created.machine, false))
+            }
+        })
+    }
+    .await;
+    display.finish(setup.is_ok());
+    let Some((session_socket, control_socket, id, machine, reattach)) = setup? else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    attach_terminal(session_socket.into(), control_socket.into(), &id, &machine, true, reattach).await
+}
+
+/// The machine, and its tools prepared; or a running session of the tool
+/// to attach to instead.
+async fn set_up(
+    api: &Api,
+    display: &mut Display,
+    plan: &Plan,
+    name: &str,
+    extra: &[String],
+    machine: Option<String>,
+    opts: &LaunchArgs,
+) -> anyhow::Result<(String, Option<toby_api::MachineSession>)> {
     let machine = match machine {
         Some(id) => id,
-        None => ensure_machine(&api, &plan, opts.ephemeral).await?,
+        None => ensure_machine(api, display, plan, opts.ephemeral).await?,
     };
-
     if !opts.install
-        && let Some(s) = running(&api, &machine, &name, opts).await?
+        && let Some(s) = running(api, display, &machine, name, opts).await?
     {
-        return attach_terminal(
-            s.session_socket.into(),
-            s.control_socket.into(),
-            &s.session.id,
-            &machine,
-            true,
-            true,
-        )
-        .await;
+        return Ok((machine, Some(s)));
     }
-
     let projects: Vec<String> = plan.projects.iter().map(|p| p.at()).collect();
-    for (tool, mcp) in extra.iter().map(|t| (t, Vec::new())).chain([(&name, plan.mcp.clone())]) {
+    for (tool, mcp) in extra.iter().map(|t| (t, Vec::new())).chain([(&name.to_string(), plan.mcp.clone())]) {
         let prepare =
             toby_api::PrepareTool { upgrade: opts.upgrade, yolo: plan.yolo, projects: projects.clone(), mcp };
         let started: toby_api::BuildStarted = api
             .post(&format!("/v1/machines/{}/tools/{}/prepare", segment(&machine), segment(tool)), &prepare)
             .await?;
-        api.follow_build(&started.id).await?;
+        // Shown only if the tool is installed or updated.
+        let mut job = display.lazy_job(tool.clone());
+        api.follow(&started.id, display, &mut job).await?;
+        if let Some(step) = job.parent() {
+            display.end(step);
+        }
     }
-    if opts.install {
-        return Ok(ExitCode::SUCCESS);
-    }
+    Ok((machine, None))
+}
 
+async fn create_session(
+    api: &Api,
+    plan: &Plan,
+    name: &str,
+    extra: Vec<String>,
+    machine: &str,
+) -> anyhow::Result<toby_api::SessionCreated> {
     let mut attachments = Vec::new();
     for p in &plan.projects {
         let host = p.host.to_str().with_context(|| format!("{} is not UTF-8", p.host.display()))?.to_string();
@@ -200,45 +235,57 @@ async fn launch(
     }
     let req = toby_api::CreateSession {
         request_id: Some(toby_config::new_id()),
-        target: toby_api::MachineSelector { machine: Some(machine), home: None, root: None },
-        tool: Some(name),
+        target: toby_api::MachineSelector { machine: Some(machine.into()), home: None, root: None },
+        tool: Some(name.into()),
         yolo: plan.yolo,
         tools: extra,
         attachments,
-        forwards: plan.forwards,
+        forwards: plan.forwards.clone(),
         mcp: plan.mcp.clone(),
-        argv: plan.params,
+        argv: plan.params.clone(),
         env,
-        cwd: plan.workdir,
+        cwd: plan.workdir.clone(),
         identity: toby_proto::types::Identity::User,
         tty: tty.then(|| {
             let (rows, cols) = toby_term::session_size(api.config.settings.status_line()).unwrap_or((24, 80));
             toby_proto::types::TtySize { rows, cols }
         }),
     };
-    let created: toby_api::SessionCreated = api.post_again("/v1/sessions", &req).await?;
-    api.warn(&created.warnings);
-    attach_terminal(
-        created.session_socket.into(),
-        created.control_socket.into(),
-        &created.id,
-        &created.machine,
-        true,
-        false,
-    )
-    .await
+    api.post_again("/v1/sessions", &req).await
 }
 
-/// The machine of the launch's home and root, creating them as needed.
-async fn ensure_machine(api: &Api, plan: &Plan, ephemeral: bool) -> anyhow::Result<String> {
+/// The machine of the launch's home and root, creating the home and root
+/// and starting the machine as needed, each a step.
+async fn ensure_machine(
+    api: &Api,
+    display: &mut Display,
+    plan: &Plan,
+    ephemeral: bool,
+) -> anyhow::Result<String> {
     let home = plan.home.clone().unwrap_or_else(|| api.config.defaults.home().to_string());
-    ensure_home(api, &home).await?;
+    let homes: Vec<toby_api::HomeInfo> = api.get("/v1/homes").await?;
+    let home_rec = homes.into_iter().find(|h| h.name == home);
     // The root tobyd will use: the given one, the home's default root, or
     // the root named default.
-    let homes: Vec<toby_api::HomeInfo> = api.get("/v1/homes").await?;
-    let default_root = homes.into_iter().find(|h| h.name == home).and_then(|h| h.default_root);
-    let root = plan.root.clone().or(default_root).unwrap_or_else(|| "default".into());
-    ensure_root(api, &root, plan.image.as_ref()).await?;
+    let root = plan
+        .root
+        .clone()
+        .or(home_rec.as_ref().and_then(|h| h.default_root.clone()))
+        .unwrap_or_else(|| "default".into());
+    let roots: Vec<toby_api::RootInfo> = api.get("/v1/roots").await?;
+    let machines: Vec<toby_api::MachineInfo> = api.get("/v1/machines").await?;
+    let running = machines
+        .iter()
+        .any(|m| m.home.as_deref() == Some(home.as_str()) && m.root == root && m.state == "ready");
+    let home_step = home_rec.is_none().then(|| display.queue(format!("Home {home}")));
+    let root_step = (!roots.iter().any(|r| r.name == root)).then(|| display.queue(format!("Root {root}")));
+    let machine_step = (!running).then(|| display.queue(format!("Machine {home}/{root}")));
+    if let Some(step) = home_step {
+        create_home(api, display, step, &home).await?;
+    }
+    if let Some(step) = root_step {
+        create_root(api, display, step, &root, plan.image.as_ref()).await?;
+    }
     let req = toby_api::EnsureMachine {
         home: Some(home),
         root: plan.root.clone(),
@@ -246,8 +293,15 @@ async fn ensure_machine(api: &Api, plan: &Plan, ephemeral: bool) -> anyhow::Resu
         cpus: plan.cpus,
         memory: plan.memory.clone(),
     };
+    if let Some(step) = machine_step {
+        display.start(step);
+        let started: toby_api::BuildStarted = api.post("/v1/machines/start", &req).await?;
+        let mut job = display.job(Some(step));
+        api.follow(&started.id, display, &mut job).await?;
+        display.end(step);
+    }
     let ensured: toby_api::Ensured = api.post_again("/v1/machines/ensure", &req).await?;
-    api.warn(&ensured.warnings);
+    display.warnings(&api.config.settings, &ensured.warnings);
     Ok(ensured.machine.id)
 }
 
@@ -255,6 +309,7 @@ async fn ensure_machine(api: &Api, plan: &Plan, ephemeral: bool) -> anyhow::Resu
 /// with `--attach`, or when one is detached and the user says so.
 async fn running(
     api: &Api,
+    display: &mut Display,
     machine: &str,
     tool: &str,
     opts: &LaunchArgs,
@@ -278,6 +333,7 @@ async fn running(
     if first.session.attached || !toby_term::local_tty() {
         return Ok(None);
     }
+    display.leave();
     eprint!("A {tool} session is running here, detached. Attach to it? [Y/n] ");
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;

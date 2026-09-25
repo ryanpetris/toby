@@ -240,6 +240,10 @@ pub struct MachineStatus {
     /// Guest boot for which the boot helpers last completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers_boot_id: Option<String>,
+    /// What a machine that is starting does: the boot helper it runs
+    /// (`net-up`, `user-setup`, …) or `attach`; none while it boots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     /// Attachments that are desired or still mounted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attach: Vec<AttachStatus>,

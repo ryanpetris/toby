@@ -27,7 +27,8 @@ shift
 
 here=$(dirname "$0")
 boot=/build/boot
-log() { printf '==> %s\n' "$*"; }
+# The build's steps, as Toby shows them.
+log() { printf '\036STEP %s\n' "$*"; }
 
 case $(uname -m) in
     x86_64) mkosi_arch=x86-64 ;;
@@ -184,4 +185,3 @@ echo "$kver" > "$boot/kernel-version"
 fstrim /out || true
 umount /out
 sync
-log "Done"

@@ -29,6 +29,14 @@ attached while a session of the tool uses them.
 If a session of the tool is running detached in that machine, `toby
 <tool>` asks whether to attach to it.
 
+Whatever has to happen first (creating the home or root, building an
+image, starting the machine, installing or updating the tool) is shown as
+a block of steps with their times and the latest output of the running
+one; a launch with nothing to do shows nothing. Where the output is not a
+terminal, or with `TOBY_PROGRESS=plain`, the steps are plain lines;
+`TOBY_PROGRESS=quiet` shows only warnings and errors. Each step's full
+output is in the build log named when something fails.
+
 ### Projects
 
 Projects live in `settings.projects_dir` (default `~/Projects`). The

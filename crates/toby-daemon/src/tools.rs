@@ -8,9 +8,9 @@ use toby_config::machine::MachineSpec;
 use toby_proto::types::{ExitStatus, Identity};
 use toby_tools::{Context, Manifest, ModelsContext, render};
 
-use crate::builder::Output;
 use crate::control;
 use crate::machines::{MODELS_LISTEN, Machines};
+use crate::progress::Steps;
 
 /// `toby-connect` in the guest.
 const CONNECT: &str = "/run/toby/bin/toby-connect";
@@ -287,7 +287,7 @@ async fn run_user(
     machines: &Machines,
     spec: &MachineSpec,
     argv: Vec<String>,
-    out: Output<'_>,
+    out: &mut (dyn FnMut(&[u8], bool) + Send),
 ) -> io::Result<ExitStatus> {
     control::run(&machines.runtime(&spec.id), argv, Identity::User, Vec::new(), out).await
 }
@@ -300,7 +300,7 @@ pub async fn prepare(
     manifest: &Manifest,
     upgrade: bool,
     session: &Session,
-    out: Output<'_>,
+    steps: &Steps,
 ) -> io::Result<()> {
     // The provider's models, for the files.
     let config = machines.current_config();
@@ -309,10 +309,10 @@ pub async fn prepare(
         && let Err(e) = discover_models(machines, &p).await
         && !config.settings.suppressed("models.endpoint-unavailable")
     {
-        out(format!("warning[models.endpoint-unavailable]: model provider {p}: {e}\n").as_bytes(), true);
+        steps.warn(format!("warning[models.endpoint-unavailable]: model provider {p}: {e}"));
     }
     for m in with_dependencies(machines, manifest)? {
-        prepare_one(machines, spec, &m, upgrade, session, &mut *out).await?;
+        prepare_one(machines, spec, &m, upgrade, session, steps).await?;
     }
     Ok(())
 }
@@ -323,7 +323,7 @@ async fn prepare_one(
     manifest: &Manifest,
     upgrade: bool,
     session: &Session,
-    out: Output<'_>,
+    steps: &Steps,
 ) -> io::Result<()> {
     let tool = &manifest.tool;
     let name = &tool.name;
@@ -367,8 +367,9 @@ async fn prepare_one(
             }
         };
         let verb = if installed { "Updating" } else { "Installing" };
-        out(format!("==> {verb} {name}\n").as_bytes(), false);
-        if run_user(machines, spec, shell(tool, script), &mut *out).await? != ExitStatus::Code(0) {
+        steps.begin(format!("{verb} {name}"));
+        let mut output = |b: &[u8], e: bool| steps.output(b, e);
+        if run_user(machines, spec, shell(tool, script), &mut output).await? != ExitStatus::Code(0) {
             return Err(err(format!("{} {name} failed", verb.to_lowercase())));
         }
         if run_user(machines, spec, shell(tool, &format!("{check} >/dev/null 2>&1")), &mut sink).await?
@@ -376,6 +377,7 @@ async fn prepare_one(
         {
             return Err(err(format!("{name} was installed, but `{}` fails", tool.check.join(" "))));
         }
+        steps.end();
     }
 
     let mut warnings = Vec::new();
@@ -385,7 +387,7 @@ async fn prepare_one(
         let id =
             w.strip_prefix("warning[").and_then(|w| w.split_once(']')).map(|(id, _)| id).unwrap_or_default();
         if !settings.suppressed(id) {
-            out(format!("{w}\n").as_bytes(), true);
+            steps.warn(w);
         }
     }
     for f in &tool.files {

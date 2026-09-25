@@ -184,9 +184,15 @@ impl Api {
         self.call(Method::DELETE, path, None).await
     }
 
-    /// Streams a response body to `f` until it ends.
-    pub async fn stream(&self, path: &str, mut f: impl FnMut(&[u8])) -> anyhow::Result<()> {
-        let resp = self.send(Method::GET, path, None).await?;
+    /// Shows a build's progress in `display`, under `job`, until it ends,
+    /// and returns its result.
+    pub async fn follow(
+        &self,
+        id: &str,
+        display: &mut crate::progress::Display,
+        job: &mut crate::progress::Job,
+    ) -> anyhow::Result<toby_api::BuildStatus> {
+        let resp = self.send(Method::GET, &format!("/v1/builds/{id}/events"), None).await?;
         if resp.status() != StatusCode::OK {
             let status = resp.status();
             let bytes = resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
@@ -196,28 +202,38 @@ impl Api {
             });
         }
         let mut body = resp.into_body();
-        while let Some(frame) = body.frame().await {
-            if let Some(data) = frame?.data_ref() {
-                f(data);
+        let mut partial = Vec::new();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                frame = body.frame() => {
+                    let Some(frame) = frame else { break };
+                    let Some(data) = frame?.into_data().ok() else { continue };
+                    partial.extend_from_slice(&data);
+                    while let Some(end) = partial.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = partial.drain(..=end).collect();
+                        if let Ok(e) = serde_json::from_slice::<toby_api::progress::Event>(&line) {
+                            display.job_event(job, e);
+                        }
+                    }
+                }
+                _ = tick.tick() => display.tick(),
             }
         }
-        Ok(())
-    }
-
-    /// Streams a build's output to the terminal and returns its result.
-    pub async fn follow_build(&self, id: &str) -> anyhow::Result<toby_api::BuildStatus> {
-        use std::io::Write;
-        self.stream(&format!("/v1/builds/{id}/logs"), |bytes| {
-            let mut out = std::io::stdout().lock();
-            let _ = out.write_all(bytes);
-            let _ = out.flush();
-        })
-        .await?;
         let status: toby_api::BuildStatus = self.get(&format!("/v1/builds/{id}")).await?;
         if status.state != "succeeded" {
             bail!("{} (build log: {})", status.error.as_deref().unwrap_or("the build failed"), status.log);
         }
         Ok(status)
+    }
+
+    /// Shows a build on its own, titled `title`, and returns its result.
+    pub async fn follow_build(&self, id: &str, title: &str) -> anyhow::Result<toby_api::BuildStatus> {
+        let mut display = crate::progress::Display::new(title);
+        let mut job = display.job(None);
+        let result = self.follow(id, &mut display, &mut job).await;
+        display.finish(result.is_ok());
+        result
     }
 
     /// Prints warnings the user has not suppressed.

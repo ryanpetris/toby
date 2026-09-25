@@ -10,6 +10,7 @@ mod images;
 mod internal;
 mod launch;
 mod mounts;
+mod progress;
 mod table;
 mod tool;
 

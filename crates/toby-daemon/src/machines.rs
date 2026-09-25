@@ -20,6 +20,7 @@ use toby_proto::types::{Identity, SessionInfo, SpawnSpec, TtySize};
 use toby_store::Store;
 
 use crate::control::Control;
+use crate::progress::Steps;
 use crate::supervisor::Supervisor;
 
 const START_TIMEOUT: Duration = Duration::from_secs(300);
@@ -176,6 +177,20 @@ pub fn default_guest_path(host: &Path) -> Result<String> {
         Error::new(ErrorKind::BadRequest, "attach.invalid-target", "choose a mount point in the machine")
     })?;
     Ok(format!("/toby/workspace/{name}"))
+}
+
+/// The step for a phase of a machine's start (`MachineStatus::phase`).
+fn phase_name(phase: Option<&str>) -> String {
+    match phase {
+        None => "Booting",
+        Some("net-up") => "Setting up the network",
+        Some("user-setup") => "Setting up the user",
+        Some("home-mount") => "Mounting the home",
+        Some("links") => "Linking Toby's commands",
+        Some("attach") => "Mounting projects",
+        Some(other) => other,
+    }
+    .to_string()
 }
 
 /// Default machine resources: half the host's CPUs (2 to 8) and half its
@@ -389,6 +404,16 @@ impl Machines {
         req: toby_api::EnsureMachine,
         services: Option<&str>,
     ) -> Result<MachineSpec> {
+        self.ensure_with(req, services, &Steps::silent()).await
+    }
+
+    /// Like `ensure_for`, reporting what a start does as steps.
+    pub async fn ensure_with(
+        &self,
+        req: toby_api::EnsureMachine,
+        services: Option<&str>,
+        steps: &Steps,
+    ) -> Result<MachineSpec> {
         let toby_api::EnsureMachine { home, root, ephemeral, mut cpus, mut memory } = req;
         if services.is_none() {
             let config = self.current_config();
@@ -488,7 +513,9 @@ impl Machines {
         let id = template.id.clone();
         // A machine being stopped is started again once it has stopped.
         if self.observe(&id).await.state == "stopping" {
+            steps.begin("Waiting for the machine to stop");
             self.wait_stopped(&id, Instant::now()).await;
+            steps.end();
         }
         let running = self.running(&id).await;
         // A services machine runs only its server: the home and root of an
@@ -509,7 +536,7 @@ impl Machines {
             // Recorded before letting go of the lock, so idle stop sees it.
             self.activity.lock().unwrap().insert(id.clone(), Instant::now());
             drop(_lock);
-            self.wait_ready(&id).await?;
+            self.wait_ready(&id, steps).await?;
             return Ok(template);
         }
         // Attachment edits for this machine wait until it has started; the
@@ -550,31 +577,48 @@ impl Machines {
         self.starting.lock().unwrap().insert(spec.id.clone(), Instant::now());
         self.stopping.lock().unwrap().remove(&spec.id);
         self.history(&spec.id, "start");
+        steps.begin("Starting its processes");
         if let Err(e) = self.supervisor.start(&spec.id).await {
             self.starting.lock().unwrap().remove(&spec.id);
             return Err(e.into());
         }
+        steps.end();
         let now = Instant::now();
         self.started.lock().unwrap().insert(spec.id.clone(), now);
         self.activity.lock().unwrap().insert(spec.id.clone(), now);
         drop(_machine);
         drop(_lock);
-        self.wait_ready(&spec.id).await?;
+        self.wait_ready(&spec.id, steps).await?;
         Ok(spec)
     }
 
-    /// Waits until a starting machine is ready.
-    async fn wait_ready(&self, id: &str) -> Result<()> {
-        let result = self.wait_ready_inner(id).await;
+    /// Waits until a starting machine is ready; each phase of its start is a
+    /// step.
+    async fn wait_ready(&self, id: &str, steps: &Steps) -> Result<()> {
+        let depth = steps.depth();
+        let result = self.wait_ready_inner(id, steps).await;
+        if result.is_ok() {
+            steps.end_to(depth);
+        }
         self.starting.lock().unwrap().remove(id);
         result
     }
 
-    async fn wait_ready_inner(&self, id: &str) -> Result<()> {
+    async fn wait_ready_inner(&self, id: &str, steps: &Steps) -> Result<()> {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         let grace = tokio::time::Instant::now() + Duration::from_secs(10);
+        let depth = steps.depth();
+        let mut shown: Option<String> = None;
         loop {
             let observed = self.observe(id).await;
+            if observed.state == "starting" {
+                let phase = phase_name(observed.status.as_ref().and_then(|s| s.phase.as_deref()));
+                if shown.as_deref() != Some(phase.as_str()) {
+                    steps.end_to(depth);
+                    steps.begin(phase.clone());
+                    shown = Some(phase);
+                }
+            }
             match observed.state {
                 "ready" => return Ok(()),
                 "failed" => {

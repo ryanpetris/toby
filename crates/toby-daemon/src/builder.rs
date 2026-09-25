@@ -19,6 +19,8 @@ use toby_store::records::{ImageConfig, ImageRecord, ImageSource, now};
 use toby_store::{Store, hash, qcow2};
 use tokio::net::UnixStream;
 
+use crate::progress::Steps;
+
 /// Version of the boot adaptation performed by builds; images from an older
 /// adaptation are rebuilt.
 pub const ADAPTATION_VERSION: u32 = 1;
@@ -28,9 +30,6 @@ pub const CACHE_SIZE: u64 = 100 << 30;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
 const STOP_TIMEOUT: Duration = Duration::from_secs(90);
-
-/// Receives build output.
-pub type Output<'a> = &'a mut (dyn FnMut(&[u8], bool) + Send);
 
 pub struct Builder {
     pub config: GlobalConfig,
@@ -92,7 +91,7 @@ impl Builder {
     /// The build cache for builds from `source`, locked for this build. Each
     /// source has its own cache, so a build can only affect later builds of
     /// the same source (plan §15.3).
-    async fn cache_disk(&self, source: &ImageSource, out: Output<'_>) -> io::Result<(PathBuf, Flock<File>)> {
+    async fn cache_disk(&self, source: &ImageSource, steps: &Steps) -> io::Result<(PathBuf, Flock<File>)> {
         let dir = self.caches_dir();
         std::fs::create_dir_all(&dir)?;
         let key = cache_key(source);
@@ -104,11 +103,13 @@ impl Builder {
         let lock = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
             Ok(l) => l,
             Err((f, nix::errno::Errno::EWOULDBLOCK)) => {
-                out(b"==> Waiting for another build of the same source\n", false);
-                tokio::task::spawn_blocking(move || Flock::lock(f, FlockArg::LockExclusive))
+                steps.begin("Waiting for another build of the same source");
+                let lock = tokio::task::spawn_blocking(move || Flock::lock(f, FlockArg::LockExclusive))
                     .await
                     .map_err(io::Error::other)?
-                    .map_err(|(_, e)| io::Error::from(e))?
+                    .map_err(|(_, e)| io::Error::from(e))?;
+                steps.end();
+                lock
             }
             Err((_, e)) => return Err(e.into()),
         };
@@ -248,19 +249,14 @@ impl Builder {
     }
 
     /// The image builders boot, bootstrapping one first if there is none.
-    async fn builder_image(&self, out: Output<'_>) -> io::Result<ImageRecord> {
+    async fn builder_image(&self, steps: &Steps) -> io::Result<ImageRecord> {
         match self.any_default_image()? {
             Some(img) => Ok(img),
-            None => self.bootstrap(None, out).await,
+            None => self.bootstrap(None, steps).await,
         }
     }
 
-    async fn run_machine(
-        &self,
-        spec: MachineSpec,
-        jobs: Vec<Vec<String>>,
-        out: Output<'_>,
-    ) -> io::Result<()> {
+    async fn run_machine(&self, spec: MachineSpec, jobs: Vec<Vec<String>>, steps: &Steps) -> io::Result<()> {
         let id = spec.id.clone();
         let state = self.paths.machine_state_dir(&id);
         std::fs::create_dir_all(&state)?;
@@ -287,12 +283,20 @@ impl Builder {
         let mut supervisor = cmd.spawn()?;
 
         let result = async {
+            steps.begin("Starting the builder");
             wait_ready(&runtime, &mut supervisor).await?;
+            steps.end();
             for argv in jobs {
                 // Root, with the adaptation version the scripts record.
                 let env = vec![("TOBY_ADAPTATION_VERSION".into(), ADAPTATION_VERSION.to_string())];
-                let status = crate::control::run(&runtime, argv, Identity::Root, env, &mut *out).await?;
-                if status != ExitStatus::Code(0) {
+                let mut guest = steps.guest();
+                let status =
+                    crate::control::run(&runtime, argv, Identity::Root, env, &mut |b, e| guest.feed(b, e))
+                        .await;
+                let ok = matches!(status, Ok(ExitStatus::Code(0)));
+                guest.finish(ok);
+                let status = status?;
+                if !ok {
                     return Err(err(format!("the build job failed (exit status {})", status.code())));
                 }
             }
@@ -354,8 +358,8 @@ impl Builder {
 
     /// Builds an image from `source` (plan §15.3), bootstrapping the default
     /// image first if there is none.
-    pub async fn build(&self, source: ImageSource, out: Output<'_>) -> io::Result<ImageRecord> {
-        self.build_pulling(source, false, out).await
+    pub async fn build(&self, source: ImageSource, steps: &Steps) -> io::Result<ImageRecord> {
+        self.build_pulling(source, false, steps).await
     }
 
     /// Builds an image; `pull` fetches a Dockerfile's base images again.
@@ -363,10 +367,10 @@ impl Builder {
         &self,
         source: ImageSource,
         pull: bool,
-        out: Output<'_>,
+        steps: &Steps,
     ) -> io::Result<ImageRecord> {
         let fresh = self.any_default_image()?.is_none();
-        let base = self.builder_image(&mut *out).await?;
+        let base = self.builder_image(steps).await?;
         if fresh && source == ImageSource::Default {
             return Ok(base);
         }
@@ -376,7 +380,10 @@ impl Builder {
         }
         let source_hash = self.source_hash(&source)?;
         let root = RootSpec::Image { image: base.id.clone() };
-        self.build_with(root, Some(base.id), source, job, source_hash, Vec::new(), out).await
+        steps.begin(format!("Building {}", title(&source)));
+        let image = self.build_with(root, Some(base.id), source, job, source_hash, Vec::new(), steps).await?;
+        steps.end();
+        Ok(image)
     }
 
     /// Describes the build job for a source.
@@ -427,7 +434,7 @@ impl Builder {
         job: Job,
         source_hash: String,
         before: Vec<Vec<String>>,
-        out: Output<'_>,
+        steps: &Steps,
     ) -> io::Result<ImageRecord> {
         self.sweep();
         let id = toby_config::new_id();
@@ -436,7 +443,7 @@ impl Builder {
         let boot_dir = work.join("boot");
         std::fs::create_dir_all(&boot_dir)?;
         let _held = lock_dir(&work, false)?;
-        let result = self.build_in(&work, root, boot, &source, &job, &id, before, out).await;
+        let result = self.build_in(&work, root, boot, &source, &job, &id, before, steps).await;
         let (kernel_version, config) = match result {
             Ok(r) => r,
             Err(e) => {
@@ -472,12 +479,12 @@ impl Builder {
         job: &Job,
         id: &str,
         before: Vec<Vec<String>>,
-        out: Output<'_>,
+        steps: &Steps,
     ) -> io::Result<(String, ImageConfig)> {
         let boot_dir = work.join("boot");
         let disk = work.join("disk.qcow2");
         qcow2::create(&disk, toby_store::store::IMAGE_SIZE, None).await?;
-        let (cache, _cache_lock) = self.cache_disk(source, &mut *out).await?;
+        let (cache, _cache_lock) = self.cache_disk(source, steps).await?;
         let disks = vec![
             Disk { path: cache, serial: "cache".into(), read_only: false },
             Disk { path: disk.clone(), serial: "out".into(), read_only: false },
@@ -509,7 +516,7 @@ impl Builder {
         let mut jobs = before;
         jobs.push(helper(&version, &args));
         let spec = self.builder_spec(root, boot, disks, attach);
-        self.run_machine(spec, jobs, out).await?;
+        self.run_machine(spec, jobs, steps).await?;
 
         // The build controls the boot directory: take regular files only,
         // copied into files of our own.
@@ -531,7 +538,7 @@ impl Builder {
 
     /// Downloads the Debian 13 cloud image used once to build the first
     /// default image, checked against Debian's published SHA512SUMS.
-    pub async fn download_bootstrap(&self, out: Output<'_>) -> io::Result<PathBuf> {
+    pub async fn download_bootstrap(&self, steps: &Steps) -> io::Result<PathBuf> {
         let target = self.bootstrap_image();
         if target.exists() {
             return Ok(target);
@@ -551,8 +558,9 @@ impl Builder {
             return Ok(target);
         }
         let name = format!("debian-13-genericcloud-{}.qcow2", debian_arch());
-        out(format!("==> Downloading {name}\n").as_bytes(), false);
+        steps.begin(format!("Downloading {name}"));
         let fetch = target.clone();
+        let counting = steps.clone();
         tokio::task::spawn_blocking(move || -> io::Result<()> {
             let base = "https://cloud.debian.org/images/cloud/trixie/latest";
             let sums = crate::download::text(&format!("{base}/SHA512SUMS"))?;
@@ -564,7 +572,9 @@ impl Builder {
                 })
                 .ok_or_else(|| err(format!("{name} is not listed in SHA512SUMS")))?;
             let part = fetch.with_extension("part");
-            let actual = crate::download::file(&format!("{base}/{name}"), &part)?;
+            let actual = crate::download::file(&format!("{base}/{name}"), &part, &mut |done, total| {
+                counting.count(done, total, true)
+            })?;
             if actual != expected {
                 let _ = std::fs::remove_file(&part);
                 return Err(err(format!("{name} does not match its published SHA512 checksum")));
@@ -573,11 +583,12 @@ impl Builder {
         })
         .await
         .map_err(io::Error::other)??;
+        steps.end();
         Ok(target)
     }
 
     /// Builds the default image in the bootstrap builder (plan §15.2).
-    pub async fn bootstrap(&self, base: Option<&Path>, out: Output<'_>) -> io::Result<ImageRecord> {
+    pub async fn bootstrap(&self, base: Option<&Path>, steps: &Steps) -> io::Result<ImageRecord> {
         let cloud = match base {
             Some(b) => {
                 if !b.is_file() {
@@ -585,30 +596,36 @@ impl Builder {
                 }
                 b.to_path_buf()
             }
-            None => self.download_bootstrap(&mut *out).await?,
+            None => self.download_bootstrap(steps).await?,
         };
         let version = self.runtime_version();
         let job = self.job_for(&ImageSource::Default)?;
         let hash = self.source_hash(&ImageSource::Default)?;
         let root = RootSpec::CloudImage { cloud_image: cloud };
         let provision = vec![helper(&version, &["provision"])];
-        self.build_with(root, None, ImageSource::Default, job, hash, provision, out).await
+        steps.begin("Building the default image");
+        let image = self.build_with(root, None, ImageSource::Default, job, hash, provision, steps).await?;
+        steps.end();
+        Ok(image)
     }
 
     /// Makes sure the current default image exists, bootstrapping or
     /// rebuilding it as needed.
-    pub async fn prepare_default(&self, rebuild: bool, out: Output<'_>) -> io::Result<ImageRecord> {
+    pub async fn prepare_default(&self, rebuild: bool, steps: &Steps) -> io::Result<ImageRecord> {
         if !rebuild && let Some(img) = self.default_image()? {
             return Ok(img);
         }
-        self.build(ImageSource::Default, out).await
+        self.build(ImageSource::Default, steps).await
     }
 
     /// `toby image prepare` (plan §15.6): the default image, the given
     /// sources and, with `roots`, the source of every root, each built when
     /// it is out of date. Returns the default image.
-    pub async fn prepare(&self, opts: PrepareOptions, out: Output<'_>) -> io::Result<ImageRecord> {
-        let default = self.prepare_default(opts.rebuild, &mut *out).await?;
+    pub async fn prepare(&self, opts: PrepareOptions, steps: &Steps) -> io::Result<ImageRecord> {
+        if !opts.rebuild && self.default_image()?.is_some() {
+            steps.up_to_date("The default image");
+        }
+        let default = self.prepare_default(opts.rebuild, steps).await?;
         let mut sources = opts.sources;
         if opts.roots {
             for root in self.store.roots()? {
@@ -625,12 +642,17 @@ impl Builder {
             let pulls =
                 opts.pull && matches!(source, ImageSource::Registry { .. } | ImageSource::Dockerfile { .. });
             let result = match self.current_image(&source) {
-                Ok(Some(_)) if !opts.rebuild && !pulls => continue,
-                Ok(_) => self.build_pulling(source.clone(), pulls, &mut *out).await.map(drop),
+                Ok(Some(_)) if !opts.rebuild && !pulls => {
+                    steps.up_to_date(capitalized(&title(&source)));
+                    continue;
+                }
+                Ok(_) => self.build_pulling(source.clone(), pulls, steps).await.map(drop),
                 Err(e) => Err(e),
             };
             if let Err(e) = result {
-                out(format!("toby: {}: {e}\n", source.describe()).as_bytes(), true);
+                // The failed build's steps fail; the others go on.
+                steps.close(false);
+                steps.output(format!("toby: {}: {e}\n", source.describe()).as_bytes(), true);
                 failed += 1;
             }
         }
@@ -656,9 +678,9 @@ impl Builder {
     }
 
     /// Formats a new home's disk with ext4 in a builder machine.
-    pub async fn format_home(&self, name: &str, out: Output<'_>) -> io::Result<()> {
+    pub async fn format_home(&self, name: &str, steps: &Steps) -> io::Result<()> {
         let mut home = self.store.home(name)?;
-        let base = self.builder_image(&mut *out).await?;
+        let base = self.builder_image(steps).await?;
         self.sweep();
         // The builder machine locks the home disk like any machine would.
         let disk = self.paths.home_disk(name);
@@ -669,10 +691,26 @@ impl Builder {
             Vec::new(),
         );
         let version = self.runtime_version();
-        self.run_machine(spec, vec![helper(&version, &["format-home"])], out).await?;
+        steps.begin("Formatting the home disk");
+        self.run_machine(spec, vec![helper(&version, &["format-home"])], steps).await?;
+        steps.end();
         home.formatted = true;
         self.store.update_home(&home)
     }
+}
+
+/// What a build makes, for its step: `the default image`, `image
+/// dockerfile …`.
+fn title(source: &ImageSource) -> String {
+    match source {
+        ImageSource::Default => "the default image".into(),
+        other => format!("image {}", other.describe()),
+    }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// What `toby image prepare` builds.

@@ -1,6 +1,7 @@
-//! Builder jobs run by tobyd (image builds, bootstrap, home formatting):
-//! their output is kept in memory and in a log file, and streamed to
-//! clients (plan §15.3).
+//! Jobs run by tobyd (image builds, bootstrap, home formatting, tool
+//! preparation, machine starts): their progress is kept in an events file,
+//! streamed to clients, and written as plain text to a log file (plan
+//! §15.3).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -10,16 +11,19 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use toby_api::BuildStatus;
+use toby_api::progress::{Event, Plain};
 use tokio::sync::watch;
 
-use crate::builder::Output;
+use crate::progress::Steps;
 
 /// A running job: it returns the image it produced, if any.
-pub type JobFuture<'a> = Pin<Box<dyn Future<Output = std::io::Result<Option<String>>> + Send + 'a>>;
+pub type JobFuture = Pin<Box<dyn Future<Output = std::io::Result<Option<String>>> + Send>>;
 
 pub struct Build {
     pub id: String,
     pub log_path: PathBuf,
+    /// The job's progress events, one JSON object a line.
+    pub events_path: PathBuf,
     inner: Mutex<Inner>,
     /// Bumped whenever output is added or the build finishes.
     changed: watch::Sender<u64>,
@@ -47,15 +51,15 @@ impl Build {
         self.inner.lock().unwrap().state != "running"
     }
 
-    /// Up to 64 KiB of output from `offset` on, read from the log file (the
-    /// output is not kept in memory).
+    /// Up to 64 KiB of the log from `offset` on (it is not kept in
+    /// memory).
     pub fn output_from(&self, offset: u64) -> std::io::Result<Vec<u8>> {
-        use std::io::{Read, Seek};
-        let mut f = std::fs::File::open(&self.log_path)?;
-        f.seek(std::io::SeekFrom::Start(offset))?;
-        let mut buf = Vec::with_capacity(64 * 1024);
-        f.take(64 * 1024).read_to_end(&mut buf)?;
-        Ok(buf)
+        read_from(&self.log_path, offset)
+    }
+
+    /// Up to 64 KiB of the events file from `offset` on.
+    pub fn events_from(&self, offset: u64) -> std::io::Result<Vec<u8>> {
+        read_from(&self.events_path, offset)
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
@@ -84,6 +88,15 @@ impl Build {
     }
 }
 
+fn read_from(path: &std::path::Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek};
+    let mut f = std::fs::File::open(path)?;
+    f.seek(std::io::SeekFrom::Start(offset))?;
+    let mut buf = Vec::with_capacity(64 * 1024);
+    f.take(64 * 1024).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// How long a finished build's output stays in memory; its log stays.
 const KEEP_FINISHED: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -104,33 +117,45 @@ impl Builds {
         all
     }
 
-    /// Starts `job` in the background; its output goes to the build's log.
-    /// The job returns the image it produced, if any.
+    /// Starts `job` in the background with the steps it reports to. The
+    /// job returns the image it produced, if any.
     pub fn start<F>(&self, logs: PathBuf, kind: &str, job: F) -> std::io::Result<Arc<Build>>
     where
-        F: for<'a> FnOnce(Output<'a>) -> JobFuture<'a> + Send + 'static,
+        F: FnOnce(Steps) -> JobFuture + Send + 'static,
     {
         std::fs::create_dir_all(&logs)?;
         let id = toby_config::new_id();
         let log_path = logs.join(format!("{id}-{kind}.log"));
-        let mut file = std::fs::File::create(&log_path)?;
+        let events_path = logs.join(format!("{id}-{kind}.events"));
+        let files = (std::fs::File::create(&log_path)?, std::fs::File::create(&events_path)?, Plain::new(0));
         let build = Arc::new(Build {
             id: id.clone(),
             log_path,
+            events_path,
             inner: Mutex::new(Inner { state: "running", error: None, image: None }),
             changed: watch::channel(0).0,
         });
         self.builds.lock().unwrap().insert(id.clone(), build.clone());
         let b = build.clone();
         let builds = self.builds.clone();
+        let files = Mutex::new(files);
+        let recorded = b.clone();
+        let steps = Steps::new(move |e: &Event| {
+            let mut f = files.lock().unwrap();
+            let (log, events, plain) = &mut *f;
+            for line in plain.format(e) {
+                let _ = writeln!(log, "{line}");
+            }
+            if let Ok(json) = serde_json::to_string(e) {
+                let _ = writeln!(events, "{json}");
+            }
+            recorded.appended();
+        });
         tokio::spawn(async move {
-            let mut out = |bytes: &[u8], _stderr: bool| {
-                let _ = file.write_all(bytes);
-                b.appended();
-            };
-            let result = job(&mut out).await.map_err(|e| e.to_string());
+            let result = job(steps.clone()).await.map_err(|e| e.to_string());
+            steps.close(result.is_ok());
             if let Err(e) = &result {
-                out(format!("toby: {e}\n").as_bytes(), true);
+                steps.output(format!("toby: {e}\n").as_bytes(), true);
             }
             b.finish(result);
             tokio::time::sleep(KEEP_FINISHED).await;
