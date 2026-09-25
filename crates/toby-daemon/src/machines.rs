@@ -91,6 +91,15 @@ pub struct Observed {
     pub status: Option<MachineStatus>,
 }
 
+/// What an ensure request asks for.
+struct Wanted {
+    home: String,
+    root: String,
+    ephemeral: bool,
+    cpus: Option<u32>,
+    memory: Option<String>,
+}
+
 pub struct Machines {
     pub config: GlobalConfig,
     pub paths: Paths,
@@ -365,9 +374,13 @@ impl Machines {
         }
     }
 
-    pub async fn list(&self) -> Vec<MachineInfo> {
+    pub async fn list(&self, filter: &toby_api::MachineFilter) -> Vec<MachineInfo> {
         let records = self.records();
-        futures_util::future::join_all(records.iter().map(|spec| self.info(spec))).await
+        let wanted = |spec: &&MachineSpec| {
+            filter.home.as_ref().is_none_or(|h| spec.home.as_ref() == Some(h))
+                && filter.root.as_ref().is_none_or(|r| spec.root == RootSpec::Named(r.clone()))
+        };
+        futures_util::future::join_all(records.iter().filter(wanted).map(|spec| self.info(spec))).await
     }
 
     /// The sessions of machine `id`, if it answers soon.
@@ -407,13 +420,14 @@ impl Machines {
         self.ensure_with(req, services, &Steps::silent()).await
     }
 
-    /// Like `ensure_for`, reporting what a start does as steps.
-    pub async fn ensure_with(
-        &self,
-        req: toby_api::EnsureMachine,
-        services: Option<&str>,
-        steps: &Steps,
-    ) -> Result<MachineSpec> {
+    /// Checks that `ensure` can start the machine a request names.
+    pub async fn check(&self, req: &toby_api::EnsureMachine) -> Result<()> {
+        let w = self.wanted(req.clone(), None)?;
+        self.check_pair(&self.records(), &w.home, &w.root).await
+    }
+
+    /// The home, root and resources a request names, checked.
+    fn wanted(&self, req: toby_api::EnsureMachine, services: Option<&str>) -> Result<Wanted> {
         let toby_api::EnsureMachine { home, root, ephemeral, mut cpus, mut memory } = req;
         if services.is_none() {
             let config = self.current_config();
@@ -461,14 +475,16 @@ impl Machines {
             ),
             _ => Error::from(e),
         })?;
+        Ok(Wanted { home, root, ephemeral, cpus, memory })
+    }
 
-        let _lock = self.lock.lock().await;
-        let records = self.records();
+    /// Fails when another running machine uses the home or the root.
+    async fn check_pair(&self, records: &[MachineSpec], home: &str, root: &str) -> Result<()> {
         let pair =
-            |s: &MachineSpec| s.home.as_deref() == Some(&home) && s.root == RootSpec::Named(root.clone());
+            |s: &MachineSpec| s.home.as_deref() == Some(home) && s.root == RootSpec::Named(root.into());
         for other in records.iter().filter(|s| !pair(s)) {
-            let shares_home = other.home.as_deref() == Some(&home);
-            let shares_root = other.root == RootSpec::Named(root.clone());
+            let shares_home = other.home.as_deref() == Some(home);
+            let shares_root = other.root == RootSpec::Named(root.into());
             if (shares_home || shares_root) && self.running(&other.id).await {
                 let what = if shares_home { format!("home {home}") } else { format!("root {root}") };
                 return Err(Error::new(
@@ -487,7 +503,22 @@ impl Machines {
                 ));
             }
         }
+        Ok(())
+    }
 
+    /// Like `ensure_for`, reporting what a start does as steps.
+    pub async fn ensure_with(
+        &self,
+        req: toby_api::EnsureMachine,
+        services: Option<&str>,
+        steps: &Steps,
+    ) -> Result<MachineSpec> {
+        let Wanted { home, root, ephemeral, cpus, memory } = self.wanted(req, services)?;
+        let _lock = self.lock.lock().await;
+        let records = self.records();
+        self.check_pair(&records, &home, &root).await?;
+        let pair =
+            |s: &MachineSpec| s.home.as_deref() == Some(&home) && s.root == RootSpec::Named(root.clone());
         let template = match records.into_iter().find(pair) {
             Some(spec) => spec,
             None => MachineSpec {

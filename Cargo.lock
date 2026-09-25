@@ -1857,7 +1857,6 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "clap",
- "crossterm",
  "futures-util",
  "http-body-util",
  "hyper",

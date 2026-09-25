@@ -138,24 +138,33 @@ impl Builds {
         self.builds.lock().unwrap().insert(id.clone(), build.clone());
         let b = build.clone();
         let builds = self.builds.clone();
-        let files = Mutex::new(files);
+        let files = Arc::new(Mutex::new(Some(files)));
+        let sink = files.clone();
         let recorded = b.clone();
         let steps = Steps::new(move |e: &Event| {
-            let mut f = files.lock().unwrap();
-            let (log, events, plain) = &mut *f;
+            let mut f = sink.lock().unwrap();
+            let Some((log, events, plain)) = &mut *f else { return };
+            let mut text = String::new();
             for line in plain.format(e) {
-                let _ = writeln!(log, "{line}");
+                text.push_str(&line);
+                text.push('\n');
             }
-            if let Ok(json) = serde_json::to_string(e) {
-                let _ = writeln!(events, "{json}");
+            let _ = log.write_all(text.as_bytes());
+            if let Ok(mut json) = serde_json::to_string(e) {
+                json.push('\n');
+                let _ = events.write_all(json.as_bytes());
             }
             recorded.appended();
         });
         tokio::spawn(async move {
             let result = job(steps.clone()).await.map_err(|e| e.to_string());
             steps.close(result.is_ok());
-            if let Err(e) = &result {
-                steps.output(format!("toby: {e}\n").as_bytes(), true);
+            drop(steps);
+            // The error ends the log; the job's status carries it.
+            if let Some((mut log, ..)) = files.lock().unwrap().take()
+                && let Err(e) = &result
+            {
+                let _ = writeln!(log, "toby: {e}");
             }
             b.finish(result);
             tokio::time::sleep(KEEP_FINISHED).await;

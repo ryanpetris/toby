@@ -637,6 +637,7 @@ impl Builder {
         }
         sources.retain(|s| *s != ImageSource::Default);
         let mut failed = 0;
+        let depth = steps.depth();
         for source in sources {
             // Pulling again matters for what comes from a registry.
             let pulls =
@@ -651,7 +652,7 @@ impl Builder {
             };
             if let Err(e) = result {
                 // The failed build's steps fail; the others go on.
-                steps.close(false);
+                steps.fail_to(depth);
                 steps.output(format!("toby: {}: {e}\n", source.describe()).as_bytes(), true);
                 failed += 1;
             }

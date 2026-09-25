@@ -10,7 +10,7 @@ use toby_tools::{Context, Manifest, ModelsContext, render};
 
 use crate::control;
 use crate::machines::{MODELS_LISTEN, Machines};
-use crate::progress::Steps;
+use crate::progress::{self, Steps};
 
 /// `toby-connect` in the guest.
 const CONNECT: &str = "/run/toby/bin/toby-connect";
@@ -347,7 +347,7 @@ async fn prepare_one(
     if run_user(machines, spec, vec!["/bin/sh".into(), "-c".into(), script], &mut collect).await?
         != ExitStatus::Code(0)
     {
-        return Err(err(format!("{name}: {}", String::from_utf8_lossy(&errors).trim())));
+        return Err(err(format!("{name}: {}", progress::clean_lines(&errors))));
     }
 
     let check = tool.check.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ");
@@ -499,7 +499,7 @@ pub async fn patch_file(
     let status =
         control::run_with_input(&runtime, argv, Identity::User, Vec::new(), input, &mut collect).await?;
     if status != ExitStatus::Code(0) {
-        return Err(err(format!("writing {path}: {}", String::from_utf8_lossy(&errors).trim())));
+        return Err(err(format!("writing {path}: {}", progress::clean_lines(&errors))));
     }
     Ok(())
 }

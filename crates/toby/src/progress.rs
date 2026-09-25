@@ -25,6 +25,8 @@ const FAILED_TAIL: usize = 20;
 const KEEP: usize = 40;
 /// How often the block is redrawn.
 const REDRAW: Duration = Duration::from_millis(100);
+/// Finished steps shown under a step that runs; earlier ones fold.
+const FINISHED_SHOWN: usize = 3;
 
 const DIM: &str = "\x1b[2m";
 const BOLD: &str = "\x1b[1m";
@@ -111,8 +113,8 @@ pub struct Display {
     plain: Plain,
     /// Whether the block has been drawn.
     visible: bool,
-    /// Lines of the block on the screen.
-    drawn: usize,
+    /// Widths of the block's lines on the screen.
+    drawn: Vec<usize>,
     last_draw: Option<Instant>,
     finished: Option<bool>,
     /// Warnings printed, each once.
@@ -132,7 +134,7 @@ impl Display {
             steps: Vec::new(),
             plain: Plain::new(0),
             visible: false,
-            drawn: 0,
+            drawn: Vec::new(),
             last_draw: None,
             finished: None,
             warned: Default::default(),
@@ -203,13 +205,16 @@ impl Display {
     /// An event of `job`, with the job's step numbers and times.
     pub fn job_event(&mut self, job: &mut Job, e: Event) {
         let now = self.now();
-        let epoch = *job.epoch.get_or_insert_with(|| match &e {
-            Event::Start { t, .. } | Event::Done { t, .. } | Event::Failed { t, .. } => {
-                now.saturating_sub(*t)
-            }
-            Event::Count { t, .. } | Event::Output { t, .. } => now.saturating_sub(*t),
-            _ => now,
-        });
+        if job.epoch.is_none()
+            && let Event::Start { t, .. }
+            | Event::Done { t, .. }
+            | Event::Failed { t, .. }
+            | Event::Count { t, .. }
+            | Event::Output { t, .. } = &e
+        {
+            job.epoch = Some(now.saturating_sub(*t));
+        }
+        let epoch = job.epoch.unwrap_or(now);
         if job.parent.is_none()
             && !matches!(e, Event::Warning { .. })
             && let Some(name) = job.lazy.take()
@@ -315,7 +320,7 @@ impl Display {
                 if matches!(e, Event::Start { .. } | Event::UpToDate { .. }) && !self.visible {
                     self.visible = true;
                     self.draw();
-                } else if matches!(e, Event::Done { .. } | Event::Failed { .. }) {
+                } else if matches!(e, Event::Failed { .. }) && self.visible {
                     self.draw();
                 }
             }
@@ -326,9 +331,9 @@ impl Display {
     /// A line printed above the block: a warning, or output of no step.
     fn above(&mut self, line: &str) {
         let mut err = std::io::stderr().lock();
-        if self.mode == Mode::Terminal && self.drawn > 0 {
-            let _ = write!(err, "\x1b[{}F\x1b[J", self.drawn);
-            self.drawn = 0;
+        if self.mode == Mode::Terminal && !self.drawn.is_empty() {
+            let _ = write!(err, "\x1b[{}F\x1b[J", self.drawn_rows(size().1));
+            self.drawn.clear();
         }
         let _ = writeln!(err, "{line}");
         drop(err);
@@ -358,7 +363,10 @@ impl Display {
     /// Leaves the block where it is: what is printed next goes below it,
     /// and the block is drawn anew under that.
     pub fn leave(&mut self) {
-        self.drawn = 0;
+        if self.mode == Mode::Terminal && self.visible {
+            self.draw();
+        }
+        self.drawn.clear();
     }
 
     /// The command is done: the block is drawn a last time, folded, or
@@ -380,13 +388,17 @@ impl Display {
         }
     }
 
+    /// Screen rows the drawn block takes, its long lines wrapped at `cols`.
+    fn drawn_rows(&self, cols: usize) -> usize {
+        self.drawn.iter().map(|w| w.div_ceil(cols.max(1)).max(1)).sum()
+    }
+
     fn draw(&mut self) {
-        let (rows, cols) =
-            crossterm::terminal::size().map(|(c, r)| (usize::from(r), usize::from(c))).unwrap_or((24, 80));
+        let (rows, cols) = size();
         let lines = self.frame(self.now(), cols, rows);
         let mut out = String::new();
-        if self.drawn > 0 {
-            out.push_str(&format!("\x1b[{}F", self.drawn));
+        if !self.drawn.is_empty() {
+            out.push_str(&format!("\x1b[{}F", self.drawn_rows(cols)));
         }
         for l in &lines {
             out.push_str("\x1b[2K");
@@ -397,39 +409,41 @@ impl Display {
         let mut err = std::io::stderr().lock();
         let _ = err.write_all(out.as_bytes());
         let _ = err.flush();
-        self.drawn = lines.len();
+        self.drawn = lines.iter().map(|l| visible(l).width()).collect();
         self.last_draw = Some(Instant::now());
     }
 
-    fn children(&self, id: Option<u32>) -> impl Iterator<Item = u32> + '_ {
-        self.steps.iter().enumerate().filter(move |(_, s)| s.parent == id).map(|(i, _)| i as u32 + 1)
+    /// The steps under each step, and at the top.
+    fn children(&self) -> HashMap<Option<u32>, Vec<u32>> {
+        let mut children: HashMap<Option<u32>, Vec<u32>> = HashMap::new();
+        for (i, s) in self.steps.iter().enumerate() {
+            children.entry(s.parent).or_default().push(i as u32 + 1);
+        }
+        children
     }
 
-    /// The block's lines at `now`, fitted to the terminal.
+    /// The block's lines at `now`, fitted to the terminal; the last frame
+    /// is not cut to its height.
     fn frame(&self, now: u64, cols: usize, rows: usize) -> Vec<String> {
         let width = cols.saturating_sub(1).max(20);
-        let counted: Vec<&Step> = self.steps.iter().filter(|s| s.state != State::Queued).collect();
+        let children = self.children();
         let done = self.steps.iter().filter(|s| matches!(s.state, State::Done | State::UpToDate)).count();
         let status = match self.finished {
             Some(true) => " FINISHED",
             Some(false) => " FAILED",
             None => "",
         };
-        let header = format!(
-            "[+] {} {}  ({done}/{}){status}",
-            self.title,
-            progress::elapsed(now),
-            self.steps.len().max(counted.len())
-        );
+        let header =
+            format!("[+] {} {}  ({done}/{}){status}", self.title, progress::elapsed(now), self.steps.len());
         let mut blocks: Vec<(bool, Vec<String>)> = Vec::new();
-        for top in self.children(None) {
+        for &top in children.get(&None).into_iter().flatten() {
             let mut lines = Vec::new();
-            self.rows(top, 0, now, width, &mut lines);
+            self.rows(&children, top, 0, now, width, &mut lines);
             let finished = self.step(top).is_some_and(|s| matches!(s.state, State::Done | State::UpToDate));
             blocks.push((finished, lines));
         }
         // Too tall: finished steps at the top go first, then the oldest lines.
-        let room = rows.saturating_sub(2).max(3);
+        let room = if self.finished.is_some() { usize::MAX } else { rows.saturating_sub(2).max(3) };
         let mut hidden = 0;
         while blocks.iter().map(|b| b.1.len()).sum::<usize>() + usize::from(hidden > 0) > room
             && blocks.len() > 1
@@ -450,7 +464,15 @@ impl Display {
         lines
     }
 
-    fn rows(&self, id: u32, depth: usize, now: u64, width: usize, out: &mut Vec<String>) {
+    fn rows(
+        &self,
+        children: &HashMap<Option<u32>, Vec<u32>>,
+        id: u32,
+        depth: usize,
+        now: u64,
+        width: usize,
+        out: &mut Vec<String>,
+    ) {
         let Some(s) = self.step(id) else { return };
         let indent = " ".repeat(1 + 2 * depth);
         let (glyph, color) = match s.state {
@@ -490,22 +512,38 @@ impl Display {
             " ".repeat(pad)
         ));
         let open = matches!(s.state, State::Running | State::Failed);
-        let mut children = self.children(Some(id)).peekable();
-        let leaf = children.peek().is_none();
+        let mine = children.get(&Some(id)).map_or(&[][..], Vec::as_slice);
+        let state = |c: &u32| self.step(*c).map(|c| c.state);
         if open {
-            for c in children {
-                self.rows(c, depth + 1, now, width, out);
+            // Finished steps but the last few fold into one line.
+            let finished = |c: &u32| matches!(state(c), Some(State::Done | State::UpToDate));
+            let folded = mine.iter().filter(|c| finished(c)).count().saturating_sub(FINISHED_SHOWN);
+            if folded > 0 {
+                out.push(format!("{}{DIM}✔ {folded} more{RESET}", " ".repeat(3 + 2 * depth)));
+            }
+            let mut skip = folded;
+            for c in mine {
+                if skip > 0 && finished(c) {
+                    skip -= 1;
+                    continue;
+                }
+                self.rows(children, *c, depth + 1, now, width, out);
             }
         }
         // Output under the step that runs, or the failed step that ended the
         // command.
-        let running_child =
-            self.children(Some(id)).any(|c| self.step(c).is_some_and(|c| c.state == State::Running));
-        let failed_child =
-            self.children(Some(id)).any(|c| self.step(c).is_some_and(|c| c.state == State::Failed));
+        let leaf = mine.is_empty();
+        let running_child = mine.iter().any(|c| state(c) == Some(State::Running));
+        let failed_child = mine.iter().any(|c| state(c) == Some(State::Failed));
         let tail = match s.state {
             State::Running if !running_child => TAIL,
-            State::Failed if self.finished.is_some() && (leaf || !failed_child) => FAILED_TAIL,
+            State::Failed if leaf || !failed_child => {
+                if self.finished.is_some() {
+                    FAILED_TAIL
+                } else {
+                    TAIL
+                }
+            }
             _ => 0,
         };
         let pad = " ".repeat(3 + 2 * depth);
@@ -513,6 +551,34 @@ impl Display {
             out.push(format!("{pad}{DIM}{}{RESET}", fit(line, width.saturating_sub(pad.len()))));
         }
     }
+}
+
+/// The terminal's size as (rows, cols), from standard error, where the
+/// block is drawn.
+fn size() -> (usize, usize) {
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCGWINSZ fills in the winsize it is given.
+    let ok = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.ws_row > 0 && ws.ws_col > 0 {
+        (usize::from(ws.ws_row), usize::from(ws.ws_col))
+    } else {
+        (24, 80)
+    }
+}
+
+/// `line` without its colours.
+fn visible(line: &str) -> String {
+    let mut out = String::new();
+    let mut esc = false;
+    for c in line.chars() {
+        match (esc, c) {
+            (false, '\x1b') => esc = true,
+            (true, c) if c.is_ascii_alphabetic() => esc = false,
+            (true, _) => {}
+            (false, c) => out.push(c),
+        }
+    }
+    out
 }
 
 /// `text` cut to `width` columns, with `…` where it was cut.
@@ -540,20 +606,7 @@ mod tests {
 
     /// The frame without colours.
     fn plain(d: &Display, now: u64, cols: usize, rows: usize) -> Vec<String> {
-        let strip = |s: &str| {
-            let mut out = String::new();
-            let mut esc = false;
-            for c in s.chars() {
-                match (esc, c) {
-                    (false, '\x1b') => esc = true,
-                    (true, 'm') => esc = false,
-                    (true, _) => {}
-                    (false, c) => out.push(c),
-                }
-            }
-            out.trim_end().to_string()
-        };
-        d.frame(now, cols, rows).iter().map(|l| strip(l)).collect()
+        d.frame(now, cols, rows).iter().map(|l| visible(l).trim_end().to_string()).collect()
     }
 
     #[test]
@@ -617,5 +670,44 @@ mod tests {
         assert!(frame[1].contains("more"), "{frame:?}");
         assert!(frame.last().unwrap().contains("running"));
         assert_eq!(fit("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn finished_steps_under_a_running_one_fold() {
+        let mut d = Display::with_mode("x", Mode::Quiet);
+        let top = d.begin("Building the default image", None);
+        for i in 0..6 {
+            let id = d.begin(format!("‣ step {i}"), Some(top));
+            d.end(id);
+        }
+        d.begin("‣ step 6", Some(top));
+        let frame = plain(&d, 1000, 60, 24);
+        assert_eq!(frame.len(), 7, "{frame:?}");
+        assert_eq!(frame[2].trim(), "✔ 3 more");
+        assert!(frame[3].contains("step 3") && frame[6].contains("● ‣ step 6"), "{frame:?}");
+    }
+
+    #[test]
+    fn the_last_frame_is_not_cut() {
+        let mut d = Display::with_mode("x", Mode::Quiet);
+        for i in 0..10 {
+            let id = d.begin(format!("step {i}"), None);
+            d.end(id);
+        }
+        let failed = d.begin("failing", None);
+        for i in 0..10 {
+            d.apply(Event::Output { id: Some(failed), line: format!("line {i}"), t: 5 });
+        }
+        d.finish(false);
+        let frame = plain(&d, 1000, 40, 8);
+        assert_eq!(frame.len(), 1 + 11 + 10, "{frame:?}");
+    }
+
+    #[test]
+    fn wrapped_lines_count_as_their_rows() {
+        let mut d = Display::with_mode("x", Mode::Quiet);
+        d.drawn = vec![10, 80, 85, 160, 0];
+        assert_eq!(d.drawn_rows(80), 1 + 1 + 2 + 2 + 1);
+        assert_eq!(visible("\x1b[1m✔\x1b[0m a").width(), 3);
     }
 }

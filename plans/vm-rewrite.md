@@ -1790,6 +1790,7 @@ POST   /v1/builds                          start build {source, arch, size} → 
 GET    /v1/builds                          builds of the last hour
 GET    /v1/builds/{id}                     status
 GET    /v1/builds/{id}/logs                output so far, then streamed until the build ends (chunked)
+GET    /v1/builds/{id}/events              progress events so far, then streamed until the build ends (NDJSON)
 POST   /v1/bootstrap                       {base} → build id (§15.2)
 DELETE /v1/images/{id}                     refuse if referenced
 POST   /v1/images/prune
@@ -1804,8 +1805,9 @@ GET    /v1/homes                           list
 POST   /v1/homes                           create {name, username, uid} → build id of the format job
 DELETE /v1/homes/{name}
 
-GET    /v1/machines                        list
+GET    /v1/machines                        list, of a ?home= and ?root= if given
 POST   /v1/machines/ensure                 {home, root, ephemeral, resources} → machine (started)
+POST   /v1/machines/start                  {home, root, ephemeral, resources} → build id (starts it)
 POST   /v1/machines/{id}/stop
 GET    /v1/machines/{id}/logs      (WS)
 POST   /v1/machines/{id}/attachments       {host, at, read_only, pinned, persist}
@@ -1827,10 +1829,11 @@ POST   /v1/web/token                       one-time URL for the web UI
 ```
 
 `POST /v1/machines/ensure` and `POST /v1/sessions` return once the
-machine is ready; builder jobs (builds, bootstrap, home formatting, tool
-preparation) return a build ID whose output streams from
-`/v1/builds/{id}/logs`. `GET /v1/events` reports changes to machines,
-sessions, approvals and builds; clients fetch what changed, and fetch
+machine is ready; jobs (builds, bootstrap, home formatting, tool
+preparation, machine starts) return a build ID whose progress streams
+from `/v1/builds/{id}/events` and log from `/v1/builds/{id}/logs`
+(§15.3). `GET /v1/events` reports changes to machines, sessions,
+approvals and builds; clients fetch what changed, and fetch
 everything again on `resync` (sent when changes may have been missed). Errors are
 `{code, message}` with a stable code such as `machine.pair-in-use`. The
 OpenAPI document is `GET /v1/openapi.json`. `GET /v1/sessions/{id}/io`
@@ -1913,7 +1916,8 @@ so they are recreated on every start.
 1. Resolve home/root/image from flags, project config, global config.
 2. Bootstrap (once, §15.2) and build the image if the root doesn't exist
    yet and the source has no image (with progress).
-3. `POST /v1/machines/ensure` (starts if needed; linger warning if
+3. `POST /v1/machines/start` if the machine is not running, with
+   progress; then `POST /v1/machines/ensure` (linger warning if
    applicable).
 4. Attach the project (session-scoped reference).
 5. Tool reconcile (§16.1) with progress.

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -170,9 +170,12 @@ pub(crate) async fn daemon_info(State(d): Shared) -> ApiResult<api::DaemonInfo> 
 
 // Machines
 
-#[utoipa::path(get, path = "/v1/machines", tag = "machines", responses((status = 200, body = Vec<api::MachineInfo>), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
-pub(crate) async fn machines(State(d): Shared) -> ApiResult<Vec<api::MachineInfo>> {
-    Ok(Json(d.machines.list().await))
+#[utoipa::path(get, path = "/v1/machines", tag = "machines", params(api::MachineFilter), responses((status = 200, body = Vec<api::MachineInfo>), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
+pub(crate) async fn machines(
+    State(d): Shared,
+    Query(filter): Query<api::MachineFilter>,
+) -> ApiResult<Vec<api::MachineInfo>> {
+    Ok(Json(d.machines.list(&filter).await))
 }
 
 #[utoipa::path(post, path = "/v1/machines/ensure", tag = "machines", request_body = api::EnsureMachine, responses((status = 200, body = api::Ensured), (status = "4XX", body = api::ApiError), (status = "5XX", body = api::ApiError)))]
@@ -189,6 +192,7 @@ async fn start_machine(
     State(d): Shared,
     Json(req): Json<api::EnsureMachine>,
 ) -> ApiResult<api::BuildStarted> {
+    d.machines.check(&req).await?;
     let machines = d.machines.clone();
     let b = d.builds.start(d.builder.paths.state.join("builds"), "machine", move |steps| {
         Box::pin(async move {
@@ -663,7 +667,7 @@ async fn machine_logs(
 pub(crate) async fn mcp_servers(State(d): Shared) -> ApiResult<Vec<api::McpInfo>> {
     use toby_config::global::{McpKind, Placement};
     let config = d.machines.current_config();
-    let machines = d.machines.list().await;
+    let machines = d.machines.list(&Default::default()).await;
     let mut out = vec![api::McpInfo {
         name: "toby".into(),
         kind: "built-in".into(),

@@ -29,7 +29,7 @@ Each source has its own build cache (container layers, mkosi caches), so
 one source's build never affects another's. Builds of the same source run
 one after another.
 
-Build output streams to the terminal and is kept in
+A build shows its steps as they run; its output is kept in
 `~/.local/state/toby/builds/`.
 
 ### The default image

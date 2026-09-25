@@ -48,7 +48,8 @@ type Snapshot = HashMap<(&'static str, String), (String, String, Option<String>)
 
 async fn snapshot(d: &Daemon) -> Option<Snapshot> {
     let mut s = Snapshot::new();
-    let (machines, sessions) = tokio::join!(d.machines.list(), d.machines.sessions());
+    let all = toby_api::MachineFilter::default();
+    let (machines, sessions) = tokio::join!(d.machines.list(&all), d.machines.sessions());
     for m in machines {
         // Uptime and idle time change all the time.
         let rest =

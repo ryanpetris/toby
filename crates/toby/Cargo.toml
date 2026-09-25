@@ -15,7 +15,6 @@ path = "src/main.rs"
 futures-util.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-crossterm.workspace = true
 http-body-util.workspace = true
 hyper-util.workspace = true
 hyper.workspace = true

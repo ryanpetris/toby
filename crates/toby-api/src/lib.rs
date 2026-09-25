@@ -93,6 +93,14 @@ pub struct AddForward {
     pub persist: bool,
 }
 
+/// `GET /v1/machines`: only the machines with this home or root.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct MachineFilter {
+    pub home: Option<String>,
+    pub root: Option<String>,
+}
+
 /// `POST /v1/machines/ensure`: the machine for a home and root, started if
 /// needed. Unset fields use the configured defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -224,7 +232,8 @@ pub struct KillSession {
 }
 
 /// A build or other builder job (`POST /v1/builds`, `/v1/homes`,
-/// `/v1/images/prepare`): its logs stream from `GET /v1/builds/{id}/logs`.
+/// `/v1/images/prepare`, `/v1/machines/start`): its progress streams from
+/// `GET /v1/builds/{id}/events` and its log from `GET /v1/builds/{id}/logs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BuildStarted {
     pub id: String,

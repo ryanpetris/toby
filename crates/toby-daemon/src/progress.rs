@@ -12,6 +12,8 @@ use toby_api::progress::Event;
 const MAX_LINE: usize = 4096;
 /// How often a step's count is reported while it changes.
 const COUNT_EVERY: Duration = Duration::from_millis(200);
+/// Steps a guest job can start; later markers are output.
+const MAX_GUEST_STEPS: usize = 1000;
 
 /// Marks a guest job's step: `\x1eSTEP <name>` on standard output.
 pub const GUEST_STEP: &str = "\x1eSTEP ";
@@ -35,9 +37,47 @@ struct State {
     next: u32,
     open: Vec<u32>,
     /// Unfinished lines of standard output and standard error.
-    partial: [Vec<u8>; 2],
+    partial: [Lines; 2],
     /// When the count of the innermost step was last reported.
     counted: Option<Instant>,
+    /// A count held back by the throttle, reported when its step ends.
+    pending: Option<Event>,
+}
+
+/// Splits output into lines. A carriage return starts its line over, as a
+/// terminal would show it, unless a newline follows it.
+#[derive(Default)]
+struct Lines {
+    partial: Vec<u8>,
+    cr: bool,
+}
+
+impl Lines {
+    fn split(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut lines = Vec::new();
+        for &b in bytes {
+            if std::mem::take(&mut self.cr) && b != b'\n' && b != b'\r' {
+                self.partial.clear();
+            }
+            match b {
+                b'\n' => lines.push(std::mem::take(&mut self.partial)),
+                b'\r' => self.cr = true,
+                _ => {
+                    self.partial.push(b);
+                    if self.partial.len() >= MAX_LINE {
+                        lines.push(std::mem::take(&mut self.partial));
+                    }
+                }
+            }
+        }
+        lines
+    }
+
+    /// What is left of an unfinished line.
+    fn rest(&mut self) -> Vec<u8> {
+        self.cr = false;
+        std::mem::take(&mut self.partial)
+    }
 }
 
 /// Printable text of a line of output: escape sequences and control
@@ -68,11 +108,23 @@ pub fn clean(bytes: &[u8]) -> String {
                 _ => {}
             },
             '\t' => out.push_str("    "),
-            c if c.is_control() => {}
+            c if c.is_control() || invisible(c) => {}
             c => out.push(c),
         }
     }
     out.trim_end().to_string()
+}
+
+/// Printable lines of text, as [`clean`] leaves them.
+pub fn clean_lines(bytes: &[u8]) -> String {
+    let lines: Vec<String> = bytes.split(|&b| b == b'\n').map(clean).filter(|l| !l.is_empty()).collect();
+    lines.join("\n")
+}
+
+/// Format characters that change how the text around them shows: zero
+/// width spaces and direction marks and overrides.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 impl Steps {
@@ -93,18 +145,20 @@ impl Steps {
         (self.0.sink)(&e);
     }
 
-    /// Sends what is left of unfinished lines to the innermost step.
+    /// Sends what is left of unfinished lines, and a held back count, to
+    /// the innermost step.
     fn flush(&self, s: &mut State) {
         let id = s.open.last().copied();
         for partial in &mut s.partial {
-            if !partial.is_empty() {
-                let line = clean(partial);
-                partial.clear();
-                if !line.is_empty() {
-                    self.emit(Event::Output { id, line, t: self.t() });
-                }
+            let line = clean(&partial.rest());
+            if !line.is_empty() {
+                self.emit(Event::Output { id, line, t: self.t() });
             }
         }
+        if let Some(count) = s.pending.take() {
+            self.emit(count);
+        }
+        s.counted = None;
     }
 
     /// Starts a step, part of the innermost open one.
@@ -115,7 +169,6 @@ impl Steps {
         let id = s.next;
         let parent = s.open.last().copied();
         s.open.push(id);
-        s.counted = None;
         self.emit(Event::Start { id, parent, name: name.into(), t: self.t() });
     }
 
@@ -143,11 +196,14 @@ impl Steps {
         let mut s = self.0.state.lock().unwrap();
         let Some(&id) = s.open.last() else { return };
         let complete = total.is_some_and(|t| done >= t);
+        let count = Event::Count { id, done, total, bytes, t: self.t() };
         if !complete && s.counted.is_some_and(|c| c.elapsed() < COUNT_EVERY) {
+            s.pending = Some(count);
             return;
         }
         s.counted = Some(Instant::now());
-        self.emit(Event::Count { id, done, total, bytes, t: self.t() });
+        s.pending = None;
+        self.emit(count);
     }
 
     /// Output for the innermost step, split into lines. A carriage return
@@ -155,20 +211,7 @@ impl Steps {
     pub fn output(&self, bytes: &[u8], stderr: bool) {
         let mut s = self.0.state.lock().unwrap();
         let id = s.open.last().copied();
-        let mut lines = Vec::new();
-        let partial = &mut s.partial[usize::from(stderr)];
-        for &b in bytes {
-            match b {
-                b'\n' => lines.push(std::mem::take(partial)),
-                b'\r' => partial.clear(),
-                _ => {
-                    partial.push(b);
-                    if partial.len() >= MAX_LINE {
-                        lines.push(std::mem::take(partial));
-                    }
-                }
-            }
-        }
+        let lines = s.partial[usize::from(stderr)].split(bytes);
         drop(s);
         for line in lines {
             let line = clean(&line);
@@ -194,13 +237,23 @@ impl Steps {
         }
     }
 
-    /// Ends the job: its open steps finish, or fail when it failed.
-    pub fn close(&self, ok: bool) {
+    /// Fails open steps until `depth` are left.
+    pub fn fail_to(&self, depth: usize) {
         let mut s = self.0.state.lock().unwrap();
         self.flush(&mut s);
-        while let Some(id) = s.open.pop() {
-            let t = self.t();
-            self.emit(if ok { Event::Done { id, t } } else { Event::Failed { id, t } });
+        while s.open.len() > depth {
+            let id = s.open.pop().unwrap();
+            self.emit(Event::Failed { id, t: self.t() });
+        }
+    }
+
+    /// Ends the job: its open steps finish, or fail when it failed.
+    pub fn close(&self, ok: bool) {
+        if ok {
+            self.flush(&mut self.0.state.lock().unwrap());
+            self.end_to(0);
+        } else {
+            self.fail_to(0);
         }
     }
 
@@ -210,7 +263,7 @@ impl Steps {
     /// lines start steps of their own. The job's steps cannot close steps it
     /// did not open.
     pub fn guest(&self) -> Guest {
-        Guest { steps: self.clone(), floor: self.depth(), partial: [Vec::new(), Vec::new()], last: None }
+        Guest { steps: self.clone(), floor: self.depth(), partial: Default::default(), last: None, begun: 0 }
     }
 }
 
@@ -219,40 +272,31 @@ pub struct Guest {
     steps: Steps,
     /// Open steps when the job started.
     floor: usize,
-    partial: [Vec<u8>; 2],
+    partial: [Lines; 2],
     /// The tool's last step: the same again is its output.
     last: Option<String>,
+    /// Steps the job has started.
+    begun: usize,
 }
 
 impl Guest {
     pub fn feed(&mut self, bytes: &[u8], stderr: bool) {
-        let mut lines = Vec::new();
-        {
-            let partial = &mut self.partial[usize::from(stderr)];
-            for &b in bytes {
-                match b {
-                    b'\n' => lines.push(std::mem::take(partial)),
-                    b'\r' => partial.clear(),
-                    _ => {
-                        partial.push(b);
-                        if partial.len() >= MAX_LINE {
-                            lines.push(std::mem::take(partial));
-                        }
-                    }
-                }
-            }
-        }
-        for line in lines {
+        for line in self.partial[usize::from(stderr)].split(bytes) {
             self.line(&line, stderr);
         }
     }
 
     fn line(&mut self, raw: &[u8], stderr: bool) {
         let steps = &self.steps;
+        if self.begun >= MAX_GUEST_STEPS {
+            steps.output(format!("{}\n", clean(raw)).as_bytes(), stderr);
+            return;
+        }
         if !stderr && let Some(name) = raw.strip_prefix(GUEST_STEP.as_bytes()) {
             steps.end_to(self.floor);
             steps.begin(clean(name));
             self.last = None;
+            self.begun += 1;
             return;
         }
         if !stderr
@@ -262,6 +306,7 @@ impl Guest {
             steps.end_to(self.floor + 1);
             steps.begin(clean(name));
             self.last = None;
+            self.begun += 1;
             return;
         }
         let text = clean(raw);
@@ -280,24 +325,26 @@ impl Guest {
                 steps.end_to(self.floor + 1);
                 steps.begin(name.clone());
                 self.last = Some(name);
+                self.begun += 1;
                 return;
             }
         }
         steps.output(format!("{text}\n").as_bytes(), stderr);
     }
 
-    /// The job ended: what is left of its lines goes out, and when it
-    /// succeeded its steps finish; when it failed they stay open, to fail
-    /// with the job.
+    /// The job ended: what is left of its lines goes out, and its steps
+    /// finish, or fail when it failed.
     pub fn finish(mut self, ok: bool) {
         for stderr in [false, true] {
-            let rest = std::mem::take(&mut self.partial[usize::from(stderr)]);
+            let rest = self.partial[usize::from(stderr)].rest();
             if !rest.is_empty() {
                 self.line(&rest, stderr);
             }
         }
         if ok {
             self.steps.end_to(self.floor);
+        } else {
+            self.steps.fail_to(self.floor);
         }
     }
 }
@@ -403,5 +450,54 @@ mod tests {
     fn output_is_cleaned() {
         assert_eq!(clean(b"\x1b]0;title\x07a\tb\x1b[1;31mc\x1b[0m\x07 "), "a    bc");
         assert_eq!(clean(b"\xff ok"), "\u{fffd} ok");
+        assert_eq!(clean("a\u{202e}b\u{200b}c\u{200d}".as_bytes()), "abc\u{200d}");
+        assert_eq!(clean_lines(b"one\n\x1b[1mtwo\n\n"), "one\ntwo");
+    }
+
+    #[test]
+    fn carriage_returns() {
+        let (steps, events) = recorded();
+        steps.begin("Installing");
+        steps.output(b"crlf\r\n10%\r50%\r", false);
+        steps.output(b"\n", false);
+        steps.output(b"twice\r\r\n", false);
+        steps.output(b"a\rb", true);
+        steps.end();
+        assert_eq!(
+            shape(&events.lock().unwrap()),
+            [
+                "start 1 None Installing",
+                "output Some(1) crlf",
+                "output Some(1) 50%",
+                "output Some(1) twice",
+                "output Some(1) b",
+                "done 1"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_guest_job_fails_its_steps_at_once() {
+        let (steps, events) = recorded();
+        steps.begin("Building the image");
+        let mut guest = steps.guest();
+        guest.feed(b"\x1eSTEP Building\nSTEP 1/1: RUN false\n", false);
+        guest.finish(false);
+        steps.count(5, None, true);
+        steps.count(9, None, true);
+        steps.end();
+        assert_eq!(
+            shape(&events.lock().unwrap()),
+            [
+                "start 1 None Building the image",
+                "start 2 Some(1) Building",
+                "start 3 Some(2) STEP 1/1: RUN false",
+                "failed 3",
+                "failed 2",
+                "count 1 5",
+                "count 1 9",
+                "done 1",
+            ]
+        );
     }
 }

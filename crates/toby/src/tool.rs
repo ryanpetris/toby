@@ -273,10 +273,9 @@ async fn ensure_machine(
         .or(home_rec.as_ref().and_then(|h| h.default_root.clone()))
         .unwrap_or_else(|| "default".into());
     let roots: Vec<toby_api::RootInfo> = api.get("/v1/roots").await?;
-    let machines: Vec<toby_api::MachineInfo> = api.get("/v1/machines").await?;
-    let running = machines
-        .iter()
-        .any(|m| m.home.as_deref() == Some(home.as_str()) && m.root == root && m.state == "ready");
+    let machines: Vec<toby_api::MachineInfo> =
+        api.get(&format!("/v1/machines?home={}&root={}", segment(&home), segment(&root))).await?;
+    let running = machines.iter().any(|m| m.state == "ready");
     let home_step = home_rec.is_none().then(|| display.queue(format!("Home {home}")));
     let root_step = (!roots.iter().any(|r| r.name == root)).then(|| display.queue(format!("Root {root}")));
     let machine_step = (!running).then(|| display.queue(format!("Machine {home}/{root}")));

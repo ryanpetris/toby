@@ -238,7 +238,8 @@ type Shared = State<Arc<Daemon>>;
 type PageResult = Result<Response, crate::machines::Error>;
 
 async fn machines(State(d): Shared) -> PageResult {
-    let axum::Json(machines) = crate::server::machines(State(d)).await?;
+    let axum::Json(machines) =
+        crate::server::machines(State(d), axum::extract::Query(Default::default())).await?;
     Ok(page("machines.html", minijinja::context! { machines }))
 }
 
